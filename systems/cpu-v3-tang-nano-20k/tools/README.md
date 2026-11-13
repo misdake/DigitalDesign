@@ -78,7 +78,8 @@
   setup/hold slack, then the unique negative endpoint sum in the printed path
   tables, then Logic. Table coverage is recorded: a partial sum is not full TNS.
   Gowin's per-clock TNS is retained separately because it can omit cross-clock
-  violations. Unrouted cases rank after routed cases.
+  violations. Fractional resource usage such as `22.25` DSPs is preserved;
+  integral resource counts remain integers. Unrouted cases rank after routed cases.
 
   Each job has its own inputs, compiler outputs, effective options, synthesis
   project, PnR command, full logs, reports and hashes. Input/permutation caching

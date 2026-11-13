@@ -1,6 +1,6 @@
 //! Native ABI4 byte oracle for the independent Target/Load/Clear assembler.
 use cpu_v3::{rcc_backend, CpuV3Sim, RunOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 #[test]
@@ -42,7 +42,7 @@ fn main(){
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
     let output = root.join("../../../target/bloxorz-web/api-copy");
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let parsed = compile_program_named_checked(
+    let parsed = crate::checked_flat_fixture::compile(
         "color-copy-packet",
         source,
         &options,
@@ -119,7 +119,7 @@ fn main(){gpu_record_init();check(gpu_record_configure(0,0x9800,1,0x9a00,1));
     for enabled in [false, true] {
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;
-        let parsed = compile_program_named_checked(
+        let parsed = crate::checked_flat_fixture::compile(
             "api-pass-packet",
             source,
             &options,

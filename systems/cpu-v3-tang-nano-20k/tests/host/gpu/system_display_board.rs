@@ -41,25 +41,23 @@ fn application_instruction_boundaries_are_safe() {
             .then_some(i)
         })
         .collect();
-    assert_eq!(
-        switches.len(),
-        2,
-        "only the diagnostic read leaf may change mapping"
-    );
-    let mut loads = 0;
-    for word in &program.words[switches[0] + 1..switches[1]] {
-        match decode(*word) {
-            Instruction::Load { base, .. } => {
-                assert_ne!(base, 13);
-                loads += 1;
+    assert!(!switches.is_empty() && switches.len() % 2 == 0);
+    for pair in switches.as_chunks::<2>().0 {
+        let mut loads = 0;
+        for word in &program.words[pair[0] + 1..pair[1]] {
+            match decode(*word) {
+                Instruction::Load { base, .. } => {
+                    assert_ne!(base, 13);
+                    loads += 1;
+                }
+                Instruction::Immediate { .. }
+                | Instruction::Prefix { .. }
+                | Instruction::Move { .. } => {}
+                other => panic!("unsafe instruction under temporary mapping: {other:?}"),
             }
-            Instruction::Immediate { .. }
-            | Instruction::Prefix { .. }
-            | Instruction::Move { .. } => {}
-            other => panic!("unsafe instruction under temporary mapping: {other:?}"),
         }
+        assert_eq!(loads, 1);
     }
-    assert_eq!(loads, 1);
     let maintenance: Vec<_> = program
         .words
         .iter()

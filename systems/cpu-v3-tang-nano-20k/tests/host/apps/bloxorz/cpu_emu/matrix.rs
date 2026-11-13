@@ -41,9 +41,15 @@ fn compile(arm: &str, level: u16) {
         Ok("1") | Err(_) => true,
         value => panic!("BLOXORZ_CPU_AUTO_INLINE must be 0 or 1: {value:?}"),
     };
+    let local_memory = match std::env::var("BLOXORZ_CPU_LOCAL_MEMORY").as_deref() {
+        Ok("0") => false,
+        Ok("1") | Err(_) => true,
+        value => panic!("BLOXORZ_CPU_LOCAL_MEMORY must be 0 or 1: {value:?}"),
+    };
     let case = ApplicationCase {
         observe_pose: false,
         automatic_inline: Some(automatic_inline),
+        local_memory: Some(local_memory),
         edit: Box::new(|source| {
             source.required_replace(
                 "session_tick(buttons, held, elapsed);",
@@ -135,6 +141,9 @@ fn compile(arm: &str, level: u16) {
         "compiler/rcc/src/frontend/mod.rs",
         "compiler/rcc/src/compiler/builder.rs",
         "compiler/rcc/src/compiler/inline.rs",
+        "compiler/rcc/src/compiler/passes.rs",
+        "compiler/rcc/src/compiler/passes/local_memory.rs",
+        "compiler/rcc/src/frontend/liveness.rs",
         "ip/cpu-v3/src/rcc_backend/inline.rs",
     ]
     .into_iter()
@@ -148,7 +157,7 @@ fn compile(arm: &str, level: u16) {
         "main_sha256":hash(&std::fs::read(out.join("compiled-main.rs")).unwrap()),
         "producer_sha256":hash(&std::fs::read(out.join("renderer_assets.rs")).unwrap()),
         "sources":sources,"compiler":compiler,"functions":functions,"globals":globals,"resources":resource_hashes,
-        "static_words":budget["static_words"],"pose_probe":false,"automatic_inline":automatic_inline,"code_segments":code_segments,"total_code_bytes":program.total_code_words()*2,
+        "static_words":budget["static_words"],"pose_probe":false,"automatic_inline":automatic_inline,"local_memory":local_memory,"code_segments":code_segments,"total_code_bytes":program.total_code_words()*2,
         "time_protocol":"PLAY from producer, dt=0 except frame8=17ms; neutral through frame6; frame7 Select(level1) or Right(level29), release at frame8"});
     std::fs::write(
         out.join("profile-input.json"),
@@ -438,7 +447,7 @@ fn run(out: &Path) {
 
 #[test]
 #[ignore = "explicit same-migrated-source CPU emu/functional GPU compiler comparison"]
-fn temporary_reuse_cpu_matrix() {
+fn compiler_cpu_matrix() {
     let arm = std::env::var("BLOXORZ_CPU_ARM").expect("explicit compiler arm");
     let level = std::env::var("BLOXORZ_START_LEVEL")
         .unwrap()

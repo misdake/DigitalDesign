@@ -700,6 +700,7 @@ fn inflight_mesh_patch_rebuild_and_free_stop_before_mutation() {
 }
 
 #[test]
+#[ignore = "requires an explicit accepted-source baseline and BLOXORZ_SIM_OUTPUT_ROOT"]
 fn representative_mixed_material_goal_and_level_rebuilds_render_against_accepted() {
     use super::{application_case, write_display_ppm};
     use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};

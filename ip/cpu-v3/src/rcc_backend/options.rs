@@ -4,6 +4,7 @@ use rcc::{Opts, RccConfig};
 #[derive(Clone, Debug)]
 pub struct CompilerOptions {
     pub asset_banks: Vec<rcc::frontend::static_assets::AssetBank>,
+    pub asset_dependencies: Vec<(String, String)>,
     pub gpu_debug: bool,
     pub opt: Opts,
     /// Automatic/explicit pre-ABI inlining policy and bounded compilation costs.
@@ -23,6 +24,7 @@ impl Default for CompilerOptions {
     fn default() -> Self {
         Self {
             asset_banks: Vec::new(),
+            asset_dependencies: Vec::new(),
             gpu_debug: false,
             opt: Opts::default(),
             inline: rcc::InlineOptions::default(),
@@ -57,6 +59,9 @@ impl CompilerOptions {
 }
 
 impl RccConfig for CompilerOptions {
+    fn asset_dependencies(&self) -> &[(String, String)] {
+        &self.asset_dependencies
+    }
     fn asset_banks(&self) -> &[rcc::frontend::static_assets::AssetBank] {
         &self.asset_banks
     }

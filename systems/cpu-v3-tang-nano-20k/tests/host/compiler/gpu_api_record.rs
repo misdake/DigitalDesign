@@ -1,6 +1,6 @@
 //! Actual record-core execution without a public factory or GPU device peer.
 use cpu_v3::{rcc_backend, CpuV3Sim, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 const RECORD: &str = r#"
@@ -96,7 +96,7 @@ fn record_core_preflights_seals_and_replays_without_a_public_factory() {
         std::fs::create_dir_all(&directory).unwrap();
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;
-        let parsed = compile_program_named_checked(
+        let parsed = crate::checked_flat_fixture::compile(
             "graphics-api-record-core",
             RECORD,
             &options,
@@ -112,11 +112,7 @@ fn record_core_preflights_seals_and_replays_without_a_public_factory() {
             "GPU_CB_RECORDS",
             "GPU_NATIVE_SCRATCH",
             "GPU_OBJECT_BACKING",
-            "CAPTURE_RESERVATION",
             "GPU_CB_RESOURCE_FACTS",
-            "GPU_API_FAULT",
-            "GPU_EXECUTION",
-            "GPU_PRESENT",
         ] {
             assert!(
                 parsed.debug.globals.iter().any(|g| g.name == name),

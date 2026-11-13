@@ -3,19 +3,16 @@ use crate::dsl_rt::*;
 mod cpu_canvas;
 use cpu_canvas::*;
 mod gpu_api;
+use crate::common::palette::*;
+use crate::common::state::*;
+use crate::common::ui::*;
 use gpu_api::*;
-mod palette;
-use palette::*;
-mod state;
-use state::*;
-mod ui;
-use ui::*;
 
 // Q16.16 nearest representation of 2*pi/128 for the raster illustration.
 const WAVE_SAMPLE_STEP: fix32 = fix32::from_words(3217, 0);
 
-pub fn waves_page(grid: &mut UiGrid, canvas: CpuCanvas, state: DemoState) {
-    page_start(grid, state, b"WAVES");
+pub fn waves_page(grid: &mut UiGrid, canvas: CpuCanvas, state: AnimationState) {
+    page_start(grid, PageId::Waves, state.paused, b"WAVES");
     text(grid, 4, 4, b"SIN");
     text(grid, 4, 8, b"COS");
     let angle = animation_phase(state);

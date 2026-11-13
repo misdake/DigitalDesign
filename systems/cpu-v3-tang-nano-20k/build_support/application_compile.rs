@@ -42,6 +42,14 @@ pub(super) fn compile_program(
     } = request;
     let mut options = options.clone();
     options.asset_banks = asset_banks(reserved);
+    options.asset_dependencies = policy
+        .sector_relocations
+        .iter()
+        .filter(|r| r.asset != r.target)
+        .map(|r| (r.asset.clone(), r.target.clone()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let options = &options;
     let explicit_gpu = matches!(frontend, ApplicationFrontend::ExplicitGpu);
     let entry = policy.entry;
@@ -57,6 +65,7 @@ pub(super) fn compile_program(
     inputs.entry(
         &path.display().to_string(),
         &rcc::frontend::ModuleSource {
+            namespace: rcc::frontend::ModuleNamespace::Scoped,
             source: source.clone(),
             origin: Some(path.to_owned()),
         },
@@ -120,8 +129,12 @@ pub(super) fn compile_program(
             "included bytes changed during compilation"
         );
     }
-    asset_relocation::apply(&mut program.assets.placed, &policy.sector_relocations)
-        .map_err(|e| BuildDiagnostic::new("asset relocation", e))?;
+    asset_relocation::apply_retained(
+        &mut program.assets.placed,
+        &program.assets.discarded,
+        &policy.sector_relocations,
+    )
+    .map_err(|e| BuildDiagnostic::new("asset relocation", e))?;
     let mut assets: Vec<crate::boot::BootResource> = program
         .assets
         .placed

@@ -99,6 +99,20 @@ class Comparison(unittest.TestCase):
 
 
 class Deployment(unittest.TestCase):
+    def test_application_programming_uses_identical_bin_without_mutating_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root/'application.cb06'
+            package.write_bytes(b'CB06\x00\xff\x12\x34')
+            receipt = root/'program.json'
+            staged = hardware.programming_binary(package, receipt)
+            self.assertEqual(staged.suffix, '.bin')
+            self.assertEqual(staged.read_bytes(), package.read_bytes())
+            self.assertEqual(hardware.programming_binary(staged, receipt), staged)
+            with self.assertRaises(FileExistsError):
+                hardware.programming_binary(package, receipt)
+            self.assertFalse(receipt.exists())
+
     def test_configuration_encoding_padding_and_capacity(self):
         with tempfile.TemporaryDirectory() as directory:
             fs = Path(directory)/'image.fs'

@@ -1,6 +1,6 @@
 //! G0 admission and language probe against real arena/schema sources, not a GPU executor.
 use cpu_v3::{rcc_backend, CpuV3Sim, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 const PROBE: &str = r#"
@@ -77,7 +77,7 @@ fn actual_rcc_g0_admission_and_affine_probe_both_profiles() {
         std::fs::create_dir_all(&dir).unwrap();
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;
-        let parsed = compile_program_named_checked(
+        let parsed = crate::checked_flat_fixture::compile(
             "graphics-api-g0",
             PROBE,
             &options,
@@ -156,7 +156,7 @@ fn main(){let gpu:Gpu=Gpu::init();halt(0x600d);}"#;
         });
     let directory = root.join("required-associated-factory");
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let program = compile_program_named_checked(
+    let program = crate::checked_flat_fixture::compile(
         "required-resource-factory",
         source,
         &options,
@@ -183,7 +183,7 @@ fn main(){let memory:GpuMemory=unsafe{GpuMemory::from_sectors(0x9800,512)};halt(
         })
         .join("required-unsafe-constructor");
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let program = compile_program_named_checked(
+    let program = crate::checked_flat_fixture::compile(
         "required-unsafe-constructor",
         source,
         &options,
@@ -210,7 +210,7 @@ fn main(){let saved=read_dseg_page(3);let mut n:u16=0;
  check(read_dseg_page(3)==saved);check(gpu_window_write_words(65535,48,ROW.as_array(),16));
  check(!gpu_window_write_words(65535,48,ROW.as_array(),17));check(!gpu_window_read_words(65535,64,ROW.as_array(),1));
  let invalid=unsafe{Ptr::from_addr(0xc000).as_u16_array()};check(!gpu_window_write_words(0,0,invalid,1));
- check(!gpu_window_write_words(0,0,ROW.as_array(),65));
+ check(!gpu_window_write_words(0,0,ROW.as_array(),GPU_API_PUSH_CHUNK_WORDS+1));
  n=0;while n<64{ROW[n]=0x6000+n;n+=1;}
  check(gpu_window_write_words(0x9000,0,ROW.as_array(),64));
  n=0;while n<64{ROW[n]=0;n+=1;}
@@ -237,7 +237,7 @@ fn main(){let saved=read_dseg_page(3);let mut n:u16=0;
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/graphics-api-g0")
         });
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let parsed = compile_program_named_checked(
+    let parsed = crate::checked_flat_fixture::compile(
         "cpu-owned-storage",
         source,
         &options,

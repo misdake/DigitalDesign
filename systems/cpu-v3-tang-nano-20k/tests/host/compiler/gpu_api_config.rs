@@ -1,6 +1,6 @@
 //! Actual configuration helpers; this is not the public resource Gpu::init gate.
 use cpu_v3::{rcc_backend, CpuV3Sim, Device, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::{any::Any, cell::RefCell, path::Path, rc::Rc};
 
 #[derive(Default)]
@@ -65,7 +65,7 @@ fn main(){
     for enabled in [false, true] {
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;
-        let parsed = compile_program_named_checked(
+        let parsed = crate::checked_flat_fixture::compile(
             "api-config",
             source,
             &options,

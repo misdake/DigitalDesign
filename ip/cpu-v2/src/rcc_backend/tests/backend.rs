@@ -70,7 +70,18 @@ fn test_spill_stress() {
     // 16 values live simultaneously (> 13 allocatable registers)
     let values: Vec<u16> = (0..16u16).map(|i| i * 3 + 1).collect();
     let (mut m, _) = FuncBuilder::new("main", 0, 0);
-    let vals = imm_seq(&mut m, &values);
+    // Load runtime values: allocator rematerialization intentionally avoids
+    // spilling immediates even when IR constant propagation is disabled.
+    let base = m.load_imm(0x1000);
+    let vals: Vec<_> = values
+        .iter()
+        .enumerate()
+        .map(|(i, &value)| {
+            let value = m.load_imm(value);
+            m.store_mem(base, i as i16, value);
+            m.load_mem(base, i as i16)
+        })
+        .collect();
     let mut acc = vals[0];
     for &v in &vals[1..] {
         acc = m.bin(BinOp::Add, acc, v);
@@ -84,6 +95,7 @@ fn test_spill_stress() {
         const_prop: false,
         cse: false,
         dce: false,
+        local_memory: false,
         coalesce: true,
     };
     c.add_func(m.finish());

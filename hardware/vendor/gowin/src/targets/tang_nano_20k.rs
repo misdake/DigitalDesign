@@ -691,7 +691,13 @@ impl TangNano20K {
         // this envelope against each final routed SDF, not only PLL phase.
         extension = extension
             .add_sdc_constraint("set_clock_latency -source -early 3.75 [get_clocks {sdram_clk}]")
-            .add_sdc_constraint("set_clock_latency -source -late 6.25 [get_clocks {sdram_clk}]");
+            .add_sdc_constraint("set_clock_latency -source -late 6.25 [get_clocks {sdram_clk}]")
+            // Keep the physical 54/108 MHz clocks and SDRAM reference intact.
+            // Full-cycle setup budgets target 55/110 MHz, including the tool's
+            // existing 35 ps allowance. Hold retains that original allowance.
+            .add_sdc_constraint("set_clock_uncertainty 0.371700 -setup -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {cpu_clk}]")
+            .add_sdc_constraint("set_clock_uncertainty 0.203350 -setup -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {controller_clk}]")
+            .add_sdc_constraint("set_clock_uncertainty 0.035 -hold -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {controller_clk cpu_clk sdram_clk}]");
         let mut binding = (if ds2 {
             Self::ds2_user_io_binding()
         } else {

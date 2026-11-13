@@ -187,6 +187,7 @@ impl Render {
 fn projection(
     files: &[syn::File],
     domains: &HashMap<usize, usize>,
+    modules: Option<&super::modules::Graph>,
 ) -> Result<Render, (usize, syn::Error)> {
     let resources = markers(files)?;
     let drops: HashSet<_> = files
@@ -219,6 +220,13 @@ fn projection(
     };
     let mut native = native::Native::new(files, &resources.keys().cloned().collect());
     let mut scopes: BTreeMap<Option<usize>, Vec<(usize, Item)>> = BTreeMap::new();
+    let groups: Vec<_> = (0..files.len())
+        .map(|file| {
+            domains.get(&file).copied().or_else(|| {
+                (file != 0 && modules.is_some_and(|m| !m.compatibility[file])).then_some(file)
+            })
+        })
+        .collect();
     for (fi, file) in files.iter().enumerate() {
         for item in &file.items {
             if matches!(item, Item::Use(_) | Item::Mod(_)) {
@@ -239,10 +247,7 @@ fn projection(
             }
             native.visit_item_mut(&mut item);
             projector.visit_item_mut(&mut item);
-            scopes
-                .entry(domains.get(&fi).copied())
-                .or_default()
-                .push((fi, item));
+            scopes.entry(groups[fi]).or_default().push((fi, item));
         }
     }
     for (name, r) in &resources {
@@ -254,76 +259,112 @@ fn projection(
                 quote!(impl ::core::ops::Drop for #id{fn drop(&mut self){}})
             };
             scopes
-                .entry(domains.get(&r.file).copied())
+                .entry(groups[r.file])
                 .or_default()
                 .push((r.file, syn::parse2(tokens).unwrap()));
         }
     }
-    let separated = scopes.len() > 1;
-    for (index, items) in scopes.values_mut().enumerate() {
-        let scope = syn::Ident::new(&format!("__rcc_check_scope_{index}"), Span::call_site());
-        if separated {
-            rendered.token("mod", 0, Span::call_site(), false);
-            rendered.token(&scope.to_string(), 0, Span::call_site(), false);
-            rendered.token("{", 0, Span::call_site(), false);
-            rendered.tokens(
-                quote!(
-                    use super::*;
-                ),
-                0,
-            );
-        }
-        for (fi, item) in items {
-            if separated {
-                // Name resolution stays flat. Only ordinary value fields gain
-                // Rust module isolation; RCC still checks callable/resource
-                // visibility and exact resource definition-file permissions.
-                let visibility = match item {
-                    Item::Struct(s) => {
-                        if resources.contains_key(&s.ident.to_string()) {
-                            for field in &mut s.fields {
-                                field.vis = parse_quote!(pub(super));
-                            }
-                        }
-                        Some(&mut s.vis)
-                    }
-                    Item::Enum(e) => Some(&mut e.vis),
-                    Item::Fn(f) => Some(&mut f.vis),
-                    Item::Const(c) => Some(&mut c.vis),
-                    Item::Static(s) => Some(&mut s.vis),
-                    Item::Type(t) => Some(&mut t.vis),
-                    Item::Impl(block) if block.trait_.is_none() => {
-                        for member in &mut block.items {
-                            if let syn::ImplItem::Method(method) = member {
-                                method.vis = parse_quote!(pub(super));
-                            }
-                        }
-                        None
-                    }
-                    _ => None,
-                };
-                if let Some(visibility) = visibility {
-                    *visibility = parse_quote!(pub(super));
-                }
-            }
-            rendered.tokens(item.to_token_stream(), *fi);
-        }
-        if separated {
-            rendered.token("}", 0, Span::call_site(), false);
-            rendered.tokens(quote!(use #scope::*;), 0);
-        }
+    let domain_roots: HashSet<_> = domains.values().copied().collect();
+    let mut children: BTreeMap<Option<usize>, Vec<usize>> = BTreeMap::new();
+    for key in groups
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        let parent = if domain_roots.contains(&key) {
+            None
+        } else {
+            modules
+                .and_then(|m| m.parents[key])
+                .and_then(|parent| groups[parent])
+                .filter(|parent| !domain_roots.contains(parent))
+        };
+        children.entry(parent).or_default().push(key);
     }
+    emit_scope(
+        &mut rendered,
+        None,
+        &mut scopes,
+        &children,
+        &domain_roots,
+        &resources,
+    );
     Ok(rendered)
+}
+
+fn emit_scope(
+    rendered: &mut Render,
+    key: Option<usize>,
+    scopes: &mut BTreeMap<Option<usize>, Vec<(usize, Item)>>,
+    children: &BTreeMap<Option<usize>, Vec<usize>>,
+    domains: &HashSet<usize>,
+    resources: &BTreeMap<String, Marker>,
+) {
+    let scope =
+        key.map(|index| syn::Ident::new(&format!("__rcc_check_scope_{index}"), Span::call_site()));
+    if let Some(scope) = &scope {
+        rendered.token("mod", 0, Span::call_site(), false);
+        rendered.token(&scope.to_string(), 0, Span::call_site(), false);
+        rendered.token("{", 0, Span::call_site(), false);
+        rendered.tokens(
+            quote!(
+                use crate::*;
+            ),
+            0,
+        );
+    }
+    for (file, mut item) in scopes.remove(&key).unwrap_or_default() {
+        if key.is_some() {
+            let domain = key.is_some_and(|index| domains.contains(&index));
+            let visibility = match &mut item {
+                Item::Struct(value) => {
+                    if resources.contains_key(&value.ident.to_string()) {
+                        for field in &mut value.fields {
+                            field.vis = parse_quote!(pub(crate));
+                        }
+                    }
+                    Some(&mut value.vis)
+                }
+                Item::Enum(value) => Some(&mut value.vis),
+                Item::Fn(value) => Some(&mut value.vis),
+                Item::Const(value) => Some(&mut value.vis),
+                Item::Static(value) => Some(&mut value.vis),
+                Item::Type(value) => Some(&mut value.vis),
+                Item::Impl(block) if domain && block.trait_.is_none() => {
+                    for member in &mut block.items {
+                        if let syn::ImplItem::Method(method) = member {
+                            method.vis = parse_quote!(pub(crate));
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            };
+            if let Some(visibility) = visibility {
+                *visibility = parse_quote!(pub(crate));
+            }
+        }
+        rendered.tokens(item.to_token_stream(), file);
+    }
+    for child in children.get(&key).into_iter().flatten() {
+        emit_scope(rendered, Some(*child), scopes, children, domains, resources);
+    }
+    if let Some(scope) = &scope {
+        rendered.token("}", 0, Span::call_site(), false);
+        rendered.tokens(quote!(pub(crate) use #scope::*;), 0);
+    }
 }
 
 pub(super) fn validate(
     files: &[syn::File],
     file_names: &[String],
     domains: &HashMap<usize, usize>,
+    modules: Option<&super::modules::Graph>,
     options: &RustcCheck,
 ) -> Result<(), (usize, syn::Error)> {
     let fail = |message: String| (0, syn::Error::new(Span::call_site(), message));
-    let rendered = projection(files, domains)?;
+    let rendered = projection(files, domains, modules)?;
     std::fs::create_dir_all(&options.directory)
         .map_err(|e| fail(format!("rustc audit directory: {e}")))?;
     let dir = std::fs::canonicalize(&options.directory).map_err(|e| fail(e.to_string()))?;

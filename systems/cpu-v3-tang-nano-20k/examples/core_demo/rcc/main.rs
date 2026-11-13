@@ -1,23 +1,21 @@
 //! The core demonstration's ordinary public-API entry. No profiler device hooks.
 use crate::dsl_rt::*;
+mod common;
 mod gpu_api;
+mod pages;
+use crate::common::working_set::*;
 use gpu_api::*;
-mod working_set;
-use working_set::*;
 mod boot_resources;
 use boot_resources::*;
 mod gamepad;
 use gamepad::*;
 mod time;
+use crate::common::frame::*;
+use crate::common::state::*;
+use crate::pages::cpu_pages::*;
+use crate::pages::geometry_page::*;
+use crate::pages::gpu_lab::*;
 use time::*;
-mod state;
-use state::*;
-mod geometry_page;
-use geometry_page::*;
-mod cpu_pages;
-use cpu_pages::*;
-mod frame;
-use frame::*;
 
 fn main() {
     let mut gpu = Gpu::init(STORAGE.gpu);
@@ -29,21 +27,25 @@ fn main() {
     let atlas = UiAtlas::from_desc(CORE_ATLAS);
     let mut grid = UiGrid::from_storage(STORAGE.ui, &atlas);
     let mut geometry = GeometryPage::new();
-    let mut state = initial_state(CORE_DEMO_PAGE);
+    let mut lab = GpuLab::new(time_milliseconds());
+    let mut state = initial_state(CORE_DEMO_PAGE, time_milliseconds());
     gamepad_init();
     loop {
         gamepad_capture();
         let input = gamepad_take_frame();
-        state = update(state, input.pressed, time_milliseconds());
+        let now = time_milliseconds();
+        state = update(state, input.pressed, now);
         buffer.reset();
         if state.frames == 0 {
             buffer.invalidate_textures();
         }
-        if state.page == 5 {
-            geometry.prepare(&mut grid, state);
+        if state.page == PageId::Geometry {
+            geometry.prepare(&mut grid, state.geometry);
+        } else if state.page == PageId::GpuLab {
+            lab.prepare(&mut grid, input, now);
         } else {
             // The CPU draws only after the GPU clear of Back has retired.
-            clear_cpu_page(&mut buffer, &color_a, &color_b, &depth, state);
+            clear_cpu_page(&mut buffer, &color_a, &color_b, &depth, state.frames);
             gpu.submit(buffer);
             buffer = gpu.wait();
             cpu_pages_draw(&mut grid, state, input);
@@ -51,8 +53,10 @@ fn main() {
         }
         {
             let mut pass = page_pass(&mut buffer, &color_a, &color_b, &depth, state);
-            if state.page == 5 {
+            if state.page == PageId::Geometry {
                 geometry.draw(&mut pass);
+            } else if state.page == PageId::GpuLab {
+                lab.draw(&mut pass);
             }
             // submit publishes CPU pixels before this common text overlay.
             pass.draw_ui(grid.ptr(), CellRect::full_grid());

@@ -48,16 +48,14 @@ pub(in super::super) fn fragile_atlas(
 }
 
 pub(in super::super) fn fragile_flow() -> ApplicationCase {
-    let case = edited("renderer_game_frames", move |mut source| {
+    edited("renderer_game_frames", move |mut source| {
         source = source.required_replace("session_init();", "session_init();level_reset(3);SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;TRANSITION[0u16]=0;")
             .required_replace("let fragile_owner = fragile_begin();", "let fragile_owner = fragile_begin();signal(14,fragile_owner.addr());")
             .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;")
             .required_replace("session_tick(buttons, held, elapsed);", "if number==1 {GAME[0u16]=3;GAME[1u16]=0;GAME[2u16]=1;session_move(0);let mut ticks:u16=0;while ticks<5 {session_tick(0,0,50);ticks+=1;}}else if number==2 {session_tick(8,0,0);TRANSITION[1u16]=320;}else if number==3 || number==6 {TRANSITION[1u16]=80;session_tick(0,0,0);}else if number==4 || number==7 {TRANSITION[1u16]=380;session_tick(0,0,0);}else if number==5 {session_tick(4096,0,0);TRANSITION[1u16]=320;}else {session_tick(buttons,held,elapsed);}");
 
         source
-    });
-
-    case
+    })
 }
 
 pub(in super::super) fn fragile_representative(frozen_assets: bool) -> ApplicationCase {

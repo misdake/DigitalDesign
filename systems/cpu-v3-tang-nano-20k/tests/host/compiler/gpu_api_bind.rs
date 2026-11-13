@@ -1,6 +1,6 @@
 //! Independent native-byte oracle for canonical binding and immutable push reuse.
 use cpu_v3::{rcc_backend, CpuV3Sim, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 const SOURCE: &str = r#"mod gpu_bind;mod gpu_arena;mod gpu_execute;mod gpu_present;mod gpu_api_fault;
@@ -81,7 +81,7 @@ fn canonical_bindings_share_drains_and_reuse_immutable_instance_payloads() {
     for enabled in [false, true] {
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;
-        let parsed = compile_program_named_checked(
+        let parsed = crate::checked_flat_fixture::compile(
             "canonical-binding",
             SOURCE,
             &options,
@@ -93,17 +93,11 @@ fn canonical_bindings_share_drains_and_reuse_immutable_instance_payloads() {
         .unwrap();
         let static_words = parsed.debug.static_data_end;
         assert!(static_words <= 8192);
-        for name in [
-            "GPU_OBJECT_BACKING",
-            "GPU_CB_RECORDS",
-            "GPU_NATIVE_SCRATCH",
-            "GPU_EXECUTION",
-            "GPU_PRESENT",
-            "GPU_API_FAULT",
-            "CAPTURE_RESERVATION",
-            "DEPENDENCY_RESERVATION",
-        ] {
+        for name in ["GPU_OBJECT_BACKING", "GPU_CB_RECORDS", "GPU_NATIVE_SCRATCH"] {
             assert!(parsed.debug.globals.iter().any(|g| g.name == name));
+        }
+        for name in ["CAPTURE_RESERVATION", "DEPENDENCY_RESERVATION"] {
+            assert!(!parsed.debug.globals.iter().any(|g| g.name == name));
         }
         let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
         let mut cpu = CpuV3Sim::default();

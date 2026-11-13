@@ -3,30 +3,20 @@ use crate::dsl_rt::*;
 mod cpu_canvas;
 use cpu_canvas::*;
 mod gpu_api;
+use crate::common::palette::*;
+use crate::common::state::*;
+use crate::common::ui::*;
 use gpu_api::*;
-mod palette;
-use palette::*;
-mod state;
-use state::*;
-mod ui;
-use ui::*;
 mod boot_resources;
 use boot_resources::*;
 
-pub fn color_page(grid: &mut UiGrid, canvas: CpuCanvas, state: DemoState) {
-    page_start(grid, state, b"COLOR");
-    canvas_rect(
-        canvas,
-        32,
-        (3 + state.color_cursor * 2) as i16 * 16,
-        144,
-        16,
-        SELECTION,
-    );
+pub fn color_page(grid: &mut UiGrid, canvas: CpuCanvas, cursor: u16, mode: u16) {
+    page_start(grid, PageId::Color, false, b"COLOR");
+    canvas_rect(canvas, 32, (3 + cursor * 2) as i16 * 16, 144, 16, SELECTION);
     let mut option: u16 = 0;
     while option < 2 {
         let mut icon = ICON_RADIO_OFF;
-        if option == state.color_mode {
+        if option == mode {
             icon = ICON_RADIO_ON;
         }
         grid.write_glyph(5, 3 + option * 2, icon);

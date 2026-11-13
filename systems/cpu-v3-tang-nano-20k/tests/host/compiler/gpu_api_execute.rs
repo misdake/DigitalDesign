@@ -1,6 +1,6 @@
 //! Offline execution-protocol peer; this never renders or accesses a board.
 use cpu_v3::{rcc_backend, CpuV3Sim, Device, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::{any::Any, cell::RefCell, collections::VecDeque, path::Path, rc::Rc};
 
 const SETUP: &str = r#"
@@ -59,7 +59,7 @@ fn run(label: &str, body: &str, statuses: &[u16], cache_error: bool) -> Vec<(u8,
         .join(format!("execution-{label}"));
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let source = format!("{SETUP}\nfn main(){{gpu_record_init();check(gpu_execute_init());make(0);make(1);{body}\nhalt(0x600d);}}");
-    let parsed = compile_program_named_checked(
+    let parsed = crate::checked_flat_fixture::compile(
         "graphics-api-execution-peer",
         &source,
         &options,

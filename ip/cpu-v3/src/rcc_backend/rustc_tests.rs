@@ -3,6 +3,9 @@ use super::{try_compile, CompilerOptions};
 use crate::{CpuV3Sim, RunOutcome};
 use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
 use std::path::PathBuf;
+mod liveness;
+mod modules;
+mod references;
 const LIBRARY: &str = r#"
 #[rcc_resource]
 pub struct Renderer{word:u16}
@@ -476,7 +479,11 @@ impl R{pub fn read(&mut self)->u16{self.word}}"#;
 #[test]
 fn rustc_drop_fail_stop_does_not_unwind() {
     let code = try_compile(
-        parse("halt", "mod owner;fn main(){let r=open(9);halt(0x600d);}").unwrap(),
+        parse(
+            "halt",
+            "mod owner;fn main(){let r=open(9);halt(0x600d+event_count());}",
+        )
+        .unwrap(),
         &CompilerOptions::default(),
         "main",
     )
@@ -528,6 +535,7 @@ pub fn helper_total()->u16{COUNT}"#;
                 let path = std::fs::canonicalize(dir.join(format!("{name}.rs")))
                     .map_err(|e| e.to_string())?;
                 Ok(rcc::frontend::ModuleSource {
+                    namespace: rcc::frontend::ModuleNamespace::Scoped,
                     source: std::fs::read_to_string(&path).unwrap(),
                     origin: Some(path),
                 })
@@ -1362,7 +1370,7 @@ fn rustc_gpu_debug_loader_and_private_domains_keep_the_same_profile() {
             ..CompilerOptions::default()
         };
         let source = format!(
-            "mod piece;fn main(){{if piece_value()!={}{{halt(0xbad);}}halt(0x600d);}}",
+            "mod piece;use piece::piece_value;fn main(){{if piece_value()!={}{{halt(0xbad);}}halt(0x600d);}}",
             u16::from(enabled)
         );
         let program=compile_program_named_checked("cfg-loader.rs",&source,&options,&self::options(&format!("cfg-loader-{enabled}")),&mut |name|{

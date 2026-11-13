@@ -310,5 +310,6 @@ fn shadow_geometry_cache_matches_fresh_instances_across_real_inputs() {
     let summary=runs[0].iter().enumerate().map(|(i,f)|serde_json::json!({"frame":i,"shadow":f.info,"command_u16":f.commands.len(),"push_u16":f.push.len(),"equal_to_forced_fresh":true})).collect::<Vec<_>>();
     let out = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/bloxorz-web/shadow-cache-inputs.json");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
     std::fs::write(out, serde_json::to_vec_pretty(&summary).unwrap()).unwrap();
 }

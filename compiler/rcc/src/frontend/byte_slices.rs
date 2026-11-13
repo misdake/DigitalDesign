@@ -41,20 +41,37 @@ fn intern(
     Ok(descriptor)
 }
 
-pub(super) fn literals(files: &[syn::File], g: &mut Globals) -> Result<(), (usize, syn::Error)> {
+pub(super) fn literals(
+    files: &[syn::File],
+    g: &mut Globals,
+    live: &super::liveness::Live,
+) -> Result<(), (usize, syn::Error)> {
     struct Collect(Vec<syn::LitByteStr>);
     impl<'ast> Visit<'ast> for Collect {
         fn visit_lit_byte_str(&mut self, literal: &'ast syn::LitByteStr) {
             self.0.push(literal.clone());
         }
     }
-    for (fi, file) in files.iter().enumerate() {
-        let mut collect = Collect(Vec::new());
-        collect.visit_file(file);
-        for literal in collect.0 {
-            intern(g, literal.value(), &literal).map_err(|error| (fi, error))?;
+    for selected in [true, false] {
+        for (fi, file) in files.iter().enumerate() {
+            for item in &file.items {
+                if live.item(item) != selected {
+                    continue;
+                }
+                let mut collect = Collect(Vec::new());
+                collect.visit_item(item);
+                g.unallocated = !selected;
+                for literal in collect.0 {
+                    let start = g.data_words.len();
+                    intern(g, literal.value(), &literal).map_err(|error| (fi, error))?;
+                    if g.unallocated {
+                        g.data_words.truncate(start);
+                    }
+                }
+            }
         }
     }
+    g.unallocated = false;
     Ok(())
 }
 
@@ -140,8 +157,7 @@ pub(super) fn initialize(l: &mut FnLower, destination: VReg, e: &Expr) -> Result
     if ty != Ty::ByteSlice {
         return Err(err(e, "expected an immutable whole byte slice"));
     }
-    let length = l.b.load_imm(2);
-    l.b.call("mem_copy", &[destination, source, length], 0);
+    super::copy_aggregate_words(l, destination, source, 2);
     Ok(())
 }
 

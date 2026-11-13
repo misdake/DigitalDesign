@@ -2,6 +2,12 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Frozen renderers still name the removed capture switch; production has no capture.
+pub(super) fn profile_compatibility(mut source: String) -> String {
+    source.push_str("\npub const GPU_CAPTURE_CONFIG_ENABLED:u16=0;\n");
+    source
+}
+
 /// Compose current common modules with byte-preserved retired fixture sources.
 /// Explicit custom fixture roots retain their own identity and overrides.
 pub fn legacy_test_sources(shared: &Path) -> PathBuf {

@@ -4,7 +4,7 @@ use super::{err, FnLower, StructTable, Ty};
 /// Without an escape proof, an address-bearing result retains its call storage.
 pub(super) fn carries_address(ty: &Ty, structs: &StructTable) -> bool {
     match ty {
-        Ty::Ptr | Ty::ArrayRef(_) | Ty::ByteSlice => true,
+        Ty::Ptr | Ty::ArrayRef(_) | Ty::Reference(..) | Ty::ByteSlice => true,
         Ty::Struct(name) => structs[name]
             .fields
             .iter()

@@ -9,12 +9,8 @@ pub const APPLICATIONS: &[Definition] = &[Definition {
     source: Some("examples/core_demo/rcc/main.rs"),
     gpu_api: true,
     owner: "examples/core_demo/application.rs",
-    ordinary_sources: &[
-        "examples/core_demo/rcc/pages",
-        "examples/core_demo/rcc/common",
-    ],
     options: &[
-        BuildOption::integer_constant("page", "CORE_DEMO_PAGE", 0, 0, 5),
+        BuildOption::integer_constant("page", "CORE_DEMO_PAGE", 0, 0, 6),
         BuildOption::integer_constant("frames", "CORE_DEMO_FRAMES", 0, 0, 65535),
     ],
     assets: Some(Assets {

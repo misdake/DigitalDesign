@@ -16,6 +16,7 @@ macro_rules! application_catalog {
 application_catalog! {
     bench => "../../examples/gpu_bench/application.rs",
     core_demo => "../../examples/core_demo/application.rs",
+    hello_gpu => "../../examples/hello_gpu/application.rs",
     demo => "../../examples/gpu_demo/application.rs",
     ds2 => "../../examples/dualshock2/application.rs",
     ds2_ui => "../../examples/dualshock2_ui/application.rs",
@@ -175,9 +176,11 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
     let manifest = if let Some(assets) = definition.assets {
         context.inputs(assets.inputs);
         context.inputs(&[assets.script]);
+        context.inputs(&["tools/asset_producer.py"]);
         let directory = output.join(assets.directory);
         let status = std::process::Command::new("python")
             .env("PYTHONDONTWRITEBYTECODE", "1")
+            .arg(root.join("tools/asset_producer.py"))
             .arg(root.join(assets.script))
             .arg("--output")
             .arg(&directory)

@@ -5,12 +5,14 @@ use crate::compiler::builder::remove_trivial_phis;
 use crate::compiler::ir::*;
 use crate::CompareOp;
 use std::collections::{HashMap, HashSet};
+mod local_memory;
 
 #[derive(Clone, Debug)]
 pub struct Opts {
     pub const_prop: bool,
     pub cse: bool,
     pub dce: bool,
+    pub local_memory: bool,
     /// register coalescing hints (used by the allocator, not a pass here)
     pub coalesce: bool,
 }
@@ -20,6 +22,7 @@ impl Default for Opts {
             const_prop: true,
             cse: true,
             dce: true,
+            local_memory: true,
             coalesce: true,
         }
     }
@@ -30,12 +33,13 @@ impl Opts {
             const_prop: false,
             cse: false,
             dce: false,
+            local_memory: false,
             coalesce: false,
         }
     }
 
     pub fn is_disabled(&self) -> bool {
-        !self.const_prop && !self.cse && !self.dce && !self.coalesce
+        !self.const_prop && !self.cse && !self.dce && !self.local_memory && !self.coalesce
     }
 }
 
@@ -51,6 +55,9 @@ pub fn optimize(f: &mut IrFunc, opts: &Opts) {
             changed |= cse(f);
             changed |= forward_memory_values(f);
             changed |= combine_vector_lane_stores(f);
+        }
+        if opts.local_memory {
+            changed |= local_memory::eliminate(f);
         }
         if opts.dce {
             changed |= dce(f);

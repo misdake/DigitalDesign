@@ -233,6 +233,7 @@ fn run_case(seed: u64, n_ops: usize, opts_on: bool) {
             const_prop: false,
             cse: false,
             dce: false,
+            local_memory: false,
             coalesce: false,
         };
     }

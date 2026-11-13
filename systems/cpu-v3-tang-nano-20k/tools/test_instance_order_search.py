@@ -76,6 +76,23 @@ class InstanceOrderTests(unittest.TestCase):
         self.assertEqual(result["setup_reported_negative_slack_sum_ns"], -0.28)
         self.assertTrue(result["setup_negative_endpoints_complete"])
 
+    def test_resource_report_preserves_fractional_dsp_usage(self):
+        target = Path(__file__).resolve().parents[3] / "target"
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target, prefix="instance-order-resource-unit-") as directory:
+            p = Path(directory) / "impl/pnr"
+            p.mkdir(parents=True)
+            for dsp in ("22.25", "22"):
+                (p / "cpu_v3_system.rpt.txt").write_text(
+                    "  Logic | 20069/20736\n  Register | 7440/15915\n"
+                    "  BSRAM | 46/46\n  DSP | " + dsp + "/24\n"
+                    "    --LUT,ALU,ROM16 | 18000(15000 LUT, 3000 ALU, 0 ROM16)\n")
+                area = search.metrics(Path(directory))["area"]
+                self.assertEqual(area["DSP"], float(dsp))
+                self.assertEqual(area["Logic"], 20069)
+                self.assertIsInstance(area["Logic"], int)
+                self.assertEqual(area["BSRAM"], 46)
+
     def test_checkpoint_rng_and_no_repeated_neighbours(self):
         rng = random.Random(20261029)
         seen, results = set(), []

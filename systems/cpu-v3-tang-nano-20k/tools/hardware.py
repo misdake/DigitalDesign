@@ -54,6 +54,18 @@ def write(path, value):
     path.write_text(json.dumps(value, indent=2)+'\n', encoding='utf-8')
 
 
+def programming_binary(payload, receipt):
+    """Gowin selects its raw Flash reader by suffix; keep verified bundles immutable."""
+    if payload.suffix == '.bin':
+        return payload
+    staged = receipt.with_name(receipt.name + '.application.bin')
+    data = payload.read_bytes()
+    with staged.open('xb') as output:
+        output.write(data)
+    require(staged.read_bytes() == data, 'programming binary differs from verified package')
+    return staged
+
+
 def assemble(hardware, application, out, runtime):
     out = Path(out).resolve()
     require(not out.exists(), 'new deployment directory required')
@@ -136,6 +148,7 @@ def main():
             else:
                 offset = BOOT_OFFSET if kind == 'application' else 0
                 payload = args.bundle.resolve()/('application.cb06' if kind == 'application' else 'complete-flash.bin')
+                payload = programming_binary(payload, args.receipt.resolve())
                 argv += ['--program-flash', str(offset), str(payload)]
             if args.gowin_home:
                 argv += ['--gowin-home', str(args.gowin_home.resolve())]

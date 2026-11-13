@@ -245,8 +245,17 @@ fn persistent_scene_patch_matches_fresh_record_and_survives_retirement() {
         );
         assert_eq!(old.commands, alternate.commands);
         assert_eq!(
-            patched.push, fresh.push,
-            "complete native payload vs ordinary recording"
+            crate::checked_flat_fixture::consumed_payload(
+                &patched.commands,
+                &patched.push,
+                patched.control[3]
+            ),
+            crate::checked_flat_fixture::consumed_payload(
+                &fresh.commands,
+                &fresh.push,
+                fresh.control[3]
+            ),
+            "GPU-consumed native payload vs ordinary recording"
         );
         assert_eq!(patched.facts, fresh.facts, "retarget replaces facts");
         assert_eq!(

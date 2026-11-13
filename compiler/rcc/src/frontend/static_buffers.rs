@@ -32,6 +32,7 @@ pub(super) struct Planner {
     pub(super) declarations: HashMap<String, usize>,
     pub(super) context: Option<(String, usize)>,
     pub(super) buffers: Vec<StaticBuffer>,
+    pub(super) live: super::liveness::Live,
 }
 impl Planner {
     pub(super) fn allocate(
@@ -51,18 +52,27 @@ impl Planner {
             ));
         }
         let alignment = alignment.max(*minimum);
-        let range = self
-            .allocator
-            .allocate(bytes, alignment)
-            .map_err(|message| err(at, message))?;
+        if bytes == 0 || bytes > 65535 * 128 {
+            return Err(err(at, "buffer size must be in 1..8388480 bytes"));
+        }
+        let used = self.live.contains(name);
+        let range = if used {
+            self.allocator
+                .allocate(bytes, alignment)
+                .map_err(|message| err(at, message))?
+        } else {
+            0..bytes.div_ceil(128) * 128
+        };
         let first_sector = (range.start / 128) as u16;
         let sector_count = (range.len() / 128) as u16;
-        self.buffers.push(StaticBuffer {
-            name: name.clone(),
-            address: range.start,
-            bytes: range.len(),
-            alignment,
-        });
+        if used {
+            self.buffers.push(StaticBuffer {
+                name: name.clone(),
+                address: range.start,
+                bytes: range.len(),
+                alignment,
+            });
+        }
         Ok(parse_quote!(StaticBuffer { first_sector: #first_sector, sector_count: #sector_count }))
     }
 }
@@ -77,6 +87,7 @@ pub(super) fn prepare(
     banks: &[AssetBank],
     assets: &[super::static_assets::StaticAsset],
     domains: &HashMap<usize, usize>,
+    live: &super::liveness::Live,
 ) -> Result<Prepared, (usize, syn::Error)> {
     let mut declarations = HashMap::new();
     let mut statics = HashSet::new();
@@ -158,6 +169,7 @@ pub(super) fn prepare(
             declarations,
             context: None,
             buffers: vec![],
+            live: live.clone(),
         },
     )?;
     let owners: HashMap<_, _> = files
@@ -254,7 +266,7 @@ struct StaticBuffer {{ first_sector:u16,sector_count:u16 }}
 impl StaticBuffer {{ const fn new(bytes:usize,align:usize)->Self {{ Self{{first_sector:0,sector_count:1}} }} }}
 {source}
 "#)).unwrap()];
-        prepare(&mut files, banks, &[], &HashMap::new())
+        prepare(&mut files, banks, &[], &HashMap::new(), &Default::default())
             .map(|p| p.buffers)
             .map_err(|(_, e)| e.to_string())
     }

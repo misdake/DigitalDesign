@@ -834,9 +834,7 @@ impl<'a> Checker<'a> {
                             &mut local.pat
                         };
                         let Pat::Ident(p) = pat else { unreachable!() };
-                        if !self.model.aggregates.contains_key(&value.ty) {
-                            p.mutability = None;
-                        } else if mutable {
+                        if self.model.aggregates.contains_key(&value.ty) && mutable {
                             p.mutability = Some(Default::default());
                         }
                         self.bind(Binding {
@@ -1128,6 +1126,24 @@ impl<'a> Checker<'a> {
                             .ok_or_else(|| error(a, "resource fields cannot be reassigned"))?;
                         let index = self.bindings.iter().rposition(|b| b.name == local).unwrap();
                         let original = self.bindings[index].clone();
+                        if !original.owned && !local.contains('.') {
+                            let Kind::Borrowed(value, mutable) = self.expr(&mut a.right)? else {
+                                return Err(error(
+                                    a,
+                                    "resource reference assignment needs a borrowed result",
+                                ));
+                            };
+                            if value.ty != original.value.ty || (original.mutable && !mutable) {
+                                return Err(error(
+                                    a,
+                                    "resource reference assignment type mismatch",
+                                ));
+                            }
+                            self.bindings[index].value = value;
+                            let variable = syn::Ident::new(&local, a.eq_token.span);
+                            *a.left = parse_quote!(#variable);
+                            return Ok(Kind::Unit);
+                        }
                         if (!original.owned && !local.contains('.')) || !original.mutable {
                             return Err(error(a, "resource reassignment needs a mutable owner"));
                         }

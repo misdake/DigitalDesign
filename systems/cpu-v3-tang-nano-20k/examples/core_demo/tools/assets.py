@@ -1,17 +1,8 @@
 """Build a selected project-font base asset with coordinated UI atlas constants."""
 import argparse
-import hashlib
-import json
 from pathlib import Path
-import sys
-
-sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[5]
-TOOLS = ROOT / "systems/cpu-v3-tang-nano-20k/tools"
-sys.path.insert(0, str(TOOLS))
 import ui_font
 import native_asset_source
-import gpu_mesh_layout
 import gpu_texture_layout
 import geometry
 
@@ -30,7 +21,7 @@ ICONS = {
     'RADIO_ON': [0,0,0,0x3c,0x42,0x5a,0x5a,0x5a,0x42,0x3c,0,0,0,0,0,0],
 }
 
-KEY_NAMES = ('L1', 'R1', 'CROSS', 'TRIANGLE', 'START', 'DPAD_H', 'DPAD_V')
+KEY_NAMES = ('L1', 'R1', 'CROSS', 'TRIANGLE', 'START', 'DPAD_H', 'DPAD_V', 'L2', 'R2', 'LS', 'RS')
 
 
 def keycaps():
@@ -43,7 +34,7 @@ def keycaps():
         def pixel(x, y):
             rows[y] |= 1 << (23-x)
 
-        if name in ('L1', 'R1', 'START'):
+        if name in ('L1', 'R1', 'L2', 'R2', 'START'):
             for x in range(2, 22):
                 pixel(x, 1)
                 pixel(x, 14)
@@ -60,6 +51,14 @@ def keycaps():
                 for y in range(4, 11):
                     for x in range(9, 16-abs(y-7)*2):
                         pixel(x, y)
+        elif name in ('LS', 'RS'):
+            for y in range(1, 15):
+                for x in range(4, 20):
+                    radius = (x-12)**2+(y-7)**2
+                    if 30 <= radius <= 44:
+                        pixel(x, y)
+            for y,bits in enumerate(font[ord(name[0])]):
+                rows[y] |= bits << 8
         elif name in ('CROSS', 'TRIANGLE'):
             for y in range(1, 15):
                 for x in range(5, 19):
@@ -99,7 +98,7 @@ def pack(output):
     # Native ASCII IDs avoid a runtime character translation table.
     keys = keycaps()
     extra = len(ICONS)+3*len(keys)
-    atlas = ui_font.base_asset('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /->', extra_glyphs=extra)
+    atlas = ui_font.base_asset('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /->+.', extra_glyphs=extra)
     first_icon = len(atlas)//256-extra
     for index, rows in enumerate(ICONS.values()):
         ui_font.write_glyph(atlas, first_icon+index, rows, foreground=ui_font.rgba5551(80, 120, 160))
@@ -116,12 +115,9 @@ def pack(output):
                          for index,name in enumerate(ICONS))
     constants += ''.join(f'pub const KEY_{name}:u8={first_key+index*3};\n'
                          for index,name in enumerate(keys))
-    generated = native.write('core_assets.rs', constants)
-    sources = [Path(__file__), Path(native_asset_source.__file__), Path(geometry.__file__),
-               Path(gpu_mesh_layout.__file__), Path(gpu_texture_layout.__file__), *ui_font.SOURCES]
-    manifest = dict(source_root='repository', **generated,
-                    sources={p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources})
-    (output/'assets.json').write_text(json.dumps(manifest, indent=2)+'\n')
+    native.write_manifest('core_assets.rs', extra=constants,
+                          sources=[__file__, geometry.__file__, gpu_texture_layout.__file__, *ui_font.SOURCES])
+
 
 
 if __name__ == '__main__':

@@ -3,13 +3,10 @@ use crate::dsl_rt::*;
 mod cpu_canvas;
 use cpu_canvas::*;
 mod gpu_api;
+use crate::common::palette::*;
+use crate::common::state::*;
+use crate::common::ui::*;
 use gpu_api::*;
-mod palette;
-use palette::*;
-mod state;
-use state::*;
-mod ui;
-use ui::*;
 mod gamepad;
 use gamepad::*;
 mod boot_resources;
@@ -26,13 +23,8 @@ fn stick(canvas: CpuCanvas, cx: i16, x: fix32, y: fix32) {
     canvas_line(canvas, cx, 128, px, py, CYAN);
     canvas_rect(canvas, px - 2, py - 2, 5, 5, GREEN);
 }
-pub fn controller_page(
-    grid: &mut UiGrid,
-    canvas: CpuCanvas,
-    state: DemoState,
-    input: GamepadFrame,
-) {
-    page_start(grid, state, b"CONTROLLER");
+pub fn controller_page(grid: &mut UiGrid, canvas: CpuCanvas, input: GamepadFrame) {
+    page_start(grid, PageId::Controller, false, b"CONTROLLER");
     text(grid, 5, 4, b"LEFT");
     text(grid, 19, 4, b"RIGHT");
     let mut link = ICON_RADIO_OFF;

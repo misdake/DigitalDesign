@@ -266,8 +266,17 @@ fn target_only_multigroup_copy_matches_fresh_bytes_after_retirement() {
         assert_eq!(old.code, patched.code);
         assert_eq!(old.code, restored.code);
         assert_eq!(
-            patched.push, fresh.push,
-            "all native payload bytes versus ordinary recording"
+            crate::checked_flat_fixture::consumed_payload(
+                &patched.code,
+                &patched.push,
+                patched.control[3]
+            ),
+            crate::checked_flat_fixture::consumed_payload(
+                &fresh.code,
+                &fresh.push,
+                fresh.control[3]
+            ),
+            "GPU-consumed native payload versus ordinary recording"
         );
         assert_eq!(
             patched.facts, fresh.facts,

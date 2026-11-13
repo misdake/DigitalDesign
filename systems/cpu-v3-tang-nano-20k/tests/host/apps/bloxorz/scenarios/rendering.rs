@@ -136,16 +136,9 @@ pub(in super::super) fn goal_mid() -> ApplicationCase {
     })
 }
 
-pub(in super::super) fn hint_order(early: bool) -> ApplicationCase {
-    edited("renderer_game_three_frames", move |mut source| {
-        source = source
-            .required_replace("run(3, false, 128);", "run(4, false, 128);")
-            .required_replace(
-                "session_tick(buttons, held, elapsed);",
-                "hint_order_frame(number);",
-            );
-        source += r#"
-fn hint_order_frame(n:u16){
+const HINT_ORDER_HOOK: &str = r#"
+use crate::{BACKGROUND, HUD};
+pub fn hint_order_frame(n:u16){
  if n==0 {level_reset(28);}
  BACKGROUND[0u16]=0;HUD[0u16]=0;TRANSITION[0u16]=0;
  let mut i:u16=0;while i<LEVEL[6u16] && !(level_field(i,0)==5 && (GAME[3u16]&level_field(i,1))==0) {i+=1;}
@@ -157,6 +150,21 @@ fn hint_order_frame(n:u16){
  fix32::from_int((i/LEVEL[0u16]) as i16)-fix32::from_int(LEVEL[1u16] as i16)*half+half),velocity:Vec3::zero(),scale:Vec3::new(one,fix32::from_int(2),one),angle:fix32::zero(),spin:fix32::zero(),axis:0};
 }
 "#;
+
+fn hint_order_module(source: &Path, target: &Path) {
+    let session = std::fs::read_to_string(source.join("session.rs")).unwrap();
+    std::fs::write(target.join("session.rs"), session + HINT_ORDER_HOOK).unwrap();
+}
+
+pub(in super::super) fn hint_order(early: bool) -> ApplicationCase {
+    let mut case = edited("renderer_game_three_frames", move |mut source| {
+        source = source
+            .required_replace("run(3, false, 128);", "run(4, false, 128);")
+            .required_replace(
+                "session_tick(buttons, held, elapsed);",
+                "hint_order_frame(number);",
+            );
+
         if early {
             let start = source.rfind("                draw_bridge_group(").unwrap();
             let end = start + source[start..].find("                );").unwrap() + 19;
@@ -173,7 +181,9 @@ fn hint_order_frame(n:u16){
         }
 
         source
-    })
+    });
+    case.edit_modules = Some(hint_order_module);
+    case
 }
 
 pub(in super::super) fn gallery() -> ApplicationCase {

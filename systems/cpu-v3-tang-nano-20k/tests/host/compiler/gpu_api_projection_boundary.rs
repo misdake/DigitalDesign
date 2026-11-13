@@ -1,6 +1,6 @@
 //! Language boundary only; B owns production Projection math and representation.
 use cpu_v3::{rcc_backend, CpuV3Sim, RunOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 #[test]
@@ -26,7 +26,7 @@ fn projection_value(out:Array<u16>)->Projection{Projection{focal:fix32::from_wor
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/graphics-api-g0")
         });
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let parsed = compile_program_named_checked(
+    let parsed = crate::checked_flat_fixture::compile(
         "projection-root-boundary",
         source,
         &options,

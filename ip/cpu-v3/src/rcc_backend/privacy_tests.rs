@@ -50,6 +50,7 @@ fn compile(label: &str, source: &str, gpu_debug: bool) -> Result<rcc::frontend::
         &mut |name| {
             if name == "outsider" {
                 return Ok(ModuleSource {
+                    namespace: rcc::frontend::ModuleNamespace::Scoped,
                     source: "pub fn forge()->GpuMemory{GpuMemory{first_sector:1,sector_count:2}}"
                         .into(),
                     origin: None,
@@ -58,6 +59,7 @@ fn compile(label: &str, source: &str, gpu_debug: bool) -> Result<rcc::frontend::
             let path = std::fs::canonicalize(library.join(format!("{name}.rs")))
                 .map_err(|e| e.to_string())?;
             Ok(ModuleSource {
+                namespace: rcc::frontend::ModuleNamespace::Scoped,
                 source: std::fs::read_to_string(&path).map_err(|e| e.to_string())?,
                 origin: Some(path),
             })
@@ -102,7 +104,7 @@ fn checked_library_private_value_fields_reject_external_use() {
             ("update","mod owner;fn main(){let memory:GpuMemory=default_memory();let other:GpuMemory=GpuMemory{first_sector:3,..memory};}"),
             ("pattern","mod owner;fn main(){let memory:GpuMemory=default_memory();let GpuMemory{first_sector,..}=memory;halt(first_sector);}"),
             ("external-impl","mod owner;impl GpuMemory{fn forged()->Self{Self{first_sector:1,sector_count:2}}}fn main(){}"),
-            ("forwarding-module","mod owner;mod outsider;fn main(){let memory:GpuMemory=forge();}"),
+            ("forwarding-module","mod owner;mod outsider;use outsider::forge;fn main(){let memory:GpuMemory=forge();}"),
         ] {
             let error=compile(label,source,gpu_debug).err().unwrap_or_else(||panic!("private fields accepted: {label}/{gpu_debug}"));
             assert!(error.contains("private"),"{label}/{gpu_debug}: {error}");

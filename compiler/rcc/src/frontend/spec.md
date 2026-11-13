@@ -683,6 +683,34 @@ Larger aggregates — structs (§9b), tuples (§9c) and `Buf<T, N>` (§10) — u
    reaches `vec_*`, a single `init_vec(vec_init_cap)` call follows. each init runs exactly once
    per program, with parameters from `CompilerOptions`.
 
+### Storage reachability and local values
+
+Checked programs collect conservative storage dependencies from `main` before
+layout. Unreferenced ordinary statics, packed byte literals/constants, external
+assets and working-buffer requests do not consume runtime storage or produce
+initialization records. Dependencies include referenced functions/function
+addresses, value methods, resource cleanup and producer-supplied asset pointer
+edges. An unresolved receiver conservatively retains all matching method names;
+this is not full interprocedural data-flow or constant-branch storage pruning.
+
+All active source still passes rustc, resource validation and target signature/body
+checks. Omitted declarations retain validation-only bindings while dead functions
+are checked; those bindings are not published as allocated debug globals. Only
+the backend's reachable functions are emitted. Declared inputs remain tracked even
+when their payload is omitted. Legacy unchecked/single-function inputs keep their
+existing storage policy.
+
+Small checked aggregate snapshots of up to four words use ordered scalar
+loads/stores, exposing them to forwarding and local-memory elimination. Larger
+copies use the ordinary helper. Snapshot evaluation order and by-value isolation
+are unchanged. `Opts.local_memory` controls elimination of overwritten local
+writes and unread, unescaped local words; unknown aliases, address escape and
+observable operations retain the relevant writes. It defaults on.
+
+CPU V3 debug globals, function names and listing headers use source names when
+unique, or module-qualified names on collision. Internal linker symbols stay
+distinct and do not define the public spelling used by artifact/profile tools.
+
 ### 13.1.1 CPU V3 inlining
 
 Ordinary functions and supported value/resource inherent methods accept `#[inline]`
@@ -1155,7 +1183,54 @@ The ordinary function restrictions (including the six-parameter limit with the
 receiver counted) still apply. This is restricted resource syntax, not general
 Rust method resolution.
 
+### File modules in checked compilation
+
+Ordinary modules form a source graph. File `mod name;` declarations load logical
+`name` or `parent/name` keys; the system loader accepts `name.rs` and `name/mod.rs`
+and rejects ambiguous forms. Paths support `crate`, `self`, `super`, explicit
+imports, groups, aliases, glob imports and re-exports. Modules and values have
+separate namespaces. Duplicate definitions, ambiguous imports, private item access
+and visibility-widening re-exports fail before target lowering. Ordinary modules
+receive distinct internal symbols, so functions/types/constants may share names
+across files. Inline modules remain outside the subset.
+
+`ModuleSource.namespace` defaults to `ModuleNamespace::Scoped` in the plain checked
+loader adapter. The host may explicitly select `Flat` for existing SDK or generated
+constant exports. That flag controls naming only: actual canonical origins and
+approved library roots still determine resource authority. Unchecked compilation
+retains its legacy flat loading behavior. A loader must not hide invalid source or
+I/O errors behind a legacy fallback; the system falls back only after relative
+candidates are genuinely absent. Ordinary application directories require no
+resource approval or repeated recipe registration.
+
+External assets and static-buffer metadata retain a unique declared name. When
+separate modules declare the same storage name, metadata uses its qualified source
+name. Internal symbol mangling does not change the producer's unique relocation
+labels, asset bytes or allocation policy.
+
 ### 15.2 Rustc ownership gate and restricted Drop
+
+Checked compilation also supports ordinary sized-value references with elided
+lifetimes. `&T` and `&mut T` occupy one address word and borrow the original
+memory-resident value; they never copy the referenced struct. Locals, parameters,
+fields and array elements can be borrowed, dereferenced, forwarded, returned under
+rustc's lifetime rules, and selected by conditionals. Fields and inherent value
+methods automatically dereference ordinary borrows. Mutable borrows coerce to
+shared borrows at assignment, call and return boundaries. Nonchecked compilation
+does not enable this facility. Existing FPU-register addressability limits remain:
+an FPU field in a struct is addressable, a standalone FPU register/vector is not.
+Explicit reference lifetimes, general slices and reference-containing generic
+types are outside this subset; immutable byte slices retain their own two-word ABI.
+
+Ordinary value methods that borrow or return resource bodies are resolved before
+resource ownership erasure, so their calls retain the same move, pending-borrow
+and cleanup checks as free functions. Checked borrowed resource locals may be
+reselected without moving or destroying either owner. The original Rust source
+must pass rustc before any reference or ownership adaptation.
+
+Checked scalar value blocks may contain statements followed by a tail value;
+unit blocks and `else if` are supported. Branch-local bindings retain their lexical
+scope. Aggregate value blocks continue to write into caller-owned destinations.
 
 The explicit `frontend::compile_program_named_checked(name, source, options,
 check, loader)` entry calls rustc before resource/method erasure. The equivalent
@@ -1174,8 +1249,9 @@ compilation. Primary rustc spans map back to the original RCC source and retain
 the rustc error code.
 
 The check projection preserves actual function bodies, calls, methods and control
-flow. It removes RCC-only markers and original module/use declarations to match RCC's
-existing flat name resolution, includes the real `dsl_rt` type signatures
+flow. Ordinary file modules resolve paths/imports and receive distinct internal
+symbols before projection. It removes RCC-only markers and resolved module/use
+declarations, includes the real `dsl_rt` type signatures
 (using standard `LazyLock` for its host-only `Lazy`), and supplies type signatures
 for target-only intrinsics. Every resource remains a non-Copy Rust type with a
 Drop boundary. Each child gets a check-only lifetime/`PhantomData<&mut ()>`;
@@ -1189,9 +1265,12 @@ check-only Rust module. The root and its explicitly approved helpers share that
 module, preserving their legitimate cross-file construction and field access.
 Ordinary value fields retain their declared visibility: an application or another
 domain cannot construct, read, write, borrow, update or destructure private fields.
-Normal rustc privacy diagnostics retain their original source mapping. Check-only
-imports preserve flat callable/type names; unprotected native files retain their
-existing common flat scope. This does not add general Rust module resolution.
+Normal rustc privacy diagnostics retain their original source mapping. Ordinary
+file modules retain their parent/child hierarchy in the check projection, so
+private fields and inherent methods obey Rust module privacy. Check-only imports
+connect resolved internal symbols without making those members public. Explicit
+`ModuleNamespace::Flat` SDK sources retain their compatibility scope; namespace
+selection does not grant resource or library authority.
 Resource identity fields, callable visibility and exact definition-file rules
 remain enforced by RCC's existing resource pass; the projection does not change
 target fields, instructions or runtime checks.
@@ -1299,8 +1378,8 @@ the root's `pub` facade is accessible; helper functions and storage remain
 internal even when declared `pub`. Checks cover direct calls, function values,
 module initializers and type-length expressions regardless of load order.
 An extra application `mod`, `use`, resource declaration or forwarding module
-cannot join an existing domain. RCC still uses its existing flat symbol table;
-this feature does not introduce general Rust module resolution or re-exports.
+cannot join an existing domain. Ordinary module resolution uses distinct internal
+symbols; it does not widen the protected domain's facade or helper visibility.
 
 Resource construction, private identity fields, cleanup definitions and
 `resource_disarm` retain their exact defining-file rules from section 15.
@@ -1309,8 +1388,8 @@ the checked program lowers through the existing scalar ABI. It is a safe-subset
 interface boundary with a trusted loader and library implementation, not a
 sandbox against arbitrary unsafe addresses, forged code pointers or device I/O.
 
-The flat function/constant/static value namespace rejects duplicate module-level
-names when either declaration belongs to a resource domain, including collisions
+The compatibility function/constant/static value namespace rejects duplicate
+module-level names when either declaration belongs to a resource domain, including collisions
 between different declaration kinds and either loading order. An application
 constant cannot replace a private static's access decision while address lowering
 still selects that static. Ordinary lexical local/parameter shadowing remains

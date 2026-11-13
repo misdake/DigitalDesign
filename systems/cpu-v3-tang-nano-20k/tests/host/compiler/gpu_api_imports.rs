@@ -6,8 +6,7 @@ use std::path::Path;
 #[test]
 fn explicit_gpu_ordinary_helpers_use_only_public_factories() {
     let package = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let output = std::path::PathBuf::from(std::env::var_os("RCC_RUSTC_TEST_DIR").unwrap())
-        .join("api-ordinary-directories");
+    let output = crate::checked_flat_fixture::output_root().join("api-ordinary-directories");
     let local = output.join("application");
     let ordinary = output.join("ordinary");
     std::fs::create_dir_all(&local).unwrap();
@@ -19,7 +18,7 @@ fn explicit_gpu_ordinary_helpers_use_only_public_factories() {
     ]{
         std::fs::write(ordinary.join("scene_factory.rs"),helper).unwrap();
         let result=resolver::compile_explicit_gpu_program_checked_with_sources(
-            "ordinary application", "mod gpu_api;mod scene_factory;fn main(){let color=surface();drop(color);halt(0);}",
+            "ordinary application", "mod gpu_api;mod scene_factory;use scene_factory::*;fn main(){let color=surface();drop(color);halt(0);}",
             &CompilerOptions::for_separate_code_and_data_segments(0),&local,&package.join("rcc"),"",std::slice::from_ref(&ordinary),
             &RustcCheck::new(output.join(label)),&mut |_|{},
         );

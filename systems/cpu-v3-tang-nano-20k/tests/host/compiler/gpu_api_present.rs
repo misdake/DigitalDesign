@@ -1,6 +1,6 @@
 //! Display-only protocol tests, with delayed old-read retirement after vblank.
 use cpu_v3::{rcc_backend, CpuV3Sim, Device, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::{any::Any, cell::RefCell, path::Path, rc::Rc};
 
 pub(super) struct State {
@@ -120,7 +120,7 @@ fn check(ok:bool){{if !ok{{halt(0xd000+STEP);}}unsafe{{addr_of(&STEP).write(0,ST
 fn main(){{check({open});{body}halt(0x600d);}}"#
     );
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let parsed = compile_program_named_checked(
+    let parsed = crate::checked_flat_fixture::compile(
         "api-present-peer",
         &source,
         &options,

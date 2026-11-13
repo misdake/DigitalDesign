@@ -5,6 +5,35 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+#[test]
+fn nested_modules_use_their_directory_and_diagnose_ambiguous_forms() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.local.join("pages/camera")).unwrap();
+    std::fs::write(f.local.join("pages/mod.rs"), "pub mod camera;").unwrap();
+    std::fs::write(
+        f.local.join("pages/camera/mod.rs"),
+        "pub fn value()->u16{7}",
+    )
+    .unwrap();
+    assert_eq!(f.load("pages").0.unwrap(), "pub mod camera;");
+    assert!(f.load("pages/camera").0.unwrap().contains("value"));
+    std::fs::write(f.local.join("pages/camera.rs"), "pub fn value()->u16{9}").unwrap();
+    assert!(f
+        .load("pages/camera")
+        .0
+        .unwrap_err()
+        .contains("ambiguous module"));
+    std::fs::write(f.local.join("camera.rs"), "fallback").unwrap();
+    std::fs::remove_file(f.local.join("pages/camera.rs")).unwrap();
+    std::fs::write(f.local.join("pages/camera/mod.rs"), [255]).unwrap();
+    assert!(f.load("pages/camera").0.is_err());
+    assert!(f
+        .load("../outside")
+        .0
+        .unwrap_err()
+        .contains("invalid relative module path"));
+}
 struct Fixture {
     root: PathBuf,
     local: PathBuf,
@@ -58,11 +87,12 @@ fn local_overrides_shared_and_missing_local_override_is_observed() {
     std::fs::write(f.shared.join("value.rs"), "shared").unwrap();
     let (text, deps) = f.load("value");
     assert_eq!(text.unwrap(), "shared");
-    assert_eq!(deps, vec![f.local.clone(), f.shared.join("value.rs")]);
+    assert!(deps.contains(&f.local));
+    assert!(deps.contains(&f.shared.join("value.rs")));
     std::fs::write(f.local.join("value.rs"), "local").unwrap();
     let (text, deps) = f.load("value");
     assert_eq!(text.unwrap(), "local");
-    assert_eq!(deps, vec![f.local.join("value.rs")]);
+    assert!(deps.contains(&f.local.join("value.rs")));
 }
 #[test]
 fn non_not_found_read_and_parse_errors_do_not_use_shared() {

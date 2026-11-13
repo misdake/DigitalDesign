@@ -66,6 +66,8 @@ for CPU/GPU timing.
 
 The host builds the existing `cpu-v3-display-sim` executable independently and
 uses Cargo's reported executable path, including a custom Cargo target directory.
+It copies and verifies that executable into the run directory before launching it;
+a Windows run therefore holds its own runtime rather than locking Cargo's build output.
 Window mode enables its `display-window` feature. Application/runner build
 subprocesses have 600-second deadlines; artifact checks have 60 seconds.
 On Windows, a timeout terminates the spawned process tree; on other hosts it
@@ -148,7 +150,8 @@ of the image build script; it never depends back on the complete composition.
 The format package shares the canonical `rcc/gpu_layout.rs`; there is no second
 hand-maintained memory map or boot instruction array.
 
-Recipes declare source entry and ordinary module roots explicitly. Shared mechanisms
+Recipes declare the source entry. Ordinary modules follow file/directory paths;
+explicit ordinary source roots remain a legacy compatibility option. Shared mechanisms
 execute the declared producer, read its manifest and assemble resources/constants.
 The selected recipe and common preparation source are tracked inputs.
 
@@ -173,6 +176,12 @@ the separate hardware export/build/audit entry; it is not an application build.
 The normal hardware binary is `cpu-v3-system`; existing-artifact consumers use
 `hardware.py` and the standalone vendor tool. [Profiling](/systems/cpu-v3-tang-nano-20k/docs/application-profiling.md)
 consumes this verified application snapshot directly.
+
+Application-only Flash programming keeps the verified deployment bundle unchanged.
+The adapter writes a byte-identical `<receipt-name>.application.bin` beside the new
+receipt because Gowin selects its raw Flash reader by the `.bin` suffix. The receipt
+binds the actual programmed payload and deployment identity; an existing staged
+file is never overwritten. Complete Flash images already have the required suffix.
 
 ## Existing-input packing and qualification
 

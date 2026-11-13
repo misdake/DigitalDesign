@@ -1,6 +1,6 @@
 //! Resource provenance planning survives successful recording and rejects overflow.
 use cpu_v3::{rcc_backend, CpuV3Sim, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 fn run(label: &str, body: &str, enabled: bool) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
@@ -10,7 +10,7 @@ fn run(label: &str, body: &str, enabled: bool) {
     let source=format!("mod gpu_record;fn check(ok:bool){{if !ok{{halt(0xbad);}}}}fn main(){{gpu_record_init();{body}halt(0x600d);}}");
     let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     options.gpu_debug = enabled;
-    let parsed = compile_program_named_checked(
+    let parsed = crate::checked_flat_fixture::compile(
         "resource-facts",
         &source,
         &options,

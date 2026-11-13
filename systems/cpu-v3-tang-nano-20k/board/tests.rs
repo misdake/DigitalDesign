@@ -167,7 +167,7 @@ fn full_system_omits_rom_overlay_dma_and_runtime_reset() {
     );
     let board = gowin_project().generate().unwrap();
     assert_eq!(board.resources.claimed[&ResourceKind::Bsram18K], 46);
-    assert_eq!(board.resources.claimed[&ResourceKind::Multiplier18x18], 42);
+    assert_eq!(board.resources.claimed[&ResourceKind::Multiplier18x18], 43);
     assert_eq!(board.resources.claimed[&ResourceKind::UserLed], 2);
     assert_eq!(board.resources.claimed[&ResourceKind::Pll], 2);
     assert_eq!(board.resources.claimed[&ResourceKind::SdrSdramDevice], 1);

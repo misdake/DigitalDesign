@@ -155,10 +155,9 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
             .map(|fact| fact[2])
             .collect();
         assert_eq!(kinds, [5, 6, 1, 2, 4, 3]);
-        let output = std::path::PathBuf::from(std::env::var_os("RCC_RUSTC_TEST_DIR").unwrap())
-            .join(format!(
-                "public-scene-budget-{debug}-rgba{rgba4444}-clamp{clamp}.json"
-            ));
+        let output = crate::checked_flat_fixture::output_root().join(format!(
+            "public-scene-budget-{debug}-rgba{rgba4444}-clamp{clamp}.json"
+        ));
         std::fs::write(output,serde_json::to_vec_pretty(&serde_json::json!({"static_bytes":static_words*2,"observed_stack_bytes":stack_words*2,"max_frame_words":program.debug.functions.iter().map(|function|function.frame_size).max().unwrap_or(0),"fact_words":&memory[facts..facts+24],"commands":&memory[0x9800*64..0x9800*64+usize::from(memory[record+5])],"push":&memory[0x9a00*64..0x9a00*64+usize::from(memory[record+6])]})).unwrap()).unwrap();
         let push = &memory[0x9a00 * 64..0x9a00 * 64 + usize::from(memory[record + 6])];
         let header = 0x36 | if rgba4444 { 0x100 } else { 0 } | if clamp { 0x200 } else { 0 };

@@ -310,7 +310,24 @@ session_tick(32768,0,0);check(GAME[9u16]!=0&&rotation_current(0)==first);
 check(rotation_current(1)==rotation_quarter(rotation_quarter(rotation_quarter(inherited,3),3),3));
 level_reset(0);check(rotation_current(0)==8&&rotation_current(1)==8&&rotation_animation()==8);session_end();
 "#;
-    let (program, resources, _) = application("orientation-split-lifecycle", Some(body));
+    fn export_orientation(source: &Path, target: &Path) {
+        let session = std::fs::read_to_string(source.join("session.rs")).unwrap();
+        assert!(session.contains("use orientation::*;"));
+        std::fs::write(
+            target.join("session.rs"),
+            session.replace("use orientation::*;", "pub use orientation::*;"),
+        )
+        .unwrap();
+    }
+    let (program, resources, _) = application_case(
+        "orientation-split-lifecycle",
+        Some(body),
+        None,
+        ApplicationCase {
+            edit_modules: Some(export_orientation),
+            ..ApplicationCase::default()
+        },
+    );
     let mut sim = cpu_v3_tang_nano_20k::system_sim::CpuV3SystemSim::new(
         cpu_v3_tang_nano_20k::system_sim::VBlankMode::Manual,
     );

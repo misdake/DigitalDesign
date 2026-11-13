@@ -1,6 +1,6 @@
 //! Native END permission for maintenance-only and post-Pass command streams.
 use cpu_v3::{rcc_backend, CpuV3Sim, RunOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 #[test]
@@ -28,7 +28,7 @@ fn main(){gpu_record_init();check(gpu_record_configure(0,0x9800,1,0x9a00,1));
     for enabled in [false, true] {
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;
-        let parsed = compile_program_named_checked(
+        let parsed = crate::checked_flat_fixture::compile(
             "maintenance-seal",
             source,
             &options,

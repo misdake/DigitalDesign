@@ -1,6 +1,6 @@
 # First CPU V3 application
 
-Read this from the repository root. This tutorial uses the core demo's normal
+Read this from the repository root. This tutorial uses the small hello-gpu application's normal
 build and functional simulator; no board, Gowin installation or HDL simulator
 is required to see the first frame.
 
@@ -10,10 +10,11 @@ Use the repository-pinned Rust nightly, Python 3 and PowerShell. On Windows,
 use an MSVC x64 developer environment. Cargo and Python must be on PATH.
 Asset generation uses Python; it is part of the ordinary application build.
 
-The language uses Rust syntax with RCC restrictions. Ordinary value structs are
-passed/returned by value or through explicit `Array<T>` views. References to
-GPU resource objects are a separate checked facility; a normal Rust `&MyStruct`
-parameter is not supported. Pure nongeneric `const fn`, value constructors,
+The language uses Rust syntax with RCC restrictions. Ordinary structs can be
+passed by value or borrowed with `&MyStruct` / `&mut MyStruct` in checked builds.
+Borrows use the original storage and one address word; rustc checks their aliases
+and lifetimes before RCC lowering. Explicit `Array<T>` views remain available.
+Pure nongeneric `const fn`, value constructors,
 the decimal `fix!` macro and `include_bytes!` use the restricted [static expression subset](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md).
 General application macros remain unsupported. Use the [SDK value helpers](/systems/cpu-v3-tang-nano-20k/docs/sdk-values.md)
 for readable colors, transforms and resource descriptions.
@@ -30,12 +31,12 @@ ownership protocol. See the [resource lifetime contract](/systems/cpu-v3-tang-na
 
 ```powershell
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- list
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo --help
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview hello-gpu --help
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview hello-gpu
 ```
 
 This builds a fresh snapshot, verifies it and writes a two-present headless
-preview under the repository's `target/apps/core-demo/`. The command prints the
+preview under the repository's `target/apps/hello-gpu/`. The command prints the
 snapshot and `frame-final.ppm` paths. The recipe produces its static assets, compiles
 the program once through Cargo OUT_DIR, packs CB06 and verifies the exported
 snapshot. `application.build.json` binds code, resources, sources and debug info.
@@ -44,8 +45,8 @@ snapshot. `application.build.json` binds code, resources, sources and debug info
 ## Run with input, or reuse a snapshot
 
 ```powershell
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run core-demo
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo --snapshot target/core-demo/app
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run hello-gpu
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview hello-gpu --snapshot target/hello-gpu
 ```
 
 `run` builds and opens a window with Windows XInput slot 0. `--snapshot` instead
@@ -62,35 +63,36 @@ controller. The [workflow guide](/systems/cpu-v3-tang-nano-20k/docs/application-
 lists defaults and overrides. See the
 [core demo controls](/systems/cpu-v3-tang-nano-20k/examples/core_demo/README.md#controls).
 To start a specific page, use `preview core-demo --page 5`, for example.
-To export without running, use `build core-demo --out target/core-demo/app`;
+To export without running, use `build hello-gpu --out target/hello-gpu`;
 `build --out` requires a new or empty directory and never overwrites a snapshot.
 Build failures print the main diagnostic and full log directory; matching
 runtime failures resolve source lines through the snapshot's debug metadata.
 
 ## Follow the source before creating a new application
 
-Open `examples/core_demo/rcc/main.rs`, then `common/state.rs` and one module
-under `pages/`.
-The page returns to the main loop after updating its UI grid. Main records into
-Back, submits, recovers the CB from GPU wait, requests that completed target and
-confirms the Display swap before reusing resources. Static memory is explicit;
-no frame allocator or hidden renderer is required.
+Open `examples/hello_gpu/rcc/main.rs`, then `rcc/scene.rs`,
+`tools/assets.py` and `application.rs`. This standalone sample contains only a
+triangle and UI label, without the capability demo's menus. Main records Back,
+submits, recovers the CB from GPU wait and confirms the Display swap before reuse.
+The scene owns its mesh/model/camera/material; static placement remains explicit.
 
-The normal application addition has two pieces:
+A normal application addition has two pieces:
 
-1. An application directory with its RCC entry/modules and an owned
-   `application.rs` recipe. Follow `examples/core_demo/application.rs`: it selects
-   the checked GPU source, producer and startup options. Diagnostic capture stays
-   disabled for an ordinary application.
-2. One entry in `application_catalog!` in `applications/build/mod.rs`, naming the
-   recipe path. That entry loads the module and registers its `APPLICATIONS`
-   slice; there is no second enumeration to update.
+1. Copy the [hello-gpu template](/systems/cpu-v3-tang-nano-20k/examples/hello_gpu/README.md)
+   and adjust the recipe's application name, selection and source/producer paths.
+2. Register its `application.rs` once in `application_catalog!` under
+   `applications/build/mod.rs`. That entry loads and enumerates the recipe.
+
+Ordinary modules follow `name.rs` or `name/mod.rs`. Use `crate::`, `self::`,
+`super::`, explicit imports, aliases or glob imports; separate modules may use the
+same item names. App subdirectories need no `ordinary_sources` entries. Existing
+flat SDK exports remain compatible and confer no additional driver authority.
 
 Declare a numeric startup constant once in the recipe:
 
 ```rust
 options: &[
-    BuildOption::integer_constant("page", "CORE_DEMO_PAGE", 0, 0, 5),
+    BuildOption::integer_constant("frames", "HELLO_FRAMES", 0, 0, 65535),
 ],
 ```
 
@@ -110,8 +112,10 @@ all loaded source origins for the artifact.
 
 An asset producer writes `assets.json`, native payloads and typed RCC
 constants into its build-owned `--output` directory. Follow
-`examples/core_demo/tools/assets.py` and its small `geometry.py`: these are actual
-consumers of the shared font, mesh and texture encoders. `native_asset_source.Sources`
+`examples/hello_gpu/tools/assets.py`: its `Sources.geometry` call takes named
+`Vertex` positions, normals and UV/RGB attributes, then builds bounded meshlets,
+headers, directories and sector relocations. Texture/mip encoders remain available
+for later examples. `native_asset_source.Sources`
 emits `AssetBytes`, aligned `#[asset]` declarations and complete native descriptions;
 the system places the blobs and applies sector relocations. Do not repeat GPU
 addresses or manually rebuild those descriptions in the application.
@@ -121,9 +125,8 @@ mod boot_resources;
 use boot_resources::*;
 
 // Producer-generated names; storage placement is resolved by the build.
-let mesh = Mesh::from_native(GEOMETRY_CUBE);
-let texture = Texture::from_native(GEOMETRY_CHECKER);
-let atlas = UiAtlas::from_desc(CORE_ATLAS);
+let mesh = Mesh::from_native(HELLO_TRIANGLE);
+let atlas = UiAtlas::from_desc(HELLO_ATLAS);
 ```
 
 The [static asset guide](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md)
@@ -149,13 +152,11 @@ let depth = DepthBuffer::from_surface(DEPTH);
 let mut grid = UiGrid::from_storage(GRID, &atlas);
 ```
 
-Import `surface` and `gpu_api` as shown by `rcc/common/working_set.rs`. Storage is placed
-and zeroed by the build/loader; live resources are registered once at startup.
-`rcc/geometry_page.rs` then shows const world/normal preparation and projection
-alongside a dynamically updated model. The GPU branch in `rcc/main.rs` records
-actual geometry and UI, waits for completion and presents Back. Its source-world
-X basis is reflected at draw conversion; the example places the fixed model on
-the screen's left and the animated model on the right.
+Import `surface` and `gpu_api` as shown by the hello-gpu `rcc/main.rs`. Storage is
+placed and zeroed by the build/loader; live resources are registered once at startup.
+Its `rcc/scene.rs` shows model/camera/material construction and Ptr-based drawing.
+For const world/normal matrices and animation, continue with the core demo's
+`rcc/pages/geometry_page.rs`. Source-world X is reflected at draw conversion.
 
 Use the shared [project font](/assets/fonts/README.md) for on-device text.
 `tools/ui_font.py` packs selected native 8×16 glyphs with `base_asset`; see the

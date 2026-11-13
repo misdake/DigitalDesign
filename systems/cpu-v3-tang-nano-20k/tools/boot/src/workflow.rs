@@ -195,6 +195,17 @@ pub fn preview(snapshot: &Path, output: &Path, options: &Preview) -> Result<(), 
         .next_back()
         .ok_or("Cargo did not report the simulator executable")?;
     let runner_identity = identity(&executable)?;
+    // Execute the run-owned image so a Windows session never locks Cargo's output.
+    let frozen = output.join(
+        executable
+            .file_name()
+            .ok_or("simulator executable has no filename")?,
+    );
+    fs::copy(&executable, &frozen).map_err(|e| format!("freeze simulator runtime: {e}"))?;
+    if identity(&frozen)? != runner_identity {
+        return Err("frozen simulator runtime changed".into());
+    }
+    let executable = frozen;
     let mut command = Command::new(&executable);
     command
         .args(["--cpu-mode", "instruction", "--package"])

@@ -66,6 +66,7 @@ impl Fixture {
     fn load(&self, name: &str) -> Result<ModuleSource, String> {
         if name == "generated" {
             return Ok(ModuleSource {
+                namespace: crate::frontend::ModuleNamespace::Scoped,
                 source: "pub const GENERATED:u16=5;".into(),
                 origin: None,
             });
@@ -75,6 +76,7 @@ impl Fixture {
             .get(name)
             .ok_or_else(|| format!("missing module {name}"))?;
         Ok(ModuleSource {
+            namespace: crate::frontend::ModuleNamespace::Scoped,
             source: std::fs::read_to_string(path).map_err(|e| e.to_string())?,
             origin: self.origins[name].clone(),
         })

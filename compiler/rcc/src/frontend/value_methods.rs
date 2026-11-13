@@ -4,6 +4,8 @@ use proc_macro2::{TokenStream, TokenTree};
 use quote::ToTokens;
 use std::collections::{HashMap, HashSet};
 use syn::{parse_quote, visit_mut::VisitMut, Expr, FnArg, Item, Type};
+mod ownership_calls;
+pub(super) use ownership_calls::prepare as prepare_ownership_calls;
 
 const PREFIX: &str = "__rcc_value_";
 #[derive(Clone, Copy)]
@@ -258,7 +260,8 @@ pub(super) fn prepare(
 }
 
 pub(super) fn call(l: &FnLower, expression: &syn::ExprMethodCall) -> Option<syn::ExprCall> {
-    let owner = match peek_type(l, &expression.receiver)? {
+    let receiver_ty = peek_type(l, &expression.receiver)?;
+    let owner = match super::references::target(&receiver_ty) {
         Ty::Struct(owner) | Ty::Enum(owner) => owner,
         _ => return None,
     };
@@ -269,10 +272,15 @@ pub(super) fn call(l: &FnLower, expression: &syn::ExprMethodCall) -> Option<syn:
     if expression.turbofish.is_some() {
         return None;
     }
-    let receiver = &expression.receiver;
+    let mut receiver = *expression.receiver.clone();
+    let mut ty = &receiver_ty;
+    while let Ty::Reference(element, _) = ty {
+        receiver = parse_quote!(*#receiver);
+        ty = element;
+    }
     let argument: Expr = match method.receiver {
         Receiver::Associated => return None,
-        Receiver::Value => *receiver.clone(),
+        Receiver::Value => receiver.clone(),
         Receiver::Borrow { mutable } => {
             // Rustc already checked the original receiver; the internal view retains
             // its mutability in the generated callee and borrows the existing place.
@@ -309,6 +317,7 @@ pub(super) fn is_value_temporary(l: &FnLower, expression: &Expr) -> bool {
             l.lookup(&name).is_none() && !l.globals.scalars.contains_key(&name)
         }
         Expr::Field(_) | Expr::Index(_) => false,
+        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => false,
         _ => true,
     }
 }

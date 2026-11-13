@@ -3,13 +3,10 @@ use crate::dsl_rt::*;
 mod cpu_canvas;
 use cpu_canvas::*;
 mod gpu_api;
+use crate::common::palette::*;
+use crate::common::state::*;
+use crate::common::ui::*;
 use gpu_api::*;
-mod palette;
-use palette::*;
-mod state;
-use state::*;
-mod ui;
-use ui::*;
 
 fn edge(ax: i16, ay: i16, bx: i16, by: i16, x: i16, y: i16) -> i16 {
     (bx - ax) * (y - ay) - (by - ay) * (x - ax)
@@ -70,8 +67,8 @@ fn triangle(canvas: CpuCanvas, t: Triangle) {
         y += 1;
     }
 }
-pub fn triangles_page(grid: &mut UiGrid, canvas: CpuCanvas, state: DemoState) {
-    page_start(grid, state, b"TRIANGLES");
+pub fn triangles_page(grid: &mut UiGrid, canvas: CpuCanvas, state: AnimationState) {
+    page_start(grid, PageId::Triangles, state.paused, b"TRIANGLES");
     text(grid, 7, 4, b"FILLED");
     text(grid, 31, 4, b"WIREFRAME");
     let angle = animation_phase(state) + fix32::from_int(state.parameter as i16) * fix!(0.125);

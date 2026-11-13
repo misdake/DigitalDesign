@@ -259,7 +259,7 @@ i=0;while i<4{check(GPU_CAMERA_REVISION_COUNTER[i]==65535);i+=1;}halt(0x600d);}"
             gpu_debug: debug,
             ..rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0)
         };
-        let parsed = rcc::frontend::compile_program_named_checked(
+        let parsed = crate::checked_flat_fixture::compile(
             "camera-revision",
             source,
             &options,

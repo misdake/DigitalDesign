@@ -1,6 +1,6 @@
 //! Directory-only fixtures: metadata/payload bytes are not rendered by this test.
 use cpu_v3::{rcc_backend, CpuV3Sim, RunOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 const SOURCE: &str = r#"mod gpu_mesh;
@@ -57,7 +57,7 @@ fn mesh_directory_expands_with_pingpong_prefetch_and_whole_draw_preflight() {
     for enabled in [false, true] {
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;
-        let parsed = compile_program_named_checked(
+        let parsed = crate::checked_flat_fixture::compile(
             "mesh-directory",
             SOURCE,
             &options,

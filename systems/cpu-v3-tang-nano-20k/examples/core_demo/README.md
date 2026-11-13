@@ -1,6 +1,6 @@
 # Core demonstration gallery
 
-One ordinary application with six navigable pages. The CPU draws animated
+One ordinary application with seven navigable pages. The CPU draws animated
 triangles, waves and controller illustrations directly into the RGB565 Back
 plane; the GPU clears that plane and overlays text/icons. The screen is a
 visual gallery, with per-page titles, small corner controls and no development HUD.
@@ -23,7 +23,7 @@ cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run core-demo
 
 Each command creates a fresh snapshot and separate run directory. `--snapshot`
 consumes an existing export; `build core-demo --out NEW-DIRECTORY` exports without
-running. `--page 0..5` selects the initial
+running. `--page 0..6` selects the initial
 page. Build option `--frames N` stops after N confirmed application presents;
 zero, the default, runs continuously. Simulator `--frames` instead bounds host
 display samples, and `--max-cpu-steps` bounds CPU work. Simulation time is not
@@ -44,9 +44,15 @@ Physical firmware uses the ordinary DS2 input device.
 | L1 / R1 | Previous / next page, wrapping at the ends |
 | Left / right on triangles/waves/geometry | Change CPU rotation/amplitude or GPU focal length on a press edge |
 | Cross on triangles/waves/geometry | Pause / resume animation |
+| L2 / R2 in GPU Lab | Previous / next tab |
+| Up / down, Cross on Surface | Focus / apply RGB, Texture, Lit or Texture+Lit |
+| Up / down, left / right in other GPU Lab tabs | Select / adjust a parameter |
+| Left stick in Camera / Light | Orbit camera / aim light |
+| Right stick in Camera / Light | Pan camera / adjust ambient and directional intensities |
 | Up / down on color | Focus SRGB / LINEAR |
 | Cross on color | Apply the focused option |
 | Triangle on triangles/waves/geometry | Reset parameter and animation |
+| Triangle in GPU Lab | Reset the active tab's settings |
 | Start | Return home |
 
 The page itself stays selected on reset. Navigation uses edges, so holding a
@@ -60,16 +66,28 @@ R1/next, D-pad/adjust or select, Cross/pause or confirm, Triangle/reset and
 Start/home. Paused pages show a play action beside Cross. Shoulder labels use
 the same native project-font pixels inside their keycaps; there is no footer prose.
 
+Camera FOV is limited to 35..80 degrees, within the projection's ray encoding.
+Orbit pitch stays at 0.15..1.2 radians. Orbit, pan and distance controls keep the
+eye above the floor and the floor/cube bounds in front of the camera; the minimum
+distance may therefore increase as the target moves. These are gallery control
+limits, not a near-plane clipping implementation.
+
+Surface's lit modes use a brighter ambient/key-light setup and a modest highlight.
+The Light tab includes an unlit cyan/gold world-space arrow labelled `TO LIGHT`.
+It follows the same direction used by shading and stays visible at zero light
+intensity; it points toward the source, rather than along incoming light rays.
+
 ## Pages and observable behavior
 
 | Page | Demonstration |
 | --- | --- |
-| 0 | Five gallery entries and selection highlight |
+| 0 | Six gallery entries and selection highlight |
 | 1 | CPU-filled gradient triangle and RGB wireframe; active time rotates both, left/right changes their orientation |
 | 2 | CPU Q16.16 sine/cosine traces and a phase-circle pointer; left/right changes amplitude, Cross freezes motion |
 | 3 | Two calibrated stick plots, sixteen button panels and a connection icon |
 | 4 | Explicit SRGB / LINEAR radio options above gray and color swatches |
 | 5 | Two textured, depth-tested GPU cubes: fixed nonuniform world/normal matrices on the left, runtime TRS rotation on the right; left/right adjusts perspective |
+| 6 | GPU Lab: Surface shader combinations, Camera orbit/pan, Light direction/intensities and Material color/response/highlights |
 
 The current hardware fixes the source at 400x240 and output at 800x480 with
 2x scaling. The gallery does not change HDMI timings. SRGB presents already
@@ -95,14 +113,15 @@ rcc/
   common/      frame passes, state, UI, palette and static working set
 ```
 
-The recipe declares `pages/` and `common/` as ordinary RCC source roots. Existing
-module names stay flat; the directories group application files by responsibility.
+`common/mod.rs`, `pages/mod.rs` and `pages/lab/mod.rs` declare ordinary file
+modules. Imports use their `crate::common` / `crate::pages` paths; the recipe no
+longer lists subdirectories. SDK facade imports retain their existing syntax.
 
 | File | Responsibility |
 | --- | --- |
 | `rcc/common/working_set.rs` | Const application-owned surfaces, commands, push and UI storage |
 | `rcc/main.rs` | Startup resource ownership, frame scheduling, GPU completion and Display handoff |
-| `rcc/common/state.rs` | Press-edge controls, modulo active time and shared animation phase |
+| `rcc/common/state.rs` | Typed page identity/capabilities, press-edge navigation and separate animation clocks |
 | `rcc/common/frame.rs` | Shared Back selection, CPU clear and color/depth pass construction |
 | `rcc/pages/cpu_pages.rs` | CPU page dispatch and Display-format selection |
 | `rcc/pages/home_page.rs` | Gallery entries and selection highlight |
@@ -111,9 +130,11 @@ module names stay flat; the directories group application files by responsibilit
 | `rcc/pages/controller_page.rs` | Stick plots, button panels and connection indicator |
 | `rcc/pages/color_page.rs` | Color-option UI, swatches and Display interpretation |
 | `rcc/pages/geometry_page.rs` | Startup GPU resources, per-frame pose/labels and geometry pass state/draws |
+| `rcc/pages/gpu_lab.rs` | Four tabs, persistent state and the common prepare/draw boundary |
+| `rcc/pages/lab/` | Shared plane/cube resources and separate Surface, Camera, Light and Material controls/views |
 | `rcc/common/ui.rs`, `rcc/common/palette.rs` | Shared text/icon layout and colors |
 | `tools/assets.py` | Selected project-font base asset, typed resources and coordinated icon IDs |
-| `tools/geometry.py` | Small cube and mip texture through the shared native encoders |
+| `tools/geometry.py` | Cube, planes, direction arrow and mip texture through the shared native encoders |
 | `application.rs` | Application-owned build recipe and bounded startup options |
 
 Each page owns its content updates and drawing loops. Shared passes stay separate
@@ -127,8 +148,8 @@ numeric output is absent; [numeric text helpers](/systems/cpu-v3-tang-nano-20k/d
 remain available to SDK consumers independently.
 
 The selected [project-font base asset](/assets/fonts/README.md) contains 91 native ASCII-indexed slots
-plus eleven action/state glyphs and seven 24×16 keycaps split into three
-records each (31,488 bytes total).
+plus eleven action/state glyphs and eleven 24×16 keycaps split into three
+records each (34,560 bytes total).
 Only the requested uppercase/digit/punctuation glyphs are populated. Native
 ASCII IDs avoid a runtime translation table; ID255 skips without loading its
 record. The base remains 64-KiB-aligned, but the memory extent and glyph count
@@ -148,6 +169,28 @@ The source-world X basis reflects at draw conversion, so screen-left uses +X.
 Pause freezes pose while retaining projection adjustment; Triangle restores the
 initial phase and focal setting. Native matrices apply the required reflection
 inside the driver, never in the application's world/normal values.
+
+## GPU Lab
+
+Page 6 adds four tabs without changing global L1/R1 page navigation. L2/R2
+switches tabs. The Surface tab compares real per-vertex RGB, unlit texture,
+lit RGB and lit texture over the same plane; focusing an option does not apply
+it until Cross. The other tabs use a floor plane and cube. Camera exposes orbit,
+pan, distance and vertical field of view in degrees. Light exposes direction, ambient and directional
+intensities. Material exposes RGB, ambient/diffuse response, specular and
+shininess. Triangle resets only the active tab. Parameters survive tab and page
+changes; meshes, texture and scene resources are allocated once at startup.
+
+Tabs and option lists are application UI. Their independent controllers do not
+add hidden input, allocation or scheduling to the graphics API. Shared calibrated
+gamepad axes drive continuous controls; updates are capped at 50 ms so returning
+from an inactive page cannot cause a large jump. CPU draw/overlay ownership and
+the GPU clear/draw/UI/present boundary remain explicit in main.
+
+Triangles, waves and the original geometry page now retain separate parameters,
+pause and elapsed time. Inactive pages do not accumulate animation time; the
+elapsed input interval belongs to the page that was visible before navigation.
+Opening an animated page with Cross does not also toggle its pause state.
 
 ## Bounded qualification
 

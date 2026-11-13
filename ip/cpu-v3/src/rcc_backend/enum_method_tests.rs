@@ -15,15 +15,17 @@ fn parse(label: &str, source: &str) -> Result<rcc::frontend::Program, rcc::front
         source,
         &CompilerOptions::default(),
         &RustcCheck::new(root.join(label)),
-        &mut |name| match name {
+        &mut |name| {
+            match name {
             "choices" => {
                 Ok("#[repr(u16)] #[derive(Copy,Clone)] pub enum Choice{First,Last}".to_owned())
             }
             "methods" => Ok(
-                "impl Choice{pub fn last()->Self{Self::Last}pub fn code(&self)->u16{*self as u16}}"
+                "use crate::choices::Choice;impl Choice{pub fn last()->Self{Self::Last}pub fn code(&self)->u16{*self as u16}}"
                     .to_owned(),
             ),
             _ => Err(format!("unexpected enum test module {name}")),
+        }
         },
     )
 }
@@ -76,7 +78,7 @@ fn main(){let mut mode=Mode::choose(0);
 
 #[test]
 fn rustc_enum_cross_file_methods_keep_single_word_discriminants() {
-    let source = r#"mod choices;mod methods;
+    let source = r#"mod choices;mod methods;use choices::*;
 struct Pair{first:Choice,last:u16}
 fn main(){let selected=Choice::last();let pair:Pair=Pair{first:selected,last:55};
  if pair.first.code()!=1||pair.last!=55{halt(1);}halt(0x600d);}"#;
@@ -132,7 +134,6 @@ fn rustc_enum_methods_preserve_checked_rejections() {
         ("associated-const","#[repr(u16)] enum E{A}impl E{const V:Self=Self::A;}fn main(){}","functions only"),
         ("unsafe","#[repr(u16)] enum E{A}impl E{unsafe fn make()->Self{Self::A}}fn main(){let value=E::make();}","rustc E0133"),
         ("entry","#[repr(u16)] enum E{A}impl E{fn __rcc_value_hidden(&self)->u16{0}}fn main(){}","reserved value method name"),
-        ("reference","#[repr(u16)]#[derive(Copy,Clone)]enum E{A}impl E{fn eq(&self,other:&Self)->bool{*self as u16==*other as u16}}fn main(){}","reference types"),
     ] {
         let error=parse(&format!("enum-reject-{label}"),source).err().expect("invalid enum method passed").to_string();
         assert!(error.contains(expected),"{label}: {error}");
@@ -154,15 +155,17 @@ fn unchecked_enum_methods_remain_outside_the_legacy_entry() {
 }
 
 #[test]
-#[ignore = "requires the frozen API B and A schema source directories"]
+#[ignore = "executes the system SDK source fixture"]
 fn rustc_enum_real_shininess_production_sources_execute() {
-    let source_root = PathBuf::from(
-        std::env::var_os("RCC_GRAPHICS_API_RCC")
-            .expect("set RCC_GRAPHICS_API_RCC to the fixed API B rcc directory"),
-    );
+    let source_root =
+        PathBuf::from(std::env::var_os("RCC_GRAPHICS_API_RCC").unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../systems/cpu-v3-tang-nano-20k/rcc")
+                .into_os_string()
+        }));
     let schema_root = PathBuf::from(
         std::env::var_os("RCC_GRAPHICS_SCHEMA_RCC")
-            .expect("set RCC_GRAPHICS_SCHEMA_RCC to A's shared schema directory"),
+            .unwrap_or_else(|| source_root.clone().into_os_string()),
     );
     let out = std::env::var_os("RCC_RUSTC_TEST_DIR")
         .map(PathBuf::from)
@@ -186,10 +189,11 @@ fn main(){let mut index:u16=0;while index<17{
             ..CompilerOptions::default()
         };
         let profile = if gpu_debug { "debug" } else { "release" };
-        let ir = compile_program_named_checked(
+        let ir = rcc::frontend::compile_program_named_with_libraries_checked(
             "actual-shininess",
             source,
             &options,
+            &[],
             &RustcCheck::new(out.join(profile)),
             &mut |name| {
                 let b_file = source_root.join(format!("{name}.rs"));
@@ -202,7 +206,11 @@ fn main(){let mut index:u16=0;while index<17{
                     .map_err(|e| format!("{}: {e}", file.display()))?;
                 std::fs::write(out.join(format!("input-{name}.rs")), &text)
                     .map_err(|e| e.to_string())?;
-                Ok(text)
+                Ok(rcc::frontend::ModuleSource {
+                    source: text,
+                    origin: Some(file.canonicalize().map_err(|e| e.to_string())?),
+                    namespace: rcc::frontend::ModuleNamespace::Flat,
+                })
             },
         )
         .unwrap_or_else(|error| panic!("{profile}: {error}"));

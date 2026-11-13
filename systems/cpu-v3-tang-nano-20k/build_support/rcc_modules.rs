@@ -59,7 +59,19 @@ pub fn load_module_source_with_sources(
                 .map_err(|e| format!("resolve module {name} at {}: {e}", path.display()))
         })
         .transpose()?;
-    Ok(rcc::frontend::ModuleSource { source, origin })
+    let namespace = if origin
+        .as_ref()
+        .is_none_or(|path| std::fs::canonicalize(shared_dir).ok().as_deref() == path.parent())
+    {
+        rcc::frontend::ModuleNamespace::Flat
+    } else {
+        rcc::frontend::ModuleNamespace::Scoped
+    };
+    Ok(rcc::frontend::ModuleSource {
+        namespace,
+        source,
+        origin,
+    })
 }
 
 /// Explicit API recording uses its own approved root, never both facade domains.
@@ -194,6 +206,7 @@ impl GpuSources<'_> {
         } = *self;
         if name == "gpu_render_profile" {
             return Ok(rcc::frontend::ModuleSource {
+                namespace: rcc::frontend::ModuleNamespace::Flat,
                 source: render_profile_source(),
                 origin: None,
             });
@@ -206,6 +219,7 @@ impl GpuSources<'_> {
             let source = std::fs::read_to_string(&origin)
                 .map_err(|e| format!("layout source {}: {e}", origin.display()))?;
             return Ok(rcc::frontend::ModuleSource {
+                namespace: rcc::frontend::ModuleNamespace::Flat,
                 source,
                 origin: Some(origin),
             });
@@ -253,7 +267,10 @@ impl GpuSources<'_> {
 }
 
 fn render_profile_source() -> String {
-    include_str!("../rcc/gpu_render_profile.rs").to_owned()
+    let source = include_str!("../rcc/gpu_render_profile.rs").to_owned();
+    #[cfg(test)]
+    let source = legacy_renderer::profile_compatibility(source);
+    source
 }
 
 fn resolve_module(
@@ -280,61 +297,67 @@ fn resolve_module_with_sources(
     if name == "boot_resources" {
         return Ok((constants.to_owned(), None));
     }
-    let local = local_dir.join(format!("{name}.rs"));
-    match std::fs::read_to_string(&local) {
-        Ok(text) => {
-            dependency(&local);
-            return Ok((text, Some(local)));
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => {
-            dependency(&local);
-            return Err(format!(
-                "read module {name} at {}: {error}",
-                local.display()
-            ));
+    if Path::new(name)
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!("invalid relative module path {name}"));
+    }
+    let common = shared_dir.join("../applications/rendering/rcc");
+    for dir in std::iter::once(local_dir)
+        .chain(std::iter::once(shared_dir))
+        .chain(ordinary_dirs.iter().map(PathBuf::as_path))
+        .chain(std::iter::once(common.as_path()))
+    {
+        if let Some(source) = read_module_at(dir, name, dependency)? {
+            return Ok((source.0, Some(source.1)));
         }
     }
-    // A new local override must invalidate a build previously using the shared
-    // file. Watch its existing directory, not a nonexistent file (always dirty).
-    dependency(local_dir);
-    let shared = shared_dir.join(format!("{name}.rs"));
-    let result = std::fs::read_to_string(&shared);
-    dependency(if result.is_ok() { &shared } else { shared_dir });
-    if result
-        .as_ref()
-        .is_err_and(|e| e.kind() == ErrorKind::NotFound)
-    {
-        // System application support is ordinary source, never GPU-library trust.
-        // Production recipes also declare this root in their exported context.
-        let common = shared_dir.join("../applications/rendering/rcc");
-        for dir in ordinary_dirs.iter().chain(std::iter::once(&common)) {
-            dependency(shared_dir);
-            let path = dir.join(format!("{name}.rs"));
-            match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    dependency(&path);
-                    return Ok((text, Some(path)));
+    // Relative lookup falls back only after every candidate was genuinely absent.
+    // Invalid data, ambiguous forms and I/O errors have already returned above.
+    if let Some((_, leaf)) = name.rsplit_once('/') {
+        return resolve_module_with_sources(
+            local_dir,
+            shared_dir,
+            constants,
+            leaf,
+            ordinary_dirs,
+            dependency,
+        );
+    }
+    Err(format!("read module {name}: local {} not found; shared {} not found (expected {name}.rs or {name}/mod.rs)", local_dir.join(format!("{name}.rs")).display(), shared_dir.join(format!("{name}.rs")).display()))
+}
+
+fn read_module_at(
+    directory: &Path,
+    name: &str,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<Option<(String, PathBuf)>, String> {
+    let mut found = None;
+    for path in [
+        directory.join(format!("{name}.rs")),
+        directory.join(name).join("mod.rs"),
+    ] {
+        match std::fs::read_to_string(&path) {
+            Ok(source) => {
+                dependency(&path);
+                if found.is_some() {
+                    return Err(format!(
+                        "ambiguous module {name}: both {name}.rs and {name}/mod.rs exist"
+                    ));
                 }
-                Err(e) if e.kind() == ErrorKind::NotFound => {
-                    if let Some(existing) = dir.ancestors().find(|path| path.is_dir()) {
-                        dependency(existing);
-                    }
+                found = Some((source, path));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                if let Some(parent) = path.ancestors().skip(1).find(|parent| parent.is_dir()) {
+                    dependency(parent);
                 }
-                Err(e) => {
-                    dependency(&path);
-                    return Err(format!("read module {name} at {}: {e}", path.display()));
-                }
+            }
+            Err(error) => {
+                dependency(&path);
+                return Err(format!("read module {name} at {}: {error}", path.display()));
             }
         }
     }
-    result
-        .map(|text| (text, Some(shared.clone())))
-        .map_err(|error| {
-            format!(
-                "read module {name}: local {} not found; shared {}: {error}",
-                local.display(),
-                shared.display()
-            )
-        })
+    Ok(found)
 }

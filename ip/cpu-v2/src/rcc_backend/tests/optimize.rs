@@ -335,6 +335,7 @@ fn test_optimized_vs_unoptimized() {
         const_prop: false,
         cse: false,
         dce: false,
+        local_memory: false,
         coalesce: false,
     };
     c.add_func(build());

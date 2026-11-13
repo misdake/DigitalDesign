@@ -28,6 +28,15 @@ transitions, rendering, shadow, goal and HUD cases share a bounded `harness`,
 while mathematical `reference` and native-output `inspection` keep distinct
 owners. Larger specialized Bloxorz suites remain separate sibling modules.
 
+`support/checked_flat_fixture.rs` gives internal SDK unit fixtures an explicit
+legacy flat scope without granting library authority. Ordinary application,
+module/privacy and approved-origin tests continue through the production loader.
+The same support owns the default target-only audit directory and the native
+DMA payload oracle: comparisons exclude unreferenced scratch/alignment gaps.
+White-box game hooks are injected into their owning fixture module rather than
+making production-private state public. Accepted-source image comparisons are
+opt-in and require their declared frozen baseline/output inputs.
+
 Standalone Python entry points and raw benches retain their existing paths.
 The Bloxorz ordinary-profile codec/launcher tests live under the application's
 `tests/`, with their command in its profiling document. Selection assertions

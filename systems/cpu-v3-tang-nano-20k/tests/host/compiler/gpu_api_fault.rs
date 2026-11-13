@@ -1,6 +1,6 @@
 //! API fault UART peer: backpressure and final stop-bit drain, entirely offline.
 use cpu_v3::{rcc_backend, CpuV3Sim, Device, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::{any::Any, cell::RefCell, path::Path, rc::Rc};
 
 #[derive(Default)]
@@ -70,7 +70,7 @@ gpu_api_fail(10,11,12,13);halt(0xbad);"#,
             let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
             options.gpu_debug = enabled;
             let source = format!("mod gpu_schema;mod gpu_api_fault;fn main(){{{body}}}");
-            let parsed = compile_program_named_checked(
+            let parsed = crate::checked_flat_fixture::compile(
                 "api-fault-peer",
                 &source,
                 &options,

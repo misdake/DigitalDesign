@@ -202,6 +202,7 @@ fn main(){if DESC.lo!=4465||DESC.hi!=1||DESC.words!=547||!DESC.valid{halt(1);}ha
                     .join("../../systems/cpu-v3-tang-nano-20k/rcc")
                     .join(format!("{name}.rs"));
                 Ok(ModuleSource {
+                    namespace: rcc::frontend::ModuleNamespace::Flat,
                     source: std::fs::read_to_string(&path).map_err(|e| e.to_string())?,
                     origin: Some(path),
                 })
@@ -326,8 +327,9 @@ fn main(){halt(DESC.address());}
             &mut |name| {
                 if name == "wrapper" {
                     return Ok(ModuleSource {
+                        namespace: rcc::frontend::ModuleNamespace::Scoped,
                         source: r#"
-mod static_buffer;use static_buffer::*;
+use crate::static_buffer::*;
 #[derive(Copy,Clone)]pub struct Wrapper{storage:StaticBuffer}
 impl Wrapper {
  pub const fn allocate()->Self{Self{storage:StaticBuffer::new(129,128)}}
@@ -343,6 +345,7 @@ impl Wrapper {
                     .join("../../systems/cpu-v3-tang-nano-20k/rcc")
                     .join(format!("{name}.rs"));
                 Ok(ModuleSource {
+                    namespace: rcc::frontend::ModuleNamespace::Flat,
                     source: std::fs::read_to_string(&path).map_err(|e| e.to_string())?,
                     origin: Some(path),
                 })

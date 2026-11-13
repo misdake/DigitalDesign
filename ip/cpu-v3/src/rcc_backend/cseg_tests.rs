@@ -4,7 +4,7 @@ use crate::{CpuV3Sim, RunOutcome};
 use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
 use std::path::Path;
 const ROOT: &str = r#"#![link_csegs(default="app", app=7, math=6, nested=5, same=7)]
-mod math;
+mod math;use math::*;
 static TOTAL:u16=0;
 struct Pair{a:u16,b:u16}
 #[inline(never)]fn back(n:u16)->u16{n+3}
@@ -17,10 +17,11 @@ fn main(){
 }
 "#;
 const MATH: &str = r#"#![link_cseg="math"]
-#[inline(never)]fn six(a:u16,b:u16,c:u16,d:u16,e:u16,f:u16)->u16{a+b+c+d+e+f}
-#[inline(never)]fn pair(a:u16,b:u16,c:u16,d:u16,e:u16)->Pair{Pair{a:a+b+c+d+e,b:(a+b+c+d+e)*2}}
-#[inline(never)]fn fixed(a:fix32)->fix32{a*fix32::from_int(4)}
-#[link_cseg="nested"]fn recurse(n:u16)->u16{if n==0{return back(0);}unsafe{addr_of(&TOTAL).write(0,TOTAL+n);}recurse(n-1)+2}
+use crate::{Pair,back,TOTAL};
+# [inline(never)]pub fn six(a:u16,b:u16,c:u16,d:u16,e:u16,f:u16)->u16{a+b+c+d+e+f}
+#[inline(never)]pub fn pair(a:u16,b:u16,c:u16,d:u16,e:u16)->Pair{Pair{a:a+b+c+d+e,b:(a+b+c+d+e)*2}}
+#[inline(never)]pub fn fixed(a:fix32)->fix32{a*fix32::from_int(4)}
+#[link_cseg="nested"]pub fn recurse(n:u16)->u16{if n==0{return back(0);}unsafe{addr_of(&TOTAL).write(0,TOTAL+n);}recurse(n-1)+2}
 "#;
 fn checked(
     source: &str,

@@ -22,6 +22,7 @@ fn fixture(label: &str, body: &str) -> PathBuf {
     inputs.entry(
         entry.to_str().unwrap(),
         &rcc::frontend::ModuleSource {
+            namespace: rcc::frontend::ModuleNamespace::Scoped,
             source: source.into(),
             origin: Some(entry.clone()),
         },

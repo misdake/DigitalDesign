@@ -44,6 +44,9 @@ pub struct BinaryInput {
 #[derive(Clone, Debug, Default)]
 pub struct Assets {
     pub placed: Vec<StaticAsset>,
+    /// Validated source payloads omitted from runtime storage; producer metadata
+    /// can still be checked against them without consuming physical capacity.
+    pub discarded: Vec<StaticAsset>,
     pub inputs: Vec<BinaryInput>,
     pub buffers: Vec<super::static_buffers::StaticBuffer>,
 }
@@ -52,11 +55,22 @@ pub struct Assets {
 #[path = "static_assets_tests.rs"]
 mod tests;
 
+#[cfg(test)]
 pub(super) fn prepare(
     files: &mut [syn::File],
     names: &[String],
     origins: &[Option<PathBuf>],
     banks: &[AssetBank],
+) -> Result<Assets, (usize, syn::Error)> {
+    prepare_live(files, names, origins, banks, &Default::default())
+}
+
+pub(super) fn prepare_live(
+    files: &mut [syn::File],
+    names: &[String],
+    origins: &[Option<PathBuf>],
+    banks: &[AssetBank],
+    live: &super::liveness::Live,
 ) -> Result<Assets, (usize, syn::Error)> {
     let mut result = Assets::default();
     let mut allocator = super::storage::Allocator::new(banks)
@@ -228,7 +242,12 @@ pub(super) fn prepare(
                 .checked_add(127)
                 .map(|n| n & !127)
                 .ok_or_else(|| fail("asset size overflow"))?;
-            let address = allocator.allocate(data.len(), align).map_err(fail)?.start;
+            let used = live.contains(&ident.to_string());
+            let address = if used {
+                allocator.allocate(data.len(), align).map_err(fail)?.start
+            } else {
+                0
+            };
             let first_sector =
                 u16::try_from(address / 128).map_err(|_| fail("asset sector address overflow"))?;
             let sector_count =
@@ -237,12 +256,17 @@ pub(super) fn prepare(
             let byte_len_hi = (data.len() >> 16) as u16;
             **expression = parse_quote!(AssetBytes { first_sector: #first_sector, sector_count: #sector_count, byte_len_lo: #byte_len_lo, byte_len_hi: #byte_len_hi });
             attributes.retain(|a| !a.path.is_ident("asset"));
-            result.placed.push(StaticAsset {
+            let asset = StaticAsset {
                 name: ident.to_string(),
                 address,
                 alignment: align,
                 data,
-            });
+            };
+            if used {
+                result.placed.push(asset);
+            } else {
+                result.discarded.push(asset);
+            }
         }
     }
     // The constructor denotes a placed blob, not a runtime descriptor factory.

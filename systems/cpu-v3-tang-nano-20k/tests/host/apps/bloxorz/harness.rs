@@ -20,6 +20,7 @@ pub(super) struct ApplicationCase {
     pub assets_from_sources: bool,
     pub observe_pose: bool,
     pub automatic_inline: Option<bool>,
+    pub local_memory: Option<bool>,
     pub edit_modules: Option<fn(&Path, &Path)>,
 }
 impl Default for ApplicationCase {
@@ -31,6 +32,7 @@ impl Default for ApplicationCase {
             assets_from_sources: false,
             observe_pose: true,
             automatic_inline: None,
+            local_memory: None,
             edit_modules: None,
         }
     }
@@ -147,6 +149,9 @@ pub(super) fn application_case(
     let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     if let Some(enabled) = case.automatic_inline {
         options.inline.automatic = enabled;
+    }
+    if let Some(enabled) = case.local_memory {
+        options.opt.local_memory = enabled;
     }
     let mut dependencies = vec![];
     let mut application_rcc = source_example.join("rcc");

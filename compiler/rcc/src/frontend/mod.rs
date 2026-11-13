@@ -21,7 +21,10 @@ mod constants;
 mod cseg;
 mod diagnostics;
 mod fixed_literals;
+mod liveness;
+mod modules;
 mod ownership_containers;
+mod references;
 mod resource;
 pub mod rustc_check;
 pub mod static_assets;
@@ -121,6 +124,7 @@ impl Program {
 pub struct FrontendDebug {
     /// Check profile of the actual selected source.
     pub gpu_debug: bool,
+    pub symbol_names: HashMap<String, String>,
     /// Explicit application code segment; None preserves the single-window format.
     pub default_cseg: Option<u16>,
     /// Exclusive word address of allocated statics, before function linking.
@@ -218,15 +222,26 @@ pub fn compile_program_named(
 ) -> Result<Program, CompileError> {
     compile_program_named_with_libraries(main_name, src, opts, &[], &mut |name| {
         loader(name).map(|source| ModuleSource {
+            namespace: crate::frontend::ModuleNamespace::Scoped,
             source,
             origin: None,
         })
     })
 }
 
-/// Source text and its trusted host-loader origin. Synthetic, non-library
-/// modules may omit the origin; source text cannot grant itself a library path.
+/// Symbol resolution policy, independent of resource-library authority.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum ModuleNamespace {
+    #[default]
+    Scoped,
+    /// Compatibility exports only; this never grants resource-library authority.
+    Flat,
+}
+
+/// Source text, resolution policy and actual host-loader origin. Synthetic
+/// modules may omit origin; source text cannot grant itself a library path.
 pub struct ModuleSource {
+    pub namespace: ModuleNamespace,
     pub source: String,
     pub origin: Option<PathBuf>,
 }
@@ -256,6 +271,7 @@ pub fn compile_program_named_checked(
 ) -> Result<Program, CompileError> {
     compile_program_named_with_libraries_checked(main_name, src, opts, &[], check, &mut |name| {
         loader(name).map(|source| ModuleSource {
+            namespace: crate::frontend::ModuleNamespace::Scoped,
             source,
             origin: None,
         })
@@ -281,52 +297,21 @@ fn compile_with_check(
     loader: &mut dyn FnMut(&str) -> Result<ModuleSource, String>,
     check: Option<&rustc_check::RustcCheck>,
 ) -> Result<Program, CompileError> {
-    // gather sources: main file + user modules (recursive) + std
-    let mut srcs: Vec<(String, String)> = vec![(main_name.to_string(), src.to_string())];
-    let mut origins = vec![None];
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut i = 0;
-    while i < srcs.len() {
-        let file_name = srcs[i].0.clone();
-        let text = srcs[i].1.clone();
-        let file = syn::parse_file(&text)
-            .map_err(|error| CompileError::from_syn(&file_name, &text, error))?;
-        for item in &file.items {
-            if let Item::Mod(m) = item {
-                cfg::module_attributes(&m.attrs)
-                    .map_err(|error| CompileError::from_syn(&file_name, &text, error))?;
-                if m.content.is_some() {
-                    return Err(CompileError::from_syn(
-                        &file_name,
-                        &text,
-                        err(
-                            &m.ident,
-                            "inline `mod name { }` is not supported; use `mod name;`",
-                        ),
-                    ));
-                }
-                let name = m.ident.to_string();
-                if seen.insert(name.clone()) {
-                    let text2 = loader(&name).map_err(|error| {
-                        CompileError::from_syn(
-                            &file_name,
-                            &text,
-                            err(&m.ident, format!("cannot load module `{name}`: {error}")),
-                        )
-                    })?;
-                    origins.push(text2.origin);
-                    srcs.push((format!("{name}.rs"), text2.source));
-                }
-            }
-        }
-        i += 1;
-    }
+    let loaded = modules::load(main_name, src, approved_roots, check.is_some(), loader)?;
+    let mut srcs = loaded.sources;
+    let mut origins = loaded.origins;
+    let mut module_graph = loaded.graph;
     srcs.extend(
         STD_SOURCES
             .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string())),
+            .map(|(name, text)| (name.to_string(), text.to_string())),
     );
     origins.resize(srcs.len(), None);
+    module_graph
+        .children
+        .resize_with(srcs.len(), Default::default);
+    module_graph.parents.resize(srcs.len(), None);
+    module_graph.compatibility.resize(srcs.len(), true);
 
     let mut files = vec![];
     let mut names = vec![];
@@ -345,11 +330,13 @@ fn compile_with_check(
         opts.optimizations().is_disabled(),
         ParseChecks {
             asset_banks: opts.asset_banks(),
+            asset_dependencies: opts.asset_dependencies(),
             resources: Some(resource::Sources {
                 origins: &origins,
                 approved_roots,
             }),
             rustc: check,
+            modules: Some(&module_graph),
             gpu_debug: opts.gpu_debug(),
         },
     )
@@ -477,9 +464,11 @@ fn prepend_init_block(main: &mut IrFunc, insts: Vec<Instr>, detail: String) {
 #[derive(Default)]
 struct ParseChecks<'a> {
     asset_banks: &'a [static_assets::AssetBank],
+    asset_dependencies: &'a [(String, String)],
     gpu_debug: bool,
     resources: Option<resource::Sources<'a>>,
     rustc: Option<&'a rustc_check::RustcCheck>,
+    modules: Option<&'a modules::Graph>,
 }
 
 fn parse_files(
@@ -496,20 +485,47 @@ fn parse_files(
     }
     cfg::prepare(&mut files, checks.gpu_debug)?;
     let csegs = cseg::prepare(&mut files)?;
-    let mut assets = static_assets::prepare(
-        &mut files,
-        file_names,
-        checks.resources.map_or(&[][..], |sources| sources.origins),
-        checks.asset_banks,
-    )?;
     let domains = if checks.rustc.is_some() {
         resource::checked_domains(&files, file_names, checks.resources)?
     } else {
         Default::default()
     };
-    let storage =
-        static_buffers::prepare(&mut files, checks.asset_banks, &assets.placed, &domains)?;
+    let labels = if let Some(modules) = checks.modules.filter(|_| checks.rustc.is_some()) {
+        modules.prepare(&mut files, &domains, file_names)?
+    } else {
+        modules::Labels::default()
+    };
+    let mut storage_live = if checks.rustc.is_some() {
+        liveness::collect(&files, None)
+    } else {
+        Default::default()
+    };
+    storage_live.follow(checks.asset_dependencies, &labels.storage);
+    let mut assets = static_assets::prepare_live(
+        &mut files,
+        file_names,
+        checks.resources.map_or(&[][..], |sources| sources.origins),
+        checks.asset_banks,
+        &storage_live,
+    )?;
+    for asset in assets.placed.iter_mut().chain(&mut assets.discarded) {
+        if let Some(label) = labels.storage.get(&asset.name) {
+            asset.name = label.clone();
+        }
+    }
+    let storage = static_buffers::prepare(
+        &mut files,
+        checks.asset_banks,
+        &assets.placed,
+        &domains,
+        &storage_live,
+    )?;
     assets.buffers = storage.buffers;
+    for buffer in &mut assets.buffers {
+        if let Some(label) = labels.storage.get(&buffer.name) {
+            buffer.name = label.clone();
+        }
+    }
     if checks.rustc.is_none() {
         struct LegacyLiteral(Option<syn::Error>);
         impl<'ast> syn::visit::Visit<'ast> for LegacyLiteral {
@@ -528,12 +544,13 @@ fn parse_files(
         }
     }
     if let Some(check) = checks.rustc {
-        rustc_check::validate(&files, file_names, &domains, check)?;
+        rustc_check::validate(&files, file_names, &domains, checks.modules, check)?;
         fixed_literals::prepare(&mut files)?;
         constants::runtime_assertions(&mut files, checks.gpu_debug, false);
     }
     resource::drop_syntax::lower(&mut files, checks.rustc.is_some())?;
     let value_methods = value_methods::prepare(&mut files, checks.rustc.is_some())?;
+    value_methods::prepare_ownership_calls(&mut files, &value_methods)?;
     let carriers = ownership_containers::prepare(&mut files, checks.rustc.is_some())?;
     resource::lower(
         &mut files,
@@ -542,6 +559,7 @@ fn parse_files(
         checks.rustc.is_some(),
         &carriers,
     )?;
+    references::validate(&files, checks.rustc.is_some())?;
     if checks.rustc.is_some() {
         constants::prepare(
             &mut files,
@@ -550,6 +568,11 @@ fn parse_files(
             &storage.statics,
         )?;
     }
+    let data_live = if checks.rustc.is_some() {
+        liveness::collect(&files, Some(&value_methods))
+    } else {
+        Default::default()
+    };
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
@@ -602,12 +625,14 @@ fn parse_files(
         globals.enums.insert(name.clone(), def);
     }
     if checks.rustc.is_some() {
-        byte_slices::literals(&files, &mut globals)?;
+        byte_slices::literals(&files, &mut globals, &data_live)?;
     }
     let mut deferred_statics: Vec<(usize, &syn::ItemStatic)> = vec![];
     for (fi, file) in files.iter().enumerate() {
         let result: Result<(), syn::Error> = (|| {
             for item in &file.items {
+                globals.unallocated = !data_live.item(item);
+                let data_start = globals.data_words.len();
                 match item {
                     Item::Fn(f) => {
                         inline_hint(f)?;
@@ -618,6 +643,9 @@ fn parse_files(
                         if checks.rustc.is_some()
                             && byte_slices::constant(c, &consts, &mut globals)?
                         {
+                            if globals.unallocated {
+                                globals.data_words.truncate(data_start);
+                            }
                             continue;
                         }
                         let ty = ty_of(&c.ty, &type_names)?;
@@ -657,6 +685,9 @@ fn parse_files(
                         ))
                     }
                 }
+                if globals.unallocated {
+                    globals.data_words.truncate(data_start);
+                }
             }
             Ok(())
         })();
@@ -681,9 +712,15 @@ fn parse_files(
     // aggregate statics now that the layouts exist (they land after the scalars)
     let layouts = globals.structs.clone();
     for (fi, s) in &deferred_statics {
+        globals.unallocated = !data_live.contains(&s.ident.to_string());
+        let data_start = globals.data_words.len();
         add_aggregate_static(s, &consts, &layouts, &type_names, &mut globals)
             .map_err(|error| (*fi, error))?;
+        if globals.unallocated {
+            globals.data_words.truncate(data_start);
+        }
     }
+    globals.unallocated = false;
     // collect signatures first (functions can call each other regardless of order)
     let mut sigs: HashMap<String, Sig> = HashMap::new();
     let mut names = vec![];
@@ -707,6 +744,7 @@ fn parse_files(
     }
     let mut out = vec![];
     let mut debug = FrontendDebug {
+        symbol_names: labels.symbols,
         gpu_debug: checks.gpu_debug,
         default_cseg: csegs.default,
         files: file_names.to_vec(),
@@ -736,6 +774,9 @@ fn parse_files(
 
     // globals/consts for the debugger
     for (name, (addr, ty)) in &globals.scalars {
+        if !data_live.contains(name) {
+            continue;
+        }
         debug.globals.push(DebugVar {
             name: name.clone(),
             ty: ty.display(),
@@ -744,6 +785,9 @@ fn parse_files(
         });
     }
     for (name, (addr, elem, len)) in &globals.arrays {
+        if !data_live.contains(name) {
+            continue;
+        }
         debug.globals.push(DebugVar {
             name: name.clone(),
             ty: Ty::Array(Box::new(elem.clone()), *len).display(),
@@ -752,6 +796,9 @@ fn parse_files(
         });
     }
     for (name, (addr, ty)) in &globals.aggregates {
+        if !data_live.contains(name) {
+            continue;
+        }
         debug.globals.push(DebugVar {
             name: name.clone(),
             ty: ty.display(),
@@ -865,6 +912,7 @@ fn lit_int_value(i: &syn::LitInt) -> Result<u64, syn::Error> {
 
 #[derive(Default)]
 struct Globals {
+    unallocated: bool,
     checked: bool,
     byte_literals: HashMap<Vec<u8>, u16>,
     byte_constants: HashMap<String, Vec<u8>>,
@@ -938,7 +986,14 @@ fn word_size(
     at: &impl syn::spanned::Spanned,
 ) -> Result<u16, syn::Error> {
     match ty {
-        Ty::U8 | Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
+        Ty::U8
+        | Ty::U16
+        | Ty::I16
+        | Ty::Ptr
+        | Ty::Bool
+        | Ty::ArrayRef(_)
+        | Ty::Reference(..)
+        | Ty::Enum(_) => Ok(1),
         Ty::Fix32 | Ty::ByteSlice => Ok(2),
         Ty::FnPtr { .. } => Ok(1),
         Ty::Tuple(elems) => u16::try_from(elems.len())
@@ -1659,6 +1714,9 @@ fn reserve_static(
     words: usize,
     at: &impl syn::spanned::Spanned,
 ) -> Result<u16, syn::Error> {
+    if g.unallocated {
+        return Ok(0);
+    }
     let start = g.next_addr;
     let end = start
         .checked_add(words)
@@ -1793,6 +1851,8 @@ enum Ty {
     Ptr,
     /// Typed, one-word unchecked array view (same target representation as Ptr).
     ArrayRef(Box<Ty>),
+    /// A checked Rust borrow; one address word, with no ownership transfer.
+    Reference(Box<Ty>, bool),
     /// Immutable packed bytes: word address plus explicit byte length.
     ByteSlice,
     Bool,
@@ -1849,6 +1909,9 @@ impl Ty {
             Ty::UntypedInt => "integer literal".into(),
             Ty::Ptr => "Ptr".into(),
             Ty::ArrayRef(elem) => format!("Array<{}>", elem.display()),
+            Ty::Reference(elem, mutable) => {
+                format!("&{}{}", if *mutable { "mut " } else { "" }, elem.display())
+            }
             Ty::Bool => "bool".into(),
             Ty::FnPtr { params, ret } => format!(
                 "fn({}) -> {}",
@@ -2021,10 +2084,7 @@ fn ty_of(ty: &Type, structs: &TypeNames) -> Result<Ty, syn::Error> {
         {
             Ok(Ty::ByteSlice)
         }
-        Type::Reference(_) => Err(err(
-            ty,
-            "reference types `&T` are not supported (pass Array<T> or Ptr)",
-        )),
+        Type::Reference(reference) => references::ty(reference, structs),
         Type::Slice(_) => Err(err(
             ty,
             "slice types are not supported (pass Array<T> or Ptr)",
@@ -2182,8 +2242,7 @@ fn init_array_at(
                 // copy the initialized element over the rest
                 for index in 1..n {
                     let dst = element_at(l, index);
-                    let len = l.b.load_imm(def.size);
-                    l.b.call("mem_copy", &[dst, first, len], 0);
+                    copy_aggregate_words(l, dst, first, def.size);
                 }
                 return Ok(());
             }
@@ -2279,6 +2338,20 @@ fn init_array_at(
     }
 }
 
+// Expose small, fixed value snapshots to normal forwarding/DCE. Keep the same
+// forward word order as mem_copy, including when unsafe source/destination alias.
+fn copy_aggregate_words(l: &mut FnLower, destination: VReg, source: VReg, words: u16) {
+    if l.globals.checked && words <= 4 {
+        for offset in 0..words {
+            let value = l.b.load_mem(source, offset as i16);
+            l.b.store_mem(destination, offset as i16, value);
+        }
+    } else {
+        let length = l.b.load_imm(words);
+        l.b.call("mem_copy", &[destination, source, length], 0);
+    }
+}
+
 /// initialize a struct value at `base`: a struct literal, or a copy of another
 /// value of the same struct type (a struct value is its address, spec §9b)
 fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Result<(), syn::Error> {
@@ -2302,8 +2375,7 @@ fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Resul
             ));
         }
         let src = place_addr(l, src_base, src_offset);
-        let len = l.b.load_imm(def.size);
-        l.b.call("mem_copy", &[base, src, len], 0);
+        copy_aggregate_words(l, base, src, def.size);
         return Ok(());
     };
     if se.path.segments.len() != 1 {
@@ -2530,8 +2602,7 @@ fn init_tuple_at(l: &mut FnLower, base: VReg, elems: &[Ty], init: &Expr) -> Resu
         ));
     }
     let src = place_addr(l, src_base, src_offset);
-    let len = l.b.load_imm(elems.len() as u16);
-    l.b.call("mem_copy", &[base, src, len], 0);
+    copy_aggregate_words(l, base, src, elems.len() as u16);
     Ok(())
 }
 
@@ -2908,6 +2979,12 @@ fn scan_expr(
             scan_expr(&x.right, consts, structs, out)
         }
         Expr::Unary(x) => scan_expr(&x.expr, consts, structs, out),
+        Expr::Reference(reference) => {
+            if let Some(name) = references::resident_name(&reference.expr) {
+                out.insert(name, ResidentKind::Scalar);
+            }
+            scan_expr(&reference.expr, consts, structs, out)
+        }
         Expr::Cast(x) => scan_expr(&x.expr, consts, structs, out),
         Expr::Call(x) => {
             if let Expr::Path(p) = x.func.as_ref() {
@@ -3376,14 +3453,13 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                             ));
                         }
                         let dst = place_addr(l, base, offset);
-                        let len = l.b.load_imm(size);
-                        l.b.call("mem_copy", &[dst, value, len], 0);
+                        copy_aggregate_words(l, dst, value, size);
                         Ok(())
                     });
                 }
             }
-            if let Expr::Field(f) = a.left.as_ref() {
-                let (base, offset, ty, mutable) = struct_field_place(l, f)?;
+            if matches!(a.left.as_ref(), Expr::Field(_)) || references::is_dereference(&a.left) {
+                let (base, offset, ty, mutable) = place_addr_of(l, &a.left)?;
                 if !mutable {
                     return Err(err(
                         &a.left,
@@ -3428,14 +3504,14 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 l.write_var(&kind, &ty, v);
                 return Ok(());
             }
-            let (v, _) = val.reg(l, &a.right, "assignment")?;
-            let (v, _) = coerce(l, v, &ty, &ty, &a.right)?;
+            let (v, from) = val.reg(l, &a.right, "assignment")?;
+            let (v, _) = coerce(l, v, &from, &ty, &a.right)?;
             l.write_var(&kind, &ty, v);
             Ok(())
         }
         Expr::AssignOp(a) => {
-            if let Expr::Field(f) = a.left.as_ref() {
-                let (base, offset, ty, mutable) = struct_field_place(l, f)?;
+            if matches!(a.left.as_ref(), Expr::Field(_)) || references::is_dereference(&a.left) {
+                let (base, offset, ty, mutable) = place_addr_of(l, &a.left)?;
                 if !mutable {
                     return Err(err(
                         &a.left,
@@ -4363,6 +4439,7 @@ fn expr_inner(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             Err(err(&p, format!("undefined name `{name}`")))
         }
         Expr::Unary(u) => match u.op {
+            SUnOp::Deref(_) => references::read(l, &u.expr),
             SUnOp::Neg(_) => {
                 let (v, ty) = expr(l, &u.expr)?.reg(l, &u.expr, "negation")?;
                 if ty.is_fpu() {
@@ -4395,7 +4472,6 @@ fn expr_inner(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     Val::Never => Err(err(&u.op, "`!` does not apply to never")),
                 }
             }
-            _ => Err(err(&u.op, "unsupported unary operator")),
         },
         Expr::Binary(b) => {
             use SBinOp::*;
@@ -4677,7 +4753,10 @@ fn expr_inner(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             control_flow_value(l, e)
         }
         Expr::Unsafe(u) => unsafe_block_value(l, u),
-        Expr::Block(b) => Err(err(&b, "blocks as expressions are not supported")),
+        Expr::Block(b) if l.globals.checked => {
+            if_expr_branch(l, &b.block)
+        }
+        Expr::Block(b) => Err(err(&b, "blocks as expressions require checked compilation")),
         Expr::Tuple(_) => Err(err(
             e,
             "a tuple is memory-resident; bind it with `let (a, b) = ...`, a typed `let`, or return \
@@ -4690,10 +4769,7 @@ fn expr_inner(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         Expr::Closure(_) => Err(err(e, "closures are not supported")),
         Expr::Macro(_) => Err(err(e, "macros are not supported")),
         Expr::Reference(reference) if byte_slices::is_value(l, &reference.expr) => byte_slices::reference(l, reference),
-        Expr::Reference(_) => Err(err(
-            e,
-            "references `&` are not supported (take addresses with addr_of(&x))",
-        )),
+        Expr::Reference(reference) => references::borrow(l, reference),
         _ => Err(err(e, "expression not supported in this subset (see spec)")),
     }
 }
@@ -4704,6 +4780,9 @@ fn expr_inner(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
 fn place_addr_of(l: &mut FnLower, e: &Expr) -> Result<(VReg, i16, Ty, bool), syn::Error> {
     match e {
         Expr::Paren(p) => place_addr_of(l, &p.expr),
+        Expr::Unary(unary) if matches!(unary.op, SUnOp::Deref(_)) => {
+            references::dereference(l, &unary.expr)
+        }
         Expr::Path(_) => {
             let name = path_ident(e)?;
             if let Some(info) = l.lookup(&name) {
@@ -4795,7 +4874,12 @@ fn struct_field_place(
     l: &mut FnLower,
     f: &syn::ExprField,
 ) -> Result<(VReg, i16, Ty, bool), syn::Error> {
-    let (base, offset, base_ty, mutable) = place_addr_of(l, &f.base)?;
+    let (base, offset, base_ty, mutable) =
+        if matches!(peek_type(l, &f.base), Some(Ty::Reference(..))) {
+            references::auto_place(l, &f.base)?
+        } else {
+            place_addr_of(l, &f.base)?
+        };
     // a tuple field is positional: element `i` sits at offset `i` (spec §9c)
     if let Ty::Tuple(elems) = &base_ty {
         let syn::Member::Unnamed(index) = &f.member else {
@@ -4864,6 +4948,9 @@ fn struct_field_place(
 /// value path (an `Array<T>` view *is* a value) and the place path (a raw array is
 /// storage) needs the type before any instructions are emitted
 fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
+    if let Some(ty) = references::peek(l, e) {
+        return Some(ty);
+    }
     match e {
         Expr::Lit(literal) if matches!(literal.lit, Lit::ByteStr(_)) => Some(Ty::ByteSlice),
         Expr::Reference(reference) if byte_slices::is_value(l, &reference.expr) => {
@@ -4873,8 +4960,9 @@ fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
         Expr::Call(call) => {
             let name = path_ident(&call.func).ok()?;
             let ty = &l.sigs.get(&name)?.ret;
-            (matches!(ty, Ty::Enum(_)) || l.globals.checked && matches!(ty, Ty::Struct(_)))
-                .then(|| ty.clone())
+            (matches!(ty, Ty::Enum(_) | Ty::Reference(..))
+                || l.globals.checked && matches!(ty, Ty::Struct(_)))
+            .then(|| ty.clone())
         }
         Expr::Struct(value) if l.globals.checked => {
             let name = value.path.get_ident()?.to_string();
@@ -4912,13 +5000,14 @@ fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
                 .map(|(_, elem, n)| Ty::Array(Box::new(elem.clone()), *n))
         }
         Expr::Field(f) => {
-            let Ty::Struct(name) = peek_type(l, &f.base)? else {
+            let base = peek_type(l, &f.base)?;
+            let Ty::Struct(name) = references::target(&base) else {
                 return None;
             };
             let syn::Member::Named(ident) = &f.member else {
                 return None;
             };
-            let def = l.globals.structs.get(&name)?;
+            let def = l.globals.structs.get(name)?;
             let member = ident.to_string();
             def.fields
                 .iter()
@@ -5043,7 +5132,8 @@ fn control_flow_value(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
     l.b.enter_block(then_b);
 
     // then branch value
-    let (tv, tt) = if_expr_branch(l, &i.then_branch)?;
+    let branch = if_expr_branch(l, &i.then_branch)?;
+    let (tv, tt) = branch_register(l, branch, &i.then_branch)?;
     let r = l.b.new_var_typed_lanes(
         if tt.is_fpu() {
             crate::RegClass::Fpu
@@ -5056,15 +5146,24 @@ fn control_flow_value(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
     l.b.mid_if_else(else_b, join);
 
     // else branch value
-    let else_blk = match else_e.as_ref() {
-        Expr::Block(b) => &b.block,
-        _ => return Err(err(else_e, "if-expression branches must be blocks")),
+    let (ev, et) = match else_e.as_ref() {
+        Expr::Block(b) => {
+            let branch = if_expr_branch(l, &b.block)?;
+            branch_register(l, branch, &b.block)?
+        }
+        Expr::If(_) => expr(l, else_e)?.reg(l, else_e, "else-if value")?,
+        _ => {
+            return Err(err(
+                else_e,
+                "if-expression branches must be blocks or else-if",
+            ))
+        }
     };
-    let (ev, et) = if_expr_branch(l, else_blk)?;
     // integer/FPU branches unify through unify_int; identical non-integer types
     // (bool, Ptr) unify with themselves
     let ty = unify_int(tt.clone(), et.clone())
-        .or_else(|| (tt == et).then(|| tt.clone()))
+        .or_else(|| (tt == et || references::compatible(&et, &tt)).then(|| tt.clone()))
+        .or_else(|| references::compatible(&tt, &et).then(|| et.clone()))
         .ok_or_else(|| {
             err(
                 e,
@@ -5080,23 +5179,49 @@ fn control_flow_value(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
 
     let v = l.b.get(r);
     l.b.set_line_hint(line_of(e));
-    Ok(Val::V(v, ty))
+    Ok(if ty == Ty::Unit {
+        Val::Unit
+    } else {
+        Val::V(v, ty)
+    })
 }
 
-fn if_expr_branch(l: &mut FnLower, blk: &Block) -> Result<(VReg, Ty), syn::Error> {
-    if blk.stmts.len() != 1 {
-        return Err(err(
-            blk,
-            "if-expression branches must be single expressions",
-        ));
+fn branch_register(
+    l: &mut FnLower,
+    value: Val,
+    at: &impl syn::spanned::Spanned,
+) -> Result<(VReg, Ty), syn::Error> {
+    match value {
+        Val::Unit => Ok((l.b.load_imm(0), Ty::Unit)),
+        value => value.reg(l, at, "branch value"),
     }
-    match &blk.stmts[0] {
-        Stmt::Expr(e) | Stmt::Semi(e, _) => {
-            l.b.set_line_hint(line_of(e));
-            expr(l, e)?.reg(l, e, "if-expression")
+}
+
+fn if_expr_branch(l: &mut FnLower, blk: &Block) -> Result<Val, syn::Error> {
+    l.scopes.push(HashMap::new());
+    l.scope_ends.push(end_line_of(blk));
+    let result = (|| {
+        let (statements, tail) = match blk.stmts.split_last() {
+            Some((Stmt::Expr(tail), statements)) => (statements, Some(tail)),
+            _ => (blk.stmts.as_slice(), None),
+        };
+        for statement in statements {
+            stmt(l, statement)?;
+            if l.dead {
+                return Err(err(statement, "value block exits before its tail"));
+            }
         }
-        s => Err(err(s, "if-expression branches must be expressions")),
-    }
+        match tail {
+            Some(tail) => {
+                l.b.set_line_hint(line_of(tail));
+                expr(l, tail)
+            }
+            None => Ok(Val::Unit),
+        }
+    })();
+    l.scope_ends.pop();
+    l.scopes.pop();
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -6688,7 +6813,11 @@ fn coerce(
     to: &Ty,
     at: &Expr,
 ) -> Result<(VReg, Ty), syn::Error> {
-    if from == to || *from == Ty::Never || (*from == Ty::UntypedInt && to.is_int()) {
+    if from == to
+        || references::compatible(from, to)
+        || *from == Ty::Never
+        || (*from == Ty::UntypedInt && to.is_int())
+    {
         Ok((v, to.clone()))
     } else {
         Err(err(
@@ -6935,7 +7064,7 @@ fn check_call_args(
         ));
     }
     for (i, (p, a)) in params.iter().zip(args).enumerate() {
-        let ok = p == a || (*a == Ty::UntypedInt && p.is_int());
+        let ok = p == a || references::compatible(a, p) || (*a == Ty::UntypedInt && p.is_int());
         if !ok {
             return Err(err(
                 call,

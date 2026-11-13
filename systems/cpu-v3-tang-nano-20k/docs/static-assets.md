@@ -36,6 +36,17 @@ and `UiAtlas::from_native` remain available.
 
 ## Placement and units
 
+Checked whole-program builds omit unreferenced static data, asset payloads and
+working buffers before physical allocation. Original declarations are still
+validated. References through descriptions, methods, cleanup and producer sector
+relocations retain their dependencies. Collection is conservative, especially for
+unresolved receiver types; importing a library does not by itself retain all its
+storage. Omitted payloads remain available to validate producer relocation metadata,
+but generate no COPY/ZERO records. Source edits can therefore move later assets;
+always consume generated descriptions rather than retaining old addresses.
+Explicit boot-project COPY/ZERO records remain roots: literal physical addresses
+do not establish an automatic dependency on a compiler-placed declaration.
+
 | Declaration | Storage | Address interpretation |
 | --- | --- | --- |
 | Ordinary struct/scalar static | CPU static arena | Existing 16-bit logical word address |
@@ -255,3 +266,66 @@ Keep the code, static-data file, word count and resources from the same build.
 Malformed extents fail. Older exports without static data keep ZERO-prefix and
 startup-store behavior. Ordinary resource COPY still cannot write the protected
 CPU static arena. CB06 and hardware loader semantics are unchanged.
+
+## Source geometry and producer manifests
+
+The ordinary application builder invokes `tools/asset_producer.py`, which supplies
+the SDK import directory and the producer's own directory. Application producers
+use normal imports, without discovering the repository through parent counts or
+editing `sys.path`. For a standalone producer run from the repository root:
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/tools/asset_producer.py systems/cpu-v3-tang-nano-20k/examples/hello_gpu/tools/assets.py --output target/hello-assets
+```
+
+`native_asset_source.Sources.geometry` accepts `Vertex` values and triangle indices.
+Positions are source-world numbers, normals are normalized by the producer, UVs
+are normalized values in 0..1, and optional RGB colors are integer bytes. All
+vertices in one mesh use the same UV/RGB mode. The producer preserves triangle
+order while partitioning at 64 vertices or 96 triangles per meshlet, chooses each
+record's Q16.16 origin/binary step, and calls the existing native record encoder.
+It creates the aligned directory, payload and sector relocation placeholders.
+`PositionEncoding(origin, shift)` optionally preserves an explicit native layout;
+ordinary callers use automatic quantization.
+
+```python
+from native_asset_source import Sources, Vertex
+
+assets = Sources(output)
+assets.font('FONT', 'HELLO')
+assets.geometry('TRIANGLE', [
+    Vertex((-1, -1, 0), color=(255, 0, 0)),
+    Vertex((1, -1, 0), color=(0, 255, 0)),
+    Vertex((0, 1, 0), color=(0, 0, 255)),
+], [[0, 1, 2]])
+assets.write_manifest('assets.rs', sources=[__file__])
+```
+
+`font` selects the project base atlas and tracks its source/data files.
+`write_manifest` publishes declarations and `assets.json`, automatically including
+SDK encoder dependencies; pass additional producer/helper files with `sources`.
+Existing `atlas`, `texture`, native `mesh` and `write` interfaces remain available
+for producers that already own encoded data or custom font/icon composition.
+There is no runtime mesh builder or additional renderer allocation.
+
+## Source images and mipmaps
+
+`Sources.texture_pixels(symbol, size, pixels, pixel_format='Rgb565',
+mipmaps=False, color_space='srgb')` accepts row-major RGB8/RGBA8 tuples. Size is
+a square power of two from 1 to 1024. `Sources.image(symbol, path, ...)` decodes
+an image with Pillow and tracks the input file; Pillow is needed only for image
+decoding. Image assets belong within the producer's repository source tree for
+manifest hashing. No implicit resizing or alpha removal occurs: use `Rgba4444`
+for nonopaque pixels.
+
+The default is a base-only texture. With `mipmaps=True`, all levels down to 1×1
+are generated from unquantized linear, premultiplied-alpha intermediates. Final
+levels are converted back to the source encoding, quantized to RGB565/RGBA4444
+and passed to the existing native encoder. This preserves its smallest-first
+order and padded mip tails. `color_space` describes source pixels and mip
+filtering (`srgb` or `linear`), not a new GPU texture flag.
+
+```python
+assets.image('WALL', Path(__file__).with_name('wall.png'), mipmaps=True)
+assets.texture_pixels('ICON', 2, rgba_pixels, 'Rgba4444', mipmaps=True)
+```

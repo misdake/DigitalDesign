@@ -3,6 +3,8 @@
 mod boot;
 #[path = "platform/cache_maintenance_wiring.rs"]
 mod cache_maintenance_wiring;
+#[path = "../support/checked_flat_fixture.rs"]
+mod checked_flat_fixture;
 #[path = "input/dualshock2_ui.rs"]
 mod dualshock2_ui;
 #[path = "platform/fetch_pause.rs"]

@@ -83,6 +83,11 @@ impl Inputs {
         }
     }
     pub fn module(&mut self, name: &str, source: &ModuleSource) {
+        let name = if source.namespace == rcc::frontend::ModuleNamespace::Flat {
+            name.rsplit('/').next().unwrap_or(name)
+        } else {
+            name
+        };
         if let Some(path) = &source.origin {
             self.watch(path);
             let origin = &self.files[&path.canonicalize().unwrap()];
@@ -117,6 +122,7 @@ impl Inputs {
             self.module(
                 name,
                 &ModuleSource {
+                    namespace: rcc::frontend::ModuleNamespace::Scoped,
                     source: (*source).to_owned(),
                     origin: None,
                 },

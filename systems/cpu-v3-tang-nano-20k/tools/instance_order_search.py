@@ -233,7 +233,10 @@ def metrics(project):
     report = project / "impl/pnr" / (OUTPUT + ".rpt.txt")
     if report.exists():
         text = report.read_text()
-        out["area"] = {name: int(re.search(r"^\s+" + name + r"\s+\|\s+(\d+)/", text, re.M)[1]) for name in ("Logic", "Register", "BSRAM", "DSP")}
+        out["area"] = {}
+        for name in ("Logic", "Register", "BSRAM", "DSP"):
+            amount = float(re.search(r"^\s+" + name + r"\s+\|\s+(\d+(?:\.\d+)?)/", text, re.M)[1])
+            out["area"][name] = int(amount) if amount.is_integer() else amount
         match = re.search(r"\((\d+) LUT, (\d+) ALU", text)
         out["area"].update(LUT=int(match[1]), ALU=int(match[2]))
         match = re.search(r"Total Time and Memory Usage:.*Elapsed time = (\d+)h (\d+)m ([\d.]+)s, Peak memory usage = (\d+)MB", text)

@@ -54,6 +54,22 @@ than copying historical SPI rates. Cycle durations stretch by 12/11 relative to
 
 ## Explicit setup and hold uncertainty are total allowances
 
+The stream binding keeps the physical PLL and generated clocks at 54/108 MHz,
+with setup guards equivalent to full-cycle budgets at 55/110 MHz. Its explicit
+totals include the existing 35 ps allowance:
+
+| Capture clock | Setup uncertainty | Hold uncertainty |
+| --- | ---: | ---: |
+| `cpu_clk` | 0.371700 ns | 0.035 ns |
+| `controller_clk` | 0.203350 ns | 0.035 ns |
+
+The source collection is `{controller_clk cpu_clk sdram_clk}`. The setup guard
+is the physical-period minus target-period difference, plus 0.035 ns; it also
+applies conservatively to cross-clock paths ending in that capture domain.
+SDRAM-referenced output setup, external IO delays, source latency and independent
+pixel clocks retain their existing constraints. This is a PnR engineering
+budget, not a PLL frequency change or a guarantee of board stability.
+
 A retained Gowin V1.9.11.03 probe reported automatic `tUnc` magnitudes of
 0.035 ns on its related-clock paths. With explicit values, setup changed from
 `-0.035` to `-0.200` ns and hold from `+0.035` to `+0.100` ns. In that tested

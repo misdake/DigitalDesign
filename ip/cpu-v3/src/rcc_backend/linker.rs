@@ -296,7 +296,12 @@ pub(super) fn link_segment(
                 address += line.size();
             }
         }
-        listing.push_str(&format!("{} @ {start:#06x}\n", function.name));
+        let display_name = frontend_debug
+            .symbol_names
+            .get(function.name)
+            .map(String::as_str)
+            .unwrap_or(function.name);
+        listing.push_str(&format!("{} @ {start:#06x}\n", display_name));
         for line in &function.lines {
             if let Line::Label(_) = line {
                 continue;
@@ -400,7 +405,7 @@ pub(super) fn link_segment(
             words.push(cpu_v3::halt());
         }
         debug_functions.push(rcc::DebugFunc {
-            name: function.name.to_string(),
+            name: display_name.to_owned(),
             file,
             addr: (start, end),
             frame_size: function.frame_size,
@@ -464,7 +469,16 @@ pub(super) fn link_segment(
             function_table: vec![],
             init_sections: vec![],
             functions: debug_functions,
-            globals: frontend_debug.globals,
+            globals: frontend_debug
+                .globals
+                .into_iter()
+                .map(|mut v| {
+                    if let Some(name) = frontend_debug.symbol_names.get(&v.name) {
+                        v.name = name.clone();
+                    }
+                    v
+                })
+                .collect(),
             types: frontend_debug.types,
             consts: frontend_debug.consts,
             lines: debug_lines,

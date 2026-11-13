@@ -1,11 +1,9 @@
 //! Actual GPU geometry: fixed nonuniform matrices beside a live rotating TRS model.
 use crate::dsl_rt::*;
 mod gpu_api;
+use crate::common::state::*;
+use crate::common::ui::*;
 use gpu_api::*;
-mod state;
-use state::*;
-mod ui;
-use ui::*;
 mod boot_resources;
 use boot_resources::*;
 
@@ -20,7 +18,7 @@ pub const FIXED_WORLD: Mat3x4 = FIXED_POSE.world_matrix();
 pub const FIXED_NORMAL: Mat3x3 = FIXED_POSE.normal_matrix();
 pub const GEOMETRY_PROJECTION: Projection = Projection::from_focal_pixels(fix!(200), fix!(199));
 
-fn geometry_update(model: &mut Model, camera: &mut Camera, state: DemoState) {
+fn geometry_update(model: &mut Model, camera: &mut Camera, state: AnimationState) {
     let angle = animation_phase(state);
     model.set_pose(
         Transform::translation(Vec3::new(fix!(-1.4), fix!(0), fix!(-4.5)))
@@ -32,8 +30,8 @@ fn geometry_update(model: &mut Model, camera: &mut Camera, state: DemoState) {
         fix!(199),
     ));
 }
-fn geometry_labels(grid: &mut UiGrid, state: DemoState) {
-    page_start(grid, state, b"GEOMETRY");
+fn geometry_labels(grid: &mut UiGrid, state: AnimationState) {
+    page_start(grid, PageId::Geometry, state.paused, b"GEOMETRY");
     text(grid, 10, 12, b"STATIC");
     text(grid, 30, 12, b"ROTATING");
 }
@@ -78,7 +76,7 @@ impl GeometryPage {
             render_state: render_state,
         }
     }
-    pub fn prepare(&mut self, grid: &mut UiGrid, state: DemoState) {
+    pub fn prepare(&mut self, grid: &mut UiGrid, state: AnimationState) {
         geometry_update(&mut self.rotating, &mut self.camera, state);
         geometry_labels(grid, state);
     }

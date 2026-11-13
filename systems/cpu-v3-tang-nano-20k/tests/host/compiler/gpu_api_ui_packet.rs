@@ -1,6 +1,6 @@
 //! UI recording bytes and staging lifetimes; no glyph or pixel rendering here.
 use cpu_v3::{rcc_backend, CpuV3Sim, RunOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 const SOURCE: &str = r#"mod gpu_ui_packet;mod gpu_mesh;
@@ -24,18 +24,18 @@ fn main(){gpu_record_init();check(gpu_record_configure(0,0x9800,4,0x9a00,16));
  let desc:MeshDesc=MeshDesc{directory_sector:0xa000,directory_word:0,meshlet_count:1,storage:memory};
  check(gpu_mesh_init(MESH.as_array(),desc));WORD[0u16]=0xa002;WORD[1u16]=1;
  check(gpu_window_write_words(0xa000,0,WORD.as_array(),2));check(gpu_mesh_draw(0,MESH.as_array(),native));
- check(c[GPU_RECORD_COMMAND_USED]==54&&c[GPU_RECORD_UI_CLEAN]==0&&c[GPU_RECORD_VALID]&32!=0);
- check(gpu_ui_packet_draw(0,DESC.as_array(),5,11,2,1));check(c[GPU_RECORD_COMMAND_USED]==60&&c[GPU_RECORD_PUSH_USED]==192);
+ check(c[GPU_RECORD_COMMAND_USED]==50&&c[GPU_RECORD_UI_CLEAN]==0&&c[GPU_RECORD_VALID]&32!=0);
+ check(gpu_ui_packet_draw(0,DESC.as_array(),5,11,2,1));check(c[GPU_RECORD_COMMAND_USED]==56&&c[GPU_RECORD_PUSH_USED]==192);
  check(gpu_record_close_pass(0));check(gpu_packet_begin(0,0x8800,0x9000,0,0,0));
  check(c[GPU_RECORD_VALID]&32==0&&c[GPU_RECORD_UI_WORD]==17);
- check(gpu_ui_packet_draw(0,DESC.as_array(),0,0,50,15));check(c[GPU_RECORD_COMMAND_USED]==84&&c[GPU_RECORD_PUSH_USED]==208);
+ check(gpu_ui_packet_draw(0,DESC.as_array(),0,0,50,15));check(c[GPU_RECORD_COMMAND_USED]==80&&c[GPU_RECORD_PUSH_USED]==208);
  DESC[0u16]=0xb006;check(gpu_ui_packet_draw(0,DESC.as_array(),49,14,1,1));
- check(c[GPU_RECORD_COMMAND_USED]==90&&c[GPU_RECORD_PUSH_USED]==224&&c[GPU_RECORD_UI_WORD]==209);
+ check(c[GPU_RECORD_COMMAND_USED]==86&&c[GPU_RECORD_PUSH_USED]==224&&c[GPU_RECORD_UI_WORD]==209);
  c[GPU_RECORD_COMMAND_USED]=250;DESC[0u16]=0xb00c;check(!gpu_ui_packet_draw(0,DESC.as_array(),0,0,50,15));
  check(c[GPU_RECORD_COMMAND_USED]==250&&c[GPU_RECORD_PUSH_USED]==224&&c[GPU_CB_UI]==0xb006);
  check(gpu_window_read_words(0x9800,250,WORD.as_array(),1));check(WORD[0u16]==0);
- c[GPU_RECORD_COMMAND_USED]=90;check(gpu_record_close_pass(0));check(gpu_record_seal(0));
- check(c[GPU_RECORD_COMMAND_USED]==96&&c[GPU_RECORD_PADDED]==128);halt(0x600d);}"#;
+ c[GPU_RECORD_COMMAND_USED]=86;check(gpu_record_close_pass(0));check(gpu_record_seal(0));
+ check(c[GPU_RECORD_COMMAND_USED]==92&&c[GPU_RECORD_PADDED]==128);halt(0x600d);}"#;
 fn dma(word: u32, local: u32, size: u32) -> u32 {
     0x10000000 | (((0x9a00u32 * 128 + word * 2) / 32) << 10) | (local << 3) | (size << 1)
 }
@@ -55,7 +55,7 @@ fn ui_ranges_reuse_descriptor_and_preserve_binding_staging_lifetimes() {
     for enabled in [false, true] {
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;
-        let parsed = compile_program_named_checked(
+        let parsed = crate::checked_flat_fixture::compile(
             "ui-packet",
             SOURCE,
             &options,
@@ -68,10 +68,11 @@ fn ui_ranges_reuse_descriptor_and_preserve_binding_staging_lifetimes() {
         let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&program.words);
-        assert!(matches!(
-            cpu.run(1_000_000).unwrap(),
-            RunOutcome::Halted { signal: 0x600d, .. }
-        ));
+        let outcome = cpu.run(1_000_000).unwrap();
+        assert!(
+            matches!(outcome, RunOutcome::Halted { signal: 0x600d, .. }),
+            "{outcome:?}"
+        );
         let code = [
             0x40000003,
             0x70000000,
@@ -86,17 +87,16 @@ fn ui_ranges_reuse_descriptor_and_preserve_binding_staging_lifetimes() {
             range(102, 105),
             range(210, 215),
             0x40000003,
-            dma(32, 66, 1),
+            dma(64, 66, 1),
             0x40000001,
             0x50000042,
-            dma(64, 68, 0),
+            dma(96, 68, 0),
             0x40000001,
             0x60000044,
             dma(128, 80, 2),
             0x40000001,
             range(300, 302),
-            dma(128, 80, 2),
-            0x40000001,
+            // UI preserves the already resident Instance binding.
             0x2a002000,
             0x40000001,
             0x30000000,
@@ -126,7 +126,7 @@ fn ui_ranges_reuse_descriptor_and_preserve_binding_staging_lifetimes() {
             .iter()
             .flat_map(|w| [*w as u16, (*w >> 16) as u16])
             .collect::<Vec<_>>();
-        assert_eq!(expected.len(), 96);
+        assert_eq!(expected.len(), 92);
         expected.resize(128, 0);
         let memory = cpu.physical_memory_mut();
         let base = 0x9800 * 64;

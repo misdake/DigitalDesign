@@ -3,6 +3,30 @@ use cpu_v3_tools::applications::asset_metadata::SectorRelocation;
 use rcc::frontend::static_assets::StaticAsset;
 use std::collections::{HashMap, HashSet};
 
+pub fn apply_retained(
+    assets: &mut [StaticAsset],
+    discarded: &[StaticAsset],
+    records: &[SectorRelocation],
+) -> Result<(), String> {
+    let retained: HashSet<_> = assets.iter().map(|a| a.name.as_str()).collect();
+    let omitted: HashSet<_> = discarded.iter().map(|a| a.name.as_str()).collect();
+    for record in records {
+        if retained.contains(record.asset.as_str()) && omitted.contains(record.target.as_str()) {
+            return Err(format!(
+                "live asset {} references discarded {}",
+                record.asset, record.target
+            ));
+        }
+    }
+    let mut complete = assets.to_vec();
+    complete.extend_from_slice(discarded);
+    apply(&mut complete, records)?;
+    for (asset, patched) in assets.iter_mut().zip(complete) {
+        asset.data = patched.data;
+    }
+    Ok(())
+}
+
 pub fn apply(assets: &mut [StaticAsset], records: &[SectorRelocation]) -> Result<(), String> {
     let symbols: HashMap<_, _> = assets
         .iter()
@@ -113,5 +137,28 @@ mod tests {
             );
             assert!(assets[0].data.iter().all(|&v| v == 0));
         }
+    }
+
+    #[test]
+    fn discarded_payloads_validate_but_cannot_satisfy_live_pointers() {
+        let record = SectorRelocation {
+            asset: "DEAD".into(),
+            target: "DEAD".into(),
+            offset: 0,
+            addend: 128,
+        };
+        let mut live = vec![asset("LIVE", 0x100000)];
+        let dead = vec![asset("DEAD", 0)];
+        apply_retained(&mut live, &dead, std::slice::from_ref(&record)).unwrap();
+        let invalid = SectorRelocation {
+            offset: 1,
+            ..record.clone()
+        };
+        assert!(apply_retained(&mut live, &dead, &[invalid]).is_err());
+        let live_to_dead = SectorRelocation {
+            asset: "LIVE".into(),
+            ..record
+        };
+        assert!(apply_retained(&mut live, &dead, &[live_to_dead]).is_err());
     }
 }

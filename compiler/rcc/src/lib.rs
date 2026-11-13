@@ -27,6 +27,10 @@ pub trait RccConfig {
     fn asset_banks(&self) -> &[frontend::static_assets::AssetBank] {
         &[]
     }
+    /// External pointer edges supplied by the asset producer, before placement.
+    fn asset_dependencies(&self) -> &[(String, String)] {
+        &[]
+    }
     fn static_data_limit(&self) -> usize {
         1 << 16
     }
