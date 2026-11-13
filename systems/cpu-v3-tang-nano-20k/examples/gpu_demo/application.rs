@@ -1,7 +1,5 @@
 //! Demo owns both legacy layouts and the ordinary public-API scene.
-use crate::applications::{
-    Assets, CapturePolicy, Definition, ResourceNames, DEFAULT, RENDERER_ASSETS,
-};
+use crate::applications::{Assets, Definition, ResourceNames, DEFAULT, RENDERER_ASSETS};
 const DEMO: Definition = Definition {
     name: "demo",
     selection: Some("gpu_demo"),
@@ -31,7 +29,6 @@ pub const APPLICATIONS: &[Definition] = &[
         selection: Some("gpu_demo_rgba4444"),
         source: Some("examples/gpu_demo/rcc/rgba_main.rs"),
         gpu_api: true,
-        capture: CapturePolicy::Disabled,
         owner: "examples/gpu_demo/application.rs",
         assets: Some(Assets {
             script: "examples/gpu_demo/tools/rgba_assets.py",
@@ -58,7 +55,6 @@ pub const APPLICATIONS: &[Definition] = &[
         selection: Some("gpu_demo_api_column16"),
         source: Some("examples/gpu_demo/rcc/public_main.rs"),
         gpu_api: true,
-        capture: CapturePolicy::Disabled,
         owner: "examples/gpu_demo/application.rs",
         assets: Some(Assets {
             script: "examples/gpu_demo/tools/public_assets.py",

@@ -281,7 +281,7 @@ neither endpoint saturated at65535. Finalized preparation survives later clears;
 fields are never combined across different sequences. Millisecond differences
 wrap modulo65536 and require a true interval below65536ms.
 
-An optional [capture gate](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md)
+An optional [capture gate](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#archived-snapshots)
 holds published input before either SEND. After explicit resume, debug_paused
 marks submit/queue/span as invalid (zero), and time/input baselines are reset.
 The next uninterrupted submission restores ordinary observations.

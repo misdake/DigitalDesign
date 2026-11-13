@@ -8,8 +8,8 @@ last-verified: 2026-11-12
 
 The approved `gpu_api` root connects resource preparation, recording, submission,
 retirement and Display to the CPU V3 storage core. Prepared scene adapters call
-`gpu_scene_*` and `gpu_ui_grid`; capture calls the separate explicit-record C
-implementation. The retired renderer is available only in explicit test-owned fixtures; no production
+`gpu_scene_*` and `gpu_ui_grid`; offline profiling observes the recorded inputs;
+The retired renderer is available only in explicit test-owned fixtures; no production
 loader or boot project selects it.
 Native commands, vertex arithmetic and hardware precision are unchanged.
 
@@ -45,7 +45,7 @@ mutable driver state. `gpu_config` remains a private helper of the approved
 `gpu_api` root; its raw initialization/take/drop functions are not application APIs.
 The System `compile_explicit_gpu_program_checked` host entry selects only this
 root and the fixed column layout. It reads the canonical shared source directory
-directly, retaining actual file origins, dependency tracking, capture validation
+directly, retaining actual file origins, dependency tracking, resource validation
 and the rustc check. Local overrides gain no approved-library identity. Legacy renderer entry points
 still approve only `gpu_pipeline`; approving both requires loading both domains
 and is incompatible with their distinct resource definitions.
@@ -149,7 +149,7 @@ reject part-bearing streams. No mutable Instance patch API is exposed.
 recordings, retaining all other templates and snapshots. `clear_prepared_group()`
 clears the bank and resets the CB, retaining the reserved partitions. Reset/clear
 advance the ordinary binding generation, invalidating old TargetBinding and
-SceneBinding values. Slot/context ownership, scalar publication, capture leases,
+SceneBinding values. Slot/context ownership, scalar publication, execution ownership,
 submit and wait remain unchanged. Templates, metadata and push snapshots cannot
 change while the GPU owns the CB.
 
@@ -284,7 +284,7 @@ payload are written before committing their color/depth allocation facts and
 record addresses. A transport failure can leave partial bytes and poisons the CB;
 it never commits replacement facts or permits submission. Camera/model/material
 payloads, command words and native opcodes stay fixed. Ordinary submission still
-publishes stores and validates capture leases.
+publishes stores and checks execution ownership.
 
 The original 208-word fields retain their offsets. Non-UI streams use inactive UI-cache
 words128..131 for copy payload offset-plus-one, source, destination and count.
@@ -488,7 +488,7 @@ preserves valid/padded counts. A tail straddling fetch sectors uses at most two
 Reset clears metadata, desired values and cache snapshots, retaining configured
 extents; it does not clear external command/push storage.
 
-`GPU_CB_CAPTURE_FACTS` holds two separate 64-entry directories, 256 words per
+`GPU_CB_RESOURCE_FACTS` holds two separate 64-entry directories, 256 words per
 CB and 1,024 bytes total. Each four-word fact is `{first_sector,
 allocation_sectors, kind, access}`. Kind1..7 means Mesh, Texture, Atlas, Grid,
 Color, Depth, Buffer; access bit0 declares reads and bit1 declares writes.
@@ -512,7 +512,7 @@ Empty mesh subsets and empty UI rectangles record no facts or commands.
 C reads these facts as bounds and decodes the ordered native stream for actual
 accesses and every Target/Load/Clear. The last target pair is not the complete
 target set. Allocation tails are read/preimage data, never framebuffer writes
-or full-clear regions. The final capture range directory has its own capacity.
+or full-clear regions.
 
 The device layer and affine public ownership must prevent access while a record
 is held for submission or execution. This CPU core does not SEND, publish, poll
@@ -520,62 +520,18 @@ completion, or transfer public ownership.
 
 ## Device4 execution handoff
 
-`gpu_execute` owns one 16-word driver record. Its first six words are phase,
-owned slot plus one, prepared first sector, prepared instruction count minus
-one, expected restored DSEG3 mapping, and first error code. Phases are idle=1,
-held=2, prepared=3, running=4 and fault=5. Zero means uninitialized. The owner
-field independently represents slot zero correctly.
-Words6/7 hold configuration handout state. Words8..13 snapshot command capacity,
-padded words, push base/capacity/used words and fact count for the prepared lease.
+`gpu_execute` owns one eight-word driver record: phase, owned slot plus one,
+command first sector, instruction count minus one, expected DSEG3, first error,
+and configuration handout state. Phases are idle=1, held=2, running=4 and fault=5.
+Zero means uninitialized. Ownership is acquired before sealing and retained on
+failure. Submission checks Device4 idle/error status, seals the recording,
+validates its command count and restored DSEG3, then publishes CPU cache stores.
+It marks running before the sole COUNT/START pair. Poll retains ownership while
+busy and on errors; only normal completion returns the slot once.
 
-Both immediate submission and capture preparation share one checked publication
-operation. It takes ownership before sealing or publishing. It seals the record,
-checks the restored window and Device4 idle/error status, and blocks on CPU
-cache publication. An immediate submission then marks running and sends COUNT
-and START directly, without creating a mutable lease or repeating the same
-metadata/status checks. Capture preparation instead snapshots the sealed
-capacities and fact count and leaves the driver prepared without starting GPU
-execution. The capture-owned hook attaches after this boundary and before start;
-the module does not implement a second hook or import the old driver.
-
-Start checks the same prepared slot/base/count, sealed capacities, padding,
-push bounds, fact count and window mapping.
-Diagnostic resume may request another publication. The driver marks running
-before sending COUNT then START, exactly once. There is no ACK/token protocol.
-Poll keeps ownership while busy; an error wins even with busy clear. Only a
-normal running-to-idle transition returns slot plus one and clears ownership.
-Later polls return zero. Internal fault returns 65535 and retains the owner;
-these status sentinels are not public API return values. First error is sticky.
-Initialization is an explicit caller-owned context boundary, not recovery from
-an in-flight/faulted context or an implicit wait.
-
-The public `Gpu::try_wait` wraps normal retirement in `Option<CommandBuffer>`;
-no current owner or unfinished work yields None, while an actual fault fail-stops
-rather than masquerading as None. `Gpu::wait` rejects a nonrunning context and
-otherwise polls until the same sole CB retires. Both submission entries move
-and disarm the application owner and use the same prepare/seal/publication,
-START and retirement driver. `Gpu::submit` is ordinary: it never builds capture
-source/ranges, enters a gate, or consumes a pending request.
-
-`Gpu::submit_capturable` behaves identically while unarmed. `request_snapshot`
-arms one pending request when capture is configured. `poll_snapshot`, ordinary
-submission and wait polling also collect the existing debounced pause-button
-edge. The first poll after context initialization establishes a held-button
-baseline; a held input does not arm repeatedly. Only an armed eligible submission
-selects and consumes the request before preparation, then snapshots source12 and enters C's
-begin/gate before either target SEND. An explicit diagnostic request uses the
-same path without a physical press. On entry the default runtime consumes the
-already-recorded pause request and resets its input baseline, so a held pause
-or old resume edge cannot resume the frozen lease. Resume requires a fresh
-debounced edge and republishes before the same START. These polls are not
-interrupts and cannot observe a press entirely between polls.
-
-One pending-request word replaces no execution owner or scheduler. The existing
-two-word submission counter advances once after every successful real START,
-including ordinary and unarmed eligible submissions. A capture header contains
-the prospective next value; lease finalization clears only lease/cache state
-and never overwrites that counter from an old header. A failed begin/gate retains
-the driver owner and capture error lease, emits no SEND and fail-stops.
+`Gpu::submit` consumes and disarms the application CB owner. `try_wait` returns
+`Option<CommandBuffer>`; `wait` requires a running owner and waits for retirement.
+Faults fail-stop. There is no pause gate or board snapshot producer in this path.
 
 `Display::try_wait_swap` performs one coherent presentation poll. Pending or a
 torn observation returns false; stable idle or an applied swap whose old reads
@@ -590,35 +546,6 @@ CONTROL value of 1 and revalidate the complete snapshot after waking, including
 target, format and old-read retirement. A no-pending wait watches FrameIndex;
 changes before arm are observed without requiring another vblank. This adds no
 GPU wait and does not turn a frame-counter change alone into swap completion.
-
-```mermaid
-flowchart LR
-  CB[Application CB owner] -->|move / disarm| P[prepare and publication]
-  P -->|source12 and facts4| C[C begin and diagnostic gate]
-  C -->|Continue or Resumed| S[start: COUNT then START]
-  S --> T[C submitted: close lease]
-  T --> W[poll: retain while busy]
-  W -->|one successful retirement| R[return CB owner]
-```
-
-The explicit loader selects `gpu_capture_access` as three read-only exports from
-`gpu_api`. The legacy loader retains its original `gpu_pipeline` access. No
-application-string test or dependency-closure trust chooses between them.
-Capture-off uses C's actual disabled behavior, not another submission path.
-The capture parser consumes ordered maintenance, Target, Clear/Load, Draw, UI
-and native MEMCPY operations. It derives dynamic reads and preimages within the
-recorded allocation facts; malformed or unsupported dependencies fail before SEND.
-The capture format and short-atlas certification are defined in [GPU capture](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md).
-
-`gpu_execute_capture_source(slot, out)` succeeds only for a healthy prepared
-owner. Its twelve words are version1, slot0/1, command sector/capacity/valid/
-padded words, push sector/capacity/used words, fact count, native ABI4 and layout
-ABI2. All lengths are CPU words; a full64-KiB extent is 32,768 words. Failure
-does not write the output. `gpu_record_capture_facts(slot)` provides the stable
-read-only `fact_count*4` span. Consumers copy temporary source fields instead of
-keeping a stack pointer and retain no A directory pointer after submitted.
-`gpu_execute_capture_health(slot)` returns0 for the same prepared identity and
-idle/error-free GPU, nonzero otherwise, without state mutation or retirement.
 
 ## Display handoff
 
@@ -644,12 +571,6 @@ Without an owned request, wait observes the next frame-index change, including
 16-bit wrap, and a stable nonpending snapshot. Display does not inspect Device4,
 wait for GPU, reserve a color pool, or make a buffer writable automatically.
 Failures retain local pending information for fail-stop diagnostics.
-
-`gpu_present_capture_state(out4)` only observes: 0 means not opened and does not
-access Device3 or the output;1 means retry;2 writes a stable `{pending,
-active_word_low, active_word_high, format}`;65535 reports an existing driver or
-hardware error. It does not open, wait, clear errors or infer completion from a
-frame index. The address pair is in physical CPU words, not bytes.
 
 ## Native Target and Load prefix
 
@@ -754,7 +675,7 @@ flowchart LR
     UI["UI descriptor + cell ranges"] --> Stored
     Stored --> Seal["One-time terminal fence if needed / END / padding"]
     Seal --> Publish["execute_prepare: ownership + publication"]
-    Publish --> PreparedOwner["Prepared driver owner / capture hook boundary"]
+    Publish --> Start["COUNT / START"]
     PreparedOwner --> Send["execute_start: COUNT then START"]
     Send --> Poll["Normal idle retires once; faults retain owner"]
 ```
@@ -825,7 +746,7 @@ profiles. It verifies public UART failure before any GPU SEND, rejects raw
 resource/helper access, missing unsafe calls and private-extent-field
 construction. The checked field-privacy gate is included in the ordinary suite.
 
-`host/gpu_api_capture_source.rs` executes A allocation-fact preflight/commit,
+`host/compiler/gpu_api_facts.rs` executes A allocation-fact preflight/commit,
 source12/health and optional Display observation without a C shim. Its bounded
 peers verify unchanged failure output, group deduplication/capacity, reset
 isolation and initial/resume publication counts. Approved-root target tests

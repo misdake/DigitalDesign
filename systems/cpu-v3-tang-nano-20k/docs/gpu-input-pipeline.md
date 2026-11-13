@@ -104,7 +104,7 @@ legal overlap, not a guaranteed frame/vblank latency. A private Prepared hold
 must not run this scheduler recursively; ordinary submission immediately starts
 the prepared input. Display retirement can continue independently of CPU polling.
 
-The optional [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md)
+The optional [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#archived-snapshots)
 passes a versioned descriptor to an explicitly selected synchronous consumer at
 that Prepared boundary. The consumer never advances this scheduler; its successful
 dump still waits for explicit resume. Ordinary applications use the no-op gate.

@@ -13,19 +13,11 @@ impl SourcePatch for str {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum CaptureProbe {
-    Objects,
-    Mesh,
-}
-
 pub(super) struct ApplicationCase {
     pub entry: &'static str,
     pub edit: Box<dyn FnOnce(String) -> String>,
     pub atlas: Option<(u16, u16)>,
     pub assets_from_sources: bool,
-    pub capture: Option<CaptureProbe>,
-    pub hook: bool,
     pub observe_pose: bool,
     pub automatic_inline: Option<bool>,
     pub edit_modules: Option<fn(&Path, &Path)>,
@@ -37,8 +29,6 @@ impl Default for ApplicationCase {
             edit: Box::new(|source| source),
             atlas: None,
             assets_from_sources: false,
-            capture: None,
-            hook: false,
             observe_pose: true,
             automatic_inline: None,
             edit_modules: None,
@@ -159,41 +149,6 @@ pub(super) fn application_case(
         options.inline.automatic = enabled;
     }
     let mut dependencies = vec![];
-    let profile = resolver::capture_profile::ColumnLayout;
-    let capture = if case.capture.is_some() {
-        let gate = out.join("capture-gate.rs");
-        std::fs::write(
-            &gate,
-            r#"use crate::dsl_rt::*;mod gpu_api;use gpu_api::*;
-pub fn profiler_gate(d:Array<u16>)->u16 {
- signal(5,d.as_ptr().addr());let mut r:u16=0;
- while r<d[36u16] {
-  if gpu_capture_range_word(r,1)==4 && gpu_capture_range_word(r,3)<2 {
-   let sector=(gpu_capture_range_word(r,2)>>7)|(gpu_capture_range_word(r,3)<<9);
-   signal(6,sector);let mut i:u16=0;
-   while i<40 {signal(7,gpu_capture_read_word(r,if i<16 {i}else{i+48},0));i+=1;}
-  }
-  r+=1;
- }
- if gpu_capture_error()!=0 {halt(0xca01);}0
-}"#,
-        )
-        .unwrap();
-        if case.capture == Some(CaptureProbe::Objects) {
-            let text = std::fs::read_to_string(&gate).unwrap().replace(
-                "gpu_capture_range_word(r,1)==4 && gpu_capture_range_word(r,3)<2",
-                "gpu_capture_range_word(r,1)==2",
-            );
-            std::fs::write(&gate, text).unwrap();
-        }
-        let manifest = out.join("capture-manifest.json");
-        std::fs::write(&manifest,serde_json::to_vec_pretty(&serde_json::json!({"version":3,"schema":"digitaldesign.gpu-capture-build","command_abi":8,"manifest_id":"0000000000000000000000000000000000000000000000000000000000000000","layout":profile.recorded_description(),"resources":[],"options":{"capture_allocation_guards":false}})).unwrap()).unwrap();
-        resolver::RendererCaptureConfiguration::from_manifest(gate, &manifest).unwrap()
-    } else if case.hook {
-        resolver::RendererCaptureConfiguration::with_default_hook()
-    } else {
-        resolver::RendererCaptureConfiguration::without_capture()
-    };
     let mut application_rcc = source_example.join("rcc");
     let mut ordinary_sources = vec![];
     if let Some(edit) = case.edit_modules {
@@ -218,7 +173,6 @@ pub fn profiler_gate(d:Array<u16>)->u16 {
         &sources.join("rcc"),
         &constants,
         &ordinary_sources,
-        &capture,
         &rcc::frontend::rustc_check::RustcCheck::new(out.join("checked")),
         &mut |p| dependencies.push(p.to_owned()),
     )

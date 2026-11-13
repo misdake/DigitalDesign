@@ -83,8 +83,8 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
                 ordinary_view.ptr(),
             );
         }
-        gpu.request_snapshot();
-        gpu.submit_capturable(buffer);
+
+        gpu.submit(buffer);
         buffer = gpu.wait();
         buffer.reset();
         buffer.invalidate_textures();
@@ -114,8 +114,8 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
             }
             // The recorded descriptor outlives this CPU TextureView.
         }
-        gpu.request_snapshot();
-        gpu.submit_capturable(buffer);
+
+        gpu.submit(buffer);
         buffer = gpu.wait();
         if (update - first) & 1 == 0 {
             display.set_next_swap(color_b.ptr());

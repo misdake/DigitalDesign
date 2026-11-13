@@ -22,14 +22,10 @@ pub const GPU_RENDERER_MAX_Z_LOW:u16=0;pub const GPU_RENDERER_MAX_Z_HIGH:u16=1;
 ";
 #[path = "../apps/bloxorz/mod.rs"]
 mod bloxorz;
-#[path = "gpu_capture.rs"]
-mod capture;
 #[path = "gpu_renderer_changes.rs"]
 mod changes;
 #[path = "gpu_persistent_ui.rs"]
 mod persistent;
-#[path = "gpu_profiler_short.rs"]
-mod profiler_short;
 #[path = "gpu_render_buffer.rs"]
 mod render_buffer;
 #[path = "gpu_renderer_time.rs"]
@@ -560,6 +556,3 @@ fn compiled_second_slot_ui_snapshot_crosses_window_without_touching_running_inpu
         gpu_v2::system::vliw_command::ui_params(at as u32, 0x4f0000).unwrap()
     );
 }
-
-#[path = "gpu_native_profile.rs"]
-mod native_profile;

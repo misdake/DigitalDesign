@@ -1,8 +1,7 @@
 # GPU profiler remaining qualification
 
 Implemented interfaces belong in [README.md](README.md), the
-[session specification](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md) and
-[driver bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md).
+[session specification](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md).
 Detailed pending architecture remains in the local project design area.
 
 - [ ] Extend physical-button qualification to initially held and simultaneous

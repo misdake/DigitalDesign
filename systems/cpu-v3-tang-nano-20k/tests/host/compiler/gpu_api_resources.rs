@@ -50,7 +50,7 @@ pub(super) fn parse(
     std::fs::create_dir_all(&local).map_err(|error| error.to_string())?;
     std::fs::write(local.join("app.rs"), source).map_err(|error| error.to_string())?;
     use super::shared_build_support_rcc_modules as resolver;
-    let configuration = resolver::RendererCaptureConfiguration::with_default_hook();
+
     resolver::compile_explicit_gpu_program_checked(
         "public-recording",
         source,
@@ -58,7 +58,6 @@ pub(super) fn parse(
         &local,
         &root,
         "",
-        &configuration,
         &RustcCheck::new(directory),
         &mut |_| {},
     )
@@ -449,7 +448,7 @@ fn main(){
             rcc::VarLoc::Global(address) => usize::from(address),
             _ => panic!("not a static {name}"),
         };
-        let facts = address("GPU_CB_CAPTURE_FACTS");
+        let facts = address("GPU_CB_RESOURCE_FACTS");
         let records = address("GPU_CB_RECORDS");
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;

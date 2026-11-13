@@ -49,12 +49,12 @@ mod ui_text;
 
 #[path = "compiler/gpu_api_bind.rs"]
 mod gpu_api_bind;
-#[path = "compiler/gpu_api_capture_source.rs"]
-mod gpu_api_capture_source;
 #[path = "compiler/gpu_api_config.rs"]
 mod gpu_api_config;
 #[path = "compiler/gpu_api_execute.rs"]
 mod gpu_api_execute;
+#[path = "compiler/gpu_api_facts.rs"]
+mod gpu_api_facts;
 #[path = "compiler/gpu_api_fault.rs"]
 mod gpu_api_fault;
 #[path = "compiler/gpu_api_g0.rs"]
@@ -104,9 +104,6 @@ mod gpu_api_model_cache;
 
 #[path = "compiler/gpu_api_scene_patch.rs"]
 mod gpu_api_scene_patch;
-
-#[path = "compiler/gpu_api_submit_modes.rs"]
-mod gpu_api_submit_modes;
 
 #[path = "platform/fixed_depth.rs"]
 mod fixed_depth;

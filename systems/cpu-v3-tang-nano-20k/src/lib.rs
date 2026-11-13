@@ -13,7 +13,6 @@ pub mod host_io;
 pub mod input_device;
 mod layout;
 mod observation_device;
-pub mod profiling_capture;
 pub mod runtime_diagnostics;
 pub mod system_cycle_emu;
 pub mod system_emu;

@@ -32,24 +32,6 @@ fn gpu_present_snapshot(mut out: Array<u16>) -> u16 {
     out[3u16] = format;
     0
 }
-// Capture observes only. Absence does not query/open Device3; errors stay held.
-// 0=not open, 1=retry, 2=stable out4, 65535=driver/hardware fault.
-fn gpu_present_capture_state(out: Array<u16>) -> u16 {
-    if GPU_PRESENT[3u16] != 0 {
-        return 65535;
-    }
-    if GPU_PRESENT[0u16] == 0 {
-        return 0;
-    }
-    let status = gpu_present_snapshot(out);
-    if status == 2 {
-        return 65535;
-    }
-    if status == 1 {
-        return 1;
-    }
-    2
-}
 fn gpu_present_open() -> bool {
     gpu_present_open_with_format(DISPLAY_RGB565)
 }
@@ -172,4 +154,21 @@ fn gpu_present_wait_vblank() -> bool {
         }
     }
     false
+}
+
+fn gpu_present_observe(out: Array<u16>) -> u16 {
+    if GPU_PRESENT[3u16] != 0 {
+        return 65535;
+    }
+    if GPU_PRESENT[0u16] == 0 {
+        return 0;
+    }
+    let status = gpu_present_snapshot(out);
+    if status == 2 {
+        return 65535;
+    }
+    if status == 1 {
+        return 1;
+    }
+    2
 }

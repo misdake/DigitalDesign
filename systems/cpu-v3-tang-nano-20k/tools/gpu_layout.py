@@ -40,3 +40,18 @@ def validate_asset_range(address, length):
     if not any(length > 0 and first <= address < address + length <= end
                for first, end in asset_regions()):
         raise ValueError(f"asset {address:#x}+{length:#x} overlaps reserved GPU storage")
+
+
+def description():
+    b=sectors()
+    value=dict(abi=2,
+        name='rgb565-macro16x16-column-pad16',
+        gpu_profile='production',
+        width=400,height=240,logical_pixels=96000,physical_bytes=b['GPU_FRAMEBUFFER_PHYSICAL_SECTORS']*128,
+        allocation_bytes=b['GPU_PLANE_SECTORS']*128,
+        pixel_bytes=2,macro_width=16,macro_height=16,macro_order='column',macro_pitch=16,
+        texture_layout='pot-column-macro16x16-min512-cache16x8')
+    starts=[b[k]*128 for k in ['GPU_COLOR_A_SECTOR','GPU_COLOR_B_SECTOR','GPU_DEPTH_SECTOR','GPU_COMMAND_FIRST_SECTOR','GPU_OBJECT_FIRST_SECTOR','GPU_ASSET_FIRST_SECTOR','GPU_UI_PAGE0_SECTOR','GPU_UI_PAGE1_SECTOR','GPU_SLOT1_COMMAND_FIRST_SECTOR','GPU_SLOT1_OBJECT_FIRST_SECTOR']]
+    names=['colorA','colorB','depth','slot0CB','slot0obj','assets','UI0','UI1','slot1CB','slot1obj']
+    value['memory_map']={n:[a,z] for n,a,z in zip(names,starts,starts[1:]+[0x800000])}
+    return value

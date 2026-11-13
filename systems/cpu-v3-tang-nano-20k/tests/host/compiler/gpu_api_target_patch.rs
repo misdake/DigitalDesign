@@ -213,7 +213,7 @@ fn run(
             Box::new(Peer {
                 kind,
                 records: global(program, "GPU_CB_RECORDS"),
-                facts: global(program, "GPU_CB_CAPTURE_FACTS"),
+                facts: global(program, "GPU_CB_RESOURCE_FACTS"),
                 execution: global(program, "GPU_EXECUTION"),
                 present: global(program, "GPU_PRESENT"),
                 seen: seen.clone(),
@@ -237,7 +237,7 @@ fn run(
             }
             if signal != 0x600d {
                 let r = global(program, "GPU_CB_RECORDS");
-                let f = global(program, "GPU_CB_CAPTURE_FACTS");
+                let f = global(program, "GPU_CB_RESOURCE_FACTS");
                 eprintln!(
                     "record={:?}, facts={:?}",
                     &cpu.physical_memory_slice()[r..r + 32],
@@ -314,7 +314,7 @@ fn target_only_rejections_preserve_all_command_payload_and_fact_bytes() {
         let pb = usize::from(old.control[3]) * 64;
         assert_eq!(&m[cb..cb + old.code.len()], old.code, "{fault:?} commands");
         assert_eq!(&m[pb..pb + old.push.len()], old.push, "{fault:?} payload");
-        let facts = global(&program, "GPU_CB_CAPTURE_FACTS");
+        let facts = global(&program, "GPU_CB_RESOURCE_FACTS");
         assert_eq!(
             &m[facts..facts + old.facts.len()],
             old.facts,
@@ -339,6 +339,6 @@ fn target_only_copy_transport_failure_poison_blocks_submission() {
         old.push,
         "first write happened before injected second-write failure"
     );
-    let f = global(&program, "GPU_CB_CAPTURE_FACTS");
+    let f = global(&program, "GPU_CB_RESOURCE_FACTS");
     assert_eq!(&m[f..f + old.facts.len()], old.facts);
 }

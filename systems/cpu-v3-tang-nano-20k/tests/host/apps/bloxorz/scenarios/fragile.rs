@@ -28,7 +28,6 @@ fn pad_surface_pose(which:u16){
     });
     case.atlas = atlas;
     case.assets_from_sources = frozen_assets;
-    case.hook = true;
     case
 }
 
@@ -45,12 +44,11 @@ pub(in super::super) fn fragile_atlas(
     });
     case.atlas = atlas;
     case.assets_from_sources = frozen_assets;
-    case.hook = true;
     case
 }
 
 pub(in super::super) fn fragile_flow() -> ApplicationCase {
-    let mut case = edited("renderer_game_frames", move |mut source| {
+    let case = edited("renderer_game_frames", move |mut source| {
         source = source.required_replace("session_init();", "session_init();level_reset(3);SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;TRANSITION[0u16]=0;")
             .required_replace("let fragile_owner = fragile_begin();", "let fragile_owner = fragile_begin();signal(14,fragile_owner.addr());")
             .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;")
@@ -59,7 +57,6 @@ pub(in super::super) fn fragile_flow() -> ApplicationCase {
         source
     });
 
-    case.hook = true;
     case
 }
 
@@ -72,7 +69,6 @@ pub(in super::super) fn fragile_representative(frozen_assets: bool) -> Applicati
         source
     });
 
-    case.hook = true;
     case.assets_from_sources = frozen_assets;
     case
 }
@@ -87,14 +83,12 @@ pub(in super::super) fn fragile_play(frozen_assets: bool) -> ApplicationCase {
         source
     });
 
-    case.hook = true;
     case.assets_from_sources = frozen_assets;
     case
 }
 
 pub(in super::super) fn fragile_ordinary() -> ApplicationCase {
     ApplicationCase {
-        hook: true,
         ..ApplicationCase::default()
     }
 }

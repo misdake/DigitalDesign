@@ -85,7 +85,6 @@ impl Fixture {
             &dir,
             &shared,
             &self.constants,
-            &resolver::RendererCaptureConfiguration::without_capture(),
             &RustcCheck::new(dir.join("rustc")),
             &mut |_| {},
         )
@@ -535,7 +534,6 @@ fn actual_minimal_member_demo_runs_three_frames() {
             &root.join("examples/gpu_renderer/rcc"),
             &root.join("rcc"),
             &f.constants,
-            &resolver::RendererCaptureConfiguration::without_capture(),
             &RustcCheck::new(f.out.join("public-rustc")),
             &mut |_| {},
         )

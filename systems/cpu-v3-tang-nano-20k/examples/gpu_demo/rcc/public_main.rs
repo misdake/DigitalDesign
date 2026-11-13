@@ -318,7 +318,7 @@ fn demo_run(limit: u16, budget: u16) {
         dev_send(7, 1, 12);
         dev_send(7, 1, 16);
         static_buffer = wait_gpu(&mut gpu, budget);
-        gpu.submit_capturable(dynamic_buffer);
+        gpu.submit(dynamic_buffer);
         dev_send(7, 1, 13);
         dynamic_buffer = wait_gpu(&mut gpu, budget);
         observed = time_microseconds();

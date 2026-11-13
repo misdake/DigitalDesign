@@ -9,7 +9,7 @@ static GPU_CB_RECORDS: Buf<u16, 448> = Buf::new([0; 448]);
 // The logical 256-word span stays line-aligned independently of static layout.
 static GPU_NATIVE_SCRATCH: Buf<u16, 271> = Buf::new([0; 271]);
 // Allocation facts survive descriptor Drop and execution until this CB resets.
-static GPU_CB_CAPTURE_FACTS: Buf<u16, 512> = Buf::new([0; 512]);
+static GPU_CB_RESOURCE_FACTS: Buf<u16, 512> = Buf::new([0; 512]);
 // Never reset with a context: copied binding locations cannot regain an epoch.
 static GPU_RECORD_GENERATION: Buf<u16, 2> = Buf::new([0; 2]);
 
@@ -92,9 +92,9 @@ fn gpu_record_new_generation(mut c: Array<u16>) -> bool {
     true
 }
 // Caller has validated slot; C reads exactly record.fact_count * 4 words.
-fn gpu_record_capture_facts(slot: u16) -> Array<u16> {
+fn gpu_record_resource_facts(slot: u16) -> Array<u16> {
     unsafe {
-        GPU_CB_CAPTURE_FACTS
+        GPU_CB_RESOURCE_FACTS
             .as_ptr()
             .add((slot * 256) as i16)
             .as_u16_array()
@@ -105,7 +105,12 @@ fn gpu_record_fact_equal(a: Array<u16>, ai: u16, b: Array<u16>, bi: u16) -> bool
 }
 // Reserve each input's final table position without changing recorded facts.
 // The caller retains this local plan until its native operation succeeds.
-fn gpu_record_capture_room(slot: u16, input: Array<u16>, count: u16, mut plan: Array<u16>) -> bool {
+fn gpu_record_resource_room(
+    slot: u16,
+    input: Array<u16>,
+    count: u16,
+    mut plan: Array<u16>,
+) -> bool {
     if slot >= 2 || count > GPU_RECORD_FACT_LIMIT {
         return false;
     }
@@ -115,7 +120,7 @@ fn gpu_record_capture_room(slot: u16, input: Array<u16>, count: u16, mut plan: A
     {
         return false;
     }
-    let facts = gpu_record_capture_facts(slot);
+    let facts = gpu_record_resource_facts(slot);
     let mut next = c[GPU_RECORD_FACT_COUNT];
     let mut i: u16 = 0;
     while i < count {
@@ -156,9 +161,9 @@ fn gpu_record_capture_room(slot: u16, input: Array<u16>, count: u16, mut plan: A
     true
 }
 // No intervening fact mutation is permitted between reservation and commit.
-fn gpu_record_capture_commit(slot: u16, input: Array<u16>, count: u16, plan: Array<u16>) {
+fn gpu_record_resource_commit(slot: u16, input: Array<u16>, count: u16, plan: Array<u16>) {
     let mut c = gpu_record_data(slot);
-    let mut facts = gpu_record_capture_facts(slot);
+    let mut facts = gpu_record_resource_facts(slot);
     let mut i: u16 = 0;
     while i < count {
         let at = i * 4;

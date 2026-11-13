@@ -66,27 +66,6 @@ pub(in super::super) fn rerecord() -> ApplicationCase {
     })
 }
 
-pub(in super::super) fn heap_capture() -> ApplicationCase {
-    let mut case = edited("renderer_game_three_frames", move |mut source| {
-        source = stage_source(source, 0, false, false, true);
-
-        source=source.required_replace("session_tick(buttons, held, elapsed);","if number==1 {level_reset(1);SESSION[0u16]=PLAY;}if number==2 {level_reset(0);SESSION[0u16]=PLAY;}session_tick(buttons,held,elapsed);");
-        source = source.required_replace(
-            "gpu.submit(commands);",
-            "gpu.request_snapshot();gpu.submit_capturable(commands);",
-        );
-        source = source.required_replace(
-            "gpu.submit(scene_commands);",
-            "gpu.request_snapshot();gpu.submit_capturable(scene_commands);",
-        );
-        source=source.required_replace("ground_rebuild();","signal(9,scene_commands.command_words());signal(10,commands.command_words());ground_rebuild();");
-
-        source
-    });
-    case.capture = Some(CaptureProbe::Mesh);
-    case
-}
-
 pub(in super::super) fn goal_close() -> ApplicationCase {
     edited("renderer_game_three_frames", move |mut source| {
         source = source

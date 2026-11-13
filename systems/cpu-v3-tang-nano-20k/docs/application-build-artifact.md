@@ -27,7 +27,7 @@ flowchart LR
 Observation records the source text actually returned by lookup. It does not
 alter approved library roots, local-override identity or private-domain checks.
 Application preparation explicitly selects the entry, ordinary module roots,
-capture policy and specialization. Included binary files also become declared inputs.
+ordinary source roots. Included binary files also become declared inputs.
 Compilation does not infer these dependencies
 from Bloxorz or RTT directory suffixes.
 
@@ -62,7 +62,7 @@ its byte length and SHA256. The descriptor itself is excluded from `files`.
 
 | Descriptor field | Contract |
 | --- | --- |
-| `application` | Original entry file, selected entry, frontend, ordinary source roots, capture policy and specialization |
+| `application` | Original entry file, selected entry, frontend, ordinary source roots |
 | `target` | CPU V3 code segment/base, initial DSEG pages, static extent, stack, heap and effective GPU debug mode |
 | `compiler_options` | Audit description of the actual backend options; an opaque string, not a configuration input |
 | `code`, `package`, `debug`, `listing` | Locators into `files` |

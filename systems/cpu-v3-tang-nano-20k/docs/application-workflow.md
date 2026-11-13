@@ -19,10 +19,7 @@ The PowerShell front door runs the same command with a Cargo summary:
 ```
 
 Choose one build entry and a fresh output directory. `--out` is required by the
-Rust command. `--gpu-debug 0|1` selects the compiler option; `--manifest FILE`
-binds an approved GPU capture build declaration. The diagnostic `gpu-profiler`
-application requires that declaration when its capture hook is enabled;
-`--hook 0` preserves its uninstrumented mode. Application options come from the same
+Rust command. `--gpu-debug 0|1` selects the compiler option. Application options come from the same
 description as the build, for example `gpu-bench --scene micro|full`.
 `bloxorz --start-level 1..33` selects the initial level; the default is level 1.
 `--start-phase entry|play` selects animated entry or a resting start; default
@@ -151,11 +148,8 @@ of the image build script; it never depends back on the complete composition.
 The format package shares the canonical `rcc/gpu_layout.rs`; there is no second
 hand-maintained memory map or boot instruction array.
 
-Recipes distinguish source entry, capture policy and diagnostic specialization.
-The compiler does not infer those policies from source-directory suffixes.
-The benchmark owns scene-dependent inputs; the diagnostic profiler owns its
-manifest-selected RTT/MEMCPY preparation. Shared mechanisms only execute the
-declared producer, read its actual manifest and assemble resources/constants.
+Recipes declare source entry and ordinary module roots explicitly. Shared mechanisms
+execute the declared producer, read its manifest and assemble resources/constants.
 The selected recipe and common preparation source are tracked inputs.
 
 ## Snapshot publication

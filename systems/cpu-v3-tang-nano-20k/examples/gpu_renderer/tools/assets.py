@@ -10,7 +10,7 @@ sys.dont_write_bytecode = True
 SYSTEM = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(SYSTEM / "tools"))
 from gpu_layout import validate_asset_range, sectors
-from capture_layout import description
+from gpu_layout import description
 import ui_font
 
 def pack(output):
@@ -70,7 +70,7 @@ def pack(output):
                     sha256=hashlib.sha256(p).hexdigest()) for n, a, p in resources],
                     triangles=1, vertices=3, bounds=[[-1, -1, 0], [1, 1, 0]],
                     glyphs=sorted(rows), sources={p.relative_to(SYSTEM.parents[1]).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                    for p in [Path(__file__).resolve(), *ui_font.SOURCES, SYSTEM / "tools/gpu_layout.py", SYSTEM / "rcc/gpu_layout.rs", SYSTEM / "tools/capture_layout.py", SYSTEM / "rcc/gpu_capture_abi.rs"]})
+                    for p in [Path(__file__).resolve(), *ui_font.SOURCES, SYSTEM / "tools/gpu_layout.py", SYSTEM / "rcc/gpu_layout.rs"]})
     (output / "assets.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 

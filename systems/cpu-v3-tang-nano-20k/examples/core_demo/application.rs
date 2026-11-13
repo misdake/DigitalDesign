@@ -1,6 +1,6 @@
 //! The core SDK demonstration owns its pages, font styles and deterministic entry.
 use crate::applications::{
-    Assets, BuildOption, CapturePolicy, Definition, ResourceNames, DEFAULT, RENDERER_ASSETS,
+    Assets, BuildOption, Definition, ResourceNames, DEFAULT, RENDERER_ASSETS,
 };
 
 pub const APPLICATIONS: &[Definition] = &[Definition {
@@ -8,7 +8,6 @@ pub const APPLICATIONS: &[Definition] = &[Definition {
     selection: Some("core_demo"),
     source: Some("examples/core_demo/rcc/main.rs"),
     gpu_api: true,
-    capture: CapturePolicy::Disabled,
     owner: "examples/core_demo/application.rs",
     ordinary_sources: &[
         "examples/core_demo/rcc/pages",

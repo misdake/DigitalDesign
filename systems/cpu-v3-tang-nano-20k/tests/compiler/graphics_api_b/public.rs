@@ -29,7 +29,7 @@ struct Stream {
 }
 fn streams(cpu: &mut CpuV3Sim, debug: &rcc::DebugInfo) -> Vec<Stream> {
     let record = address(debug, "GPU_CB_RECORDS");
-    let facts = address(debug, "GPU_CB_CAPTURE_FACTS");
+    let facts = address(debug, "GPU_CB_RESOURCE_FACTS");
     let record_words = debug
         .consts
         .iter()

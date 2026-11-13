@@ -44,11 +44,6 @@ path = "src/bin/cpu-v3-display-sim.rs"
 test = false
 
 [[bin]]
-name = "cpu-v3-gpu-dump"
-path = "src/bin/cpu-v3-gpu-dump.rs"
-test = false
-
-[[bin]]
 name = "cpu-v3-system-emu"
 path = "src/bin/cpu-v3-system-emu.rs"
 test = false
@@ -102,16 +97,6 @@ path = "tests/apps/gpu_renderer_native.rs"
 # boot test contracts; target names remain stable.
 
 # capture test contracts; target names remain stable.
-
-[[test]]
-name = "capture_draw"
-path = "tests/capture/capture_draw.rs"
-
-[[test]]
-name = "capture_layout"
-path = "tests/capture/capture_layout.rs"
-
-# compiler test contracts; target names remain stable.
 
 [[test]]
 name = "graphics_api_b_modules"

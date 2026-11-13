@@ -515,7 +515,7 @@ fn minimal_application_uses_actual_packed_assets_and_public_renderer_calls() {
                 .unwrap();
         assert_ne!(source, original_source);
         std::fs::write(out.join("bounded-main.rs"), &source).unwrap();
-        let configuration = resolver::RendererCaptureConfiguration::without_capture();
+
         let parsed = resolver::compile_explicit_gpu_program_checked(
             "minimal renderer app",
             &source,
@@ -523,7 +523,6 @@ fn minimal_application_uses_actual_packed_assets_and_public_renderer_calls() {
             &example.join("rcc"),
             &root.join("rcc"),
             &constants,
-            &configuration,
             &rcc::frontend::rustc_check::RustcCheck::new(out.join("public-ownership")),
             &mut |_| {},
         )

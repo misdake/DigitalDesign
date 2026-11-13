@@ -41,7 +41,6 @@ fn native_descriptions_relocate_across_banks_without_changing_pixels() {
             shared_dir: &system.join("rcc"),
             constants: &constants,
             ordinary_dirs: &[],
-            configuration: &resolver::RendererCaptureConfiguration::without_capture(),
         }
         .compile_checked(
             "native asset fixture",

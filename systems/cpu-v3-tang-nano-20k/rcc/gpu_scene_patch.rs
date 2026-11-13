@@ -82,7 +82,7 @@ fn gpu_patch_binding(slot: u16) -> bool {
     if !gpu_patch_group(c) || c[GPU_RECORD_FACT_COUNT] > GPU_RECORD_FACT_LIMIT {
         return false;
     }
-    let facts = gpu_record_capture_facts(slot);
+    let facts = gpu_record_resource_facts(slot);
     let mut color: u16 = 0;
     let mut depth: u16 = 0;
     let mut i: u16 = 0;
@@ -120,7 +120,7 @@ fn gpu_patch_matches(slot: u16, low: u16, high: u16) -> bool {
 }
 fn gpu_patch_targets(slot: u16, color: Array<u16>, depth: Array<u16>) -> bool {
     let c = gpu_record_data(slot);
-    let facts = gpu_record_capture_facts(slot);
+    let facts = gpu_record_resource_facts(slot);
     let ci = c[GPU_RECORD_COLOR_FACT];
     let di = c[GPU_RECORD_DEPTH_FACT];
     if c[GPU_RECORD_FACT_COUNT] > GPU_RECORD_FACT_LIMIT
@@ -275,7 +275,7 @@ fn gpu_patch_scene(
     gpu_bind_copy(c, GPU_CB_CAMERA_REVISION, camera, GPU_CAMERA_REVISION, 4);
     gpu_bind_copy(c, GPU_CB_GLOBAL, native, 0, 32);
     gpu_bind_copy(c, GPU_CB_INSTANCE, native, GPU_SCRATCH_INSTANCE, 42);
-    let mut facts = gpu_record_capture_facts(slot);
+    let mut facts = gpu_record_resource_facts(slot);
     facts[(c[GPU_RECORD_COLOR_FACT] - 1) * 4] = color[0u16];
     facts[(c[GPU_RECORD_DEPTH_FACT] - 1) * 4] = depth[0u16];
     c[GPU_RECORD_COLOR] = color[0u16];
@@ -315,7 +315,7 @@ fn gpu_target_binding(slot: u16) -> bool {
     if !gpu_target_shape(c) || c[GPU_RECORD_FACT_COUNT] > GPU_RECORD_FACT_LIMIT {
         return false;
     }
-    let facts = gpu_record_capture_facts(slot);
+    let facts = gpu_record_resource_facts(slot);
     let mut color: u16 = 0;
     let mut depth: u16 = 0;
     let mut source = false;
@@ -369,7 +369,7 @@ fn gpu_target_matches(slot: u16, low: u16, high: u16) -> bool {
 // Observation only: no poll/retire, no waiting and no sticky Display mutation.
 fn gpu_target_front_safe(color: Array<u16>, depth: Array<u16>) -> bool {
     let snapshot: Buf<u16, 4> = Buf::new([0; 4]);
-    let status = gpu_present_capture_state(snapshot.as_array());
+    let status = gpu_present_observe(snapshot.as_array());
     if status == 65535 || status == 1 {
         return false;
     }
@@ -433,7 +433,7 @@ fn gpu_target_retarget(slot: u16, color: Array<u16>, depth: Array<u16>) -> bool 
         c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
         return false;
     }
-    let mut facts = gpu_record_capture_facts(slot);
+    let mut facts = gpu_record_resource_facts(slot);
     facts[(c[GPU_RECORD_COLOR_FACT] - 1) * 4] = color[0u16];
     facts[(c[GPU_RECORD_DEPTH_FACT] - 1) * 4] = depth[0u16];
     c[GPU_RECORD_COLOR] = color[0u16];

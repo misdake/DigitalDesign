@@ -5,7 +5,7 @@ use cpu_v3_tools::{
 };
 use std::{path::PathBuf, process::ExitCode};
 
-const HELP: &str = "cpu-v3-app list\ncpu-v3-app build APPLICATION --out NEW-DIRECTORY [--gpu-debug 0|1] [--manifest FILE] [application options]\ncpu-v3-app preview APPLICATION [application options] [--snapshot DIRECTORY] [--out NEW-RUN-DIRECTORY] [--presents N] [--max-steps N]\ncpu-v3-app run APPLICATION [application options] [--headless] [--samples N] [--max-steps N] [--seconds N]";
+const HELP: &str = "cpu-v3-app list\ncpu-v3-app build APPLICATION --out NEW-DIRECTORY [--gpu-debug 0|1] [application options]\ncpu-v3-app preview APPLICATION [application options] [--snapshot DIRECTORY] [--out NEW-RUN-DIRECTORY] [--presents N] [--max-steps N]\ncpu-v3-app run APPLICATION [application options] [--headless] [--samples N] [--max-steps N] [--seconds N]";
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
         Ok(()) => ExitCode::SUCCESS,
@@ -49,7 +49,6 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                 xinput: None,
             };
             let mut settings = std::collections::BTreeMap::new();
-            let inherited_hook = std::env::var("GPU_PROFILER_HOOK").ok();
             while let Some(flag) = args.next() {
                 if matches!(flag.as_str(), "--help" | "-h") {
                     println!(
@@ -75,22 +74,11 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                             }
                             OptionValues::InputFile => "FILE".into(),
                         };
-                        let hook = settings
-                            .get("GPU_PROFILER_HOOK")
-                            .map(String::as_str)
-                            .or(inherited_hook.as_deref());
-                        let required = if option.variable == "GPU_PROFILER_MANIFEST"
-                            && definition.capture.requires_manifest(hook)
-                        {
-                            " (required with hook)"
-                        } else {
-                            ""
-                        };
                         let default = option
                             .default_value()
                             .map(|v| format!(" (default {v})"))
                             .unwrap_or_default();
-                        println!("  --{} {values}{default}{required}", option.flag);
+                        println!("  --{} {values}{default}", option.flag);
                     }
                     return Ok(());
                 }
@@ -163,20 +151,6 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                 if settings.insert(option.variable, value).is_some() {
                     return Err(format!("duplicate {flag}"));
                 }
-            }
-            let hook = settings
-                .get("GPU_PROFILER_HOOK")
-                .map(String::as_str)
-                .or(inherited_hook.as_deref());
-            if snapshot.is_none()
-                && definition.capture.requires_manifest(hook)
-                && !settings.contains_key("GPU_PROFILER_MANIFEST")
-                && !std::env::var_os("GPU_PROFILER_MANIFEST").is_some_and(|value| !value.is_empty())
-            {
-                return Err(format!(
-                    "{} requires --manifest FILE with its capture hook enabled",
-                    definition.name
-                ));
             }
             if seen.contains("--headless") && seen.contains("--window") {
                 return Err("choose --headless or --window".into());

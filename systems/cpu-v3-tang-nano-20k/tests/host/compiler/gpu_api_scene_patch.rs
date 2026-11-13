@@ -138,7 +138,7 @@ pub(super) fn compile(source: &str, debug: bool, label: &str) -> rcc_backend::Cp
     ));
     let local = directory.join("application");
     std::fs::create_dir_all(&local).unwrap();
-    if label.starts_with("storage-failure") || label == "submit-modes" {
+    if label.starts_with("storage-failure") {
         // Test-only callee failure. The scene patch itself remains byte-exact
         // production source; this does not qualify a hardware transport error.
         let copy = directory.join("library");
@@ -165,19 +165,11 @@ pub(super) fn compile(source: &str, debug: bool, label: &str) -> rcc_backend::Cp
                 std::fs::read(root.join("gpu_scene_patch.rs")).unwrap(),
                 std::fs::read(copy.join("gpu_scene_patch.rs")).unwrap()
             );
-        } else {
-            std::fs::write(copy.join("profiler_gate.rs"), r#"use crate::dsl_rt::*;mod gpu_capture_abi;use gpu_capture_abi::*;
-pub fn profiler_gate(d:Array<u16>)->u16{dev_send(7,2,d[GPU_CAPTURE_H_SUBMISSION]);dev_send(7,3,d[GPU_CAPTURE_H_SUBMISSION+1]);0}"#).unwrap();
         }
         root = copy;
     }
     let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     options.gpu_debug = debug;
-    let configuration = if label.starts_with("submit-") {
-        resolver::RendererCaptureConfiguration::with_default_hook()
-    } else {
-        resolver::RendererCaptureConfiguration::without_capture()
-    };
     let ir = resolver::compile_explicit_gpu_program_checked(
         "scene-patch",
         source,
@@ -185,7 +177,6 @@ pub fn profiler_gate(d:Array<u16>)->u16{dev_send(7,2,d[GPU_CAPTURE_H_SUBMISSION]
         &local,
         &root,
         "",
-        &configuration,
         &RustcCheck::new(directory),
         &mut |_| {},
     )
@@ -216,7 +207,7 @@ fn run(code: &rcc_backend::CpuV3Program, injection: Inject) -> (u16, Rc<RefCell<
             Box::new(Peer {
                 kind,
                 records: global(code, "GPU_CB_RECORDS"),
-                facts: global(code, "GPU_CB_CAPTURE_FACTS"),
+                facts: global(code, "GPU_CB_RESOURCE_FACTS"),
                 execution: global(code, "GPU_EXECUTION"),
                 injection,
                 seen: seen.clone(),

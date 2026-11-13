@@ -12,8 +12,8 @@ mod game_assets;
 use game_assets::*;
 mod gpu_board;
 use gpu_board::*;
-mod profiler_clock;
-use profiler_clock::*;
+mod time;
+use time::*;
 mod gamepad;
 use gamepad::*;
 mod boot_resources;
@@ -633,24 +633,13 @@ fn submit_game(
     begin: u16,
     started: bool,
 ) -> CommandBuffer {
-    let resume_before = profiler_resume_epoch();
     gpu.submit(commands);
-    wait_game(gpu, resume_before, finish, begin, started)
+    wait_game(gpu, finish, begin, started)
 }
-fn wait_game(
-    gpu: &mut Gpu,
-    resume_before: u16,
-    finish: bool,
-    begin: u16,
-    started: bool,
-) -> CommandBuffer {
+fn wait_game(gpu: &mut Gpu, finish: bool, begin: u16, started: bool) -> CommandBuffer {
     let completed = gpu.wait();
     if finish {
-        render_time_complete(begin, profiler_active_milliseconds(), started);
-    }
-    if profiler_resume_epoch() != resume_before {
-        gamepad_capture();
-        gamepad_discard_edges();
+        render_time_complete(begin, time_milliseconds(), started);
     }
     completed
 }
@@ -811,7 +800,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     shadow_invalidate();
     BLOCK_POSE_KEY[0u16] = 0;
     gamepad_init();
-    let mut previous = profiler_active_milliseconds();
+    let mut previous = time_milliseconds();
     let mut render_start: u16 = 0;
     let mut render_started = false;
     let mut number: u16 = 0;
@@ -830,7 +819,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         if !fading() && input.pressed & 1 != 0 {
             BACKGROUND[0u16] ^= 1;
         }
-        let now = profiler_active_milliseconds();
+        let now = time_milliseconds();
         let elapsed = now - previous;
         previous = now;
         let buttons = if automatic_capture {
@@ -916,9 +905,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     &scene.camera,
                     fragile_owner,
                 );
-                let build_resume = profiler_resume_epoch();
+
                 gpu.submit(scene_commands);
-                scene_commands = wait_game(&mut gpu, build_resume, false, 0, false);
+                scene_commands = wait_game(&mut gpu, false, 0, false);
                 scene_generation = LEVEL_GENERATION[0u16];
                 scene_background = BACKGROUND[0u16];
                 scene_hidden = fragile_hidden(fragile_owner);
@@ -935,7 +924,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     DepthLoad::load(),
                 );
             }
-            let scene_resume = profiler_resume_epoch();
+
             gpu.submit(scene_commands);
             if automatic_capture && fade {
                 capture_report(66, number);
@@ -1152,7 +1141,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
             // The other CB is CPU-owned while the immutable static CB runs.
             // Its Load dependency is checked only after static completion,
             // when it is submitted; recording does not reclaim that producer.
-            scene_commands = wait_game(&mut gpu, scene_resume, false, 0, false);
+            scene_commands = wait_game(&mut gpu, false, 0, false);
             if fade {
                 commands = submit_game(&mut gpu, commands, false, 0, false);
                 snapshot_valid = true;
@@ -1239,7 +1228,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         HUD[2u16] = 1;
         display.set_next_swap(back.ptr());
         display.wait_vblank();
-        render_start = profiler_active_milliseconds();
+        render_start = time_milliseconds();
         render_started = true;
         gamepad_capture();
         signal(12, SESSION[0u16]);

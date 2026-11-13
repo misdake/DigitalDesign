@@ -22,34 +22,12 @@ application_catalog! {
     renderer => "../../examples/gpu_renderer/application.rs",
     bloxorz => "../../examples/gpu_renderer_bloxorz/application.rs",
     rtt => "../../examples/gpu_renderer_rtt/application.rs",
-    profiler => "../../examples/gpu_profiler_board/application.rs",
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SourceSpecialization {
-    Standard,
-    ProfilerMemcpy,
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum CapturePolicy {
-    Shared,
-    Disabled,
-    Diagnostic,
-}
-impl CapturePolicy {
-    pub fn hook_enabled(self, setting: Option<&str>) -> bool {
-        self != Self::Disabled && setting != Some("0")
-    }
-    pub fn requires_manifest(self, setting: Option<&str>) -> bool {
-        self == Self::Diagnostic && self.hook_enabled(setting)
-    }
-}
 pub struct ApplicationSource {
     pub sector_relocations: Vec<asset_metadata::SectorRelocation>,
     pub entry: &'static str,
     pub ordinary_dirs: Vec<PathBuf>,
-    pub capture: CapturePolicy,
-    pub specialization: SourceSpecialization,
 }
 pub struct Prepared {
     pub project: BootProject,
@@ -80,7 +58,6 @@ pub struct Definition {
     pub source: Option<&'static str>,
     pub gpu_api: bool,
     pub entry: &'static str,
-    pub capture: CapturePolicy,
     pub ordinary_sources: &'static [&'static str],
     pub owner: &'static str,
     pub assets: Option<Assets>,
@@ -94,7 +71,6 @@ pub const DEFAULT: Definition = Definition {
     source: None,
     gpu_api: false,
     entry: "main",
-    capture: CapturePolicy::Shared,
     ordinary_sources: &[],
     owner: "applications/build/mod.rs",
     assets: None,
@@ -146,16 +122,6 @@ impl Context<'_> {
 
 pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Path)) -> Prepared {
     let definition = find(name).unwrap_or_else(|error| panic!("{error}"));
-    if definition
-        .capture
-        .requires_manifest(std::env::var("GPU_PROFILER_HOOK").ok().as_deref())
-    {
-        assert!(
-            std::env::var_os("GPU_PROFILER_MANIFEST").is_some_and(|value| !value.is_empty()),
-            "{} requires GPU_PROFILER_MANIFEST with the capture hook enabled",
-            definition.name
-        );
-    }
     let mut context = Context {
         root,
         output,
@@ -198,14 +164,12 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
         source: ApplicationSource {
             sector_relocations: vec![],
             entry: definition.entry,
-            capture: definition.capture,
             ordinary_dirs: definition
                 .ordinary_sources
                 .iter()
                 .map(|path| root.join(path))
                 .chain(std::iter::once(root.join("applications/rendering/rcc")))
                 .collect(),
-            specialization: SourceSpecialization::Standard,
         },
     };
     let manifest = if let Some(assets) = definition.assets {
@@ -311,22 +275,7 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn capture_policy_keeps_disabled_and_uninstrumented_diagnostic_modes() {
-        for setting in [None, Some("0"), Some("1")] {
-            assert!(!CapturePolicy::Disabled.hook_enabled(setting));
-            assert!(!CapturePolicy::Disabled.requires_manifest(setting));
-            assert!(!CapturePolicy::Shared.requires_manifest(setting));
-            assert_eq!(
-                CapturePolicy::Shared.hook_enabled(setting),
-                setting != Some("0")
-            );
-            assert_eq!(
-                CapturePolicy::Diagnostic.requires_manifest(setting),
-                setting != Some("0")
-            );
-        }
-    }
+
     #[test]
     fn application_names_aliases_and_options_are_unambiguous() {
         let mut names = std::collections::BTreeMap::new();

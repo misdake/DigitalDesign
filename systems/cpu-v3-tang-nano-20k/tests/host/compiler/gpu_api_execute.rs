@@ -113,116 +113,56 @@ fn run(label: &str, body: &str, statuses: &[u16], cache_error: bool) -> Vec<(u8,
 #[test]
 fn execution_peer_orders_publication_start_and_single_retirement() {
     let events = run(
-        "replay",
+        "immediate",
         r#"
- check(gpu_execute_prepare(0));check(GPU_EXECUTION[1u16]==1);
- check(GPU_EXECUTION[0u16]==GPU_EXEC_PREPARED);check(gpu_execute_poll()==0);
- check(gpu_execute_start(0,false));check(gpu_execute_poll()==0);check(GPU_EXECUTION[1u16]==1);
+ check(gpu_execute_submit(0));check(GPU_EXECUTION[0u16]==GPU_EXEC_RUNNING);
+ check(gpu_execute_poll()==0);check(GPU_EXECUTION[1u16]==1);
  check(gpu_execute_poll()==1);check(gpu_execute_poll()==0);check(GPU_EXECUTION[1u16]==0);
- check(gpu_execute_prepare(0));check(gpu_execute_start(0,false));check(gpu_execute_poll()==1);
- check(gpu_execute_prepare(1));check(gpu_execute_start(1,true));check(gpu_execute_poll()==2);
- check(GPU_EXECUTION[5u16]==0);check(gpu_record_data(0)[GPU_RECORD_COMMAND_USED]==8);
+ check(gpu_execute_submit(1));check(gpu_execute_poll()==2);
  "#,
-        &[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        &[0, 0, 0, 1, 0, 0, 0, 0, 0],
         false,
     );
     assert_eq!(
-        events
-            .iter()
-            .filter(|e| e.0 == 4)
-            .copied()
-            .collect::<Vec<_>>(),
-        vec![
+        events,
+        [
+            (0, 1, 1),
             (4, 0, 3),
             (4, 1, 0x9800),
-            (4, 0, 3),
-            (4, 1, 0x9800),
+            (0, 1, 1),
             (4, 0, 3),
             (4, 1, 0xfc00)
         ]
     );
-    assert_eq!(events.iter().filter(|e| e.0 == 0).count(), 4);
-    let order = events
-        .iter()
-        .map(|e| {
-            if e.0 == 0 {
-                "publish"
-            } else if e.1 == 0 {
-                "count"
-            } else {
-                "start"
-            }
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        order,
-        [
-            "publish", "count", "start", "publish", "count", "start", "publish", "publish",
-            "count", "start"
-        ]
-    );
-    let direct = run(
-        "immediate",
-        r#"
- check(gpu_execute_submit(0));check(GPU_EXECUTION[0u16]==GPU_EXEC_RUNNING);
- check(GPU_EXECUTION[8u16]==0);check(gpu_execute_poll()==1);
- "#,
-        &[0, 0, 0, 0],
-        false,
-    );
-    assert_eq!(direct, [(0, 1, 1), (4, 0, 3), (4, 1, 0x9800)]);
 }
-
 #[test]
 fn execution_peer_faults_keep_the_owned_slot_without_extra_sends() {
     let cache = run(
         "cache-error",
-        r#"
- check(!gpu_execute_prepare(0));check(GPU_EXECUTION[1u16]==1);check(GPU_EXECUTION[5u16]==6);
- check(gpu_execute_poll()==65535);
- "#,
+        r#"check(!gpu_execute_submit(0));check(GPU_EXECUTION[1u16]==1);check(GPU_EXECUTION[5u16]==6);check(gpu_execute_poll()==65535);"#,
         &[0, 0],
         true,
     );
     assert!(cache.iter().all(|e| e.0 != 4));
     let busy = run(
         "unexpected-busy",
-        r#"
- check(!gpu_execute_prepare(0));check(GPU_EXECUTION[1u16]==1);check(gpu_execute_poll()==65535);
- "#,
+        r#"check(!gpu_execute_submit(0));check(GPU_EXECUTION[1u16]==1);check(gpu_execute_poll()==65535);"#,
         &[0, 1],
         false,
     );
     assert!(busy.is_empty());
     let fault = run(
         "fault-idle",
-        r#"
- check(gpu_execute_prepare(0));check(gpu_execute_start(0,false));
- check(gpu_execute_poll()==65535);check(GPU_EXECUTION[1u16]==1);
- check(gpu_execute_poll()==65535);
- "#,
-        &[0, 0, 0, 0, 2],
+        r#"check(gpu_execute_submit(0));check(gpu_execute_poll()==65535);check(GPU_EXECUTION[1u16]==1);check(gpu_execute_poll()==65535);"#,
+        &[0, 0, 0, 2],
         false,
     );
     assert_eq!(fault.iter().filter(|e| e.0 == 4).count(), 2);
     let duplicate = run(
         "busy-submit",
-        r#"
- check(gpu_execute_prepare(0));check(gpu_execute_start(0,false));
- check(!gpu_execute_prepare(1));check(GPU_EXECUTION[1u16]==1);check(gpu_execute_poll()==65535);
- "#,
-        &[0, 0, 0, 0],
-        false,
-    );
-    assert_eq!(duplicate.iter().filter(|e| e.0 == 4).count(), 2);
-    let changed = run(
-        "changed-prepared",
-        r#"
- check(gpu_execute_prepare(0));gpu_record_data(0)[GPU_RECORD_COMMAND_BASE]=0x9900;
- check(!gpu_execute_start(0,false));check(GPU_EXECUTION[1u16]==1);check(gpu_execute_poll()==65535);
- "#,
+        r#"check(gpu_execute_submit(0));check(!gpu_execute_submit(1));check(GPU_EXECUTION[1u16]==1);check(gpu_execute_poll()==65535);"#,
         &[0, 0, 0],
         false,
     );
-    assert!(changed.iter().all(|e| e.0 != 4));
+    assert_eq!(duplicate.iter().filter(|e| e.0 == 4).count(), 2);
 }

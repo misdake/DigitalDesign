@@ -25,7 +25,7 @@ MAX_FRAME_BYTES = 4096
 MAX_CHUNK_BYTES = 1024
 MEMORY_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = MEMORY_BYTES * 2
-DEFAULT_ABI = Path(__file__).resolve().parents[2] / "rcc/gpu_capture_abi.rs"
+DEFAULT_ABI = Path(__file__).resolve().parent / "snapshot_abi.rs"
 # Accepted ABI4/range1 source at the feature base, in Git LF and Windows CRLF.
 # The old hash is provenance, not permission to extend its numerical format.
 LEGACY_ABI4_SHA256 = (

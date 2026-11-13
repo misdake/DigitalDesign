@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 COMMAND_ABI = int(re.search(r"pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = ([0-9]+);",
-    (Path(__file__).resolve().parents[2] / "rcc/gpu_capture_abi.rs").read_text()).group(1))
+    (Path(__file__).resolve().parent / "snapshot_abi.rs").read_text()).group(1))
 RTT_COMMAND_ABIS = (4, COMMAND_ABI)
 # Parsing archived captures is separate from executing current fixed-depth commands.
 HISTORICAL_RTT_COMMAND_ABIS = (6,)

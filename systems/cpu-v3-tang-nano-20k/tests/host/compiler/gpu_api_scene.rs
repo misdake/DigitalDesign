@@ -1,6 +1,5 @@
 //! Public resource adapters consume the fixed B production helpers.
 use cpu_v3::{rcc_backend, CpuV3Sim, StepOutcome};
-use std::any::Any;
 pub(super) const SOURCE: &str = r#"mod gpu_api;use gpu_api::*;
 fn check(ok:bool){if !ok{halt(0xbad);}}
 fn v(x:i16,y:i16,z:i16)->Vec3{Vec3{x:fix32::from_int(x),y:fix32::from_int(y),z:fix32::from_int(z)}}
@@ -101,7 +100,7 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
             _ => unreachable!(),
         };
         let record = global("GPU_CB_RECORDS");
-        let facts = global("GPU_CB_CAPTURE_FACTS");
+        let facts = global("GPU_CB_RESOURCE_FACTS");
         let fault = match parsed
             .debug
             .globals
@@ -194,81 +193,5 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
                 .count(),
             1
         );
-    }
-}
-
-struct NoSubmission;
-impl cpu_v3::Device for NoSubmission {
-    fn read(&mut self, _: &mut [u16], channel: u8) -> u16 {
-        assert_eq!(channel, 2);
-        0
-    }
-    fn write(&mut self, _: &mut [u16], _: u8, _: u16) {
-        panic!("malformed captured dependency issued SEND");
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-#[test]
-fn malformed_native_dependency_fails_before_send_and_preserves_sealed_inputs() {
-    let prefix = SOURCE
-        .split(" check(cb.command_words()>20&&cb.push_words()>80);")
-        .next()
-        .unwrap();
-    let source = format!("{prefix}gpu.request_snapshot();gpu.submit_capturable(cb);halt(0xbad);}}");
-    for debug in [false, true] {
-        let parsed = super::gpu_api_resources::parse(&source, "actual-abc-stage-boundary", debug)
-            .unwrap_or_else(|error| panic!("{error}"));
-        let global = |name| match parsed
-            .debug
-            .globals
-            .iter()
-            .find(|item| item.name == name)
-            .unwrap()
-            .loc
-        {
-            rcc::VarLoc::Global(address) => usize::from(address),
-            _ => unreachable!(),
-        };
-        let execution = global("GPU_EXECUTION");
-        let record = global("GPU_CB_RECORDS");
-        let facts = global("GPU_CB_CAPTURE_FACTS");
-        let capture = global("GPU_CAPTURE_CONTROL");
-        let fault = global("GPU_API_FAULT");
-        let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-        options.gpu_debug = debug;
-        let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
-        let mut cpu = CpuV3Sim::default();
-        cpu.set_boot_window(&program.words);
-        cpu.attach_device(4, Box::new(NoSubmission));
-        cpu.physical_memory_mut()[0xa000 * 64..0xa000 * 64 + 2].copy_from_slice(&[0xa001, 1]);
-        let mut halted = false;
-        for _ in 0..5_000_000 {
-            if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
-                assert_eq!(signal, 0xe001);
-                halted = true;
-                break;
-            }
-        }
-        assert!(halted, "bounded actual A/B/C malformed-dependency timeout");
-        let memory = cpu.physical_memory_mut();
-        assert_eq!(&memory[fault + 1..fault + 3], &[6, 6]);
-        assert_eq!(&memory[execution..execution + 2], &[5, 1]);
-        assert_eq!(memory[capture], 1);
-        assert_ne!(memory[capture + 1], 0);
-        assert_eq!(memory[capture + 4], 0);
-        let e = &memory[execution..execution + 16];
-        let c = &memory[record..record + 32];
-        let source = [
-            1, 0, e[2], e[8], c[5], e[9], e[10], e[11], e[12], e[13], 4, 2,
-        ];
-        let command = usize::from(e[2]) * 64;
-        let push = usize::from(e[10]) * 64;
-        let report = serde_json::json!({"scope":"actual A/B sealed input, malformed native dependency rejected before SEND","source12":source,"fact_words":&memory[facts..facts+usize::from(e[13])*4],"commands":&memory[command..command+usize::from(e[9])],"push":&memory[push..push+usize::from(e[12])]});
-        let output = std::path::PathBuf::from(std::env::var_os("RCC_RUSTC_TEST_DIR").unwrap())
-            .join(format!("actual-abc-sealed-input-{debug}.json"));
-        std::fs::write(output, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
 }

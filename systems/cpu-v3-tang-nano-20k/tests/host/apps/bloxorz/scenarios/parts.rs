@@ -43,8 +43,8 @@ fn button_test_pose(n:u16){
     })
 }
 
-pub(in super::super) fn static_cache(level: u16, capture: bool) -> ApplicationCase {
-    let mut case = edited("renderer_game_frames", move |mut source| {
+pub(in super::super) fn static_cache(level: u16) -> ApplicationCase {
+    edited("renderer_game_frames", move |mut source| {
         assert!((1..=33).contains(&level));
         source = source.required_replace(
             "session_init();",
@@ -58,16 +58,8 @@ pub(in super::super) fn static_cache(level: u16, capture: bool) -> ApplicationCa
             "session_tick(buttons, held, 0);",
         );
 
-        if capture {
-            source = source.required_replace(
-                "gpu.submit(commands);",
-                "gpu.request_snapshot();gpu.submit_capturable(commands);",
-            );
-        }
         source
-    });
-    case.capture = capture.then_some(CaptureProbe::Objects);
-    case
+    })
 }
 
 pub(in super::super) fn cache_level() -> u16 {

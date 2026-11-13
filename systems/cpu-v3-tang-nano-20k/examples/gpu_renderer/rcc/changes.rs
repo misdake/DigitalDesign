@@ -6,8 +6,8 @@ mod gpu_board;
 mod gpu_demo_api;
 use gpu_board::*;
 use gpu_demo_api::*;
-mod profiler_clock;
-use profiler_clock::*;
+mod time;
+use time::*;
 mod time;
 use time::*;
 
@@ -257,14 +257,11 @@ fn run(limit: u16) {
             }
         }
         signal(2, tick);
-        let resume_before = profiler_resume_epoch();
+
         time_clear_microseconds();
         gpu.submit(buffer);
         buffer = gpu.wait();
         observed = time_microseconds();
-        if profiler_resume_epoch() != resume_before {
-            observed = 65535;
-        }
         if tick & 1 == 0 {
             display.set_next_swap(color_b.ptr());
         } else {

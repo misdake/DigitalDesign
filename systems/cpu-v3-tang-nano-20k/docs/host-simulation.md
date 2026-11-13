@@ -209,40 +209,6 @@ or cleaned. No output transform is applied to memory; only PPM uses Display1's
 color conversion. Existing Prepared-gate capture remains separate and keeps its
 original driver ABI/gate, without bypassing UART or application control flow.
 
-### Prepared gate on native CPU
-
-`profiling_capture::capture_native_flash_with_functional_prefix` runs the existing
-native CPU composition to the compiled `CapturePoint`. It stops when the first
-scalar instruction of that function is awaiting its execute edge. It uses the
-core's executing instruction address, not the next/prefetched program counter;
-a preceding return cannot falsely trigger the gate. All earlier CBs execute on
-the same functional GPU and backing. The gate body, UART exchange and target GPU
-START are not executed or bypassed. The caller supplies a positive cycle bound.
-Ordinary submission versus eligible request selection remains firmware behavior;
-a raw `--freeze-submit` ordinal is not evidence of that policy.
-
-Capture header/table are producer-owned ordinary scalar metadata. Their read-only
-view checks the core's latest pending scalar store, resident D-cache line, then
-physical memory on a cache miss. It neither issues a CPU load nor changes cache
-replacement, dirty flags, memory, clocks or native responses. This limited view
-is not a general architectural read transaction or FPU-store checkpoint API.
-GPU command/object/resource/target payloads always read physical memory directly,
-even if a CPU cache line contains an older GPU output. Header/table observation
-never overlays CPU cache data into the GPU image or implicitly publishes metadata.
-
-`NativeFrozenInputs` carries the validated `FrozenData`, raw physical image,
-functional Display state and logic/native/vblank counters. Its raw Header can
-legitimately lag its separate CPU-private Header. The existing architectural
-Prepared capture keeps its API and descriptor/physical-payload semantics. Both
-backends use one shared range/envelope validation and extraction function; no
-command ABI or application synchronization rule changes.
-
-Device7 records the last value and write count for each diagnostic channel.
-CPU reads return zero, matching the old unattached interpreter behavior. It
-creates no memory requests or CPU delay. Native uninstalled devices still return
-an explicit unsupported-device error; this does not make every unknown device
-silently succeed.
-
 ## Native-edge CPU composition
 
 `system_emu::CpuV3SystemEmu` runs the existing core/FPU, fetch, read-only I-cache,

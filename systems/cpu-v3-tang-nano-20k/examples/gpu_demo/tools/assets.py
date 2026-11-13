@@ -12,7 +12,7 @@ EXAMPLE = Path(__file__).resolve().parents[1]
 ROOT = EXAMPLE.parents[3]
 sys.path.insert(0, str(ROOT / "systems/cpu-v3-tang-nano-20k/tools"))
 from gpu_layout import validate_asset_range, sectors
-from capture_layout import description as capture_description
+from gpu_layout import description as capture_description
 import ui_font
 import gpu_mesh_layout
 from gpu_mesh_layout import native_record
@@ -82,8 +82,6 @@ def pack(output):
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_layout.py",
                ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_layout.rs",
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_texture_layout.py",
-               ROOT/"systems/cpu-v3-tang-nano-20k/tools/capture_layout.py",
-               ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_capture_abi.rs",
                SCENE/"material_scene.py", SCENE/"solid_scene.py", SCENE/"assets/room-tiles.png"]
     manifest = dict(source_root='repository', hardware_profile="production",
         layout_identity="rgb565-macro16x16-column-major-pad16-cache16x8-8KiB",

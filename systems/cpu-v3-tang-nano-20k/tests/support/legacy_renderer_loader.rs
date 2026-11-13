@@ -73,14 +73,13 @@ pub fn snapshot_legacy_sources(
     Ok(generated)
 }
 
-/// This explicit host entry always requires the shared GPU root, even when
-/// application text omits it. Native diagnostics keep the String-loader path.
+#[allow(clippy::too_many_arguments)]
 pub fn compile_renderer_program(
     main_name: &str,
     source: &str,
     options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
+    local: &Path,
+    shared: &Path,
     constants: &str,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
@@ -88,55 +87,54 @@ pub fn compile_renderer_program(
         main_name,
         source,
         options,
-        local_dir,
-        shared_dir,
+        local,
+        shared,
         constants,
         &[],
         dependency,
     )
 }
-
 #[allow(clippy::too_many_arguments)]
 pub fn compile_renderer_program_with_sources(
     main_name: &str,
     source: &str,
     options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
+    local: &Path,
+    shared: &Path,
     constants: &str,
     ordinary_dirs: &[PathBuf],
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
-    let from_shared = local_dir == shared_dir;
-    let legacy = legacy_test_sources(shared_dir);
-    let shared_dir = legacy.as_path();
-    let local_dir = if from_shared { shared_dir } else { local_dir };
-    compile_renderer_capture(
+    let legacy = legacy_test_sources(shared);
+    let local = if local == shared {
+        legacy.as_path()
+    } else {
+        local
+    };
+    GpuSources {
+        local_dir: local,
+        shared_dir: &legacy,
+        constants,
+        ordinary_dirs,
+    }
+    .compile(
         "gpu_pipeline",
         main_name,
         source,
         options,
-        local_dir,
-        shared_dir,
-        constants,
-        ordinary_dirs,
-        None,
-        &RendererCaptureConfiguration::with_default_hook(),
         None,
         dependency,
+        &mut |_, _| {},
     )
 }
-
-/// Check actual approved library bodies with rustc before target ownership erasure.
 #[allow(clippy::too_many_arguments)]
 pub fn compile_renderer_program_checked(
     main_name: &str,
     source: &str,
     options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
+    local: &Path,
+    shared: &Path,
     constants: &str,
-    configuration: &RendererCaptureConfiguration,
     check: &rcc::frontend::rustc_check::RustcCheck,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, String> {
@@ -144,124 +142,47 @@ pub fn compile_renderer_program_checked(
         main_name,
         source,
         options,
-        local_dir,
-        shared_dir,
+        local,
+        shared,
         constants,
         &[],
-        configuration,
         check,
         dependency,
     )
 }
-
-/// Checked resource callers may import approved ordinary application modules.
 #[allow(clippy::too_many_arguments)]
 pub fn compile_renderer_program_checked_with_sources(
     main_name: &str,
     source: &str,
     options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
+    local: &Path,
+    shared: &Path,
     constants: &str,
     ordinary_dirs: &[PathBuf],
-    configuration: &RendererCaptureConfiguration,
     check: &rcc::frontend::rustc_check::RustcCheck,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, String> {
-    let from_shared = local_dir == shared_dir;
-    let actual_shared = snapshot_legacy_sources(
-        shared_dir,
-        &check.directory.join("renderer-rcc"),
-        dependency,
-    )?;
-    let local_dir = if from_shared {
-        actual_shared.as_path()
+    let legacy =
+        snapshot_legacy_sources(shared, &check.directory.join("renderer-rcc"), dependency)?;
+    let local = if local == shared {
+        legacy.as_path()
     } else {
-        local_dir
+        local
     };
-    compile_renderer_capture(
+    GpuSources {
+        local_dir: local,
+        shared_dir: &legacy,
+        constants,
+        ordinary_dirs,
+    }
+    .compile(
         "gpu_pipeline",
         main_name,
         source,
         options,
-        local_dir,
-        &actual_shared,
-        constants,
-        ordinary_dirs,
-        configuration.capture.as_ref(),
-        configuration,
         Some(check),
         dependency,
-    )
-    .map_err(|e| e.to_string())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn compile_renderer_program_with_capture(
-    main_name: &str,
-    source: &str,
-    options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
-    constants: &str,
-    ordinary_dirs: &[PathBuf],
-    capture: Option<&CaptureConfiguration>,
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
-    let from_shared = local_dir == shared_dir;
-    let legacy = legacy_test_sources(shared_dir);
-    let shared_dir = legacy.as_path();
-    let local_dir = if from_shared { shared_dir } else { local_dir };
-    compile_renderer_capture(
-        "gpu_pipeline",
-        main_name,
-        source,
-        options,
-        local_dir,
-        shared_dir,
-        constants,
-        ordinary_dirs,
-        capture,
-        &RendererCaptureConfiguration::without_capture(),
-        None,
-        dependency,
-    )
-}
-
-/// Explicit versioned producer; profile and capture identity are one host selection.
-#[allow(clippy::too_many_arguments)]
-pub fn compile_renderer_program_with_capture_profile(
-    main_name: &str,
-    source: &str,
-    options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
-    constants: &str,
-    ordinary_dirs: &[PathBuf],
-    configuration: &RendererCaptureConfiguration,
-    generated_sources: &Path,
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<rcc::frontend::Program, String> {
-    let from_shared = local_dir == shared_dir;
-    let actual_shared = snapshot_legacy_sources(shared_dir, generated_sources, dependency)?;
-    let local_dir = if from_shared {
-        actual_shared.as_path()
-    } else {
-        local_dir
-    };
-    compile_renderer_capture(
-        "gpu_pipeline",
-        main_name,
-        source,
-        options,
-        local_dir,
-        &actual_shared,
-        constants,
-        ordinary_dirs,
-        configuration.capture.as_ref(),
-        configuration,
-        None,
-        dependency,
+        &mut |_, _| {},
     )
     .map_err(|e| e.to_string())
 }

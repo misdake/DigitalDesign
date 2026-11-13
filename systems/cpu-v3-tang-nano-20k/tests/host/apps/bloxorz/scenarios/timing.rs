@@ -43,13 +43,13 @@ pub(in super::super) fn render_time(fade: bool) -> ApplicationCase {
         );
         assert_eq!(
             source
-                .matches("render_start = profiler_active_milliseconds();")
+                .matches("render_start = time_milliseconds();")
                 .count(),
             1
         );
         source = source.required_replace(
-            "render_start = profiler_active_milliseconds();",
-            "signal(8,number);render_start = profiler_active_milliseconds();",
+            "render_start = time_milliseconds();",
+            "signal(8,number);render_start = time_milliseconds();",
         );
 
         source
@@ -57,7 +57,7 @@ pub(in super::super) fn render_time(fade: bool) -> ApplicationCase {
 }
 
 pub(in super::super) fn cpu_cost(legacy: bool) -> ApplicationCase {
-    let mut case = edited("renderer_game_three_frames", move |mut source| {
+    let case = edited("renderer_game_three_frames", move |mut source| {
         source = stage_source(source, 0, false, false, true);
 
         assert_eq!(source.matches("level_reset(0);").count(), 1);
@@ -75,6 +75,5 @@ pub(in super::super) fn cpu_cost(legacy: bool) -> ApplicationCase {
         source
     });
 
-    case.hook = true;
     case
 }

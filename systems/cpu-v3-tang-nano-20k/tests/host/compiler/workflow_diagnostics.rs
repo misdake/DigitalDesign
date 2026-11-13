@@ -33,7 +33,6 @@ fn fixture(label: &str, body: &str) -> PathBuf {
         shared_dir: &system.join("rcc"),
         constants: "",
         ordinary_dirs: &[],
-        configuration: &resolver::RendererCaptureConfiguration::without_capture(),
     }
     .compile_checked(
         entry.to_str().unwrap(),
@@ -200,7 +199,6 @@ fn checked_compilation_preserves_source_location_for_build_reports() {
         shared_dir: &system.join("rcc"),
         constants: "",
         ordinary_dirs: &[],
-        configuration: &resolver::RendererCaptureConfiguration::without_capture(),
     }
     .compile_checked_source(
         "broken.rs",

@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 use cpu_v3::rcc_backend::CompilerOptions;
 use cpu_v3_boot_format as boot;
-use rcc_modules::capture_profile::layout as gpu_layout;
+use rcc_modules::layout as gpu_layout;
 use std::path::PathBuf;
 #[path = "../../build_support/application_entry.rs"]
 mod application_entry;

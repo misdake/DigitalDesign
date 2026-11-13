@@ -1,6 +1,5 @@
 //! Read-only producer metadata and physical GPU data deliberately differ.
 use super::*;
-use crate::profiling_capture::abi as cap;
 use gpu_v2::system::vliw_command as abi;
 fn pause_at(sim: &mut CpuV3SystemEmu, channel: u8) {
     for _ in 0..20000 {
@@ -22,35 +21,6 @@ fn metadata_observation_preserves_pending_dirty_missed_and_gpu_stale_views() {
     memory[0x6000] = 0xbeef;
     memory[0x5800..0x5900].fill(0x5678);
     memory[0x4000..0x4040].fill(0);
-    for (field, value) in [
-        (
-            cap::GPU_CAPTURE_H_VERSION,
-            cap::GPU_CAPTURE_EXPLICIT_VERSION,
-        ),
-        (cap::GPU_CAPTURE_H_WORDS, cap::GPU_CAPTURE_WORDS),
-        (
-            cap::GPU_CAPTURE_H_BINDINGS,
-            cap::GPU_CAPTURE_BINDINGS_SELF_CONTAINED,
-        ),
-        (cap::GPU_CAPTURE_H_RANGE_WORDS, cap::GPU_CAPTURE_RANGE_WORDS),
-        (
-            cap::GPU_CAPTURE_H_RANGE_VERSION,
-            cap::GPU_CAPTURE_RANGE_VERSION,
-        ),
-        (cap::GPU_CAPTURE_H_RANGE_COUNT, 1),
-    ] {
-        memory[0x4000 + usize::from(field)] = value;
-    }
-    memory[0x4100..0x4108].copy_from_slice(&[
-        cap::GPU_CAPTURE_READ,
-        cap::GPU_CAPTURE_TAG_BUFFER,
-        0xa000,
-        0,
-        512,
-        0,
-        0,
-        0,
-    ]);
     let params = abi::memcpy_params(0xb000, 0xa000, 512).unwrap();
     for (out, bytes) in memory[0x24000..].iter_mut().zip(params.as_chunks::<2>().0) {
         *out = u16::from_le_bytes(*bytes);
@@ -77,7 +47,7 @@ fn metadata_observation_preserves_pending_dirty_missed_and_gpu_stale_views() {
     let mut code = Vec::new();
     code.extend(load_immediate16(1, 1));
     code.extend(load_immediate16(2, 0x4002));
-    code.extend(load_immediate16(0, cap::GPU_CAPTURE_PUBLISHED));
+    code.extend(load_immediate16(0, 0x1234));
     code.push(store(0, 2, 0));
     code.push(device_send(1, 7, 1));
     code.extend(load_immediate16(2, 0x5000));
@@ -100,13 +70,10 @@ fn metadata_observation_preserves_pending_dirty_missed_and_gpu_stale_views() {
     assert_eq!(
         sim.core()
             .pending_scalar_store_word(PhysicalWordAddress::new(0x4002)),
-        Some(cap::GPU_CAPTURE_PUBLISHED)
+        Some(0x1234)
     );
     assert_eq!(sim.physical_memory()[0x4002], 0);
-    assert_eq!(
-        sim.metadata_words(0x4002, 1).unwrap(),
-        [cap::GPU_CAPTURE_PUBLISHED]
-    );
+    assert_eq!(sim.metadata_words(0x4002, 1).unwrap(), [0x1234]);
     sim.step().unwrap();
     pause_at(&mut sim, 2);
     assert!(sim.gpu().last_error().is_none());
@@ -118,28 +85,10 @@ fn metadata_observation_preserves_pending_dirty_missed_and_gpu_stale_views() {
     let regs = sim.core().architectural_gprs();
     let physical = sim.physical_memory().to_vec();
     for _ in 0..16 {
-        assert_eq!(
-            sim.metadata_words(0x4002, 1).unwrap(),
-            [cap::GPU_CAPTURE_PUBLISHED]
-        );
+        assert_eq!(sim.metadata_words(0x4002, 1).unwrap(), [0x1234]);
         assert_eq!(sim.metadata_words(0x6000, 1).unwrap(), [0xbeef]);
         assert_eq!(sim.metadata_words(0x5000, 1).unwrap(), [0xa55a]);
         assert_eq!(sim.physical_memory()[0x5000], 0x5678);
-        let snapshot = crate::profiling_capture::freeze_data(
-            crate::profiling_capture::CapturePoint {
-                gate_pc: 0,
-                header_word: 0x4000,
-                ranges_word: 0x4100,
-            },
-            |start, count| sim.metadata_words(start, count),
-            &sim.physical_memory(),
-        )
-        .unwrap();
-        assert_eq!(
-            snapshot.header[usize::from(cap::GPU_CAPTURE_H_FLAGS)],
-            cap::GPU_CAPTURE_PUBLISHED
-        );
-        assert_eq!(snapshot.payloads, [0x5678u16.to_le_bytes().repeat(256)]);
         assert_eq!(
             sim.physical_memory()[0x4002],
             0,
@@ -166,7 +115,7 @@ fn metadata_observation_preserves_pending_dirty_missed_and_gpu_stale_views() {
     assert!(halted);
     let gpr = sim.core().architectural_gprs();
     assert_eq!((gpr[4], gpr[5], gpr[6]), (0xa55a, 0xa55a, 0x5678));
-    assert_eq!(sim.physical_memory()[0x4002], cap::GPU_CAPTURE_PUBLISHED);
+    assert_eq!(sim.physical_memory()[0x4002], 0x1234);
     assert_eq!(sim.physical_memory()[0x5000], 0x5678);
     let marker = sim.device::<crate::ObservationDevice>(7).unwrap();
     assert_eq!((marker.writes(1), marker.writes(2)), (1, 1));

@@ -37,7 +37,6 @@ pub(in super::super) fn frame_schedule(pose: &str, shadow_cost: bool) -> Applica
         source
     });
     case.edit_modules = shadow_cost.then_some(instrument_shadow_cost);
-    case.hook = true;
     case
 }
 

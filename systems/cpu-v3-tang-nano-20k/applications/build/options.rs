@@ -85,19 +85,11 @@ impl BuildOption {
         })
     }
 }
-pub const COMMON_OPTIONS: &[BuildOption] = &[
-    BuildOption::environment(
-        "hook",
-        "GPU_PROFILER_HOOK",
-        OptionValues::Choices(&["0", "1"]),
-    ),
-    BuildOption::environment(
-        "gpu-debug",
-        "RCC_GPU_DEBUG",
-        OptionValues::Choices(&["0", "1"]),
-    ),
-    BuildOption::environment("manifest", "GPU_PROFILER_MANIFEST", OptionValues::InputFile),
-];
+pub const COMMON_OPTIONS: &[BuildOption] = &[BuildOption::environment(
+    "gpu-debug",
+    "RCC_GPU_DEBUG",
+    OptionValues::Choices(&["0", "1"]),
+)];
 #[cfg(test)]
 mod tests {
     use super::*;

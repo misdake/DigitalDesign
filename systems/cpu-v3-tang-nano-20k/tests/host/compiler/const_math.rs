@@ -11,7 +11,6 @@ fn compile(source: &str, label: &str) -> Result<rcc::frontend::Program, String> 
         shared_dir: &root.join("rcc"),
         constants: "",
         ordinary_dirs: &[],
-        configuration: &resolver::RendererCaptureConfiguration::without_capture(),
     }
     .compile_checked(
         label,

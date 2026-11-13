@@ -19,102 +19,6 @@ fn words(path: &Path, data: &[u16]) {
 }
 
 #[test]
-fn prepared_bridge_capture_reads_fixed_push_after_reset_and_normal_retirement() {
-    use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
-    let (program, resources, out) = application_case(
-        "static-cache-prepared-capture",
-        Some("run(3,false,128);"),
-        None,
-        scenarios::static_cache(scenarios::cache_level(), true),
-    );
-    let records = global(&program, "GPU_CB_RECORDS");
-    let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
-    sim.cpu_mut().set_boot_window(&program.words);
-    preload(sim.cpu_mut().physical_memory_mut(), &resources);
-    let mut captures = vec![];
-    let mut expected = vec![];
-    let mut samples = 0;
-    let mut halted = false;
-    let mut minimum_sp = 0xc000;
-    for _ in 0..12_000_000 {
-        if sim.waiting_for_vblank() {
-            sim.advance_vblank();
-        }
-        let sp = sim.cpu().registers()[13];
-        if sp != 0 {
-            minimum_sp = minimum_sp.min(sp);
-        }
-        let outcome = sim.step().unwrap();
-        if let StepOutcome::Signaled(e) = outcome {
-            let m = sim.cpu().physical_memory_slice();
-            match e.signal_type {
-                5 => {
-                    assert!(!sim.gpu().busy());
-                    let header = &m[usize::from(e.value)..usize::from(e.value) + 64];
-                    assert_eq!(header[9], 0);
-                    assert_eq!(&header[12..14], &[0x4000, 0x4c]);
-                    let c = &m[records..records + 224];
-                    assert_eq!(c[209] & 1, 1);
-                    assert!(c[209] & !1 != 0, "button parts were recorded");
-                    assert!(header[20] >= c[211] * 2);
-                    if captures.len() == 1 {
-                        words(
-                            &out.join("warm-command.bin"),
-                            &m[0x9880 * 64..0x9880 * 64 + usize::from(c[5])],
-                        );
-                        words(
-                            &out.join("warm-push.bin"),
-                            &m[0x9a00 * 64..0x9a00 * 64 + usize::from(c[6])],
-                        );
-                        words(&out.join("warm-template.bin"), &m[0x9800 * 64..0x9880 * 64]);
-                        words(&out.join("warm-record.bin"), c);
-                        words(
-                            &out.join("warm-facts.bin"),
-                            &m[global(&program, "GPU_CB_CAPTURE_FACTS")
-                                ..global(&program, "GPU_CB_CAPTURE_FACTS")
-                                    + usize::from(c[15]) * 4],
-                        );
-                        words(&out.join("warm-physical.bin"), m);
-                    }
-                    captures.push(json!({"header":header,"persistent_push_words":c[211],"group_words":c[210],"fact_count":c[15]}));
-                }
-                6 => {
-                    let at = usize::from(e.value) * 64;
-                    expected = m[at..at + 16]
-                        .iter()
-                        .chain(m[at + 64..at + 88].iter())
-                        .copied()
-                        .collect();
-                    samples = 0;
-                }
-                7 => {
-                    assert_eq!(e.value, expected[samples]);
-                    samples += 1;
-                }
-                _ => {}
-            }
-        }
-        if let StepOutcome::Halted { signal } = outcome {
-            assert_eq!(
-                signal,
-                0x600d,
-                "GPU API fault {:?}",
-                &sim.cpu().physical_memory_slice()
-                    [global(&program, "GPU_API_FAULT")..global(&program, "GPU_API_FAULT") + 6]
-            );
-            halted = true;
-            break;
-        }
-    }
-    assert!(halted, "bounded prepared capture timeout");
-    assert_eq!(captures.len(), 3);
-    assert_eq!(samples, 40);
-    assert!(minimum_sp >= 0xa000);
-    assert!(sim.gpu().last_error().is_none());
-    std::fs::write(out.join("capture-qualification.json"),serde_json::to_vec_pretty(&json!({"captures":captures,"minimum_sp":minimum_sp,"max_steps":12000000,"scope":"real A publication and C indirect dependency capture; fixed push samples read through capture exports before normal START"})).unwrap()).unwrap();
-}
-
-#[test]
 #[ignore = "explicit bounded full-system Bloxorz timing and physical outputs"]
 fn warm_second_frame_system_timing() {
     runner::host_worker(|| {
@@ -142,7 +46,7 @@ fn measure() {
             &format!("static-cache-{arm}"),
             Some("run(3,false,128);"),
             None,
-            scenarios::static_cache(scenarios::cache_level(), false),
+            scenarios::static_cache(scenarios::cache_level()),
         );
         std::fs::write(out.join("application.listing"), &program.listing).unwrap();
         let code = program

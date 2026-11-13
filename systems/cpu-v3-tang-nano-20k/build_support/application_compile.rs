@@ -1,5 +1,5 @@
 //! Approved application source loading, entry and diagnostic specialization.
-use super::{ApplicationFrontend, ApplicationSource, CapturePolicy, SourceSpecialization};
+use super::{ApplicationFrontend, ApplicationSource};
 use crate::artifact::Inputs;
 use crate::{application_entry, rcc_modules};
 use cpu_v3::rcc_backend::{self, CompilerOptions};
@@ -54,73 +54,6 @@ pub(super) fn compile_program(
     };
     let entry = if explicit_gpu { "main" } else { entry };
     let source_dir = path.parent().unwrap();
-    let hook_enabled = policy
-        .capture
-        .hook_enabled(std::env::var("GPU_PROFILER_HOOK").ok().as_deref());
-    let capture = if policy.capture == CapturePolicy::Diagnostic && hook_enabled {
-        let manifest_path = PathBuf::from(
-            std::env::var_os("GPU_PROFILER_MANIFEST")
-                .expect("gpu_profiler_board requires GPU_PROFILER_MANIFEST"),
-        );
-        inputs.watch(&manifest_path);
-        Some(
-            rcc_modules::RendererCaptureConfiguration::from_manifest(
-                source_dir.join("profiler_gate.rs"),
-                &manifest_path,
-            )
-            .expect("explicit GPU profiler identity"),
-        )
-    } else if explicit_gpu && hook_enabled {
-        if let Some(path) = std::env::var_os("GPU_PROFILER_MANIFEST") {
-            let path = PathBuf::from(path);
-            inputs.watch(&path);
-            Some(
-                rcc_modules::RendererCaptureConfiguration::from_manifest(
-                    shared.join("profiler_gate.rs"),
-                    &path,
-                )
-                .expect("GPU profiler build identity"),
-            )
-        } else {
-            Some(rcc_modules::RendererCaptureConfiguration::with_default_hook())
-        }
-    } else {
-        None
-    };
-    let native_root;
-    let shared = if matches!(policy.specialization, SourceSpecialization::ProfilerMemcpy) {
-        assert!(
-            policy.capture == CapturePolicy::Diagnostic && explicit_gpu,
-            "MEMCPY specialization requires the explicit GPU diagnostic"
-        );
-        let root = shared.parent().expect("system RCC source directory");
-        let helper = root.join("examples/gpu_profiler_board/tools/native_sources.py");
-        inputs.watch(&helper);
-        inputs.watch(&root.join("tests/fixtures/capture_native_explicit_tail.rcc"));
-        for file in std::fs::read_dir(shared).unwrap().flatten() {
-            if file.path().extension().is_some_and(|s| s == "rs") {
-                inputs.watch(&file.path());
-            }
-        }
-        native_root =
-            PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("profiler-memcpy-rcc");
-        let mut producer = std::process::Command::new("python");
-        producer
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .arg(helper)
-            .arg("--shared")
-            .arg(shared)
-            .arg("--output")
-            .arg(&native_root)
-            .arg("--explicit-api");
-        let status = producer
-            .status()
-            .expect("native diagnostic source producer");
-        assert!(status.success(), "native diagnostic specialization failed");
-        native_root.as_path()
-    } else {
-        shared
-    };
     inputs.entry(
         &path.display().to_string(),
         &rcc::frontend::ModuleSource {
@@ -131,13 +64,11 @@ pub(super) fn compile_program(
     inputs.embedded_standard_library();
     let mut dependencies = vec![];
     let mut program = if explicit_gpu {
-        let disabled = rcc_modules::RendererCaptureConfiguration::without_capture();
         rcc_modules::GpuSources {
             local_dir: source_dir,
             shared_dir: shared,
             constants,
             ordinary_dirs: &policy.ordinary_dirs,
-            configuration: capture.as_ref().unwrap_or(&disabled),
         }
         .compile_checked_source(
             &path.display().to_string(),
@@ -232,7 +163,7 @@ fn source_failure(error: rcc::frontend::CompileError) -> BuildDiagnostic {
 fn asset_banks(
     reserved: &[crate::boot::BootResource],
 ) -> Vec<rcc::frontend::static_assets::AssetBank> {
-    use crate::rcc_modules::capture_profile::layout;
+    use crate::rcc_modules::layout;
     let mut banks = Vec::new();
     for (first, end) in [
         (layout::GPU_ASSET_FIRST_SECTOR, layout::GPU_ASSET_END_SECTOR),

@@ -429,7 +429,7 @@ fn ordinary_batch_slots_publish_after_retirement_and_free_on_finite_exit() {
     super::preload(sim.cpu_mut().physical_memory_mut(), &resources);
     let batch = global(&program, "SHADOW_BATCH_BASE");
     let records = global(&program, "GPU_CB_RECORDS");
-    let facts = global(&program, "GPU_CB_CAPTURE_FACTS");
+    let facts = global(&program, "GPU_CB_RESOURCE_FACTS");
     let heap_begin = global(&program, "HEAP_BEGIN");
     let heap_end = global(&program, "HEAP_END");
     let heads = global(&program, "FREE_HEADS");

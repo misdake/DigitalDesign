@@ -15,7 +15,7 @@ fn main(){
  check(aligned&15==0&&aligned>=raw&&aligned+256<=raw+271);
  scratch[0u16]=0xa11e;scratch[255u16]=0xb11e;
  check(gpu_native_scratch()[0u16]==0xa11e&&gpu_native_scratch()[255u16]==0xb11e);
- check(GPU_CB_CAPTURE_FACTS[0u16]==0&&GPU_CB_CAPTURE_FACTS[511u16]==0);
+ check(GPU_CB_RESOURCE_FACTS[0u16]==0&&GPU_CB_RESOURCE_FACTS[511u16]==0);
  let saved=read_dseg_page(3);gpu_record_init();check(gpu_arena_init(8192));
  check(!gpu_record_configure(2,0x9800,1,0x9a00,1));
  check(!gpu_record_configure(0,0x9800,0,0x9a00,1));
@@ -113,7 +113,7 @@ fn record_core_preflights_seals_and_replays_without_a_public_factory() {
             "GPU_NATIVE_SCRATCH",
             "GPU_OBJECT_BACKING",
             "CAPTURE_RESERVATION",
-            "GPU_CB_CAPTURE_FACTS",
+            "GPU_CB_RESOURCE_FACTS",
             "GPU_API_FAULT",
             "GPU_EXECUTION",
             "GPU_PRESENT",

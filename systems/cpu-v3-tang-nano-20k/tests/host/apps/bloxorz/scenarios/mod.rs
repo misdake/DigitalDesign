@@ -1,5 +1,5 @@
 //! Explicit application fixture inputs; labels only identify output directories.
-use super::harness::{ApplicationCase, CaptureProbe, SourcePatch};
+use super::harness::{ApplicationCase, SourcePatch};
 use super::*;
 
 fn edited(entry: &'static str, edit: impl FnOnce(String) -> String + 'static) -> ApplicationCase {
@@ -21,8 +21,7 @@ pub(super) use fragile::{
 };
 mod rendering;
 pub(super) use rendering::{
-    cached_veil, gallery, goal_close, goal_mid, heap_capture, hint_order, orientation, rerecord,
-    stage,
+    cached_veil, gallery, goal_close, goal_mid, hint_order, orientation, rerecord, stage,
 };
 mod shadow;
 use rendering::stage_source;

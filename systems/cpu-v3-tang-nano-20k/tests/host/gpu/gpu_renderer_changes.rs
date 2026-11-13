@@ -45,7 +45,6 @@ fn application(name: &str) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>)
         &example.join("rcc"),
         &root.join("rcc"),
         &constants,
-        &resolver::RendererCaptureConfiguration::without_capture(),
         &rcc::frontend::rustc_check::RustcCheck::new(out.join("checked")),
         &mut |_| {},
     )

@@ -8,7 +8,7 @@ param(
 $buildLabel = if ($Label -eq '') { 'bloxorz-rtt-' + [guid]::NewGuid().ToString('N').Substring(0,8) } else { $Label }
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path
-$packageAbiSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'systems/cpu-v3-tang-nano-20k/rcc/gpu_capture_abi.rs')
+$packageAbiSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/snapshot_abi.rs')
 $packageCommandAbiMatch = [regex]::Match($packageAbiSource, 'pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = ([0-9]+);')
 if (-not $packageCommandAbiMatch.Success) { throw 'Missing canonical RTT command ABI' }
 $packageCommandAbi = [int]$packageCommandAbiMatch.Groups[1].Value

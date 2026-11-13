@@ -12,8 +12,8 @@ mod gamepad;
 use gamepad::*;
 mod time;
 use time::*;
-mod profiler_clock;
-use profiler_clock::*;
+mod time;
+use time::*;
 mod frame_stats;
 use frame_stats::*;
 
@@ -206,7 +206,7 @@ fn run(limit: u16) {
     frame_stats_reset(stats.as_array());
     let mut eye_x = fix32::zero();
     let mut eye_z = fix32::zero();
-    let mut previous_ms = profiler_active_milliseconds();
+    let mut previous_ms = time_milliseconds();
     let mut observed: u16 = 65535;
     let mut completed = false;
     let mut count: u16 = 0;
@@ -217,7 +217,7 @@ fn run(limit: u16) {
         if completed {
             display.wait_vblank();
         }
-        let now = profiler_active_milliseconds();
+        let now = time_milliseconds();
         // Millisecond conversion uses bounded integers before Q16.16 scaling.
         let mut milliseconds = now - previous_ms;
         if milliseconds > 100 {
@@ -276,14 +276,11 @@ fn run(limit: u16) {
                 },
             );
         }
-        let resume_before = profiler_resume_epoch();
+
         time_clear_microseconds();
         gpu.submit(buffer);
         buffer = gpu.wait();
         observed = time_microseconds();
-        if profiler_resume_epoch() != resume_before {
-            observed = 65535;
-        }
         completed = true;
         if back_b {
             display.set_next_swap(color_b.ptr());
