@@ -97,6 +97,17 @@ fn compile(arm: &str, level: u16) {
             )
         })
         .collect();
+    let mut code_segments = vec![];
+    for segment in &program.code_segments {
+        let name = format!("application.cseg{}.dbg", segment.cseg);
+        std::fs::write(out.join(&name), segment.debug.render()).unwrap();
+        std::fs::write(
+            out.join(format!("application.cseg{}.asm", segment.cseg)),
+            &segment.listing,
+        )
+        .unwrap();
+        code_segments.push(json!({"cseg":segment.cseg,"debug":name,"bytes":segment.words.len()*2}));
+    }
     let functions: BTreeMap<_, _> = ["record_static_scene", "draw_shadow", "draw_shadow_hull"]
         .into_iter()
         .map(|name| {
@@ -137,7 +148,7 @@ fn compile(arm: &str, level: u16) {
         "main_sha256":hash(&std::fs::read(out.join("compiled-main.rs")).unwrap()),
         "producer_sha256":hash(&std::fs::read(out.join("renderer_assets.rs")).unwrap()),
         "sources":sources,"compiler":compiler,"functions":functions,"globals":globals,"resources":resource_hashes,
-        "static_words":budget["static_words"],"pose_probe":false,"automatic_inline":automatic_inline,
+        "static_words":budget["static_words"],"pose_probe":false,"automatic_inline":automatic_inline,"code_segments":code_segments,"total_code_bytes":program.total_code_words()*2,
         "time_protocol":"PLAY from producer, dt=0 except frame8=17ms; neutral through frame6; frame7 Select(level1) or Right(level29), release at frame8"});
     std::fs::write(
         out.join("profile-input.json"),
@@ -220,11 +231,18 @@ fn run(out: &Path) {
     let mut submits = vec![];
     let debug =
         rcc::parse_debug(&std::fs::read_to_string(out.join("application.dbg")).unwrap()).unwrap();
-    let code_start = cpu_v3::PhysicalWordAddress::from_segment_offset(7, 0).get() as usize;
-    let code: Vec<_> = native.physical_memory()[code_start..code_start + 65536]
-        .iter()
-        .map(|word| cpu_v3::decode(*word))
-        .collect();
+    let mut bank_debug = BTreeMap::from([(7u16, debug)]);
+    if let Some(segments) = metadata["code_segments"].as_array() {
+        for s in segments {
+            bank_debug.insert(
+                s["cseg"].as_u64().unwrap() as u16,
+                rcc::parse_debug(
+                    &std::fs::read_to_string(out.join(s["debug"].as_str().unwrap())).unwrap(),
+                )
+                .unwrap(),
+            );
+        }
+    }
     // Passive instruction observations do not alter the emulated workload.
     // Columns: DSEG3 writes, changed-page writes, DSEG3 reads, cache waits.
     let mut windows: BTreeMap<usize, BTreeMap<String, [u64; 4]>> = BTreeMap::new();
@@ -248,9 +266,10 @@ fn run(out: &Path) {
                 minimum_sp = minimum_sp.min(gprs[13]);
             }
             if let Some((segment, pc)) = core.executing_instruction_address() {
-                assert_eq!(segment, 7);
-                let key = (core.retired_words(), pc);
-                let column = match code[usize::from(pc)] {
+                let key = (core.retired_words(), segment, pc);
+                let column = match cpu_v3::decode(
+                    native.physical_memory()[(usize::from(segment) << 16) + usize::from(pc)],
+                ) {
                     cpu_v3::Instruction::WriteDataSegment { index: Some(3), .. } => Some(0),
                     cpu_v3::Instruction::ReadSpecial {
                         special: cpu_v3::SpecialRegister::DataSegment3,
@@ -261,7 +280,9 @@ fn run(out: &Path) {
                 };
                 if let Some(column) = column.filter(|_| last_window_instruction != Some(key)) {
                     last_window_instruction = Some(key);
-                    let name = debug
+                    let name = bank_debug
+                        .get(&segment)
+                        .expect("instruction CSEG debug")
                         .functions
                         .iter()
                         .find(|f| f.addr.0 <= usize::from(pc) && usize::from(pc) <= f.addr.1)
@@ -279,12 +300,12 @@ fn run(out: &Path) {
                 }
                 for watch in &mut watches {
                     if let Some((start, ret, ordinal)) = watch.active {
-                        if pc == ret {
+                        if segment == 7 && pc == ret {
                             spans.push(json!({"function":watch.name,"frame":ordinal,"start":start,"end":cycle,"cpu_cycles":cycle-start,"cpu_ms":(cycle-start) as f64/54000.0}));
                             watch.active = None;
                         }
                     }
-                    if pc == watch.entry && watch.active.is_none() {
+                    if segment == 7 && pc == watch.entry && watch.active.is_none() {
                         watch.active = Some((cycle, gprs[LINK_REGISTER], frame));
                     }
                 }

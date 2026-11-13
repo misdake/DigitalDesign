@@ -167,7 +167,7 @@ pub fn try_compile_with_inline_report(
     let (baseline, baseline_costs) =
         compile_ir_with_allocations(&functions, options, main, debug.clone())?;
     report.baseline_lowering = start.elapsed();
-    report.baseline_words = Some(baseline.words.len());
+    report.baseline_words = Some(baseline.total_code_words());
     let start = Instant::now();
     let mut selection = InlineSelection {
         originals: &functions,
@@ -185,7 +185,7 @@ pub fn try_compile_with_inline_report(
         }
         Err(error) => return Err(error),
     };
-    report.candidate_words = Some(candidate.words.len());
+    report.candidate_words = Some(candidate.total_code_words());
     let changed: HashSet<_> = report
         .ir
         .sites
@@ -205,11 +205,11 @@ pub fn try_compile_with_inline_report(
         .filter(|frame| frame.rejection().is_some())
         .map(|frame| frame.function)
         .collect();
-    let allowance = 64.max(baseline.words.len().div_ceil(10));
-    let rejection = if candidate.words.len() > baseline.words.len() + allowance {
+    let allowance = 64.max(baseline.total_code_words().div_ceil(10));
+    let rejection = if candidate.total_code_words() > baseline.total_code_words() + allowance {
         Some(InlineRejection::CodeGrowth {
-            baseline: baseline.words.len(),
-            candidate: candidate.words.len(),
+            baseline: baseline.total_code_words(),
+            candidate: candidate.total_code_words(),
             allowance,
         })
     } else {

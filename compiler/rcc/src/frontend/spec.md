@@ -1,8 +1,9 @@
 # rcc — a minimal Rust-subset language for this CPU
 
 > rcc (retro console compiler) is a **tiny strict subset of Rust syntax**: every valid rcc
-> program is also a valid Rust program, so rust-analyzer parses, highlights and navigates
-> it with no plugin at all.
+> program uses Rust syntax, so rust-analyzer parses, highlights and navigates it.
+> The CSEG placement attributes below are explicit RCC metadata; RustcCheck removes
+> only that metadata from its checking copy.
 > The design uses a low-level C-like address model under Rust syntax. Ordinary storage uses
 > `Buf`/`Array`; raw `Ptr` dereference and typed conversion are the explicit `unsafe` boundary.
 > The target has no reference values, lifetimes, or dynamic bounds checks.
@@ -1495,3 +1496,41 @@ For generated system boot applications, `RCC_GPU_DEBUG=0|1` selects the boolean
 and `cpu-v3-boot.map` records `rcc_gpu_debug=true|false`. This adds no runtime
 flag, target instructions or GPU command ABI field. It does not classify or
 rewrite checks in the production graphics driver.
+
+
+## Code placement on CPU V3
+
+An application may declare its logical code segments once in the root file:
+
+```rust
+#![link_csegs(default = "app", app = 7, shadow_math = 6)]
+```
+
+`#[link_cseg = "shadow_math"]` places one ordinary function or inherent method.
+`#![link_cseg = "shadow_math"]` sets the current definition file's default,
+including generated methods/cleanup functions. Precedence is function, file,
+then application default. A file default does not propagate through `mod` or
+`use` into another file. The root registry must include a declared default;
+names are unique and values are u16 CSEG numbers. Multiple names may map to the
+same physical CSEG. Unknown names, duplicates and metadata on other syntax
+positions are errors. Explicit placement on a `Drop` method remains unsupported;
+its generated functions follow the definition file.
+
+Only retained runtime bodies need code placement. Globals, statics, assets and
+static buffers are allocated once for the complete program, independently of
+code placement. Const evaluation does not acquire a code segment. RustcCheck
+checks the same bodies, types and ownership after removing only CSEG metadata.
+`link_cseg` places only the independently emitted function body. Inline copies
+belong to the final caller's CSEG, including nested expansion; global/static
+references still name the same data. Unexpanded calls target the original body
+in its declared CSEG. A body that is no longer referenced is removed normally.
+Ordinary inline hints, `#[inline(never)]`, eligibility and target-cost limits
+apply across CSEGs too. Use `#[inline(never)]` when execution must remain in the
+declared bank; observing the current CSEG after inlining observes the caller's
+actual execution bank. Multi-CSEG programs currently reject near function
+addresses,
+including local address-taking that could escape to another CSEG. Use direct
+calls. Unannotated programs retain the existing single-window path.
+
+The [CPU V3 CSEG linker](/ip/cpu-v3/docs/rcc-cseg.md) defines the call ABI and
+per-window capacity. A fitted system separately defines allowed physical banks.

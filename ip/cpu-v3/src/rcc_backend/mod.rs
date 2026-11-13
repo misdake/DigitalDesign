@@ -207,14 +207,20 @@ fn reachable_functions(
 }
 
 mod abi;
+mod cseg;
 mod linker;
 mod lowering;
 mod program;
 use abi::CPU_V3_REGISTER_CONVENTION;
-use linker::link;
+use cseg::link;
 pub use linker::{validate_program, ProgramValidationError};
 use lowering::lower_function;
-pub use program::{BackendError, BackendResourceError, BackendResourceKind, CpuV3Program};
+pub use program::{
+    BackendError, BackendResourceError, BackendResourceKind, CpuV3CodeSegment, CpuV3Program,
+};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cseg_tests;

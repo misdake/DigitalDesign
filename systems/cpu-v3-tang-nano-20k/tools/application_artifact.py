@@ -67,6 +67,21 @@ class Artifact:
                 require(original in self.files and digest(self.files[original]) == origin['input_sha256'], 'source origin: '+name)
         require(int(self.files['application.static-words']) == m['target']['static_words'], 'static extent')
         self._check_package()
+        seen = {m['target']['code_segment']}
+        for segment in m.get('code_segments', []):
+            bank, offset = segment['cseg'], segment['code_base_words']
+            require(type(bank) is int and bank not in seen and 1 <= bank <= 6 and offset == 0, 'CSEG placement')
+            seen.add(bank)
+            code = self.files[segment['code']]
+            require(0 < len(code) <= 131072 and len(code) % 2 == 0 and len(code) == segment['bytes'], 'CSEG code extent')
+            require(segment['physical_bytes'] == (bank << 17)+offset*2, 'CSEG physical address')
+            require(any(r['kind'] == 'copy' and r['address_bytes'] == segment['physical_bytes']
+                        and self.files[r['file']] == code for r in m['resources']), 'CSEG loader COPY')
+            debug = self.files[segment['debug']].decode('utf-8')
+            require(debug.startswith('# rcc debug info v2\n') and segment['listing'] in self.files, 'CSEG debug/listing')
+            for name, lo, hi in re.findall(r'^func (\S+) (0x[0-9a-f]+)\.\.(0x[0-9a-f]+) .+ frame \d+$', debug, re.M):
+                require(offset <= int(lo, 16) < int(hi, 16) <= offset+len(code)//2, 'CSEG function extent: '+name)
+
 
     @staticmethod
     def _insert(table, name, value):

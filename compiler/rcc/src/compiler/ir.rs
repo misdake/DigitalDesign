@@ -777,6 +777,8 @@ pub enum InlineHint {
 
 #[derive(Clone, Debug)]
 pub struct IrFunc {
+    /// Placement of the independent function body; inline copies belong to their caller.
+    pub cseg: Option<u16>,
     pub inline_hint: InlineHint,
     pub name: FuncName,
     /// vregs holding the parameters at function entry (defined by the ABI)

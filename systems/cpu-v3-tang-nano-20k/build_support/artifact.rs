@@ -223,6 +223,13 @@ pub fn write(record: BuildRecord<'_>, assets: &mut Vec<String>) {
         "code":"application.v3bin","package":"cpu-v3-boot.bin","debug":"application.dbg","listing":"application.asm",
         "files":files,"source_map":source_map,"declared_inputs":declared,"resources":resources
     });
+    if !program.code_segments.is_empty() {
+        manifest["code_segments"]=json!(program.code_segments.iter().map(|s|json!({
+            "cseg":s.cseg,"code_base_words":s.code_base,"physical_bytes":(usize::from(s.cseg)<<17)+usize::from(s.code_base)*2,
+            "bytes":s.words.len()*2,"code":format!("application.cseg{}.v3bin",s.cseg),
+            "debug":format!("application.cseg{}.dbg",s.cseg),"listing":format!("application.cseg{}.asm",s.cseg),
+        })).collect::<Vec<_>>());
+    }
     manifest["artifact_id"] = json!(hash(&serde_json::to_vec(&manifest).unwrap()));
     std::fs::write(
         output.join("application.build.json"),

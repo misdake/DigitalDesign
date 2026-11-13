@@ -7,10 +7,33 @@ use rcc::{AllocationError, InlineError};
 pub struct CpuV3Program {
     /// Profile of the source selected by the frontend, for software identity.
     pub gpu_debug: bool,
+    /// Explicit entry CSEG; None retains the caller-selected legacy placement.
+    pub cseg: Option<Word>,
+    pub code_segments: Vec<CpuV3CodeSegment>,
     pub code_base: Word,
     pub words: Vec<Word>,
     pub listing: String,
     pub debug: rcc::DebugInfo,
+}
+
+/// An additional independently addressed 128-KiB instruction window.
+#[derive(Clone, Debug)]
+pub struct CpuV3CodeSegment {
+    pub cseg: Word,
+    pub code_base: Word,
+    pub words: Vec<Word>,
+    pub listing: String,
+    pub debug: rcc::DebugInfo,
+}
+impl CpuV3Program {
+    pub fn total_code_words(&self) -> usize {
+        self.words.len()
+            + self
+                .code_segments
+                .iter()
+                .map(|s| s.words.len())
+                .sum::<usize>()
+    }
 }
 
 /// An error the CpuV3 backend reports after the frontend has accepted the
@@ -21,6 +44,7 @@ pub struct CpuV3Program {
 pub enum BackendError {
     /// A referenced function was not provided by the frontend.
     UnknownFunction(String),
+    Cseg(String),
     /// The linked code image violated an encoding requirement.
     Validation(ProgramValidationError),
     Allocation(AllocationError),
@@ -31,6 +55,7 @@ pub enum BackendError {
 impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Cseg(message) => f.write_str(message),
             Self::UnknownFunction(name) => write!(f, "unknown function `{name}`"),
             Self::Validation(error) => write!(f, "{error}"),
             Self::Allocation(error) => write!(f, "{error}"),

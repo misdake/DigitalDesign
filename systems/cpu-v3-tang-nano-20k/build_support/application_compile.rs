@@ -122,7 +122,7 @@ pub(super) fn compile_program(
     }
     asset_relocation::apply(&mut program.assets.placed, &policy.sector_relocations)
         .map_err(|e| BuildDiagnostic::new("asset relocation", e))?;
-    let assets = program
+    let mut assets: Vec<crate::boot::BootResource> = program
         .assets
         .placed
         .iter()
@@ -141,6 +141,29 @@ pub(super) fn compile_program(
     let buffers = program.assets.buffers.clone();
     let program = rcc_backend::try_compile(program, options, entry)
         .map_err(|e| BuildDiagnostic::new("target compilation", e))?;
+    if program
+        .cseg
+        .is_some_and(|cseg| usize::from(cseg) != crate::boot::SINGLE_BOOT_CODE_WORD >> 16)
+    {
+        return Err(BuildDiagnostic::new(
+            "CSEG placement",
+            "the cold application entry must use CSEG7",
+        ));
+    }
+    for segment in &program.code_segments {
+        // Main memory's free instruction windows. CSEG0 is CPU data; CSEG7 is entry.
+        // GPU/asset banks are not implicit instruction storage on this system.
+        if !(1..=6).contains(&segment.cseg) || segment.code_base != 0 {
+            return Err(BuildDiagnostic::new(
+                "CSEG placement",
+                "additional system CSEGs must be 1..6 at offset zero",
+            ));
+        }
+        assets.push(crate::boot::BootResource::copy(
+            usize::from(segment.cseg) << 17,
+            segment.words.iter().flat_map(|w| w.to_le_bytes()).collect(),
+        ));
+    }
     Ok(CompiledApplication {
         options: options.clone(),
         program,

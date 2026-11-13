@@ -225,6 +225,7 @@ fn projection(
                 continue;
             }
             let mut item = item.clone();
+            super::cseg::strip_check(&mut item);
             if let Item::Struct(s) = &mut item {
                 if resources.contains_key(&s.ident.to_string()) {
                     s.attrs.retain(|a| !a.path.is_ident("rcc_resource"));

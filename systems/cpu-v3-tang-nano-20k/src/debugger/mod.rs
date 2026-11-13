@@ -97,6 +97,7 @@ impl V3DebugSession {
         program: CpuV3Program,
         mut source_overrides: HashMap<u16, String>,
     ) -> V3DebugSession {
+        assert!(program.cseg.is_none(), "the interactive debugger accepts single-CSEG programs; use the bank-aware sim/emu package runners");
         // inject the embedded standard library sources so library tabs render
         for (name, text) in rcc::frontend::std_sources() {
             if let Some(index) = program.debug.files.iter().position(|f| f == name) {
@@ -1177,6 +1178,8 @@ mod tests {
 
     fn session(words: Vec<Word>) -> V3DebugSession {
         V3DebugSession::from_program(CpuV3Program {
+            cseg: None,
+            code_segments: vec![],
             gpu_debug: false,
             code_base: 0,
             words,
@@ -1248,6 +1251,8 @@ mod tests {
     fn struct_layouts_are_published_and_expanded() {
         // a hand-built .dbg: one struct static `p` at data address 0x0040
         let program = CpuV3Program {
+            cseg: None,
+            code_segments: vec![],
             gpu_debug: false,
             code_base: 0,
             words: vec![halt()],

@@ -197,6 +197,12 @@ pub(super) fn application_case(
             .unwrap(),
     )
     .unwrap();
+    for segment in &program.code_segments {
+        resources.push((
+            (usize::from(segment.cseg) << 17) + usize::from(segment.code_base) * 2,
+            segment.words.iter().flat_map(|w| w.to_le_bytes()).collect(),
+        ));
+    }
     (program, resources, out)
 }
 

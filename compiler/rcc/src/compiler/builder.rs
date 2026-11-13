@@ -90,6 +90,7 @@ impl FuncBuilder {
         let entry = 0;
         let mut b = Self {
             func: IrFunc {
+                cseg: None,
                 inline_hint: InlineHint::Default,
                 name,
                 params: (0..n_params as VReg).collect(),

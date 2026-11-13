@@ -5,6 +5,8 @@ display, device allocation, and fitted timing belong to the Tang Nano 20K system
 
 ## Documents
 
+- [RCC CSEG linking](rcc-cseg.md): explicit placement, far-call ABI, per-bank layout and products.
+
 - [`testing.md`](testing.md): private unit-suite ownership, grouped core/backend
   cases and the boundary to system qualification.
 - [`isa.md`](isa.md): normative ISA, architectural addressing, fault, and ABI specification for

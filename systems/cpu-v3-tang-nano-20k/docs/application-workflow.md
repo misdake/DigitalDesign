@@ -177,7 +177,7 @@ consumes this verified application snapshot directly.
 ## Existing-input packing and qualification
 
 ```powershell
-cargo run --release -p cpu-v3-boot-format --bin cpu-v3-pack -- target/bloxorz-build/application.v3bin --project target/bloxorz-build/renderer-repack.conf -o target/bloxorz-repacked.bin
+cargo run --release -p cpu-v3-boot-format --bin cpu-v3-pack -- target/bloxorz-build/application.v3bin --project target/bloxorz-build/application.repack.conf -o target/bloxorz-repacked.bin
 ```
 
 This command's normal/build dependency graph contains only the std-only format

@@ -32,10 +32,17 @@ pub(super) enum Line {
         line: Option<u32>,
         short: bool,
     },
+    /// Preserve r14 while transferring to a named function in the same CSEG.
+    TailCall {
+        function: FuncName,
+        line: Option<u32>,
+        short: bool,
+    },
     LoadFunctionAddress {
         function: FuncName,
         dst: u8,
         line: Option<u32>,
+        short: bool,
     },
 }
 
@@ -44,14 +51,17 @@ impl Line {
         match self {
             Self::Word { .. } => 1,
             Self::Label(_) => 0,
-            Self::Branch { short, .. } | Self::Jump { short, .. } | Self::Call { short, .. } => {
+            Self::Branch { short, .. }
+            | Self::Jump { short, .. }
+            | Self::Call { short, .. }
+            | Self::TailCall { short, .. }
+            | Self::LoadFunctionAddress { short, .. } => {
                 if *short {
                     1
                 } else {
                     2
                 }
             }
-            Self::LoadFunctionAddress { .. } => 2,
         }
     }
 }
@@ -118,6 +128,7 @@ impl Lines {
 
     fn load_function_address(&mut self, function: FuncName, dst: u8) {
         self.items.push(Line::LoadFunctionAddress {
+            short: false,
             function,
             dst,
             line: self.cur_line,
@@ -126,11 +137,20 @@ impl Lines {
 }
 
 pub(super) struct LoweredFunction {
+    /// Ordinary bodies keep a guard; proven terminal synthetic blocks need none.
+    pub(super) trailing_guard: bool,
+    pub(super) cseg: Option<u16>,
     pub(super) name: FuncName,
     pub(super) lines: Vec<Line>,
     pub(super) static_addresses: Vec<u16>,
     pub(super) frame_size: usize,
     pub(super) callee_saved: usize,
+}
+
+impl LoweredFunction {
+    pub(super) fn size_words(&self) -> usize {
+        self.lines.iter().map(Line::size).sum::<usize>() + usize::from(self.trailing_guard)
+    }
 }
 
 pub(super) fn lower_function(
@@ -288,6 +308,8 @@ pub(super) fn lower_function(
     }
 
     LoweredFunction {
+        trailing_guard: true,
+        cseg: function.cseg,
         name: function.name,
         lines: lines.items,
         static_addresses,

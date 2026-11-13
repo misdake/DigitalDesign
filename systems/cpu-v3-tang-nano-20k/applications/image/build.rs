@@ -133,6 +133,25 @@ fn build() -> Result<(), cpu_v3_tools::diagnostics::BuildDiagnostic> {
     }
     std::fs::write(output.join("application.repack.conf"), repack).unwrap();
     assets.push("application.repack.conf".into());
+    for segment in &program.code_segments {
+        let stem = format!("application.cseg{}", segment.cseg);
+        for (suffix, data) in [
+            (
+                "v3bin",
+                segment
+                    .words
+                    .iter()
+                    .flat_map(|w| w.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            ),
+            ("asm", segment.listing.as_bytes().to_vec()),
+            ("dbg", segment.debug.render().into_bytes()),
+        ] {
+            let name = format!("{stem}.{suffix}");
+            std::fs::write(output.join(&name), data).unwrap();
+            assets.push(name);
+        }
+    }
     assets.extend(application.extra_assets.iter().cloned());
     artifact::write(
         artifact::BuildRecord {

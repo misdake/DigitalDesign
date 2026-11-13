@@ -23,13 +23,13 @@ fn relax_one(from: usize, target: usize, short: &mut bool, changed: &mut bool) {
 /// Iterative branch relaxation: any branch, jump, or call whose final signed
 /// 8-bit relative offset fits shrinks from the two-word wide form (PFX12 +
 /// relative) to one word. Widths only ever shrink, so the layout converges.
-fn relax_branches(functions: &mut [LoweredFunction], code_base: usize) {
+pub(super) fn relax_branches(functions: &mut [LoweredFunction], code_base: usize) {
     loop {
         let mut function_addresses = HashMap::new();
         let mut cursor = code_base;
         for function in functions.iter() {
             function_addresses.insert(function.name, cursor);
-            cursor += function.lines.iter().map(Line::size).sum::<usize>() + 1;
+            cursor += function.size_words();
         }
         let mut changed = false;
         for function in functions.iter_mut() {
@@ -53,6 +53,11 @@ fn relax_branches(functions: &mut [LoweredFunction], code_base: usize) {
                         relax_one(address, labels[target], short, &mut changed);
                     }
                     Line::Call {
+                        function: target,
+                        short,
+                        ..
+                    }
+                    | Line::TailCall {
                         function: target,
                         short,
                         ..
@@ -178,10 +183,11 @@ pub fn validate_program(words: &[Word], code_base: Word) -> Result<(), ProgramVa
     Ok(())
 }
 
-pub(super) fn link(
+pub(super) fn link_segment(
     mut functions: Vec<LoweredFunction>,
     options: &CompilerOptions,
     frontend_debug: rcc::frontend::FrontendDebug,
+    external_addresses: &HashMap<rcc::FuncName, usize>,
 ) -> Result<CpuV3Program, BackendError> {
     let code_base = usize::from(options.code_base);
     relax_branches(&mut functions, code_base);
@@ -189,7 +195,10 @@ pub(super) fn link(
     let mut cursor = code_base;
     for function in &functions {
         function_addresses.insert(function.name, cursor);
-        cursor += function.lines.iter().map(Line::size).sum::<usize>() + 1;
+        cursor += function.size_words();
+    }
+    for (&name, &address) in external_addresses {
+        function_addresses.entry(name).or_insert(address);
     }
     if cursor > 1 << 16 {
         return Err(resource(
@@ -332,30 +341,50 @@ pub(super) fn link(
                 }
                 Line::Call {
                     function: target,
-                    line,
+                    line: source_line,
+                    short,
+                }
+                | Line::TailCall {
+                    function: target,
+                    line: source_line,
                     short,
                 } => {
                     let span = if *short { 1 } else { 2 };
                     let offset =
                         relative_offset(code_base + words.len() + span, function_addresses[target]);
+                    let link = matches!(line, Line::Call { .. });
                     if *short {
-                        words.push(cpu_v3::jump_and_link_relative(offset));
-                        (1, *line)
-                    } else {
+                        words.push(if link {
+                            cpu_v3::jump_and_link_relative(offset)
+                        } else {
+                            cpu_v3::jump_relative(offset)
+                        });
+                    } else if link {
                         words.extend(wide_call(offset));
-                        (2, *line)
+                    } else {
+                        words.extend(wide_jump(offset));
                     }
+                    (span, *source_line)
                 }
                 Line::LoadFunctionAddress {
                     function: target,
                     dst,
                     line,
+                    short,
                 } => {
-                    words.extend(cpu_v3::load_immediate16(
-                        *dst,
-                        function_addresses[target] as u16,
-                    ));
-                    (2, *line)
+                    let address = function_addresses[target];
+                    if *short {
+                        assert!(address < 16, "short function address is out of range");
+                        words.push(cpu_v3::immediate_unsigned(
+                            cpu_v3::ImmediateOp::LoadUnsigned,
+                            *dst,
+                            address as u8,
+                        ));
+                        (1, *line)
+                    } else {
+                        words.extend(cpu_v3::load_immediate16(*dst, address as u16));
+                        (2, *line)
+                    }
                 }
             };
             let emitted_count = words.len() - emitted;
@@ -367,7 +396,9 @@ pub(super) fn link(
             }
         }
         let end = code_base + words.len();
-        words.push(cpu_v3::halt());
+        if function.trailing_guard {
+            words.push(cpu_v3::halt());
+        }
         debug_functions.push(rcc::DebugFunc {
             name: function.name.to_string(),
             file,
@@ -422,6 +453,8 @@ pub(super) fn link(
     validate_program(&words, options.code_base)?;
     debug_lines.sort();
     Ok(CpuV3Program {
+        cseg: None,
+        code_segments: vec![],
         gpu_debug: frontend_debug.gpu_debug,
         code_base: options.code_base,
         words,

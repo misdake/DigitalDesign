@@ -18,6 +18,7 @@ mod aggregate_values;
 mod byte_slices;
 mod cfg;
 mod constants;
+mod cseg;
 mod diagnostics;
 mod fixed_literals;
 mod ownership_containers;
@@ -32,13 +33,16 @@ mod value_methods;
 fn inline_hint(function: &ItemFn) -> Result<crate::InlineHint, syn::Error> {
     let mut hint = None;
     for attr in &function.attrs {
-        if attr.path.is_ident("allow") || attr.path.is_ident("doc") {
+        if attr.path.is_ident("allow")
+            || attr.path.is_ident("doc")
+            || attr.path.is_ident("link_cseg")
+        {
             continue;
         }
         if !attr.path.is_ident("inline") {
             return Err(err(
                 attr,
-                "attributes are not supported (except #[allow], #[doc], #[inline])",
+                "attributes are not supported (except #[allow], #[doc], #[inline], #[link_cseg])",
             ));
         }
         if hint.is_some() {
@@ -117,6 +121,8 @@ impl Program {
 pub struct FrontendDebug {
     /// Check profile of the actual selected source.
     pub gpu_debug: bool,
+    /// Explicit application code segment; None preserves the single-window format.
+    pub default_cseg: Option<u16>,
     /// Exclusive word address of allocated statics, before function linking.
     /// Includes imported modules and the standard library; not the arena limit.
     pub static_data_end: usize,
@@ -489,6 +495,7 @@ fn parse_files(
         resource::drop_syntax::validate_attributes(&files)?;
     }
     cfg::prepare(&mut files, checks.gpu_debug)?;
+    let csegs = cseg::prepare(&mut files)?;
     let mut assets = static_assets::prepare(
         &mut files,
         file_names,
@@ -701,6 +708,7 @@ fn parse_files(
     let mut out = vec![];
     let mut debug = FrontendDebug {
         gpu_debug: checks.gpu_debug,
+        default_cseg: csegs.default,
         files: file_names.to_vec(),
         static_data_end: globals.next_addr,
         ..FrontendDebug::default()
@@ -717,10 +725,14 @@ fn parse_files(
         )
         .map_err(|error| (fi, error))?;
         ir.inline_hint = inline_hint(f).map_err(|error| (fi, error))?;
+        ir.cseg = csegs.function(fi, &f.attrs).map_err(|error| (fi, error))?;
         out.push(ir);
         debug.funcs.push(fdbg);
     }
     emit_data_init(&mut out, &globals).map_err(|error| (0, error))?;
+    for function in &mut out {
+        function.cseg = function.cseg.or(csegs.default);
+    }
 
     // globals/consts for the debugger
     for (name, (addr, ty)) in &globals.scalars {

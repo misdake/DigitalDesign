@@ -46,6 +46,14 @@ from Bloxorz or RTT directory suffixes.
 | `application.build.json` | Versioned application, file, source and resource identities |
 | `application.inputs/<sha256>` | Content snapshots not already present in another exported file |
 
+Explicit multi-CSEG applications additionally export `application.csegN.v3bin`,
+`.asm` and `.dbg`. Their `code_segments` entries bind CSEG, local code base,
+physical byte address and file identities. Each code segment is also a normal
+COPY resource in the package and complete repack recipe. The root code/debug
+files retain their default-CSEG meaning; local PCs from another bank must use
+that bank's debug map. The offline checker validates the segment's placement,
+size, function ranges and matching loader COPY.
+
 Application-specific resource files and repack configurations remain exported.
 The old unconsumed `boot-assets.manifest` FNV inventory is retired and removed
 when materializing into an older export directory.

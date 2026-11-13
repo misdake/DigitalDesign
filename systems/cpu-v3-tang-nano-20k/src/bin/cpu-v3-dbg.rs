@@ -357,6 +357,8 @@ mod tests {
 
     fn session() -> V3DebugSession {
         V3DebugSession::from_program(CpuV3Program {
+            cseg: None,
+            code_segments: vec![],
             gpu_debug: false,
             code_base: 0,
             words: vec![cpu_v3::halt()],
