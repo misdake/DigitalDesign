@@ -32,7 +32,7 @@ module TangNano20KSdramNativeBridge108M54M #(
   begin
    remaining=(logical_address&((21'd1<<BANK_BIT)-1))|
              ((logical_address>>(BANK_BIT+2))<<BANK_BIT);
-   bank=logical_address>>BANK_BIT;
+   bank=logical_address[BANK_BIT+:2];
    bank_row_key={bank,remaining[18:8]};
   end
  endfunction

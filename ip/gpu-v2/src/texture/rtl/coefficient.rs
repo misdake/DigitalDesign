@@ -221,7 +221,7 @@ pub fn verilog() -> &'static str {
   genvar m;
   generate for(m=0;m<3;m=m+1) begin:metadata_bank
     SDPX9B #(.READ_MODE(1'b0),.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),
-      .BLK_SEL_0(0),.BLK_SEL_1(0),.RESET_MODE("SYNC")) bank(
+      .BLK_SEL_0(3'b000),.BLK_SEL_1(3'b000),.RESET_MODE("SYNC")) bank(
       .DO(meta_do[m*36+:36]),.DI(meta_data[m*36+:36]),
       .BLKSELA(3'b0),.BLKSELB(3'b0),
       .ADA({5'b0,cwr,1'b0,4'b1111}),.ADB({5'b0,meta_ra,5'b0}),

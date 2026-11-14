@@ -93,7 +93,7 @@ module SdramController #(
         begin
             remaining = (logical_address & ((21'd1 << BANK_BIT) - 1)) |
                 ((logical_address >> (BANK_BIT + 2)) << BANK_BIT);
-            native_address[20:19] = logical_address >> BANK_BIT;
+            native_address[20:19] = logical_address[BANK_BIT+:2];
             native_address[18:0] = remaining;
         end
     endfunction

@@ -149,7 +149,7 @@ const BODY: &str = r#"input wire clk,reset,ce,
   if(MODE==1)begin:synchronous_owner
    if(NATIVE)begin:hardware
     wire [35:0] q;
-    SDPX9B #(.READ_MODE(1'b0),.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.BLK_SEL_0(0),.BLK_SEL_1(0),.RESET_MODE("SYNC")) bank(
+    SDPX9B #(.READ_MODE(1'b0),.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.BLK_SEL_0(3'b000),.BLK_SEL_1(3'b000),.RESET_MODE("SYNC")) bank(
      .DO(q),.DI({30'b0,reserve_owner}),.BLKSELA(3'b0),.BLKSELB(3'b0),
      .ADA({5'b0,alloc[3:0],1'b0,4'b1111}),.ADB({5'b0,owner_ra,5'b0}),
      .CLKA(clk),.CLKB(clk),.CEA(ow),.CEB(or_en),.OCE(1'b1),.RESETA(1'b0),.RESETB(reset));
@@ -177,7 +177,7 @@ const BODY: &str = r#"input wire clk,reset,ce,
  end endgenerate
  generate if(NATIVE)begin:payload_hardware
   genvar b;for(b=0;b<2;b=b+1)begin:banks
-   SDPX9B #(.READ_MODE(1'b0),.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.BLK_SEL_0(0),.BLK_SEL_1(0),.RESET_MODE("SYNC")) bank(
+   SDPX9B #(.READ_MODE(1'b0),.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.BLK_SEL_0(3'b000),.BLK_SEL_1(3'b000),.RESET_MODE("SYNC")) bank(
     .DO(data_do[b*36+:36]),.DI(write_payload[b*36+:36]),.BLKSELA(3'b0),.BLKSELB(3'b0),
     .ADA({3'b0,wptr,1'b0,4'b1111}),.ADB({3'b0,rptr,5'b0}),
     .CLKA(clk),.CLKB(clk),.CEA(pw),.CEB(pr),.OCE(1'b1),.RESETA(1'b0),.RESETB(reset));

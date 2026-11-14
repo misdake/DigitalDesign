@@ -156,7 +156,7 @@ active_bank<=!active_bank;end
  .wide_valid(wide_valid),.wide_asign(wide_asign),
  .bound_valid(engine_bound_valid),.bound_empty(engine_bound_empty),.bound_xlo(bound_xlo),.bound_xhi(bound_xhi),.bound_ylo(bound_ylo),.bound_yhi(bound_yhi),
  .wide_result_data(result_data),
- .busy(s_busy),.import_busy(prepare_import_busy),.done(s_done),.error(s_error));
+ .busy(s_busy),.import_busy(prepare_import_busy),.done(s_done),.error(s_error),.math_busy());
 
  rc_compute compute(
  .clk(clk),.reset(reset),.ce(ce),.phase(phase),
@@ -172,5 +172,7 @@ active_bank<=!active_bank;end
  .quad_end_valid(quad_end_valid),.quad_end_qid(current_id),.quad_end_mask(quad_mask),
  .result_we(result_we),.result_wa(result_wa),.result_wd(result_wd),
  .depth_event_valid(depth_event_valid),.depth_event_pid(depth_event_pid),.depth_event_z16(depth_event_z16),.depth_event_pass(depth_event_pass),
- .lod_valid(lod_valid),.lod_id(lod_id),.lod_value(lod_value),.busy(p_busy),.error(p_error));
+ .lod_valid(lod_valid),.lod_id(lod_id),.lod_value(lod_value),.busy(p_busy),.error(p_error),.tap_valid(),
+ // Optional observability outputs are intentionally not consumed here.
+ .tap_pid(),.tap_index(),.tap_a(),.tap_b());
 endmodule

@@ -137,3 +137,22 @@ fn descriptor_rejects_wrong_target_paths_and_incomplete_fit_closure() {
     .unwrap();
     assert!(verify_fit(&root, &project).is_err());
 }
+
+#[test]
+fn diagnostic_fit_binds_raw_logs_and_mapped_warning_evidence() {
+    let (root, project) = fixture("diagnostic-fit");
+    for name in warning_files("fixture") {
+        fs::write(root.join(name), "diagnostic fixture\n").unwrap();
+    }
+    seal_fit(&root, &project).unwrap();
+    let seal: Value =
+        serde_json::from_slice(&fs::read(root.join("gowin-fit.json")).unwrap()).unwrap();
+    assert_eq!(seal["version"], 2);
+    verify_fit(&root, &project).unwrap();
+    for name in warning_files("fixture") {
+        let path = root.join(name);
+        fs::write(&path, "changed diagnostic\n").unwrap();
+        assert!(verify_fit(&root, &project).is_err());
+        fs::write(&path, "diagnostic fixture\n").unwrap();
+    }
+}

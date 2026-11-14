@@ -256,7 +256,8 @@ pub fn inspect_gowin_artifact<T: GowinTarget>(directory: &Path) -> Result<Value,
         "project":project.project_name,"top":project.top_module,"logic_top":project.logic_top_module,
         "device":device(project.device),"bitstream":canonicalize_for_gowin(bitstream)?,
         "descriptor_sha256":hash(&fs::read(directory.join(FILE))?),
-        "flash_capacity_bytes":T::inventory().fitted_device_capacity_bits(ResourceKind::SpiFlashDevice).map(|v|v/8)}),
+        "flash_capacity_bytes":T::inventory().fitted_device_capacity_bits(ResourceKind::SpiFlashDevice).map(|v|v/8),
+        "warnings":super::warnings::summary(super::audit_gowin_warnings(directory, &project.project_name)?)}),
     )
 }
 
@@ -274,7 +275,16 @@ pub(super) fn seal_fit(root: &Path, project: &GeneratedGowinProject) -> Result<(
     for name in names {
         files.insert(name.clone(), hash(&fs::read(source_path(root, &name)?)?));
     }
-    let mut seal = json!({"schema":"digitaldesign.gowin-fit","version":1,"files":files});
+    let diagnostics = warning_files(name);
+    let version = if diagnostics.iter().all(|name| root.join(name).is_file()) {
+        for name in diagnostics {
+            files.insert(name.clone(), hash(&fs::read(source_path(root, &name)?)?));
+        }
+        2
+    } else {
+        1
+    }; // Explicit migration of older fits retains their limited closure.
+    let mut seal = json!({"schema":"digitaldesign.gowin-fit","version":version,"files":files});
     seal["fit_id"] = json!(hash(
         &serde_json::to_vec(&seal).map_err(|e| invalid(e.to_string()))?
     ));
@@ -283,6 +293,18 @@ pub(super) fn seal_fit(root: &Path, project: &GeneratedGowinProject) -> Result<(
         serde_json::to_vec_pretty(&seal).map_err(|e| invalid(e.to_string()))?,
     )?;
     Ok(())
+}
+
+fn warning_files(name: &str) -> [String; 7] {
+    [
+        format!("impl/gwsynthesis/{name}.log"),
+        format!("impl/pnr/{name}.log"),
+        format!("impl/pnr/{name}.vo"),
+        "impl/pnr/cmd.do".into(),
+        "gowin-warnings.json".into(),
+        "gowin-console.log".into(),
+        format!("impl/gwsynthesis/{name}.prj"),
+    ]
 }
 pub(super) fn verify_fit(root: &Path, project: &GeneratedGowinProject) -> Result<(), GowinError> {
     let mut seal: Value = serde_json::from_slice(&fs::read(root.join("gowin-fit.json"))?)
@@ -293,7 +315,7 @@ pub(super) fn verify_fit(root: &Path, project: &GeneratedGowinProject) -> Result
         .remove("fit_id")
         .ok_or_else(|| invalid("fit identity"))?;
     if seal["schema"] != "digitaldesign.gowin-fit"
-        || seal["version"] != 1
+        || (seal["version"] != 1 && seal["version"] != 2)
         || id != hash(&serde_json::to_vec(&seal).map_err(|e| invalid(e.to_string()))?)
     {
         return Err(invalid("fit identity/schema"));
@@ -302,7 +324,7 @@ pub(super) fn verify_fit(root: &Path, project: &GeneratedGowinProject) -> Result
         .as_object()
         .ok_or_else(|| invalid("fit files"))?;
     let name = &project.project_name;
-    let expected = [
+    let mut expected = vec![
         FILE.to_owned(),
         build_manifest::FILE_NAME.to_owned(),
         format!("impl/pnr/{name}.fs"),
@@ -310,6 +332,9 @@ pub(super) fn verify_fit(root: &Path, project: &GeneratedGowinProject) -> Result
         format!("impl/pnr/{name}.tr"),
         format!("impl/gwsynthesis/{name}_syn_rsc.xml"),
     ];
+    if seal["version"] == 2 {
+        expected.extend(warning_files(name));
+    }
     if files.len() != expected.len() || expected.iter().any(|name| !files.contains_key(name)) {
         return Err(invalid("incomplete fit closure"));
     }
@@ -325,7 +350,7 @@ pub(super) fn verify_fit(root: &Path, project: &GeneratedGowinProject) -> Result
 pub fn run_gowin_artifact_cli<T: GowinTarget>() -> Result<(), GowinCliError> {
     let options = parse_gowin_cli_args(std::env::args_os().skip(1))?;
     if options.help {
-        println!("gowin-artifact DIRECTORY [--check-existing] [--program-existing | --program-flash OFFSET FILE] [--gowin-home PATH]");
+        println!("gowin-artifact DIRECTORY [--check-existing] [--program-existing | --program-flash OFFSET FILE] [--gowin-home PATH]\ngowin-artifact DIRECTORY --warnings-only PROJECT");
         return Ok(());
     }
     if options.build || options.program || options.audit_current {
@@ -336,6 +361,24 @@ pub fn run_gowin_artifact_cli<T: GowinTarget>() -> Result<(), GowinCliError> {
     let directory = options
         .output
         .ok_or_else(|| GowinCliError::Argument("hardware directory required".into()))?;
+    if let Some(project) = options.warnings_only {
+        let report = super::audit_gowin_warnings(&directory, &project)?;
+        let count = report["unacknowledged"].as_array().unwrap().len();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&super::warnings::summary(report))
+                .expect("warning summary")
+        );
+        return if count == 0 {
+            Ok(())
+        } else {
+            Err(GowinError::UnacknowledgedWarnings {
+                count,
+                report: directory,
+            }
+            .into())
+        };
+    }
     let inspection = inspect_gowin_artifact::<T>(&directory)?;
     if options.program_existing || options.program_flash.is_some() {
         let toolchain = options

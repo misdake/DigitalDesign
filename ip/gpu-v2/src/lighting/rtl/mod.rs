@@ -504,6 +504,38 @@ fn numeric(name: &str, f: Format) -> String {
     }
 }
 
+// Preserve the full expression context, then explicitly select the existing
+// fixed-width result. In particular, never slice before an arithmetic shift.
+fn calculation_bits(e: &Event, frame: &LoweredFrame) -> u32 {
+    let out = frame.values[e.output.unwrap()].format.bits;
+    let numeric_bits = |i: usize| {
+        let f = frame.values[e.inputs[i]].format;
+        f.bits + u32::from(!f.signed)
+    };
+    let width = match e.operation {
+        Operation::Add | Operation::Sub => numeric_bits(0).max(numeric_bits(1)) + 1,
+        Operation::Multiply => numeric_bits(0) + numeric_bits(1),
+        Operation::Resize
+        | Operation::BinaryScale
+        | Operation::Shift
+        | Operation::RescaleFloor(_) => numeric_bits(0),
+        Operation::ShiftLeft(n) => numeric_bits(0) + n,
+        Operation::Slice(_) => frame.values[e.inputs[0]].format.bits,
+        _ => out,
+    };
+    width.max(out)
+}
+
+fn logic_assignment(e: &Event, frame: &LoweredFrame, expression: &str) -> String {
+    let v = e.output.unwrap();
+    let out = frame.values[v].format.bits;
+    if calculation_bits(e, frame) > out {
+        format!("wide{v} = {expression}; t{v} = wide{v}[{}:0];", out - 1)
+    } else {
+        format!("t{v} = {expression};")
+    }
+}
+
 fn scalar_shareable(frame: &LoweredFrame, instructions: &[Instruction]) -> bool {
     let first = &instructions[0];
     if first.members.len() != 1 {
@@ -945,6 +977,10 @@ impl Emitter {
         for &id in &ins.members {
             let v = frame.events[id].output.unwrap();
             writeln!(self.body, "reg {} t{v};", decl(frame.values[v].format)).unwrap();
+            let bits = calculation_bits(&frame.events[id], frame);
+            if bits > frame.values[v].format.bits {
+                writeln!(self.body, "reg signed [{}:0] wide{v};", bits - 1).unwrap();
+            }
             if self.range_shifts
                 && matches!(frame.events[id].operation, Operation::Shift)
                 && !self.q_amounts.contains(&frame.events[id].inputs[1])
@@ -962,6 +998,11 @@ impl Emitter {
                         let max = max.min(i128::from(width - 1)) as u32;
                         let bits = (32 - max.leading_zeros()).max(1);
                         writeln!(self.body, "reg [{}:0] shift{v}_{direction};", bits - 1).unwrap();
+                        if direction == "r" {
+                            let amount_bits = frame.values[amount].format.bits;
+                            writeln!(self.body, "reg signed [{amount_bits}:0] magnitude{v};")
+                                .unwrap();
+                        }
                     }
                 }
             }
@@ -986,6 +1027,7 @@ impl Emitter {
                 }
             };
             let num = |i: usize| numeric(&get(i), frame.values[e.inputs[i]].format);
+            let assign = |expression: String| logic_assignment(e, frame, &expression);
             if let Some(rewrite) = self.power_mask.filter(|rewrite| rewrite.event == id) {
                 let descriptor = ins
                     .inputs
@@ -1011,8 +1053,12 @@ impl Emitter {
                         // its low14 bits have consumers. No RNE is moved.
                         writeln!(self.body,"// Exact q windows; code0/1/2/3 => right12/15/14/13.\ncase ({} & 2'b11)",get(1)).unwrap();
                         for (code, shift) in Q_WINDOWS {
-                            writeln!(self.body, "2'd{code}: t{v} = {} >> {shift};", get(0))
-                                .unwrap();
+                            writeln!(
+                                self.body,
+                                "2'd{code}: {}",
+                                assign(format!("{} >> {shift}", get(0)))
+                            )
+                            .unwrap();
                         }
                         writeln!(self.body, "endcase").unwrap();
                         continue;
@@ -1039,7 +1085,7 @@ impl Emitter {
                                 range.hi.max(0)
                             };
                             if max == 0 {
-                                writeln!(body, "t{v} = {};", num(0)).unwrap();
+                                writeln!(body, "{}", assign(num(0))).unwrap();
                                 return;
                             }
                             let suffix = if right { "r" } else { "l" };
@@ -1065,15 +1111,31 @@ impl Emitter {
                                 };
                                 writeln!(
                                     body,
-                                    "if ({magnitude} >= {width}) t{v} = {fill}; else begin"
+                                    "if ({magnitude} >= {width}) {} else begin",
+                                    assign(fill)
                                 )
                                 .unwrap();
                             }
+                            let bounded_max = max.min(i128::from(width - 1)) as u32;
+                            let bits = (32 - bounded_max.leading_zeros()).max(1);
+                            if right {
+                                writeln!(
+                                    body,
+                                    "magnitude{v} = {magnitude}; {shift} = magnitude{v}[{}:0];",
+                                    bits - 1
+                                )
+                                .unwrap();
+                            } else {
+                                writeln!(body, "{shift} = {}[{}:0];", get(1), bits - 1).unwrap();
+                            }
                             writeln!(
                                 body,
-                                "{shift} = {magnitude};\nt{v} = {} {} {shift};",
-                                num(0),
-                                if right { ">>>" } else { "<<<" }
+                                "{}",
+                                assign(format!(
+                                    "{} {} {shift}",
+                                    num(0),
+                                    if right { ">>>" } else { "<<<" }
+                                ))
                             )
                             .unwrap();
                             if max >= i128::from(width) {
@@ -1082,10 +1144,19 @@ impl Emitter {
                         };
                         if range.lo == range.hi {
                             if range.lo < 0 {
-                                writeln!(self.body, "t{v} = {} >>> {};", num(0), -range.lo)
-                                    .unwrap();
+                                writeln!(
+                                    self.body,
+                                    "{}",
+                                    assign(format!("{} >>> {}", num(0), -range.lo))
+                                )
+                                .unwrap();
                             } else {
-                                writeln!(self.body, "t{v} = {} <<< {};", num(0), range.lo).unwrap();
+                                writeln!(
+                                    self.body,
+                                    "{}",
+                                    assign(format!("{} <<< {}", num(0), range.lo))
+                                )
+                                .unwrap();
                             }
                         } else if range.lo >= 0 {
                             emit(&mut self.body, false);
@@ -1103,12 +1174,10 @@ impl Emitter {
                     // Never put signed arithmetic inside a ?: expression.
                     writeln!(
                         self.body,
-                        "if ({} < 0) t{v} = {} >>> (-{}); else t{v} = {} <<< {};",
+                        "if ({} < 0) {} else {}",
                         num(1),
-                        num(0),
-                        num(1),
-                        num(0),
-                        num(1)
+                        assign(format!("{} >>> (-{})", num(0), num(1))),
+                        assign(format!("{} <<< {}", num(0), num(1)))
                     )
                     .unwrap();
                     continue;
@@ -1148,7 +1217,7 @@ impl Emitter {
                 }
                 _ => return Err(format!("function operation {:?}", e.operation)),
             };
-            writeln!(self.body, "t{v} = {expr};").unwrap();
+            writeln!(self.body, "{}", assign(expr)).unwrap();
         }
         let names = outputs
             .iter()
@@ -1211,7 +1280,7 @@ impl Emitter {
                 }
             }
             "context.shininess" => "ctx_code".into(),
-            "context.power" | "context.h9-step" => "ctx_power".into(),
+            "context.power" | "context.h9-step" => format!("ctx_power[{}:0]", f.bits - 1),
             _ => return Err("unknown RTL input source".into()),
         };
         writeln!(self.body, "wire {} v{value}_d0 = {source};", decl(f)).unwrap();

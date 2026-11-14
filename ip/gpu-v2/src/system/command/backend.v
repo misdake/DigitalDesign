@@ -134,7 +134,13 @@ wire[15:0]depth_data;
  .context_epoch(context_epoch),.context_mode(context_mode),.context_code(context_code),
  .light_x(light_x),.light_y(light_y),.light_z(light_z),.ambient(ambient),.directional(directional),
  .ray_x(ray_x),.ray_y(ray_y),.ray_k(ray_k),
- .out_valid(lv),.out_ready(lr),.out_key(lk),.out_quad_last(ll),.out_g(lg),.out_h(lh));
+ .out_valid(lv),.out_ready(lr),.out_key(lk),.out_quad_last(ll),.out_g(lg),.out_h(lh),
+ // Optional sampling/debug views do not participate in this parent protocol.
+ .sample_ready(),.sample_data(),.raw_metadata(),.raw_write(),.committed(),.context_slot(),.phase(),.sample_out_valid(),.sample_out_ready(),.packet_out_ready(),.packet_out_valid(),.coefficient_accept(),.packet_out_payload(),.producer_count(),.unwritten_count(),.group_count(),.row_count(),.sample_out_owner(),.sample_out_result(),.context_state(),.c_occupied(),.c_completed(),.d_issue(),.l_issue(),.c_issue(),.d_return(),.l_return(),.c_return(),.uv_write(),.uv_read(),.uv_write_address(),.uv_read_address(),.pixel_accepted(),.out_epoch(),
+`ifndef GPU_V2_LIVE_GLOBALS
+ .context_wait(),.context_accepted(),
+`endif
+ .sample_valid());
  // Public low four slot bits are already in sk; only the global upper bit is missing.
  (* syn_ramstyle="distributed_ram" *)reg public_upper[0:15];
  wire[6:0]sample_address={public_upper[sk[5:2]],sk};

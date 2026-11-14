@@ -17,6 +17,12 @@ manifest, exact FS, PnR resource/timing reports and synthesis resource XML. Read
 verify file identities and repeat the existing timing, fitted resource and
 hierarchical ownership checks. Hash agreement alone is not a passing audit.
 
+New fits also bind the complete warning evidence. The [warning audit](gowin-warnings.md)
+classifies actual mapped primitive ports and bounded source-owned exceptions;
+unknown diagnostics fail new-build qualification. Existing-artifact inspection
+returns a compact warning summary and any remaining unknowns, including explicit
+incomplete coverage for older fits.
+
 ```powershell
 cargo run --release -p digital-design-hardware-gowin --bin gowin-artifact -- target/hardware
 ```

@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 serde_json = "1"
 sha2 = "0.10.9"
+regex = "1"
 digital-design-hardware = { path = "../../core" }
 digital-design-circuit = { path = "../../../circuit" }
 digital-design-hardware-common = { path = "../../common" }

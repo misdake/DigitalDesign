@@ -71,7 +71,9 @@ module gpu_v2_vliw_frontend(
   .geo_we(geo_we),.geo_wa(geo_wa),.geo_wd(geo_wd),
   .phase(phase),.run_enable(run_enable),.quad_valid(rqv),.quad_ready(rqr),.quad_x(qx),.quad_y(qy),.quad_mask(qm),
  .sample_valid(sample_valid),.sample_lane(sample_lane),.sample_cover(sample_cover),.sample_anchor(sample_anchor),.sample_h(sample_h),.quad_end_valid(quad_end_valid),
-  .busy(raster_busy),.done(done_raster),.error(core_error));
+  .busy(raster_busy),.done(done_raster),.error(core_error),.quad_take(),
+ // Optional observability outputs are intentionally not consumed here.
+ .evt_import(),.evt_prep(),.evt_traverse(),.evt_row(),.evt_align(),.evt_credit_wait(),.evt_leaf(),.evt_empty_quad(),.evt_node(),.full_scan());
  gpu_v2_vliw_interpolator interpolator(
 `ifdef GPU_V2_COMMAND_PORTS
 .pool_color(quad_color),

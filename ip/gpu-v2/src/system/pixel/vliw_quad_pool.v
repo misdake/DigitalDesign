@@ -66,6 +66,7 @@ light_valid,light_context_valid,
  reg[7:0]attr_pixel;
  reg[9:0]light_descriptor_q;reg[18:0]sample_descriptor_q;
  reg[5:0]normal_y_high;reg[3:0]depth_mask;
+ // gowin-lint: unused PA1001 producer_used[0],producer_used[1],producer_used[2] -- Low occupancy bits are optional observability; admission only compares producer_used against 8.
  assign global_used=allocated-retired;assign producer_used=allocated-publish_ptr;
  assign light_pending=publish_ptr-light_cursor;assign sample_pending=publish_ptr-sample_cursor;
  assign quad_ready=!reset&&!fault&&global_used<24&&producer_used<8;
@@ -125,13 +126,13 @@ wire[2:0]sample_meta;
  gpu_v2_vliw_pool_meta #(.WIDTH(19)) mn(clk,reset,allocate,allocated[4:0],header_write,next_slot,next_meta);
  gpu_v2_vliw_pool_meta #(.WIDTH(19)) ml(clk,reset,allocate,allocated[4:0],header_write,light_cursor[4:0],light_meta);
  gpu_v2_vliw_pool_meta #(.WIDTH(3)) ms(clk,reset,allocate,allocated[4:0],header_write[2:0],sample_cursor[4:0],sample_meta);
- gpu_v2_vliw_pool_meta #(.WIDTH(19)) mp(clk,reset,allocate,allocated[4:0],header_write,publish_ptr[4:0],publish_meta);
+ gpu_v2_vliw_pool_meta #(.WIDTH(19)) mp(clk,reset,allocate,allocated[4:0],header_write,publish_ptr[4:0],publish_meta); // gowin-lint: allow NL0002 -- Publication payload is optional and unused by the command parent.
  gpu_v2_vliw_pool_meta #(.WIDTH(4)) fi(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,descriptor_issue_slot,issue_mask);
  gpu_v2_vliw_pool_meta #(.WIDTH(4)) fh(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,retired[4:0],head_mask);
  gpu_v2_vliw_pool_meta #(.WIDTH(4)) fn(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,next_slot,next_mask);
  gpu_v2_vliw_pool_meta #(.WIDTH(4)) fl(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,light_cursor[4:0],light_mask);
  gpu_v2_vliw_pool_meta #(.WIDTH(4)) fs(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,sample_cursor[4:0],sample_mask);
- gpu_v2_vliw_pool_meta #(.WIDTH(4)) fp(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,publish_ptr[4:0],publish_mask);
+ gpu_v2_vliw_pool_meta #(.WIDTH(4)) fp(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,publish_ptr[4:0],publish_mask); // gowin-lint: allow NL0002 -- Publication payload is optional and unused by the command parent.
  gpu_v2_vliw_pool_meta #(.WIDTH(8)) ls(clk,reset,uv_lod_event,complete_tail[4:0],lod_value,sample_cursor[4:0],sample_lod);
  // Publication and the two parent descriptor views never arbitrate a read port.
  assign published_slot=publish_ptr[4:0];
@@ -448,8 +449,8 @@ module gpu_v2_vliw_pool_meta #(parameter WIDTH=4)(input clk,reset,we,input[4:0]w
  localparam LANES=(WIDTH+3)/4;wire[LANES*4-1:0]padded={{(LANES*4-WIDTH){1'b0}},wd};
  wire[LANES*4-1:0]lo,hi;genvar j;
  generate for(j=0;j<LANES;j=j+1)begin:lane
-  RAM16SDP4 a(.DO(lo[j*4+:4]),.DI(padded[j*4+:4]),.WAD(wa[3:0]),.RAD(ra[3:0]),.WRE(we&&!reset&&!wa[4]),.CLK(clk));
-  RAM16SDP4 b(.DO(hi[j*4+:4]),.DI(padded[j*4+:4]),.WAD(wa[3:0]),.RAD(ra[3:0]),.WRE(we&&!reset&&wa[4]),.CLK(clk));
+  RAM16SDP4 a(.DO(lo[j*4+:4]),.DI(padded[j*4+:4]),.WAD(wa[3:0]),.RAD(ra[3:0]),.WRE(we&&!reset&&!wa[4]),.CLK(clk)); // gowin-lint: allow NL0001 instances=mi/lane[1:4].a,mh/lane[0].a,mn/lane[0].a,mp/lane[0:4].a,fp/lane[0].a -- This reader specialization does not consume these metadata nibbles.
+  RAM16SDP4 b(.DO(hi[j*4+:4]),.DI(padded[j*4+:4]),.WAD(wa[3:0]),.RAD(ra[3:0]),.WRE(we&&!reset&&wa[4]),.CLK(clk)); // gowin-lint: allow NL0001 instances=mi/lane[1:4].b,mh/lane[0].b,mn/lane[0].b,mp/lane[0:4].b,fp/lane[0].b -- This reader specialization does not consume these metadata nibbles.
  end endgenerate
  wire[LANES*4-1:0]selected=ra[4]?hi:lo;assign q=selected[WIDTH-1:0];
 `endif

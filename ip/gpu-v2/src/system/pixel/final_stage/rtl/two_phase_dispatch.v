@@ -12,4 +12,6 @@ module gpu_v2_postquad_final(input wire shade_phase,input wire clk,reset,ce,prop
  .in_tex_alpha(in_tex_alpha),.out_tex_alpha(out_tex_alpha),
 `endif
 .in_spec(in_spec),.in_g(in_g),.in_h(in_h),
- .out_ready(out_ready),.out_valid(out_valid),.out_rgb(out_rgb),.fault(fault));endmodule
+ .out_ready(out_ready),.out_valid(out_valid),.out_rgb(out_rgb),.fault(fault),.in_accept(),
+ // Optional observability outputs are intentionally not consumed here.
+ .advance(),.out_fire(),.credits(),.queued());endmodule

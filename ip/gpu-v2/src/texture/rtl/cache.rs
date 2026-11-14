@@ -309,7 +309,7 @@ module {MODULE}(
   reg        vic_valid;
   reg [5:0]  vic_line;
   integer    wl, wv;
-  reg [1:0]  o0, o1;
+  reg [1:0] o0, o1;
 
   wire[17:0] head_tag={{head_key[21:17],head_key[14:10],head_key[7:0]}};
   wire tag_write=!reset && ce && !fault_eff && !desc_valid && head_valid &&
@@ -374,6 +374,8 @@ module {MODULE}(
   end
 
 {hit_decode}  always @(*) begin
+    o0={{head_plru[0],(head_plru[0]?head_plru[2]:head_plru[1])}};
+    o1=o0^2'd1;
     vic_valid = 1'b0; vic_line = 6'd0;
     for (wv = 0; wv < {ways}; wv = wv + 1) begin
       if (!vic_valid && (head_state[wv*2+:2] == 2'd0) &&
@@ -384,8 +386,6 @@ module {MODULE}(
     if (!vic_valid) begin
       // No descriptor means every non-invalid line is READY. Only one
       // line may be pinned, so the PLRU first choice or its sibling suffices.
-      o0={{head_plru[0],(head_plru[0]?head_plru[2]:head_plru[1])}};
-      o1=o0^2'd1;
       vic_valid=1'b1;
       if(pin_valid && pin_line=={{head_set,o0}})vic_line={{head_set,o1}};
       else vic_line={{head_set,o0}};

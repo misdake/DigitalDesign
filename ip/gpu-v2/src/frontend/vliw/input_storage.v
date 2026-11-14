@@ -28,7 +28,7 @@ module rp_triangle_descriptors #(parameter AB=4)(input clk,we,input[AB-1:0]wa,in
  generate for(i=0;i<9;i=i+1)begin:lanes
   if(AB<=4)begin:single
    RAM16SDP4 ram(.DO(result[i*4+:4]),.DI(data[i*4+:4]),
-    .WAD({{(4-AB){1'b0}},wa}),.RAD({{(4-AB){1'b0}},ra}),.WRE(we),.CLK(clk));
+    .WAD({{(4-AB){1'b0}},wa}),.RAD({{(4-AB){1'b0}},ra}),.WRE(we),.CLK(clk)); // gowin-lint: allow NL0001 instances=descriptors/lanes[5:7].single.ram -- The command parent does not consume triangle descriptor bits 20 through 31.
   end else begin:double
    wire[3:0]lo,hi;
    RAM16SDP4 a(.DO(lo),.DI(data[i*4+:4]),.WAD(wa[3:0]),.RAD(ra[3:0]),.WRE(we&&!wa[4]),.CLK(clk));

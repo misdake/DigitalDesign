@@ -32,7 +32,8 @@ module gpu_v2_texture_runtime_cache_unique # (parameter NATIVE=@NATIVE@)(
  wire[15:0]data_di[0:3],data_do[0:3];
  wire head_valid=in_valid;wire[34:0]head_payload=in_payload;
  reg hit_ready,look_filling,vic_valid;reg[4:0]hit_line,vic_line;
- integer wl,wv;reg[1:0]o0,o1;
+ integer wl,wv;
+ reg[1:0]o0,o1;
  wire[14:0]head_sector=head_payload[14:0];
  wire[3:0]head_tlx=head_payload[18:15];wire[2:0]head_tly=head_payload[21:19];
  wire[2:0]head_set=head_sector[2:0];
@@ -151,6 +152,8 @@ module gpu_v2_texture_runtime_cache_unique # (parameter NATIVE=@NATIVE@)(
     hit_line = {head_set, ready_hits[3] | ready_hits[2], ready_hits[3] | (ready_hits[1] & ~ready_hits[2])};
   end
   always @(*) begin
+    o0={head_plru[0],(head_plru[0]?head_plru[2]:head_plru[1])};
+    o1=o0^2'd1;
     vic_valid = 1'b0; vic_line = 5'd0;
     for (wv = 0; wv < 4; wv = wv + 1) begin
       if (!vic_valid && (head_state[wv*2+:2] == 2'd0) &&
@@ -161,8 +164,6 @@ module gpu_v2_texture_runtime_cache_unique # (parameter NATIVE=@NATIVE@)(
     if (!vic_valid) begin
       // No descriptor means every non-invalid line is READY. Only one
       // line may be pinned, so the PLRU first choice or its sibling suffices.
-      o0={head_plru[0],(head_plru[0]?head_plru[2]:head_plru[1])};
-      o1=o0^2'd1;
       vic_valid=1'b1;
       if(pin_valid && pin_line=={head_set,o0})vic_line={head_set,o1};
       else vic_line={head_set,o0};

@@ -17,7 +17,10 @@ use std::process::{Command, ExitStatus, Output};
 mod artifact;
 #[path = "toolchain/build_manifest.rs"]
 mod build_manifest;
+#[path = "toolchain/warnings.rs"]
+mod warnings;
 pub use artifact::{inspect_gowin_artifact, run_gowin_artifact_cli};
+pub use warnings::audit_gowin_warnings;
 
 /// Canonicalize like [`fs::canonicalize`] but strip the Windows verbatim
 /// (`\\?\`) prefix: the Gowin Tcl console and Programmer cannot open such
@@ -914,6 +917,13 @@ impl<T: GowinTarget> GowinProject<T> {
             PathBuf::from("resource-report.txt"),
             render_resource_report(T::DEVICE, &resource_report),
         );
+        // Gowin does not define the conventional simulation guard itself.
+        // Put it in each exported HDL compilation unit so IDE and CLI agree.
+        for (path, source) in &mut files {
+            if path.extension().is_some_and(|extension| extension == "v") {
+                source.insert_str(0, "`define SYNTHESIS\n");
+            }
+        }
         let source_paths = files
             .keys()
             .filter(|path| file_type(path).is_some())
@@ -934,6 +944,16 @@ impl<T: GowinTarget> GowinProject<T> {
                     .as_ref()
                     .map_or(&BTreeMap::new(), |binding| &binding.process_options),
             )?,
+        );
+        files.insert(
+            PathBuf::from(format!("impl/{}_process_config.json", self.project_name)),
+            render_process_config(
+                &self.project_name,
+                &top_module,
+                self.board_binding
+                    .as_ref()
+                    .map_or(&BTreeMap::new(), |b| &b.process_options),
+            ),
         );
         Ok(GeneratedGowinProject {
             project_name: self.project_name.clone(),
@@ -1104,6 +1124,37 @@ fn tcl_add_file(path: &Path) -> String {
     format!("add_file [file join $here {components}]")
 }
 
+fn render_process_config(project: &str, top: &str, options: &BTreeMap<String, String>) -> String {
+    let mut config = serde_json::json!({
+        "Process_Configuration_Verion":"1.0", "TopModule":top,
+        "OUTPUT_BASE_NAME":project, "Synthesize_tool":"GowinSyn",
+        "Verilog_Standard":"Vlg_Std_2001", "Show_All_Warnings":true,
+        "show_all_warnings":true, "Generate_Plain_Text_Timing_Report":true
+    });
+    for (cli, ide, boolean) in [
+        ("-use_mspi_as_gpio", "MSPI", true),
+        ("-ioreg_in_iob", "PlaceIoRegToIob", true),
+        ("-place_option", "Place_Option", false),
+        ("-route_option", "Route_Option", false),
+        ("-gen_posp", "Generate_Post_Place_File", true),
+        (
+            "-gen_verilog_sim_netlist",
+            "Generate_Post_PNR_Simulation_Model_File",
+            true,
+        ),
+        ("-gen_sdf", "Generate_SDF_File", true),
+    ] {
+        if let Some(value) = options.get(cli) {
+            config[ide] = if boolean {
+                serde_json::json!(value == "1")
+            } else {
+                serde_json::json!(value)
+            };
+        }
+    }
+    serde_json::to_string_pretty(&config).expect("IDE configuration") + "\n"
+}
+
 fn render_build_tcl(
     device: GowinDeviceInfo,
     project_name: &str,
@@ -1143,6 +1194,7 @@ set_option -top_module {top_module}\n\
 set_option -output_base_name {project_name}\n\
 set_option -verilog_std v2001\n\
 set_option -print_all_synthesis_warning 1\n\
+set_option -show_all_warn 1\n\
 set_option -gen_text_timing_rpt 1\n\
 {process_options}\n\
 run all\n"
@@ -1188,6 +1240,7 @@ struct GowinCliOptions {
     seal_existing: bool,
     program_existing: bool,
     program_flash: Option<(u32, PathBuf)>,
+    warnings_only: Option<String>,
     gowin_home: Option<PathBuf>,
     cable_index: Option<u8>,
     help: bool,
@@ -1201,6 +1254,18 @@ fn parse_gowin_cli_args(
 
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
+            Some("--warnings-only") => {
+                options.warnings_only = Some(
+                    arguments
+                        .next()
+                        .and_then(|v| v.into_string().ok())
+                        .ok_or_else(|| {
+                            GowinCliError::Argument(
+                                "`--warnings-only` requires a project name".into(),
+                            )
+                        })?,
+                );
+            }
             Some("--build") => options.build = true,
             Some("--program") => {
                 options.build = true;
@@ -1274,6 +1339,20 @@ fn parse_gowin_cli_args(
             "`--program-existing` cannot be combined with `--build` or `--program`".to_string(),
         ));
     }
+    if options.warnings_only.is_some()
+        && (options.build
+            || options.program
+            || options.program_existing
+            || options.program_flash.is_some()
+            || options.check_existing
+            || options.audit_current
+            || options.seal_existing)
+    {
+        return Err(GowinCliError::Argument(
+            "`--warnings-only` cannot be combined with build, fit-audit or programming operations"
+                .into(),
+        ));
+    }
     if options.program_flash.is_some() && (options.program_existing || options.program) {
         return Err(GowinCliError::Argument(
             "select only one programming operation".to_string(),
@@ -1338,6 +1417,11 @@ where
         .unwrap_or_else(|| "gowin-example".into());
 
     let options = parse_gowin_cli_args(arguments)?;
+    if options.warnings_only.is_some() {
+        return Err(GowinCliError::Argument(
+            "`--warnings-only` is provided by gowin-artifact".into(),
+        ));
+    }
     if options.help {
         println!(
             "Usage: {} [OUTPUT] [--build] [--program] [--check-existing] [--program-existing] [--program-flash OFFSET FILE] [--gowin-home PATH] [--cable-index N]\n\n\
@@ -1395,9 +1479,6 @@ where
     if options.build {
         let result = toolchain.build(&output, &generated)?;
         println!("Built {}", result.bitstream.display());
-        for warning in &result.warnings {
-            println!("Gowin warning: {warning}");
-        }
         if options.program {
             println!("Programming volatile FPGA SRAM; the board must be connected.");
             toolchain.program_sram(
@@ -1414,6 +1495,7 @@ where
             artifact::write(&output, &generated)?;
             artifact::seal_fit(&output, &generated)?;
         }
+        warnings::print_summary(&audit_gowin_warnings(&output, &generated.project_name)?);
         println!("Existing Gowin build is audited: {}", bitstream.display());
     }
     if options.program_existing {
@@ -1508,6 +1590,7 @@ pub struct GowinBuildResult {
     pub pnr_report: PathBuf,
     pub timing_report: PathBuf,
     pub warnings: Vec<String>,
+    pub warning_report: serde_json::Value,
     pub device: GowinDeviceInfo,
 }
 
@@ -1524,19 +1607,39 @@ impl GowinToolchain {
             return Err(GowinError::MissingTool(executable.clone()));
         }
         let build_tcl = canonicalize_for_gowin(directory.join("build.tcl"))?;
-        // Capture the console stream so precisely acknowledged Gowin warnings
-        // are suppressed there as well as in the persisted log collection.
-        // The CLI has only a project-wide warning switch, which stays enabled.
+        // Preserve the whole console and classify it together with both raw
+        // stage logs. Ordinary output shows the summary and unknown diagnostics.
         let output = Command::new(executable)
             .arg(&build_tcl)
             .current_dir(directory)
             .output()?;
-        print_gowin_console(&output.stdout, false);
-        print_gowin_console(&output.stderr, true);
+        let mut console = output.stdout.clone();
+        console.extend_from_slice(&output.stderr);
+        fs::write(directory.join("gowin-console.log"), console)?;
         let status = output.status;
         if !status.success() {
+            print_gowin_console(&output.stdout, false, false);
+            print_gowin_console(&output.stderr, true, false);
             return Err(GowinError::BuildFailed(status));
         }
+        let warning_report = audit_gowin_warnings(directory, project_name)?;
+        fs::write(
+            directory.join("gowin-warnings.json"),
+            serde_json::to_string_pretty(&warning_report).expect("JSON value"),
+        )?;
+        print_gowin_console(&output.stdout, false, true);
+        print_gowin_console(&output.stderr, true, true);
+        let warnings: Vec<String> = warning_report["unacknowledged"]
+            .as_array()
+            .expect("warning array")
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+        warnings::print_summary(&warning_report);
+        println!(
+            "Warning details: {}",
+            directory.join("gowin-warnings.json").display()
+        );
         let result = GowinBuildResult {
             status,
             bitstream: directory.join(format!("impl/pnr/{project_name}.fs")),
@@ -1545,7 +1648,8 @@ impl GowinToolchain {
                 .join(format!("impl/gwsynthesis/{project_name}_syn_rsc.xml")),
             pnr_report: directory.join(format!("impl/pnr/{project_name}.rpt.txt")),
             timing_report: directory.join(format!("impl/pnr/{project_name}.tr")),
-            warnings: collect_warnings(directory, project_name)?,
+            warnings,
+            warning_report,
             device: project.device,
         };
         if !result.bitstream.is_file() {
@@ -1559,6 +1663,12 @@ impl GowinToolchain {
             &project.dsp_expectations,
             project.bsram_expectation,
         )?;
+        if !result.warnings.is_empty() {
+            return Err(GowinError::UnacknowledgedWarnings {
+                count: result.warnings.len(),
+                report: directory.join("gowin-warnings.json"),
+            });
+        }
         build_manifest::write(directory, project, &result.bitstream)?;
         artifact::seal_fit(directory, project)?;
         Ok(result)
@@ -1702,9 +1812,9 @@ impl GowinToolchain {
     }
 }
 
-fn print_gowin_console(bytes: &[u8], stderr: bool) {
+fn print_gowin_console(bytes: &[u8], stderr: bool, warnings_reported: bool) {
     for line in String::from_utf8_lossy(bytes).lines() {
-        if gowin_warning_is_suppressed(line) {
+        if warnings_reported && line.contains("WARN") {
             continue;
         }
         if stderr {
@@ -1784,80 +1894,6 @@ fn gowin_home_from_gw_sh(executable: &Path) -> Option<PathBuf> {
     let bin = executable.parent()?;
     let ide = bin.parent()?;
     ide.parent().map(Path::to_path_buf)
-}
-
-fn collect_warnings(directory: &Path, project_name: &str) -> Result<Vec<String>, GowinError> {
-    let logs = [
-        directory.join(format!("impl/gwsynthesis/{project_name}.log")),
-        directory.join(format!("impl/pnr/{project_name}.log")),
-    ];
-    let mut warnings = Vec::new();
-    for log in logs {
-        if !log.is_file() {
-            continue;
-        }
-        warnings.extend(
-            fs::read_to_string(log)?
-                .lines()
-                .filter(|line| line.contains("WARN"))
-                .filter(|line| !gowin_warning_is_suppressed(line))
-                .map(str::to_string),
-        );
-    }
-    Ok(warnings)
-}
-
-/// Suppress only warnings that are either explicitly acknowledged on the
-/// generated Verilog source line or originate from the opaque Controller HS
-/// netlist. Gowin exposes only a project-wide "print all warnings" switch, so
-/// turning that off would also hide actionable width and connectivity issues.
-fn gowin_warning_is_suppressed(warning: &str) -> bool {
-    let vendor_controller_warning = warning.contains("sdrc_hs_top.vp\":0)")
-        && (warning.contains("WARN  (EX3670)") || warning.contains("WARN  (EX3791)"));
-    let vendor_controller_clock_warning =
-        warning.contains("WARN  (PR1014)") && warning.contains("signal 'clk_d'");
-    vendor_controller_warning
-        || vendor_controller_clock_warning
-        || source_line_allows_gowin_warning(warning)
-}
-
-fn source_line_allows_gowin_warning(warning: &str) -> bool {
-    let Some(code) = warning
-        .split_once("WARN  (")
-        .and_then(|(_, rest)| rest.split_once(')'))
-        .map(|(code, _)| code)
-    else {
-        return false;
-    };
-    let Some(location_start) = warning.rfind("(\"").map(|index| index + 2) else {
-        return false;
-    };
-    let Some(location_end) = warning[location_start..]
-        .rfind("\":")
-        .map(|index| index + location_start)
-    else {
-        return false;
-    };
-    let line_start = location_end + 2;
-    let Some(line_end) = warning[line_start..]
-        .find(')')
-        .map(|index| index + line_start)
-    else {
-        return false;
-    };
-    let Ok(line_number) = warning[line_start..line_end].parse::<usize>() else {
-        return false;
-    };
-    if line_number == 0 {
-        return false;
-    }
-    let Ok(source) = fs::read_to_string(&warning[location_start..location_end]) else {
-        return false;
-    };
-    let Some(source_line) = source.lines().nth(line_number - 1) else {
-        return false;
-    };
-    source_line.contains(&format!("gowin-lint: allow {code}"))
 }
 
 fn audit_timing(report: &Path) -> Result<(), GowinError> {
@@ -2215,6 +2251,10 @@ pub enum GowinError {
     ToolchainNotConfigured,
     ProgrammerNotConfigured,
     BuildFailed(ExitStatus),
+    UnacknowledgedWarnings {
+        count: usize,
+        report: PathBuf,
+    },
     ProgramFailed(ExitStatus),
     ExternalFlashProgramFailed(ExitStatus),
     ProgrammerReportedFailure {
@@ -2281,6 +2321,8 @@ impl Display for GowinError {
                 "Gowin Programmer is not configured; use a Gowin home containing `Programmer/bin/programmer_cli.exe` or add `programmer_cli` to PATH",
             ),
             Self::BuildFailed(status) => write!(formatter, "Gowin build failed with {status}"),
+            Self::UnacknowledgedWarnings { count, report } => write!(formatter,
+                "Gowin warning audit failed: {count} unacknowledged diagnostics; see {}", report.display()),
             Self::ProgramFailed(status) => {
                 write!(formatter, "Gowin SRAM programming failed with {status}")
             }
@@ -2415,40 +2457,6 @@ mod tests {
     #[derive(Clone, ModuleIo)]
     struct TestOutput {
         result: Wire,
-    }
-
-    #[test]
-    fn gowin_warning_suppression_is_source_local_and_vendor_specific() {
-        let directory = std::env::temp_dir().join(format!(
-            "digital-design-gowin-warning-filter-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&directory).unwrap();
-        let source = directory.join("marked.v");
-        fs::write(
-            &source,
-            "wire [8:0] q = value / 10'd3; // gowin-lint: allow EX3791\n",
-        )
-        .unwrap();
-        let marked = format!(
-            "WARN  (EX3791) : Expression size 10 truncated to fit in target size 9(\"{}\":1)",
-            source.display()
-        );
-        assert!(gowin_warning_is_suppressed(&marked));
-        assert!(!gowin_warning_is_suppressed(
-            &marked.replace("EX3791", "EX3792")
-        ));
-        assert!(gowin_warning_is_suppressed(
-            "WARN  (EX3791) : opaque warning(\"build\\sdrc_hs_top.vp\":0)"
-        ));
-        assert!(gowin_warning_is_suppressed(
-            "WARN  (PR1014) : Generic routing will be used for signal 'clk_d'"
-        ));
-        assert!(!gowin_warning_is_suppressed(
-            "WARN  (PR1014) : Generic routing will be used for signal 'user_clock'"
-        ));
-        fs::remove_file(source).unwrap();
-        fs::remove_dir(directory).unwrap();
     }
 
     #[derive(Hardware)]
@@ -2681,6 +2689,35 @@ mod tests {
                 Err(GowinCliError::Argument(_))
             ));
         }
+    }
+
+    #[test]
+    fn exports_enable_simulation_guards_and_full_cli_and_ide_diagnostics() {
+        let project = GowinProject::<TangNano20K>::new("diagnostics")
+            .generate::<ManifestLogic>()
+            .unwrap();
+        for (path, source) in &project.files {
+            if path.extension().is_some_and(|v| v == "v") {
+                assert!(source.starts_with("`define SYNTHESIS\n"));
+            }
+        }
+        let tcl = &project.files[Path::new("build.tcl")];
+        assert!(tcl.contains("set_option -print_all_synthesis_warning 1"));
+        assert!(tcl.contains("set_option -show_all_warn 1"));
+        let ide: serde_json::Value =
+            serde_json::from_str(&project.files[Path::new("impl/diagnostics_process_config.json")])
+                .unwrap();
+        assert_eq!(ide["TopModule"], project.top_module);
+        assert_eq!(ide["Show_All_Warnings"], true);
+        assert_eq!(ide["show_all_warnings"], true);
+        let read_only =
+            parse_gowin_cli_args(["out", "--warnings-only", "diagnostics"].map(OsString::from))
+                .unwrap();
+        assert_eq!(read_only.warnings_only.as_deref(), Some("diagnostics"));
+        assert!(parse_gowin_cli_args(
+            ["out", "--warnings-only", "diagnostics", "--program"].map(OsString::from)
+        )
+        .is_err());
     }
 
     #[test]

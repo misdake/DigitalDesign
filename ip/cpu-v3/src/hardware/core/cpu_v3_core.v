@@ -546,7 +546,7 @@ wire [15:0] fpu2_word_half =
 assign data_write = async_store_valid ? 1'b1 :
                     fpu2_mem_active ? fpu2_write_back : pending_write;
 assign data_address = async_store_valid ? async_store_address :
-                      fpu2_mem_active ? fpu2_address + {31'b0, fpu2_beat} :
+                      fpu2_mem_active ? fpu2_address + {29'b0, fpu2_beat} :
                       pending_address;
 assign data_write_data = async_store_valid ? async_store_data :
                          fpu2_mem_active ?

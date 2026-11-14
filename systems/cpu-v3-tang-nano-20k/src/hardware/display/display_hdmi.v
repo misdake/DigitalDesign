@@ -439,12 +439,11 @@ always @(posedge clk) begin
  else if(disparity==0 || qm_ones==4) begin
   symbol[9]<=~qm[8]; symbol[8]<=qm[8]; symbol[7:0]<=qm[8]?qm[7:0]:~qm[7:0];
   if(qm[8]) disparity<=disparity+qm_delta; else disparity<=disparity-qm_delta;
- // The unsized alternatives below are literal zero, so narrowing them to the
- // six-bit signed disparity datapath is exact. Sized zero changes Gowin's
- // signed-expression inference and costs substantial logic on GW2AR-18.
+ // Both alternatives are explicitly signed six-bit values, matching the
+ // disparity datapath without implicit expression truncation.
  end else if((disparity>0&&qm_ones>4)||(disparity<0&&qm_ones<4)) begin
-  symbol<={1'b1,qm[8],~qm[7:0]}; disparity<=disparity-qm_delta+(qm[8]?6'sd2:0); // gowin-lint: allow EX3791
- end else begin symbol<={1'b0,qm[8],qm[7:0]}; disparity<=disparity+qm_delta-(qm[8]?0:6'sd2); end // gowin-lint: allow EX3791
+  symbol<={1'b1,qm[8],~qm[7:0]}; disparity<=disparity-qm_delta+(qm[8]?6'sd2:6'sd0);
+ end else begin symbol<={1'b0,qm[8],qm[7:0]}; disparity<=disparity+qm_delta-(qm[8]?6'sd0:6'sd2); end
 end endmodule
 `ifndef __ICARUS__
 module HdmiSerializer10(input wire pixel_clk,input wire serial_clk,input wire [9:0] data,output wire serial);

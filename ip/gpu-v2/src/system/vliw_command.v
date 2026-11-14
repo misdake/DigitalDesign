@@ -288,7 +288,9 @@ module gpu_v2_vliw_command(
  .fb_w_response_valid(fb_w_response_valid&&!clear_active),
  .fb_w_response_last(fb_w_response_last),
  .fb_w_response_error(fb_w_response_error),
- .busy(memory_busy),.fault(memory_fault));
+ .busy(memory_busy),.fault(memory_fault),.control_request_ready(),
+ // Optional observability outputs are intentionally not consumed here.
+ .control_response_valid(),.control_response_last(),.control_response_error(),.control_response_data());
 `ifndef SYNTHESIS
  always @(posedge clk)if(!reset)begin
   if(dma_we&&!dma_ready)$fatal(1,"DMA sink lost its statically independent write port");

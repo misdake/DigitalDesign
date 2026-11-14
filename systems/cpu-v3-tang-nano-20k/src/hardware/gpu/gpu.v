@@ -45,5 +45,7 @@ module CpuV3Gpu (
      .fb_w_address(gpu_fb_w_address),.fb_w_count(gpu_fb_w_line_count_minus_1),
      .fb_w_data(gpu_fb_w_write_data),.fb_w_data_ready(gpu_fb_w_write_data_ready),
      .fb_w_response_valid(gpu_fb_w_response_valid),.fb_w_response_last(gpu_fb_w_response_last),
-     .fb_w_response_error(gpu_fb_w_error));
+     .fb_w_response_error(gpu_fb_w_error),.busy(),
+ // Optional observability outputs are intentionally not consumed here.
+ .pipeline_idle(),.idle(),.fault(),.frontend_idle(),.meshlet_done(),.meshlet_ready(),.published_vertices(),.emit_valid(),.emit_addr(),.emit_data(),.quad_admitted(),.quad_empty_skipped(),.quad_published(),.light_result(),.sample_result(),.final_issue(),.final_result(),.quad_accepted(),.commit_valid(),.commit_x(),.commit_y(),.commit_mask(),.global_used(),.producer_used(),.work_reserved(),.work_count());
 endmodule
