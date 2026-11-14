@@ -36,6 +36,9 @@ const H: [[u32; 3]; 4] = [
     [0, 0, 0],
 ];
 fn run(rgb: bool) -> Vec<Edge> {
+    run_bias(rgb, 8)
+}
+fn run_bias(rgb: bool, depth_bias: i8) -> Vec<Edge> {
     let attrs = attributes(rgb);
     let mut p = Compute::default();
     let mut rows = Vec::new();
@@ -49,7 +52,7 @@ fn run(rgb: bool) -> Vec<Edge> {
             write_bank: false,
             cfg_far: 20 << 16,
             cfg_rgb: rgb,
-            cfg_z_bias: 8,
+            cfg_z_bias: depth_bias,
             cfg_tex_u: 6,
             cfg_tex_v: 5,
             cfg_max_mip: 6,
@@ -255,6 +258,32 @@ fn reciprocal_weights_depth_and_attributes_match_integer_reference() {
 }
 
 #[test]
+fn internal_zero_depth_boundary_preserves_positive_d16_zero_and_ce_hold() {
+    for reciprocal in [65536u64, 131072] {
+        for k in [1u64 << 30, (1 << 31) - 1] {
+            let product = reciprocal * k;
+            for shift in 45..=48 {
+                let mut p = Compute::default();
+                p.state.phase = 3;
+                p.state.valid_pipe = 4;
+                p.state.cover_pipe = 4;
+                p.state.z_shift = shift;
+                p.wide.result = Bits::new(product, 54);
+                let input = Input {
+                    cfg_far: 80 << 16,
+                    ..Input::default()
+                };
+                p.clock(input).unwrap();
+                assert!(!p.state.z_early_pass, "CE0 must retain the old result");
+                p.clock(Input { ce: true, ..input }).unwrap();
+                assert_eq!(p.state.z_early_pass, product >> shift > 0);
+                assert_eq!(p.state.z_early, 0);
+            }
+        }
+    }
+}
+
+#[test]
 #[ignore = "compiled numeric RAM/Newton correction/attribute DSP mutations"]
 fn compute_negative_controls_are_sensitive() {
     use std::{
@@ -337,6 +366,18 @@ fn every_compute_and_lod_edge_matches_production() {
         vertex_support::rtl::replay(
             &root,
             &format!("rgb{rgb}"),
+            rows.iter().map(fixture::fields).collect(),
+            fixture::production(&pins),
+            false,
+            None,
+        );
+    }
+    for bias in 28..=32 {
+        let rows = run_bias(true, bias);
+        let pins = fixture::fields(&rows[0]);
+        vertex_support::rtl::replay(
+            &root,
+            &format!("depth-bias-{bias}"),
             rows.iter().map(fixture::fields).collect(),
             fixture::production(&pins),
             false,

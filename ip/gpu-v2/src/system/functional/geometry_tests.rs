@@ -2,6 +2,40 @@ use super::*;
 use crate::system::functional::{Effects, Memory};
 
 #[test]
+fn full_depth_underflow_rejects_coplanar_coverage_but_keeps_d16_zero() {
+    let vertices = |p: [[i128; 3]; 3]| {
+        p.map(|position| Vertex {
+            position,
+            normal: [0, 0, 1024],
+            attribute: 0xffffff,
+        })
+    };
+    let coplanar = Triangle::new(
+        vertices([
+            [-106418, 1596, 196599],
+            [106418, -532, -65533],
+            [-106418, -532, -65533],
+        ]),
+        false,
+    )
+    .unwrap()
+    .unwrap();
+    let fragment = (0..240)
+        .find_map(|y| {
+            let (lo, hi) = coplanar.span(y)?;
+            coplanar.fragment((lo + hi) / 2, y, 80 << 16).ok()
+        })
+        .expect("the rounded coplanar triangle must exercise false coverage");
+    assert!(!fragment.valid);
+    let close = Triangle::new(vertices([[-2, -2, 2], [2, -2, 2], [0, 2, 2]]), false)
+        .unwrap()
+        .unwrap();
+    let fragment = close.fragment(200, 120, 80 << 16).unwrap();
+    assert!(fragment.valid);
+    assert_eq!(fragment.depth, 0);
+}
+
+#[test]
 fn fixed_depth_preserves_unsigned_comparisons_and_write_enable() {
     struct Words([u16; 3]);
     impl shading::PixelMemory for Words {

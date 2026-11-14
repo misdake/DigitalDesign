@@ -321,10 +321,17 @@ Depth derives from the positive determinant and the same aligned denominator.
 Let `ed=floor(log2(abs(delta)))`, `K=floor(abs(delta)*2^(30-ed))`, and
 `right=e+E+38-ed`. Form `Z_full=floor(r*K*2^-right)` under the admitted
 integer widths; the output is `Z16=(Z_full>>8)&65535`. Live depth additionally
-requires nonzero D, `Z_full < 2^32` (no arithmetic overflow),
+requires nonzero D, `Z_full > 0`, `Z_full < 2^32` (no arithmetic overflow),
 `Z_full < 2^24` (upper depth-word bits zero), and
-`Z16 <= cfg_far_z[23:8]`. A positive value quantizing to zero is allowed; this
-depth check does not introduce a near plane.
+`Z16 <= cfg_far_z[23:8]`. Positive internal depths that quantize to D16 zero
+remain valid. Internal-depth underflow to zero is invalid: this numerical near
+boundary discards depths below one internal F16 unit, without a configurable
+world-space epsilon. It suppresses the coplanar false coverage whose truncated
+determinant produces an unrepresentable depth; it is not an exact determinant
+predicate or geometric near-plane clipping. Normalized `r` is in `[2^16,2^17]`
+and K31 is in `[2^30,2^31)`, so the existing product is in `[2^46,2^48)`.
+Compute tests full-depth nonzero as `right<47 || (right==47 && product[47])`,
+before the additional eight-bit D16 discard. No extra shifter or pipeline is used.
 
 UV quads select the first geometrically covered lane as the LOD anchor. Using
 that lane's interpolated U/V, align Nx/Ny coefficients to E with truncation

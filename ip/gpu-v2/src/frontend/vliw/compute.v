@@ -151,7 +151,10 @@ reg rgb;
  wire z_overflow=z_shift<9'sd15||(z_shift==9'sd15&&wide_result[47]);
  wire[24:0]depth_word=(z_shift>=9'sd48||output_shift[5]) ? 25'd0:shifted[24:0];
  wire[15:0]z16=depth_word[15:0];
- wire numerical_pass=cover_pipe[2]&&!z_dzero&&!z_overflow&&depth_word[24:16]==0&&z16<=far_z[23:8];
+ // Normalized r*K is in [2^46,2^48): test full-depth underflow before
+ // discarding eight more bits for D16. Positive depths may still emit D16=0.
+ wire z_nonzero=z_shift<9'sd47||(z_shift==9'sd47&&wide_result[47]);
+ wire numerical_pass=cover_pipe[2]&&!z_dzero&&!z_overflow&&z_nonzero&&depth_word[24:16]==0&&z16<=far_z[23:8];
  assign depth_event_valid=phase==1&&valid_pipe[3]&&!reset;
  assign depth_event_pid=pid3;
  assign depth_event_z16=z_early;

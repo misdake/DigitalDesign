@@ -361,7 +361,10 @@ impl Triangle {
             rgb,
             normal,
             depth: ((depth_full >> 8) & 65535) as u16,
-            valid: d != 0 && depth_full < (1 << 24) && depth_full >> 8 <= i128::from(far >> 8),
+            valid: d != 0
+                && depth_full > 0
+                && depth_full < (1 << 24)
+                && depth_full >> 8 <= i128::from(far >> 8),
             denominator: d,
         })
     }

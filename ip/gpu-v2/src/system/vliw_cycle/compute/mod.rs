@@ -181,6 +181,7 @@ impl Compute {
         let numerical_pass = bit(s.cover_pipe, 2)
             && !s.z_dzero
             && !(s.z_shift < 15 || (s.z_shift == 15 && self.wide.result.value & (1 << 47) != 0))
+            && (s.z_shift < 47 || s.z_shift == 47 && self.wide.result.value & (1 << 47) != 0)
             && depth_word >> 16 == 0
             && z16 <= ((i.cfg_far >> 8) & 65535) as u16;
         let correction_inc = self.multiply.result & 256 != 0
