@@ -62,6 +62,7 @@ pub const BUTTON_L2: u16 = 1 << 8;
 pub const BUTTON_R2: u16 = 1 << 9;
 pub const BUTTON_TRIANGLE: u16 = 1 << 12;
 pub const BUTTON_CROSS: u16 = 1 << 14;
+pub const BUTTON_SQUARE: u16 = 1 << 15;
 
 #[derive(Copy, Clone)]
 pub struct AnimationState {

@@ -1,13 +1,14 @@
-//! A persistent plane/cube scene shared by the four application tabs.
+//! One persistent object/floor scene and a camera-oriented corner axis gizmo.
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
 mod boot_resources;
+use crate::pages::lab::surface_tab::*;
 use boot_resources::*;
 
 pub const LAB_FLOOR_Y: fix32 = fix!(-1.1);
 pub const LAB_FLOOR_HALF_SIZE: fix32 = fix!(2);
-pub const LAB_CUBE_HALF_SIZE: fix32 = fix!(0.8);
+pub const LAB_OBJECT_HALF_SIZE: fix32 = fix!(0.8);
 
 #[derive(Copy, Clone)]
 pub struct LabView {
@@ -24,7 +25,7 @@ impl LabView {
             yaw: fix!(0),
             pitch: fix!(0.3),
             distance: fix!(6),
-            target_x: fix!(1.5),
+            target_x: fix!(0),
             target_y: fix!(0),
             fov: 60,
         }
@@ -47,14 +48,6 @@ impl LabLight {
             pitch: fix!(0.7),
             ambient: fix!(0.2),
             directional: fix!(0.8),
-        }
-    }
-    pub const fn surface() -> Self {
-        Self {
-            yaw: fix!(-0.15),
-            pitch: fix!(0.45),
-            ambient: fix!(0.35),
-            directional: fix!(0.75),
         }
     }
     pub fn direction(self) -> Vec3 {
@@ -113,8 +106,16 @@ pub struct LabScene {
     plane: Mesh,
     rgb_plane: Mesh,
     cube: Mesh,
+    rgb_cube: Mesh,
+    sphere: Mesh,
+    rgb_sphere: Mesh,
+    torus: Mesh,
+    rgb_torus: Mesh,
+    axes: Mesh,
+    axes_model: Model,
+    axes_camera: Camera,
+    axes_state: RenderState,
     light_arrow: Mesh,
-    surface: Model,
     floor: Model,
     object: Model,
     arrow: Model,
@@ -125,9 +126,10 @@ pub struct LabScene {
     state: RenderState,
     view: TextureView,
     texture: Texture,
-    composed: bool,
-    textured: bool,
-    show_light: bool,
+    white_texture: Texture,
+    white_view: TextureView,
+    geometry: u16,
+    color: u16,
 }
 impl LabScene {
     pub fn new() -> Self {
@@ -137,16 +139,29 @@ impl LabScene {
         let texture = Texture::from_native(GEOMETRY_CHECKER);
         let mut view = texture.view();
         view.set_address_mode(TextureAddressMode::ClampToEdge);
+        let white_texture = Texture::from_native(LAB_WHITE);
+        let white_view = white_texture.view();
         Self {
             plane: plane,
             rgb_plane: rgb_plane,
             cube: cube,
-            light_arrow: Mesh::from_native(LAB_LIGHT_ARROW),
-            surface: Model::new(
-                Transform::translation(Vec3::new(fix!(0), fix!(-0.25), fix!(0)))
-                    .with_rotation(Vec3::new(fix!(0.15), fix!(-0.3), fix!(0)))
-                    .with_scale(Vec3::splat(fix!(1.6))),
+            rgb_cube: Mesh::from_native(LAB_RGB_CUBE),
+            sphere: Mesh::from_native(LAB_SPHERE),
+            rgb_sphere: Mesh::from_native(LAB_RGB_SPHERE),
+            torus: Mesh::from_native(LAB_TORUS),
+            rgb_torus: Mesh::from_native(LAB_RGB_TORUS),
+            axes: Mesh::from_native(LAB_AXES),
+            axes_model: Model::new(Transform::identity()),
+            axes_camera: Camera::new(CameraDesc::new(
+                Vec3::zero(),
+                Vec3::zero(),
+                Projection::from_focal_pixels(fix!(200), fix!(80)),
+            )),
+            axes_state: RenderState::new(
+                RenderStateDesc::opaque(Lighting::ambient(fix!(1)))
+                    .with_depth(DepthFunc::Always, false),
             ),
+            light_arrow: Mesh::from_native(LAB_LIGHT_ARROW),
             floor: Model::new(
                 Transform::translation(Vec3::new(fix!(0), LAB_FLOOR_Y, fix!(0)))
                     .with_rotation(Vec3::new(fix!(-90).to_radians(), fix!(0), fix!(0)))
@@ -154,7 +169,7 @@ impl LabScene {
             ),
             object: Model::new(
                 Transform::rotation(Vec3::new(fix!(0), fix!(0.4), fix!(0)))
-                    .with_scale(Vec3::splat(LAB_CUBE_HALF_SIZE)),
+                    .with_scale(Vec3::splat(LAB_OBJECT_HALF_SIZE)),
             ),
             arrow: Model::new(Transform::identity()),
             material: Material::new(MaterialDesc::diffuse(Rgba8::white())),
@@ -168,18 +183,27 @@ impl LabScene {
             state: RenderState::new(RenderStateDesc::opaque(Lighting::ambient(fix!(1)))),
             texture: texture,
             view: view,
-            composed: false,
-            textured: false,
-            show_light: false,
+            white_texture: white_texture,
+            white_view: white_view,
+            geometry: 2,
+            color: 2,
         }
     }
     pub fn configure(&mut self, view: &LabView, light: &LabLight, material: &LabMaterial) {
         let direction = view.direction();
-        let target = Vec3::new(view.target_x, view.target_y, fix!(0));
+        let yaw = fsincos(view.yaw);
+        let pitch = fsincos(view.pitch);
+        // Frame the object beside the menu in camera-right coordinates. A fixed
+        // world-X offset would move it behind the menu after half an orbit.
+        let target = Vec3::new(
+            view.target_x + yaw.y() * fix!(1.5),
+            view.target_y,
+            -yaw.x() * fix!(1.5),
+        );
         let eye = Vec3::new(
             target.x + direction.x * view.distance,
             target.y + direction.y * view.distance,
-            direction.z * view.distance,
+            target.z + direction.z * view.distance,
         );
         self.camera.set_look_at_y_up(eye, target);
         self.camera.set_projection(Projection::from_vertical_fov(
@@ -196,7 +220,6 @@ impl LabScene {
             material.green as u8,
             material.blue as u8,
         ));
-        self.material.set_unlit(false);
         self.material.set_response(
             fix32::from_int(material.ambient as i16) * fix!(0.01),
             fix32::from_int(material.diffuse as i16) * fix!(0.01),
@@ -210,60 +233,85 @@ impl LabScene {
             Transform::translation(Vec3::new(fix!(-1.4), fix!(0.4), fix!(0)))
                 .with_rotation(Vec3::new(-light.pitch, light.yaw, fix!(0))),
         );
-        self.composed = true;
-        self.textured = true;
-        self.show_light = false;
+        // Rotation is the same world-to-view basis used by the orbit camera.
+        // Translation and projection are fixed, so pan/FOV cannot lose the gizmo.
+        let right = Vec4::new(yaw.y(), fix!(0), -yaw.x(), fix!(-3.4));
+        let up = Vec4::new(
+            -yaw.x() * pitch.x(),
+            pitch.y(),
+            -yaw.y() * pitch.x(),
+            fix!(-1.2),
+        );
+        let back = Vec4::new(
+            yaw.x() * pitch.y(),
+            pitch.x(),
+            yaw.y() * pitch.y(),
+            fix!(-5),
+        );
+        let world = Mat3x4::from_rows(right, up, back);
+        let normal = Mat3x3::identity();
+        self.axes_model.set_matrices(world, normal);
     }
-    pub fn show_light_direction(&mut self) {
-        self.show_light = true;
+    pub fn surface_mode(&mut self, surface: SurfaceTab) {
+        self.geometry = surface.geometry;
+        self.color = surface.color;
+        self.material.set_unlit(!surface.lit);
     }
-    pub fn surface_mode(&mut self, mode: u16) {
-        self.composed = false;
-        self.textured = mode == 1 || mode == 3;
-        self.material.set_uniform_color(Rgba8::white());
-        if mode >= 2 {
-            self.material.set_specular(Rgb8::gray(96), Shininess::S16);
-        } else {
-            self.material.set_specular(Rgb8::black(), Shininess::S4);
+    fn object_mesh(&self) -> MeshPtr {
+        if self.color == 0 {
+            if self.geometry == 0 {
+                return self.rgb_plane.ptr();
+            }
+            if self.geometry == 1 {
+                return self.rgb_cube.ptr();
+            }
+            if self.geometry == 2 {
+                return self.rgb_sphere.ptr();
+            }
+            return self.rgb_torus.ptr();
         }
-        self.material.set_unlit(mode < 2);
+        if self.geometry == 0 {
+            return self.plane.ptr();
+        }
+        if self.geometry == 1 {
+            return self.cube.ptr();
+        }
+        if self.geometry == 2 {
+            return self.sphere.ptr();
+        }
+        self.torus.ptr()
     }
     pub fn draw(&self, pass: &mut Pass) {
         pass.set_camera(self.camera.ptr());
         pass.set_state(self.state.ptr());
-        if self.composed {
-            pass.draw(
-                self.plane.ptr(),
-                self.floor.ptr(),
-                self.floor_material.ptr(),
-                self.view.ptr(),
-            );
-            pass.draw(
-                self.cube.ptr(),
-                self.object.ptr(),
-                self.material.ptr(),
-                self.view.ptr(),
-            );
-            if self.show_light {
-                pass.draw_colored(
-                    self.light_arrow.ptr(),
-                    self.arrow.ptr(),
-                    self.arrow_material.ptr(),
-                );
-            }
-        } else if self.textured {
-            pass.draw(
-                self.plane.ptr(),
-                self.surface.ptr(),
-                self.material.ptr(),
-                self.view.ptr(),
-            );
+        pass.draw(
+            self.plane.ptr(),
+            self.floor.ptr(),
+            self.floor_material.ptr(),
+            self.view.ptr(),
+        );
+        let mesh = self.object_mesh();
+        if self.color == 0 {
+            pass.draw_colored(mesh, self.object.ptr(), self.material.ptr());
         } else {
-            pass.draw_colored(
-                self.rgb_plane.ptr(),
-                self.surface.ptr(),
-                self.material.ptr(),
-            );
+            let mut texture = self.white_view.ptr();
+            if self.color == 1 {
+                texture = self.view.ptr();
+            }
+            pass.draw(mesh, self.object.ptr(), self.material.ptr(), texture);
         }
+        // The direction marker remains part of the same scene on every tab.
+        pass.draw_colored(
+            self.light_arrow.ptr(),
+            self.arrow.ptr(),
+            self.arrow_material.ptr(),
+        );
+        pass.set_camera(self.axes_camera.ptr());
+        pass.set_state(self.axes_state.ptr());
+        pass.draw_colored(
+            self.axes.ptr(),
+            self.axes_model.ptr(),
+            self.arrow_material.ptr(),
+        );
     }
 }

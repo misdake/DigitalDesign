@@ -38,9 +38,6 @@ impl MaterialTab {
         } else {
             self.material.gloss = lab_adjust(self.material.gloss, pressed, 1, 4);
         }
-        if pressed & BUTTON_TRIANGLE != 0 {
-            *self = Self::new();
-        }
     }
 }
 

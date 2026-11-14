@@ -16,6 +16,15 @@ pub fn lab_clamp(value: fix32, minimum: fix32, maximum: fix32) -> fix32 {
     }
     value
 }
+pub fn lab_wrap_angle(value: fix32) -> fix32 {
+    if value.greater_than(fix!(3.14159265)) {
+        return value - fix!(6.2831853);
+    }
+    if value.less_than(fix!(-3.14159265)) {
+        return value + fix!(6.2831853);
+    }
+    value
+}
 pub fn lab_cursor(cursor: u16, pressed: u16, count: u16) -> u16 {
     let mut next = cursor;
     if pressed & BUTTON_DOWN != 0 {

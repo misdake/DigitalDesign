@@ -25,11 +25,7 @@ impl CameraTab {
     }
     pub fn update(&mut self, input: GamepadFrame, seconds: fix32) {
         self.cursor = lab_cursor(self.cursor, input.pressed, 2);
-        self.view.yaw = lab_clamp(
-            self.view.yaw - input.left_x * seconds,
-            fix!(-1.2),
-            fix!(1.2),
-        );
+        self.view.yaw = lab_wrap_angle(self.view.yaw - input.left_x * seconds);
         self.view.pitch = lab_clamp(
             self.view.pitch - input.left_y * seconds,
             fix!(0.15),
@@ -64,11 +60,11 @@ impl CameraTab {
             }
         }
         let direction = self.view.direction();
-        // Support of the floor/cube AABB relative to the orbit target. Keep
+        // Support of the floor/object AABB relative to the orbit target. Keep
         // its nearest point at least 0.75 world units in front of the camera.
-        // Pitch stays positive, so the AABB's upper Y is the cube's top.
+        // Pitch stays positive, so the AABB's upper Y is the object's top.
         let nearest = LAB_FLOOR_HALF_SIZE * (direction.x.abs() + direction.z.abs())
-            + (LAB_CUBE_HALF_SIZE - self.view.target_y) * direction.y
+            + (LAB_OBJECT_HALF_SIZE - self.view.target_y) * direction.y
             - self.view.target_x * direction.x
             + fix!(0.75);
         if self.view.distance.less_than(nearest) {
@@ -78,9 +74,6 @@ impl CameraTab {
         let minimum_y = LAB_FLOOR_Y + fix!(0.35) - direction.y * self.view.distance;
         if self.view.target_y.less_than(minimum_y) {
             self.view.target_y = minimum_y;
-        }
-        if input.pressed & BUTTON_TRIANGLE != 0 {
-            *self = Self::new();
         }
     }
 }
@@ -95,4 +88,26 @@ pub fn camera_labels(grid: &mut UiGrid, state: CameraTab) {
     hint_at(grid, 1, 12, KEY_LS, ICON_ADJUST);
     hint_at(grid, 8, 12, KEY_RS, ICON_ADJUST);
     hint_at(grid, 17, 12, KEY_DPAD_H, ICON_ADJUST);
+}
+
+fn camera_fixed_bits(grid: &mut UiGrid, row: u16, value: fix32) {
+    text_hex16(grid, 15, row, value.hi_bits());
+    text_hex16(grid, 19, row, value.lo_bits());
+}
+
+/// Raw halves preserve the exact signed Q16.16 values used by this frame.
+pub fn camera_parameters(grid: &mut UiGrid, view: LabView) {
+    text(grid, 3, 4, b"CAMERA HEX Q16.16");
+    text(grid, 3, 5, b"YAW RAD");
+    camera_fixed_bits(grid, 5, view.yaw);
+    text(grid, 3, 6, b"PITCH RAD");
+    camera_fixed_bits(grid, 6, view.pitch);
+    text(grid, 3, 7, b"DISTANCE");
+    camera_fixed_bits(grid, 7, view.distance);
+    text(grid, 3, 8, b"TARGET X");
+    camera_fixed_bits(grid, 8, view.target_x);
+    text(grid, 3, 9, b"TARGET Y");
+    camera_fixed_bits(grid, 9, view.target_y);
+    text(grid, 3, 10, b"FOV DEG");
+    text_u16_field(grid, 15, 10, 3, view.fov);
 }

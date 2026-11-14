@@ -3,7 +3,8 @@
 One ordinary application with seven navigable pages. The CPU draws animated
 triangles, waves and controller illustrations directly into the RGB565 Back
 plane; the GPU clears that plane and overlays text/icons. The screen is a
-visual gallery, with per-page titles, small corner controls and no development HUD.
+visual gallery, with per-page titles, small corner controls and an optional
+exact camera readout in GPU Lab.
 
 The geometry page owns its registered scene resources in `GeometryPage`.
 Drawing passes their copyable `*Ptr` values; resource bodies retain allocation
@@ -45,14 +46,15 @@ Physical firmware uses the ordinary DS2 input device.
 | Left / right on triangles/waves/geometry | Change CPU rotation/amplitude or GPU focal length on a press edge |
 | Cross on triangles/waves/geometry | Pause / resume animation |
 | L2 / R2 in GPU Lab | Previous / next tab |
-| Up / down, Cross on Surface | Focus / apply RGB, Texture, Lit or Texture+Lit |
+| Up / down, left / right or Cross on Surface | Select / change geometry, color source or lighting |
+| Square in GPU Lab | Toggle exact camera parameters; controls continue to edit the selected tab |
 | Up / down, left / right in other GPU Lab tabs | Select / adjust a parameter |
 | Left stick in Camera / Light | Orbit camera / aim light |
 | Right stick in Camera / Light | Pan camera / adjust ambient and directional intensities |
 | Up / down on color | Focus SRGB / LINEAR |
 | Cross on color | Apply the focused option |
 | Triangle on triangles/waves/geometry | Reset parameter and animation |
-| Triangle in GPU Lab | Reset the active tab's settings |
+| Triangle in GPU Lab | Reset the entire scene, keeping the selected tab |
 | Start | Return home |
 
 The page itself stays selected on reset. Navigation uses edges, so holding a
@@ -67,15 +69,28 @@ Start/home. Paused pages show a play action beside Cross. Shoulder labels use
 the same native project-font pixels inside their keycaps; there is no footer prose.
 
 Camera FOV is limited to 35..80 degrees, within the projection's ray encoding.
-Orbit pitch stays at 0.15..1.2 radians. Orbit, pan and distance controls keep the
-eye above the floor and the floor/cube bounds in front of the camera; the minimum
+Orbit yaw wraps through the full circle; pitch stays at 0.15..1.2 radians.
+A camera-relative framing offset keeps the object beside the menu throughout
+the orbit. Orbit, pan and distance controls keep the
+eye above the floor and the floor/object bounds in front of the camera; the minimum
 distance may therefore increase as the target moves. These are gallery control
 limits, not a near-plane clipping implementation.
 
-Surface's lit modes use a brighter ambient/key-light setup and a modest highlight.
-The Light tab includes an unlit cyan/gold world-space arrow labelled `TO LIGHT`.
-It follows the same direction used by shading and stays visible at zero light
-intensity; it points toward the source, rather than along incoming light rays.
+The same object, floor and unlit cyan/gold `TO LIGHT` arrow appear on all tabs.
+The arrow follows the shading direction and remains visible with lights off.
+An RGB XYZ gizmo in the lower-right corner follows the camera's world-to-view
+basis, independently of pan and FOV. It uses Always depth testing with writes
+disabled, so scene geometry cannot hide the orientation guide.
+
+Square toggles a camera readout in the left menu area on any Lab tab. It is hidden
+initially and stays enabled across tabs, page visits and scene resets. Yaw/pitch
+(radians), distance and target X/Y display all 32 raw Q16.16 bits in hexadecimal,
+high word first; FOV displays exact integer degrees. Values come from the same
+post-update `LabView` used to configure that frame, including camera safety
+adjustments. Photograph the scene and these values to report a reproducible view.
+For example, pitch `00004CCD` restores with
+`fix32::from_words(0x4ccd, 0x0000)`; negative values retain their two's-complement
+bits. The readout changes only UI content and does not pause or reset the scene.
 
 ## Pages and observable behavior
 
@@ -131,10 +146,10 @@ longer lists subdirectories. SDK facade imports retain their existing syntax.
 | `rcc/pages/color_page.rs` | Color-option UI, swatches and Display interpretation |
 | `rcc/pages/geometry_page.rs` | Startup GPU resources, per-frame pose/labels and geometry pass state/draws |
 | `rcc/pages/gpu_lab.rs` | Four tabs, persistent state and the common prepare/draw boundary |
-| `rcc/pages/lab/` | Shared plane/cube resources and separate Surface, Camera, Light and Material controls/views |
+| `rcc/pages/lab/` | Shared object/floor resources and separate Surface, Camera, Light and Material controls/views |
 | `rcc/common/ui.rs`, `rcc/common/palette.rs` | Shared text/icon layout and colors |
 | `tools/assets.py` | Selected project-font base asset, typed resources and coordinated icon IDs |
-| `tools/geometry.py` | Cube, planes, direction arrow and mip texture through the shared native encoders |
+| `tools/geometry.py` | Cube, quad, analytic sphere/torus, arrows and mip texture through the shared native encoders |
 | `application.rs` | Application-owned build recipe and bounded startup options |
 
 Each page owns its content updates and drawing loops. Shared passes stay separate
@@ -143,13 +158,13 @@ groups the scene's owning resources, prepares their state, then passes copyable
 pointers to drawing. Its shared/mutable methods borrow the original page storage,
 within RCC's six-parameter function ABI.
 
-The gallery uses the public `UiGrid` API for text and icons. Development-only
-numeric output is absent; [numeric text helpers](/systems/cpu-v3-tang-nano-20k/docs/ui-text.md)
-remain available to SDK consumers independently.
+The gallery uses the public `UiGrid` API for text and icons. Numeric details stay
+hidden unless GPU Lab's camera readout is enabled; [numeric text helpers](/systems/cpu-v3-tang-nano-20k/docs/ui-text.md)
+are also available to SDK consumers independently.
 
 The selected [project-font base asset](/assets/fonts/README.md) contains 91 native ASCII-indexed slots
-plus eleven action/state glyphs and eleven 24×16 keycaps split into three
-records each (34,560 bytes total).
+plus fourteen action/state/axis glyphs and twelve 24×16 keycaps split into three
+records each (36,096 bytes total).
 Only the requested uppercase/digit/punctuation glyphs are populated. Native
 ASCII IDs avoid a runtime translation table; ID255 skips without loading its
 record. The base remains 64-KiB-aligned, but the memory extent and glyph count
@@ -173,13 +188,25 @@ inside the driver, never in the application's world/normal values.
 ## GPU Lab
 
 Page 6 adds four tabs without changing global L1/R1 page navigation. L2/R2
-switches tabs. The Surface tab compares real per-vertex RGB, unlit texture,
-lit RGB and lit texture over the same plane; focusing an option does not apply
-it until Cross. The other tabs use a floor plane and cube. Camera exposes orbit,
-pan, distance and vertical field of view in degrees. Light exposes direction, ambient and directional
-intensities. Material exposes RGB, ambient/diffuse response, specular and
-shininess. Triangle resets only the active tab. Parameters survive tab and page
-changes; meshes, texture and scene resources are allocated once at startup.
+switches tabs. All tabs edit one persistent object/floor scene. Surface selects
+Quad, Cube, Sphere or Torus; Vertex RGB, Texture or Uniform base color; and an
+independent Unlit/Lit option. Up/down focuses a row, left/right changes its value
+(Cross also advances it). The default is a lit, uniformly colored sphere.
+Camera exposes full-circle orbit, pan, distance and vertical FOV. Light changes
+direction and ambient/directional intensities. Material changes the selected
+object's RGB and ambient/diffuse/specular/shininess response. Uniform uses that
+RGB directly; Vertex RGB and Texture multiply it as a tint. Reflection response
+is active only in Lit mode. Uniform reuses the UV mesh with a one-pixel white
+texture, without a new GPU rendering mode.
+
+Sphere has 960 triangles in 12 meshlets; Torus has 768 in 9 meshlets. Analytic
+normals provide smooth highlights, and UV seams retain identical positions.
+The shared source encoder assigns canonical positions to shared vertices while
+retaining local meshlet precision, and audits the written bytes before publishing.
+This prevents cracks between independently quantized copies of shared vertices.
+Triangle resets geometry, color source, lighting, camera, lights and material
+together, retaining the selected tab. All settings stay active across tab/page
+changes; resources are allocated once at startup.
 
 Tabs and option lists are application UI. Their independent controllers do not
 add hidden input, allocation or scheduling to the graphics API. Shared calibrated

@@ -179,221 +179,223 @@ struct Demo {
 fn gpu_lab_options_sticks_and_tab_state_from_exported_application() {
     let mut demo = Demo::new();
     demo.present();
-    demo.click(1 << 10); // Home -> GPU Lab, using the actual page wrap.
+    demo.click(1 << 10); // Home -> GPU Lab.
     assert_eq!(demo.text(2, 1, 7), "GPU LAB");
-    let picture = |demo: &Demo| demo.region(168, 70, 216, 120);
+    let picture = |demo: &Demo| demo.region(216, 64, 184, 128);
+    let defaults = picture(&demo);
+    assert_eq!(demo.text(15, 5, 6), "SPHERE");
+    assert_eq!(demo.text(15, 7, 7), "UNIFORM");
+    assert_eq!(demo.text(15, 9, 3), "LIT");
+    demo.save("lab-sphere-uniform-lit");
+    for (name, label) in [("cube", "CUBE"), ("quad", "QUAD")] {
+        demo.click(1 << 7);
+        assert_eq!(demo.text(15, 5, label.len()), label);
+        assert_ne!(picture(&demo), defaults);
+        demo.save(&format!("lab-{name}-uniform-lit"));
+    }
+    demo.click(1 << 7); // Quad wraps to Torus.
+    assert_eq!(demo.text(15, 5, 5), "TORUS");
+    let torus = picture(&demo);
+    assert_ne!(torus, defaults);
+    demo.save("lab-torus-uniform-lit");
+    demo.click(1 << 6); // Color source.
+    demo.click(1 << 5); // Uniform -> Vertex RGB.
+    assert_eq!(demo.text(15, 7, 10), "VERTEX RGB");
     let rgb = picture(&demo);
-    assert!(rgb.iter().filter(|&&pixel| pixel != 0x0843).count() > 1500);
-    demo.save("lab-rgb");
-    demo.click(1 << 6);
-    assert_eq!(picture(&demo), rgb, "focus must not apply a radio option");
-    demo.click(1 << 14);
+    assert_ne!(rgb, torus);
+    demo.save("lab-torus-rgb-lit");
+    demo.click(1 << 5);
+    assert_eq!(demo.text(15, 7, 7), "TEXTURE");
     let texture = picture(&demo);
-    assert_ne!(texture, rgb, "actual textured shader path");
-    demo.save("lab-texture");
-    demo.click(1 << 6);
-    demo.click(1 << 14);
-    let lit = picture(&demo);
-    assert_ne!(lit, rgb, "lighting changes the RGB plane");
-    demo.save("lab-lit");
-    demo.click(1 << 6);
-    demo.click(1 << 14);
-    let texture_lit = picture(&demo);
-    assert_ne!(texture_lit, texture, "texture and lighting combine");
-    demo.save("lab-texture-lit");
-
+    assert_ne!(texture, rgb);
+    demo.save("lab-torus-texture-lit");
+    demo.click(1 << 6); // Independent lighting option.
+    demo.click(1 << 5);
+    assert_eq!(demo.text(15, 9, 5), "UNLIT");
+    assert_ne!(picture(&demo), texture);
+    demo.save("lab-torus-texture-unlit");
+    demo.click(1 << 12); // Global reset, keeping Surface selected.
+    assert_eq!(picture(&demo), defaults);
     demo.click(1 << 9);
     assert_eq!(demo.glyph(13, 3), 62);
-    let camera_default = picture(&demo);
-    demo.input(0, [240, 80]);
-    for _ in 0..8 {
+    assert_eq!(picture(&demo), defaults, "tabs must share the same scene");
+    demo.input(0, [255, 128]);
+    let axes_before = demo.region(300, 140, 100, 52);
+    for frame in 0..140 {
+        demo.sim.advance_host_time(Duration::from_millis(50));
         demo.present();
-    }
-    demo.input(0, [128, 128]);
-    demo.present();
-    assert_ne!(
-        picture(&demo),
-        camera_default,
-        "left stick changes the camera orbit"
-    );
-    demo.save("lab-camera-orbit");
-    demo.input_pair(0, [128, 128], [220, 100]);
-    for _ in 0..8 {
-        demo.present();
-    }
-    demo.input(0, [128, 128]);
-    demo.present();
-    demo.save("lab-camera-pan");
-    demo.input(0, [128, 255]);
-    for frame in 0..60 {
-        demo.present();
-        if frame == 20 || frame == 40 || frame == 59 {
-            demo.save(&format!("lab-camera-low-{frame}"));
+        demo.save(&format!("lab-camera-orbit-{frame}"));
+        if frame == 34 {
+            assert_ne!(
+                demo.region(300, 140, 100, 52),
+                axes_before,
+                "axis directions follow the camera"
+            );
         }
     }
     demo.input(0, [128, 128]);
     demo.present();
-    for (left, right) in [([255, 255], [255, 255]), ([0, 255], [0, 0])] {
-        demo.input_pair(0, left, right);
-        for _ in 0..150 {
-            demo.present();
-        }
-        demo.input(0, [128, 128]);
-        demo.present();
-        demo.save(if left[0] == 255 {
-            "lab-camera-corner-a"
-        } else {
-            "lab-camera-corner-b"
-        });
-    }
-    demo.click(1 << 6); // FOV.
-    demo.save("lab-camera-fov-before");
-    assert_eq!(demo.glyph(1, 7), 62, "focus FOV");
-    for _ in 0..8 {
-        demo.click(1 << 5);
-    }
-    assert_eq!(demo.text(15, 7, 2), "80", "maximum safe FOV");
-    demo.save("lab-camera-fov-max");
-    for _ in 0..20 {
-        demo.click(1 << 7);
-    }
-    assert_eq!(demo.text(15, 7, 2), "35", "minimum FOV");
-    demo.save("lab-camera-fov-min");
-    demo.click(1 << 12);
-    assert_eq!(demo.text(15, 7, 2), "60", "camera reset");
-    demo.click(1 << 6);
-    demo.click(1 << 5);
-    let camera_changed = picture(&demo);
-
-    demo.click(1 << 9);
-    assert_eq!(demo.glyph(24, 3), 62);
-    let light_default = picture(&demo);
+    let orbit = picture(&demo);
+    assert_ne!(orbit, defaults);
+    demo.click(1 << 9); // Light: no scene reset.
+    assert_eq!(picture(&demo), orbit);
     demo.input(0, [240, 40]);
     for _ in 0..8 {
+        demo.sim.advance_host_time(Duration::from_millis(50));
         demo.present();
     }
     demo.input(0, [128, 128]);
     demo.present();
-    assert_ne!(
-        picture(&demo),
-        light_default,
-        "left stick changes light direction"
-    );
-    demo.save("lab-light-direction");
-    let ambient_before = demo.text(14, 5, 3);
-    demo.input_pair(0, [128, 128], [255, 0]);
-    for _ in 0..8 {
-        demo.present();
-    }
-    demo.input(0, [128, 128]);
-    demo.present();
-    assert_ne!(
-        demo.text(14, 5, 3),
-        ambient_before,
-        "right stick changes ambient intensity"
-    );
-    demo.save("lab-light-strength");
-    let arrow_pixels = |demo: &Demo| {
-        (64..150)
-            .flat_map(|y| (300..384).map(move |x| (x, y)))
-            .filter(|&(x, y)| matches!(demo.pixel(x, y), 0xfe88 | 0x87ff))
-            .collect::<Vec<_>>()
-    };
-    let arrow = arrow_pixels(&demo);
-    assert!(arrow.len() > 10, "visible unlit light-direction arrow");
-    demo.input_pair(0, [128, 128], [0, 255]);
-    for _ in 0..100 {
-        demo.present();
-    }
-    demo.input(0, [128, 128]);
-    demo.present();
-    assert_eq!(demo.text(15, 5, 1), "0");
-    assert_eq!(demo.text(15, 7, 1), "0");
-    assert_eq!(
-        arrow_pixels(&demo),
-        arrow,
-        "direction stays visible with lights off"
-    );
-    demo.save("lab-light-zero-strength");
-    let light_changed = picture(&demo);
-
-    demo.click(1 << 9);
-    assert_eq!(demo.glyph(34, 3), 62);
-    let material_default = picture(&demo);
+    let light = picture(&demo);
+    assert_ne!(light, orbit);
+    demo.save("lab-combined-camera-light");
+    demo.click(1 << 9); // Material retains camera AND light.
+    assert_eq!(picture(&demo), light);
     for _ in 0..4 {
         demo.click(1 << 7);
     }
-    assert_ne!(
-        picture(&demo),
-        material_default,
-        "material color changes actual cube pixels"
-    );
-    demo.save("lab-material-color");
-    demo.click(1 << 12);
-    assert_eq!(
-        picture(&demo),
-        material_default,
-        "material reset restores only this tab"
-    );
-    demo.save("lab-material-reset");
+    let tinted = picture(&demo);
+    assert_ne!(tinted, light);
+    demo.save("lab-combined-material-color");
     for _ in 0..5 {
         demo.click(1 << 6);
     }
     for _ in 0..10 {
         demo.click(1 << 7);
     }
-    assert_ne!(
-        picture(&demo),
-        material_default,
-        "specular response affects actual shaded pixels"
+    assert!(
+        picture(&demo) != tinted,
+        "curved object exposes specular response"
     );
-    demo.save("lab-material-specular");
-    demo.click(1 << 12);
-    for _ in 0..6 {
-        demo.click(1 << 6);
+    demo.save("lab-sphere-no-specular");
+    let combined = picture(&demo);
+    for _ in 0..4 {
+        demo.click(1 << 9);
+        assert_eq!(picture(&demo), combined);
     }
-    demo.click(1 << 7);
-    demo.click(1 << 7);
-    assert_ne!(
+    demo.click(1 << 10); // Previous page.
+    demo.click(1 << 11); // Return to Lab.
+    assert_eq!(
         picture(&demo),
-        material_default,
-        "shininess changes the highlight"
+        combined,
+        "page changes preserve the entire scene"
     );
-    demo.save("lab-material-shininess");
+    demo.click(1 << 12); // Reset from Material resets the whole scene.
+    assert_eq!(demo.glyph(34, 3), 62, "reset preserves the selected tab");
+    assert_eq!(picture(&demo), defaults);
+    demo.save("lab-global-reset");
+    demo.click(1 << 8); // Light default values also restored.
+    assert_eq!(demo.text(15, 5, 2), "20");
+    assert_eq!(demo.text(15, 7, 2), "80");
+    demo.click(1 << 8); // Camera FOV remains bounded.
+    demo.click(1 << 6);
+    for _ in 0..8 {
+        demo.click(1 << 5);
+    }
+    assert_eq!(demo.text(15, 7, 2), "80");
+    demo.input_pair(0, [128, 255], [255, 255]);
+    for _ in 0..30 {
+        demo.sim.advance_host_time(Duration::from_millis(50));
+        demo.present();
+    }
+    demo.input(0, [128, 128]);
+    demo.present();
+    demo.save("lab-camera-safe-low");
     demo.click(1 << 12);
-    assert_eq!(picture(&demo), material_default);
-
-    demo.click(1 << 8);
-    assert_eq!(
-        picture(&demo),
-        light_changed,
-        "light settings survive material reset"
-    );
-    demo.click(1 << 8);
-    assert_eq!(
-        picture(&demo),
-        camera_changed,
-        "camera settings survive other tabs"
-    );
-    demo.click(1 << 8);
-    assert_eq!(
-        picture(&demo),
-        texture_lit,
-        "surface selection survives other tabs"
-    );
-    demo.click(1 << 10);
-    demo.click(1 << 11);
-    assert_eq!(
-        picture(&demo),
-        texture_lit,
-        "page leave/reentry preserves lab state"
-    );
-    demo.save("lab-return");
+    assert_eq!(picture(&demo), defaults);
+    demo.click(1 << 8); // Surface: every geometry/color/lighting combination.
+    for geometry in ["sphere", "torus", "quad", "cube"] {
+        demo.click(1 << 6);
+        for color in ["uniform", "rgb", "texture"] {
+            let lit = picture(&demo);
+            demo.save(&format!("lab-{geometry}-{color}-lit"));
+            demo.click(1 << 6);
+            demo.click(1 << 5);
+            assert!(
+                picture(&demo) != lit,
+                "lighting option must affect {geometry}/{color}"
+            );
+            demo.save(&format!("lab-{geometry}-{color}-unlit"));
+            demo.click(1 << 5);
+            demo.click(1 << 4);
+            demo.click(1 << 5);
+        }
+        demo.click(1 << 4);
+        demo.click(1 << 5);
+    }
+    demo.click(1 << 12);
+    assert_eq!(picture(&demo), defaults);
     let stack_words = usize::from(0xc000 - demo.minimum_sp);
     assert!(demo.static_words + stack_words <= 8192);
-    let evidence = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/core-demo/key-legends/pages/lab-budget.json");
-    std::fs::write(evidence,serde_json::to_vec_pretty(&serde_json::json!({"presents":demo.presents,"static_words":demo.static_words,"observed_stack_words":stack_words,"maximum_steps_per_present":8_000_000})).unwrap()).unwrap();
+    std::fs::write(evidence_root().join("lab-budget.json"), serde_json::to_vec_pretty(&serde_json::json!({
+        "presents":demo.presents,"static_words":demo.static_words,"observed_stack_words":stack_words,
+        "maximum_steps_per_present":8_000_000
+    })).unwrap()).unwrap();
+}
+#[test]
+#[ignore = "requires a core-demo --page 6 export in CORE_DEMO_ARTIFACT"]
+fn gpu_lab_exact_camera_readout_from_exported_application() {
+    let mut demo = Demo::new();
+    demo.present();
+    assert_eq!(demo.text(2, 1, 7), "GPU LAB");
+    let scene = demo.region(216, 64, 184, 128);
+    demo.save("camera-readout-hidden");
+    let defaults = ["00000000", "00004CCD", "00060000", "00000000", "00000000"];
+    demo.click(1 << 15); // Square toggles UI only.
+    assert_eq!(demo.text(3, 4, 17), "CAMERA HEX Q16.16");
+    for (index, expected) in defaults.iter().enumerate() {
+        assert_eq!(demo.text(15, 5 + index, 8), *expected);
+    }
+    assert_eq!(demo.text(15, 10, 2), "60");
+    demo.save("camera-readout-default");
+    assert!(
+        demo.region(216, 64, 184, 128) == scene,
+        "readout must preserve scene pixels"
+    );
+    demo.click(1 << 9); // Camera controls remain active behind the readout.
+    demo.input_pair(0, [255, 128], [255, 128]);
+    for _ in 0..3 {
+        demo.sim.advance_host_time(Duration::from_millis(50));
+        demo.present();
+    }
+    demo.input(0, [128, 128]);
+    demo.present();
+    assert!(demo.text(15, 5, 8).starts_with("FFFF"), "signed yaw bits");
+    assert!(
+        demo.text(15, 8, 8).starts_with("FFFF"),
+        "signed target X bits"
+    );
+    demo.click(1 << 6); // FOV.
+    demo.click(1 << 5);
+    assert_eq!(demo.text(15, 10, 2), "65");
+    demo.save("camera-readout-moved");
+    demo.click(1 << 12); // Reset retains the readout and restores exact defaults.
+    for (index, expected) in defaults.iter().enumerate() {
+        assert_eq!(demo.text(15, 5 + index, 8), *expected);
+    }
+    assert!(
+        demo.region(216, 64, 184, 128) == scene,
+        "reset scene pixels"
+    );
+    demo.save("camera-readout-reset");
+    demo.click(1 << 10);
+    demo.click(1 << 11);
+    assert_eq!(demo.text(3, 4, 17), "CAMERA HEX Q16.16");
+    demo.click(1 << 15);
+    assert_eq!(demo.glyph(3, 4), 255);
+    assert_eq!(demo.text(3, 5, 8), "DISTANCE");
+    assert!(
+        demo.region(216, 64, 184, 128) == scene,
+        "hidden scene pixels"
+    );
+}
+
+fn evidence_root() -> std::path::PathBuf {
+    std::env::var_os("CORE_DEMO_EVIDENCE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/core-demo/key-legends/pages")
+        })
 }
 impl Demo {
     fn new() -> Self {
@@ -569,8 +571,7 @@ impl Demo {
             .collect()
     }
     fn save(&self, name: &str) {
-        let root =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/core-demo/key-legends/pages");
+        let root = evidence_root();
         std::fs::create_dir_all(&root).unwrap();
         let mut data = b"P6\n400 240\n255\n".to_vec();
         for pixel in self.sim.render_active_framebuffer() {

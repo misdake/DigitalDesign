@@ -1,4 +1,4 @@
-//! Direction and intensities act on both the floor and the cube.
+//! Direction and intensities act on the shared object and floor.
 use crate::dsl_rt::*;
 mod gpu_api;
 use crate::common::state::*;
@@ -25,11 +25,7 @@ impl LightTab {
     }
     pub fn update(&mut self, input: GamepadFrame, seconds: fix32) {
         self.cursor = lab_cursor(self.cursor, input.pressed, 2);
-        self.light.yaw = lab_clamp(
-            self.light.yaw - input.left_x * seconds * fix!(2),
-            fix!(-3.1),
-            fix!(3.1),
-        );
+        self.light.yaw = lab_wrap_angle(self.light.yaw - input.left_x * seconds * fix!(2));
         self.light.pitch = lab_clamp(
             self.light.pitch - input.left_y * seconds * fix!(2),
             fix!(-1.2),
@@ -57,9 +53,6 @@ impl LightTab {
         } else {
             self.light.directional = lab_clamp(self.light.directional + delta, fix!(0), fix!(1));
         }
-        if input.pressed & BUTTON_TRIANGLE != 0 {
-            *self = Self::new();
-        }
     }
 }
 
@@ -78,7 +71,6 @@ pub fn light_labels(grid: &mut UiGrid, state: LightTab) {
     );
     text(grid, 3, 9, b"LS DIRECTION");
     text(grid, 3, 11, b"RS STRENGTH");
-    text(grid, 31, 5, b"TO LIGHT");
     hint_at(grid, 1, 12, KEY_LS, ICON_ADJUST);
     hint_at(grid, 8, 12, KEY_RS, ICON_ADJUST);
     hint_at(grid, 17, 12, KEY_DPAD_H, ICON_ADJUST);

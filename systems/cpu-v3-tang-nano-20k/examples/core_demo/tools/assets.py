@@ -19,9 +19,12 @@ ICONS = {
     'SELECT': [0,0,0,0x1f,0,0x5f,0x80,0x5f,0,0x1f,0,0,0,0,0,0],
     'RADIO_OFF': [0,0,0,0x3c,0x42,0x42,0x42,0x42,0x42,0x3c,0,0,0,0,0,0],
     'RADIO_ON': [0,0,0,0x3c,0x42,0x5a,0x5a,0x5a,0x42,0x3c,0,0,0,0,0,0],
+    'AXIS_X': ui_font.load_rows()[ord('X')],
+    'AXIS_Y': ui_font.load_rows()[ord('Y')],
+    'AXIS_Z': ui_font.load_rows()[ord('Z')],
 }
 
-KEY_NAMES = ('L1', 'R1', 'CROSS', 'TRIANGLE', 'START', 'DPAD_H', 'DPAD_V', 'L2', 'R2', 'LS', 'RS')
+KEY_NAMES = ('L1', 'R1', 'CROSS', 'TRIANGLE', 'START', 'DPAD_H', 'DPAD_V', 'L2', 'R2', 'LS', 'RS', 'SQUARE')
 
 
 def keycaps():
@@ -59,7 +62,7 @@ def keycaps():
                         pixel(x, y)
             for y,bits in enumerate(font[ord(name[0])]):
                 rows[y] |= bits << 8
-        elif name in ('CROSS', 'TRIANGLE'):
+        elif name in ('CROSS', 'TRIANGLE', 'SQUARE'):
             for y in range(1, 15):
                 for x in range(5, 19):
                     radius = (x-12)**2+(y-7)**2
@@ -69,12 +72,18 @@ def keycaps():
                 for i in range(5):
                     pixel(10+i, 5+i)
                     pixel(14-i, 5+i)
-            else:
+            elif name == 'TRIANGLE':
                 for i in range(5):
                     pixel(12-i, 4+i)
                     pixel(12+i, 4+i)
                 for x in range(8, 17):
                     pixel(x, 9)
+            else:
+                for i in range(7):
+                    pixel(9+i, 4)
+                    pixel(9+i, 10)
+                    pixel(9, 4+i)
+                    pixel(15, 4+i)
         else:
             points = {(x,y) for y in range(3,13) for x in range(5,19)
                       if 10 <= x <= 13 or 6 <= y <= 9}
@@ -100,8 +109,10 @@ def pack(output):
     extra = len(ICONS)+3*len(keys)
     atlas = ui_font.base_asset('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /->+.', extra_glyphs=extra)
     first_icon = len(atlas)//256-extra
-    for index, rows in enumerate(ICONS.values()):
-        ui_font.write_glyph(atlas, first_icon+index, rows, foreground=ui_font.rgba5551(80, 120, 160))
+    axis_colors = {'AXIS_X': (255,80,80), 'AXIS_Y': (80,255,112), 'AXIS_Z': (96,160,255)}
+    for index, (name, rows) in enumerate(ICONS.items()):
+        color = axis_colors.get(name, (80,120,160))
+        ui_font.write_glyph(atlas, first_icon+index, rows, foreground=ui_font.rgba5551(*color))
     first_key = first_icon+len(ICONS)
     for index, rows in enumerate(keys.values()):
         for cell in range(3):
