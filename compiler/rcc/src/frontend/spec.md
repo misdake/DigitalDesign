@@ -216,6 +216,7 @@ they are not part of this surface.
 | numeric conversion | `fix32::from_int(x: i16) -> fix32`, `x.to_int() -> i16` | `I16TOF`; `FTOI16` truncates toward zero and wraps on overflow |
 | decimal literal | `fix!(0.125)`, `fix!(-1.25)`, `fix!(1e-3)` | unsuffixed decimal literal, optional trailing comma; exact compile-time decimal-to-Q16.16 quantization, nearest/ties away from zero, range errors in both profiles |
 | readable constants | `fix32::one()`, `fix32::from_ratio(n: i16, d: u16)`, `fix32::degrees(value: i16)` | compile-time arguments; nearest Q16.16, ties away from zero; ratio denominator must be nonzero |
+| angle conversion | `x.to_radians() -> fix32` | runtime Q16.16 multiply by raw `1144`, materialized with both raw halves initialized; constant evaluation quantizes the conversion once |
 | raw construction | `fix32::from_words(lo: u16, hi: u16) -> fix32` | construct the exact 32-bit Q16.16 pattern, low half first (`ILO2F`, `IHI2F`); a compile-time zero low half uses one exact `I16TOF` |
 | raw extraction | `x.lo_bits() -> u16`, `x.hi_bits() -> u16` | extract the exact low/high half (`FLO2I`, `FHI2I`) |
 | vector construction | `vec2::new(x, y)`, `vec3::new(x, y, z)`, `vec4::new(x, y, z, w)` | build a consecutive F-register range from `fix32` lanes |

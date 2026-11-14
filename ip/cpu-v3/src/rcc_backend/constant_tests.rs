@@ -445,3 +445,60 @@ fn main(){
         RunOutcome::Halted { signal: 0x600d, .. }
     ));
 }
+
+#[test]
+fn runtime_radians_initializes_both_coefficient_halves() {
+    let source = r#"
+static DEGREES:fix32=fix!(60);
+fn main(){
+ let radians=DEGREES.to_radians();
+ if radians.lo_bits()!=3104||radians.hi_bits()!=1{halt(1);}
+ halt(0x600d);
+}
+"#;
+    for opt in [rcc::Opts::default(), rcc::Opts::disabled()] {
+        let options = CompilerOptions {
+            opt,
+            ..CompilerOptions::default()
+        };
+        let program =
+            try_compile(parse("runtime-radians", source).unwrap(), &options, "main").unwrap();
+        for high in [0xffff, 0x1234] {
+            // Execute real instructions to dirty every possible F-register
+            // allocation before entering the compiled program.
+            let mut seed = crate::load_immediate16(1, high).to_vec();
+            for fd in 0..64 {
+                seed.extend(crate::fpu_aux(
+                    crate::FpuAuxKind::IntegerRegister,
+                    1,
+                    0,
+                    fd,
+                    crate::FpuAuxSubop::I16tof,
+                    0,
+                ));
+            }
+            let mut cpu = CpuV3Sim::default();
+            cpu.set_boot_window(&seed);
+            for _ in 0..seed.len() {
+                if usize::from(cpu.pc()) == seed.len() {
+                    break;
+                }
+                cpu.step().unwrap();
+            }
+            assert_eq!(usize::from(cpu.pc()), seed.len());
+            assert!(cpu
+                .fpu_registers()
+                .iter()
+                .all(|value| (*value as u32 >> 16) == u32::from(high)));
+            cpu.set_boot_window(&program.words);
+            cpu.set_pc(0);
+            assert!(
+                matches!(
+                    cpu.run(10000).unwrap(),
+                    RunOutcome::Halted { signal: 0x600d, .. }
+                ),
+                "coefficient inherited F-register high half {high:#06x}"
+            );
+        }
+    }
+}

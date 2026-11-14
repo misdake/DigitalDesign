@@ -6505,8 +6505,7 @@ fn fpu_method(
                 if !m.args.is_empty() {
                     return Err(err(m, "to_radians takes no arguments"));
                 }
-                let coefficient = l.b.load_imm(1144);
-                let factor = l.b.fpu_from_lo(coefficient);
+                let factor = fpu_const(l, 1144);
                 Ok(Val::V(l.b.fpu_bin(FpuBinOp::Mul, base, factor), Ty::Fix32))
             }
             "abs" | "floor" | "ceil" | "round" | "trunc" => {
