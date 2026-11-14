@@ -4,6 +4,15 @@
   Texture/Mesh/UI-atlas descriptions from producer metadata. It leaves addresses
   to placement and emits sector fixups for address-independent mesh packages;
   see [static assets](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md).
+- `build_meshlets.mjs` is the shared official meshoptimizer 1.3.0 entry, promoted
+  from the local meshpack experiment; `mesh_partition.py` supplies its bounded
+  Python bridge. Multi-record geometry uses 64V/96T and cone weight 0. Node.js 18+
+  is required (`NODE_EXE` may override PATH); the checked-in MIT module needs no
+  npm or download step. There is no silent greedy fallback.
+- `mesh_source.py` solves canonical local position levels after clustering;
+  `mesh_inspect.py` independently decodes native bytes and audits source IDs,
+  attributes, oriented triangle multiplicity/winding and shared edges before
+  publication. The bridge and official module are producer fingerprint inputs.
 - `gpu_mesh_layout.py` owns the shared V96/T64 meshlet record encoder;
   `gpu_texture_layout.py` owns native 16-bit texture packing, including mip tails.
 

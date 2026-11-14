@@ -281,12 +281,45 @@ python -B systems/cpu-v3-tang-nano-20k/tools/asset_producer.py systems/cpu-v3-ta
 `native_asset_source.Sources.geometry` accepts `Vertex` values and triangle indices.
 Positions are source-world numbers, normals are normalized by the producer, UVs
 are normalized values in 0..1, and optional RGB colors are integer bytes. All
-vertices in one mesh use the same UV/RGB mode. The producer preserves triangle
-order while partitioning at 64 vertices or 96 triangles per meshlet, chooses each
-record's Q16.16 origin/binary step, and calls the existing native record encoder.
-It creates the aligned directory, payload and sector relocation placeholders.
-`PositionEncoding(origin, shift)` optionally preserves an explicit native layout;
-ordinary callers use automatic quantization.
+vertices in one mesh use the same UV/RGB mode. Multi-record meshes are partitioned
+by the pinned official meshoptimizer 1.3.0 clusterizer, with 64 vertices,
+96 triangles and cone weight 0. Triangle and local vertex order may change;
+the oriented triangle multiset, including duplicate counts, remains identical.
+Meshes already fitting one record retain their original bytes and unused
+vertices. Order-dependent geometry must account for the optimized order.
+Node.js 18+ is required for partitioning (`NODE_EXE` can select the executable).
+The official JavaScript/WebAssembly module is checked in with its MIT license;
+no npm installation or network access occurs during asset generation. Missing
+Node or a partition error fails the build, without a greedy fallback. Automatic
+position encoding groups equal Q16.16 coordinates, including different source
+IDs at UV or hard-normal seams. Attributes retain their source identity.
+A mesh-wide anchor fixes the binary lattice; each meshlet starts at its finest
+fitting level. A shared position adopts the coarsest level required by any
+referencing meshlet. The producer recomputes canonical positions from the
+original Q16 coordinates and raises meshlet levels when the new bounds require
+it, repeating until stable. Levels increase monotonically within the native
+0..31 range. Finer meshlets keep their fine interior vertices and encode their
+coarser boundary points exactly. Each record uses a local origin on its grid;
+writing deltas does not round relative to that origin again. Thus distant
+meshlets do not need one ten-bit global bounding box, and the entire mesh need
+not adopt its coarsest level.
+
+Before publication, `mesh_inspect` independently reads the actual native bytes.
+It walks directory lengths, decodes positions/indices, verifies the partition's
+source-ID map against canonical coordinates and normal/attribute signatures,
+and independently compares the oriented source-triangle multiset. Cyclic index
+rotation is allowed; reversed winding, lost or duplicated triangles are rejected.
+Shared-edge endpoints and duplicate-position groups must remain identical. Intentional
+UV/normal seam copies keep different attributes while sharing one position.
+Malformed extents, indices or attributes fail the build. The inspector imports
+no encoder logic; producer dependency hashes include it. Position and normal
+mutation tests check this gate. The producer creates the aligned directory,
+payload and sector relocation placeholders without changing the native format.
+`PositionEncoding(origin, shift)` optionally fixes position encoding; ordinary
+callers use automatic quantization. Offline callers can pass `audit={}` to
+`encode_mesh` to collect decoded audit statistics and the per-record `source_maps`
+for a separate `inspect_mesh(..., source_maps=...)` invocation. Source maps are
+offline provenance and add no runtime bytes.
 
 ```python
 from native_asset_source import Sources, Vertex

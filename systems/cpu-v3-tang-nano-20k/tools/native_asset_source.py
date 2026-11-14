@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from mesh_source import PositionEncoding, Vertex, encode_mesh
 import mesh_source
+import mesh_inspect
+import mesh_partition
 import gpu_mesh_layout
 import gpu_texture_layout
 import texture_source
@@ -21,8 +23,8 @@ class Sources:
         self.resources = []
         self.relocations = []
         self.symbols = set()
-        self.sources = {Path(__file__), Path(mesh_source.__file__), Path(gpu_mesh_layout.__file__),
-                        Path(texture_source.__file__), Path(gpu_texture_layout.__file__)}
+        self.sources = {Path(__file__), Path(mesh_source.__file__), Path(mesh_inspect.__file__), Path(gpu_mesh_layout.__file__),
+                        Path(texture_source.__file__), Path(gpu_texture_layout.__file__), *mesh_partition.SOURCES}
 
     def _asset(self, symbol, payload, alignment, description):
         if not re.fullmatch(r'[A-Z][A-Z0-9_]*', symbol) or symbol in self.symbols:

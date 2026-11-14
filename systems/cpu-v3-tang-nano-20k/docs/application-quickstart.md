@@ -8,6 +8,8 @@ is required to see the first frame.
 
 Use the repository-pinned Rust nightly, Python 3 and PowerShell. On Windows,
 use an MSVC x64 developer environment. Cargo and Python must be on PATH.
+Multi-meshlet source geometry also uses Node.js 18+ on PATH (or `NODE_EXE`);
+the pinned meshoptimizer module is included, with no npm or network build step.
 Asset generation uses Python; it is part of the ordinary application build.
 
 The language uses Rust syntax with RCC restrictions. Ordinary structs can be
