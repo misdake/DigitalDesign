@@ -51,12 +51,12 @@ pub struct Allocation {
     /// callee-save regs actually used; saved/restored at frame slots 0..k
     pub callee_saved: Vec<u8>,
     /// frame-local slots assigned by the frontend (address-taken locals and
-    /// local arrays); they follow the callee-save area
+    /// local arrays)
     pub local_slots: u8,
-    /// number of spill frame slots used (after the local area)
+    /// number of GPR spill slots used
     pub spill_slots: u8,
     /// number of FPU spill slots; each is 4 words and 4-aligned, in an area
-    /// after the GPR spill area (preceded by up to 3 words of alignment
+    /// after both scalar areas (preceded by up to 3 words of alignment
     /// padding)
     pub fpu_spill_slots: u8,
 }
@@ -79,11 +79,11 @@ impl Allocation {
     pub fn fpu_area_offset(&self) -> u8 {
         self.callee_saved.len() as u8 + self.local_slots + self.spill_slots
     }
-    /// frame slot index of a frontend local slot
+    /// frame slot index of a frontend local slot in the default locals-first layout
     pub fn local_frame_slot(&self, slot: u8) -> u8 {
         self.callee_saved.len() as u8 + slot
     }
-    /// frame slot index of a spill slot (they follow the local area)
+    /// frame slot index of a GPR spill in the default locals-first layout
     pub fn spill_frame_slot(&self, slot: u8) -> u8 {
         self.callee_saved.len() as u8 + self.local_slots + slot
     }
@@ -196,7 +196,7 @@ pub fn try_allocate_with_convention(
             };
             collapse_redundant_phi_trampolines(&mut f, &alloc.reg);
             forward_adjacent_stack_reloads(&mut f);
-            deduplicate_allocated_immediates(&mut f, &alloc.reg);
+            reuse_allocated_gpr_values(&mut f, &alloc.reg);
             if alloc.frame_size() > convention.maximum_frame_words {
                 return Err(AllocationError::FrameCapacity {
                     function: f.name,
@@ -241,15 +241,22 @@ fn forward_adjacent_stack_reloads(f: &mut IrFunc) {
     }
 }
 
-// Rebuilt constants can land in the same register repeatedly. Remember only
-// physical register contents within a block, invalidating every GPR definition
-// and every call. This does not extend any allocated live interval.
-fn deduplicate_allocated_immediates(f: &mut IrFunc, registers: &HashMap<VReg, u8>) {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RematerializedValue {
+    Immediate(u16),
+    LocalAddress(u8),
+    FpuSpillAddress(u8),
+}
+
+// Constants and frame addresses can already be present in the destination
+// register. Forget overwritten registers and stop tracking across calls.
+// No allocated live interval is extended.
+fn reuse_allocated_gpr_values(f: &mut IrFunc, registers: &HashMap<VReg, u8>) {
     let layout = f.rpo();
     let classes = &f.vreg_class;
     for block_id in layout {
         let block = &mut f.blocks[block_id];
-        let mut known: HashMap<u8, (VReg, u16)> = HashMap::new();
+        let mut known: HashMap<u8, (VReg, RematerializedValue)> = HashMap::new();
         for inst in &mut block.insts {
             if matches!(
                 inst,
@@ -257,7 +264,17 @@ fn deduplicate_allocated_immediates(f: &mut IrFunc, registers: &HashMap<VReg, u8
             ) {
                 known.clear();
             }
-            if let Instr::LoadImm { dst, value } = *inst {
+            let materialized = match *inst {
+                Instr::LoadImm { dst, value } => Some((dst, RematerializedValue::Immediate(value))),
+                Instr::AddrOfLocal { dst, slot } => {
+                    Some((dst, RematerializedValue::LocalAddress(slot)))
+                }
+                Instr::AddrOfFpuSpill { dst, slot } => {
+                    Some((dst, RematerializedValue::FpuSpillAddress(slot)))
+                }
+                _ => None,
+            };
+            if let Some((dst, value)) = materialized {
                 if let Some(&(src, old)) = known.get(&registers[&dst]) {
                     if old == value {
                         *inst = Instr::Mov { dst, src };
@@ -275,7 +292,7 @@ fn deduplicate_allocated_immediates(f: &mut IrFunc, registers: &HashMap<VReg, u8
                     known.remove(&registers[&def]);
                 }
             }
-            if let Instr::LoadImm { dst, value } = *inst {
+            if let Some((dst, value)) = materialized {
                 known.insert(registers[&dst], (dst, value));
             }
         }
@@ -1958,7 +1975,7 @@ mod spill_capacity_tests {
             }],
             ..Block::default()
         });
-        deduplicate_allocated_immediates(&mut f, &registers);
+        reuse_allocated_gpr_values(&mut f, &registers);
         assert!(matches!(f.blocks[0].insts[1], Instr::Mov { dst, src } if dst == c && src == a));
         for i in [3, 5] {
             assert!(matches!(f.blocks[0].insts[i], Instr::LoadImm { .. }));

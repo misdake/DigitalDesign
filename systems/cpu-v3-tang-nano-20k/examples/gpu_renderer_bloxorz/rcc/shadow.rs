@@ -299,6 +299,7 @@ fn shadow_hull(count: u16) -> u16 {
     }
     size - 1
 }
+#[inline]
 fn shadow_distance(x: fix32, z: fix32, bound: fix32, side: u16) -> fix32 {
     if side == 0 {
         return x - bound;

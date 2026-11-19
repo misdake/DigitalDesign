@@ -158,7 +158,7 @@ fn cseg_capacity_is_per_window() {
         ],
         static_addresses: vec![],
         frame_size: 0,
-        callee_saved: 0,
+        local_base: 0,
     };
     let options = CompilerOptions::for_separate_code_and_data_segments(0);
     let debug = rcc::frontend::FrontendDebug {

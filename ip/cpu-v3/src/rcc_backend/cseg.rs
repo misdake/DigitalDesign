@@ -1,7 +1,7 @@
 //! Multi-CSEG layout and ordinary-ABI far calls. No data-segment state is changed.
 use super::{
     abi::{REG_LINK, REG_SP, REG_TMP},
-    linker::{link_segment, relax_branches},
+    linker::{link_segment, place_near_calls, relax_branches, trim_interior_guards},
     lowering::{Line, LoweredFunction},
     BackendError, CompilerOptions, CpuV3CodeSegment, CpuV3Program,
 };
@@ -24,7 +24,7 @@ fn synthetic(name: FuncName, lines: Vec<Line>) -> LoweredFunction {
         lines,
         static_addresses: vec![],
         frame_size: 0,
-        callee_saved: 0,
+        local_base: 0,
         trailing_guard: false,
     }
 }
@@ -152,11 +152,16 @@ fn relax_banks(
     }
 }
 pub(super) fn link(
-    functions: Vec<LoweredFunction>,
+    mut functions: Vec<LoweredFunction>,
     options: &CompilerOptions,
     debug: FrontendDebug,
 ) -> Result<CpuV3Program, BackendError> {
     let Some(default) = debug.default_cseg else {
+        if !options.opt.is_disabled() {
+            trim_interior_guards(&mut functions);
+            let bodies = 0..functions.len();
+            place_near_calls(&mut functions, bodies, usize::from(options.code_base));
+        }
         return link_segment(functions, options, debug, &HashMap::new());
     };
     if !options.separate_code_data_segments {
@@ -204,7 +209,11 @@ pub(super) fn link(
             .push(function);
     }
     let multiple = banks.len() > 1;
+    let mut body_ranges = Vec::new();
     for (&bank, functions) in &mut banks {
+        if !options.opt.is_disabled() {
+            trim_interior_guards(functions);
+        }
         let mut targets = BTreeSet::new();
         for function in functions.iter() {
             for line in &function.lines {
@@ -246,7 +255,9 @@ pub(super) fn link(
                 }
             }
         }
-        if incoming.contains(&bank) {
+        let ordinary_bodies = functions.len();
+        let start = usize::from(incoming.contains(&bank));
+        if start != 0 {
             functions.insert(0, header(return_offset));
         }
         let shared = (targets.len() > 1)
@@ -263,8 +274,37 @@ pub(super) fn link(
         if let Some(name) = shared {
             functions.push(shared_entry(name, options.code_base + return_offset));
         }
+        body_ranges.push((bank, start..start + ordinary_bodies));
     }
-    let addresses = relax_banks(&mut banks, usize::from(options.code_base));
+    let code_base = usize::from(options.code_base);
+    // A smaller relative layout can still widen another bank's absolute stub
+    // loads. Compare the fully relaxed banks before accepting the new order.
+    let baseline = (multiple && !options.opt.is_disabled()).then(|| {
+        let mut original = banks.clone();
+        let addresses = relax_banks(&mut original, code_base);
+        (original, addresses)
+    });
+    if !options.opt.is_disabled() {
+        for (bank, range) in body_ranges {
+            place_near_calls(banks.get_mut(&bank).unwrap(), range, code_base);
+        }
+    }
+    let mut addresses = relax_banks(&mut banks, code_base);
+    if let Some((original, original_addresses)) = baseline {
+        let words = |functions: &[LoweredFunction]| {
+            functions
+                .iter()
+                .map(LoweredFunction::size_words)
+                .sum::<usize>()
+        };
+        if banks
+            .iter()
+            .any(|(bank, functions)| words(functions) > words(&original[bank]))
+        {
+            banks = original;
+            addresses = original_addresses;
+        }
+    }
     let mut root = None;
     let mut segments = Vec::new();
     for (bank, functions) in banks {

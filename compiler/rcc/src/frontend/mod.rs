@@ -374,7 +374,9 @@ fn auto_init(out: &mut [IrFunc], opts: &impl RccConfig) -> Result<(), syn::Error
             }
         }
     }
-    let heap_used = reachable.contains("malloc") || reachable.contains("free");
+    let heap_used = ["malloc", "try_malloc", "free"]
+        .iter()
+        .any(|name| reachable.contains(name));
     let vec_used = reachable.iter().any(|name| name.starts_with("vec_"));
     if !heap_used && !vec_used {
         return Ok(());
@@ -387,41 +389,35 @@ fn auto_init(out: &mut [IrFunc], opts: &impl RccConfig) -> Result<(), syn::Error
     };
     let mut heap_init = vec![];
     let mut vec_init = vec![];
-    let mut next_v = main.vreg_count;
-    // the init temporaries are GPRs
-    main.vreg_class
-        .resize(next_v as usize + 4, crate::RegClass::Gpr);
-    main.vreg_lanes.resize(next_v as usize + 4, 1);
     if heap_used {
+        let begin = main.fresh_vreg(crate::RegClass::Gpr);
+        let size = main.fresh_vreg(crate::RegClass::Gpr);
         heap_init.push(Instr::LoadImm {
-            dst: next_v,
+            dst: begin,
             value: opts.heap_begin(),
         });
-        next_v += 1;
         heap_init.push(Instr::LoadImm {
-            dst: next_v,
+            dst: size,
             value: opts.heap_size(),
         });
-        next_v += 1;
         heap_init.push(Instr::Call {
             func: "init_heap",
-            args: vec![next_v - 2, next_v - 1],
+            args: vec![begin, size],
             rets: vec![],
         });
     }
     if vec_used {
+        let capacity = main.fresh_vreg(crate::RegClass::Gpr);
         vec_init.push(Instr::LoadImm {
-            dst: next_v,
+            dst: capacity,
             value: opts.vec_init_cap(),
         });
-        next_v += 1;
         vec_init.push(Instr::Call {
             func: "init_vec",
-            args: vec![next_v - 1],
+            args: vec![capacity],
             rets: vec![],
         });
     }
-    main.vreg_count = next_v;
     // Prepend in reverse execution order: heap -> vec -> existing data init.
     if !vec_init.is_empty() {
         prepend_init_block(
@@ -6355,6 +6351,34 @@ fn fpu_associated_call(
             let (ptr, p_ty) = args[1].clone().reg(l, &call.args[1], "vec4::export")?;
             let (ptr, _) = coerce(l, ptr, &p_ty, &Ty::Ptr, &call.args[1])?;
             l.b.fpu_vec_store(ptr, 0, v);
+            Ok(Val::Unit)
+        }
+        (_, "load_words" | "store_words") => {
+            let name = format!("{ty_name}::{method}");
+            let store = method == "store_words";
+            let args = exactly_args(l, &call.args, call, 2 + usize::from(store), &name)?;
+            let (base, base_ty) = args[0].clone().reg(l, &call.args[0], &name)?;
+            let words = Ty::ArrayRef(Box::new(Ty::U16));
+            let (base, _) = coerce(l, base, &base_ty, &words, &call.args[0])?;
+            let (offset, offset_ty) = args[1].clone().reg(l, &call.args[1], &name)?;
+            let (offset, _) = coerce(l, offset, &offset_ty, &Ty::U16, &call.args[1])?;
+            let address = l.b.bin(BinOp::Add, base, offset);
+            let (lanes, ty) = vector.unwrap_or((1, Ty::Fix32));
+            if !store {
+                let value = if lanes == 1 {
+                    l.b.fpu_load(address, 0)
+                } else {
+                    l.b.fpu_vec_load(address, 0, lanes)
+                };
+                return Ok(Val::V(value, ty));
+            }
+            let (v, v_ty) = args[2].clone().reg(l, &call.args[2], &name)?;
+            let (v, _) = coerce(l, v, &v_ty, &ty, &call.args[2])?;
+            if ty == Ty::Fix32 {
+                l.b.fpu_store(address, 0, v);
+            } else {
+                l.b.fpu_vec_store(address, 0, v);
+            }
             Ok(Val::Unit)
         }
         _ => Err(err(

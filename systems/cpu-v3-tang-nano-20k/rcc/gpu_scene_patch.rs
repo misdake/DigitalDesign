@@ -208,16 +208,8 @@ fn gpu_patch_scene(
     let mut native = gpu_native_scratch();
     gpu_bind_copy(native, 0, c, GPU_CB_GLOBAL, 32);
     gpu_bind_copy(native, GPU_SCRATCH_INSTANCE, c, GPU_CB_INSTANCE, 64);
-    gpu_bind_copy(native, GPU_SCRATCH_MATH, camera, 0, 32);
-    gpu_bind_copy(native, GPU_SCRATCH_MATH + 32, c, GPU_CB_STATE, 16);
-    let desired = unsafe { native.as_ptr().add(GPU_SCRATCH_MATH as i16).as_u16_array() };
     let state = unsafe { c.as_ptr().add(GPU_CB_STATE as i16).as_u16_array() };
-    let light = gpu_scene_vec_read(state, GPU_STATE_LIGHT);
-    let row0 = gpu_scene_vec_read(desired, 0);
-    let row1 = gpu_scene_vec_read(desired, 8);
-    let row2 = gpu_scene_vec_read(desired, 16);
-    let view_light = vec3::new(-fdot(row0, light), fdot(row1, light), fdot(row2, light));
-    if !gpu_scene_light_encode(view_light, native) {
+    if !gpu_scene_encode_view_light(camera, state, native) {
         return false;
     }
     let revision = unsafe {
@@ -227,7 +219,7 @@ fn gpu_patch_scene(
             .as_u16_array()
     };
     gpu_model_matrix_prepare(
-        desired,
+        camera,
         model,
         native,
         gpu_arena_data(model[GPU_MODEL_DERIVED]),

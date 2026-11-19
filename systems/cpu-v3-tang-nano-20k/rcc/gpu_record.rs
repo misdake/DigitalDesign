@@ -100,9 +100,6 @@ fn gpu_record_resource_facts(slot: u16) -> Array<u16> {
             .as_u16_array()
     }
 }
-fn gpu_record_fact_equal(a: Array<u16>, ai: u16, b: Array<u16>, bi: u16) -> bool {
-    a[ai] == b[bi] && a[ai + 1] == b[bi + 1] && a[ai + 2] == b[bi + 2]
-}
 // Reserve each input's final table position without changing recorded facts.
 // The caller retains this local plan until its native operation succeeds.
 fn gpu_record_resource_room(
@@ -121,32 +118,39 @@ fn gpu_record_resource_room(
         return false;
     }
     let facts = gpu_record_resource_facts(slot);
-    let mut next = c[GPU_RECORD_FACT_COUNT];
+    let existing = c[GPU_RECORD_FACT_COUNT];
+    let existing_end = existing * 4;
+    let mut next = existing;
     let mut i: u16 = 0;
     while i < count {
         let at = i * 4;
-        if !gpu_memory_extent_valid(input[at], input[at + 1])
-            || input[at + 2] == 0
-            || input[at + 2] > GPU_FACT_BUFFER
+        let first = input[at];
+        let sectors = input[at + 1];
+        let kind = input[at + 2];
+        if !gpu_memory_extent_valid(first, sectors)
+            || kind == 0
+            || kind > GPU_FACT_BUFFER
             || input[at + 3] == 0
             || input[at + 3] > 3
         {
             return false;
         }
         let mut found: u16 = 65535;
-        let mut j: u16 = 0;
-        while j < c[GPU_RECORD_FACT_COUNT] && found == 65535 {
-            if gpu_record_fact_equal(input, at, facts, j * 4) {
-                found = j;
+        let mut index: u16 = 0;
+        while index < existing_end {
+            if first == facts[index] && sectors == facts[index + 1] && kind == facts[index + 2] {
+                found = index >> 2;
+                break;
             }
-            j += 1;
+            index += 4;
         }
-        j = 0;
-        while j < i && found == 65535 {
-            if gpu_record_fact_equal(input, at, input, j * 4) {
-                found = plan[j];
+        index = 0;
+        while index < at && found == 65535 {
+            if first == input[index] && sectors == input[index + 1] && kind == input[index + 2] {
+                found = plan[index >> 2];
+                break;
             }
-            j += 1;
+            index += 4;
         }
         if found == 65535 {
             if next == GPU_RECORD_FACT_LIMIT {

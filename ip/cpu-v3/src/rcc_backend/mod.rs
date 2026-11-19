@@ -63,9 +63,27 @@ struct AllocationCost {
     gpr_spill: usize,
     fpu_spill: usize,
 }
+impl AllocationCost {
+    fn compare(&self, function: FuncName, candidate: &Self) -> InlineFrameCost {
+        InlineFrameCost {
+            function,
+            baseline_frame: self.frame,
+            candidate_frame: candidate.frame,
+            baseline_gpr_spill: self.gpr_spill,
+            candidate_gpr_spill: candidate.gpr_spill,
+            baseline_fpu_spill: self.fpu_spill,
+            candidate_fpu_spill: candidate.fpu_spill,
+        }
+    }
+}
+#[derive(Clone, Debug)]
+struct FunctionCost {
+    allocation: AllocationCost,
+    words: usize,
+}
 struct InlineSelection<'a> {
     originals: &'a HashMap<FuncName, IrFunc>,
-    baseline_costs: &'a HashMap<FuncName, AllocationCost>,
+    baseline_costs: &'a HashMap<FuncName, FunctionCost>,
     frames: Vec<InlineFrameCost>,
 }
 impl InlineSelection<'_> {
@@ -73,15 +91,7 @@ impl InlineSelection<'_> {
         let Some(baseline) = self.baseline_costs.get(name) else {
             return true;
         };
-        let frame = InlineFrameCost {
-            function: name,
-            baseline_frame: baseline.frame,
-            candidate_frame: candidate.frame,
-            baseline_gpr_spill: baseline.gpr_spill,
-            candidate_gpr_spill: candidate.gpr_spill,
-            baseline_fpu_spill: baseline.fpu_spill,
-            candidate_fpu_spill: candidate.fpu_spill,
-        };
+        let frame = baseline.allocation.compare(name, candidate);
         let retain = frame.rejection().is_none();
         self.frames.push(frame);
         retain
@@ -105,9 +115,11 @@ fn allocate_function(
     }
     Ok((function, allocation))
 }
-fn allocation_cost(allocation: &Allocation) -> AllocationCost {
+fn allocation_cost(function: &IrFunc, allocation: &Allocation) -> AllocationCost {
+    let frame = lowering::AlignedSpillFrame::for_function(function, allocation)
+        .map_or_else(|| allocation.frame_size(), |frame| frame.maximum_words());
     AllocationCost {
-        frame: allocation.frame_size(),
+        frame,
         gpr_spill: allocation.spill_slots as usize,
         fpu_spill: allocation.fpu_area_words(),
     }
@@ -117,7 +129,7 @@ fn compile_ir_with_allocations(
     options: &CompilerOptions,
     main: FuncName,
     debug: rcc::frontend::FrontendDebug,
-) -> Result<(CpuV3Program, HashMap<FuncName, AllocationCost>), BackendError> {
+) -> Result<(CpuV3Program, HashMap<FuncName, FunctionCost>), BackendError> {
     compile_ir_selected(functions, options, main, debug, None)
 }
 fn compile_ir_selected(
@@ -126,7 +138,7 @@ fn compile_ir_selected(
     main: FuncName,
     debug: rcc::frontend::FrontendDebug,
     mut selection: Option<&mut InlineSelection<'_>>,
-) -> Result<(CpuV3Program, HashMap<FuncName, AllocationCost>), BackendError> {
+) -> Result<(CpuV3Program, HashMap<FuncName, FunctionCost>), BackendError> {
     let mut pending = BTreeSet::from([main]);
     let mut visited = HashSet::new();
     let mut lowered = Vec::new();
@@ -141,7 +153,7 @@ fn compile_ir_selected(
         let (mut function, mut allocation) =
             allocate_function(source.clone(), options, name == main)?;
         if let Some(selector) = selection.as_deref_mut() {
-            if !selector.retain(name, &allocation_cost(&allocation)) {
+            if !selector.retain(name, &allocation_cost(&function, &allocation)) {
                 source = selector
                     .originals
                     .get(name)
@@ -156,11 +168,15 @@ fn compile_ir_selected(
                 pending.insert(callee);
             }
         }
-        costs.insert(name, allocation_cost(&allocation));
-        lowered.push((
+        let body = lower_function(&function, &allocation, name == main, options.stack_init);
+        costs.insert(
             name,
-            lower_function(&function, &allocation, name == main, options.stack_init),
-        ));
+            FunctionCost {
+                allocation: allocation_cost(&function, &allocation),
+                words: body.size_words(),
+            },
+        );
+        lowered.push((name, body));
     }
     // Discovery order does not determine final code layout.
     lowered.sort_by_key(|(name, _)| (*name != main, *name));

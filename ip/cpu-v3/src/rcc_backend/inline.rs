@@ -75,6 +75,8 @@ pub struct InlineCompilationReport {
     pub fallback_count: usize,
     pub baseline_words: Option<usize>,
     pub candidate_words: Option<usize>,
+    /// Linked code words before and after trying the smaller caller bodies.
+    pub wrapper_trial_words: Option<(usize, usize)>,
     pub frames: Vec<InlineFrameCost>,
     pub baseline_lowering: Duration,
     pub candidate_lowering: Duration,
@@ -87,6 +89,12 @@ impl std::fmt::Display for InlineCompilationReport {
             "  target lowering: baseline {:?}, candidate {:?}",
             self.baseline_lowering, self.candidate_lowering
         )?;
+        if let Some((ordinary, wrappers)) = self.wrapper_trial_words {
+            writeln!(
+                f,
+                "  single-use wrapper trial: {ordinary} -> {wrappers} words"
+            )?;
+        }
         for cost in &self.frames {
             writeln!(
                 f,
@@ -132,35 +140,29 @@ pub fn try_compile_with_inline_report(
     {
         return Ok((compile_ir(functions, options, main, debug)?, report));
     }
+    let entries = HashSet::from([main]);
     let mut candidate = functions.clone();
-    report.ir = inline_calls(
-        &mut candidate,
-        &live,
-        &HashSet::from([main]),
-        &options.inline,
-    )
-    .map_err(BackendError::Inline)?;
-    let file = |name| {
-        debug
-            .funcs
+    report.ir = inline_calls(&mut candidate, &live, &entries, &options.inline)
+        .map_err(BackendError::Inline)?;
+    let mut wrapper_trial = None;
+    if options.inline.size_aware_wrappers
+        && options.inline.maximum_program_nodes.is_none()
+        && report
+            .ir
+            .sites
             .iter()
-            .find(|d| d.name == name)
-            .and_then(|d| debug.files.get(d.file as usize))
-            .cloned()
-    };
-    report.origins = report
-        .ir
-        .sites
-        .iter()
-        .enumerate()
-        .map(|(site, s)| InlineSourceOrigin {
-            site,
-            caller_file: file(s.caller),
-            source_file: file(s.source_function),
-            callee_file: file(s.callee),
-        })
-        .collect();
-    if report.ir.expanded_sites() == 0 {
+            .any(|s| s.depth == 1 && s.decision == InlineDecision::AutomaticBudget)
+    {
+        let mut bodies = functions.clone();
+        let ir =
+            inline_calls_with_single_use_wrappers(&mut bodies, &live, &entries, &options.inline)
+                .map_err(BackendError::Inline)?;
+        if !ir.wrapper_callers.is_empty() {
+            wrapper_trial = Some((bodies, ir));
+        }
+    }
+    if report.ir.expanded_sites() == 0 && wrapper_trial.is_none() {
+        report.origins = site_origins(&report.ir, &debug);
         return Ok((compile_ir(functions, options, main, debug)?, report));
     }
     let start = Instant::now();
@@ -174,18 +176,83 @@ pub fn try_compile_with_inline_report(
         baseline_costs: &baseline_costs,
         frames: Vec::new(),
     };
-    let result = compile_ir_selected(&candidate, options, main, debug, Some(&mut selection));
+    let result = if report.ir.expanded_sites() == 0 {
+        Ok((baseline.clone(), baseline_costs.clone()))
+    } else {
+        compile_ir_selected(
+            &candidate,
+            options,
+            main,
+            debug.clone(),
+            Some(&mut selection),
+        )
+    };
     report.candidate_lowering = start.elapsed();
-    let (candidate, _) = match result {
+    let (mut selected, ordinary_costs) = match result {
         Ok(value) => value,
         Err(error) if error.is_resource_limit() => {
+            report.origins = site_origins(&report.ir, &debug);
             report.outcome = InlineOutcome::Baseline(InlineRejection::Resource(error.to_string()));
             report.fallback_count = 1;
             return Ok((baseline, report));
         }
         Err(error) => return Err(error),
     };
-    report.candidate_words = Some(candidate.total_code_words());
+    if let Some((mut bodies, mut ir)) = wrapper_trial {
+        let callers = smaller_wrapper_callers(
+            &mut candidate,
+            &mut bodies,
+            &ir.wrapper_callers,
+            &ordinary_costs,
+            &selection,
+            options,
+            main,
+        )?;
+        if !callers.is_empty() {
+            let mut trial_selection = InlineSelection {
+                originals: &functions,
+                baseline_costs: &baseline_costs,
+                frames: Vec::new(),
+            };
+            match compile_ir_selected(
+                &candidate,
+                options,
+                main,
+                debug.clone(),
+                Some(&mut trial_selection),
+            ) {
+                Ok((trial, _)) => {
+                    let sizes = (selected.total_code_words(), trial.total_code_words());
+                    report.wrapper_trial_words = Some(sizes);
+                    if sizes.1 < sizes.0 {
+                        selected = trial;
+                        ir.wrapper_callers = callers;
+                        ir.sites
+                            .retain(|site| ir.wrapper_callers.contains(site.caller));
+                        ir.sites.extend(
+                            report
+                                .ir
+                                .sites
+                                .into_iter()
+                                .filter(|site| !ir.wrapper_callers.contains(site.caller)),
+                        );
+                        ir.introduced_nodes =
+                            ir.sites.iter().map(|site| site.introduced_nodes).sum();
+                        report.ir = ir;
+                        selection = trial_selection;
+                    }
+                }
+                Err(error) if error.is_resource_limit() => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    report.candidate_lowering = start.elapsed();
+    report.origins = site_origins(&report.ir, &debug);
+    if report.ir.expanded_sites() == 0 {
+        return Ok((baseline, report));
+    }
+    report.candidate_words = Some(selected.total_code_words());
     let changed: HashSet<_> = report
         .ir
         .sites
@@ -206,10 +273,10 @@ pub fn try_compile_with_inline_report(
         .map(|frame| frame.function)
         .collect();
     let allowance = 64.max(baseline.total_code_words().div_ceil(10));
-    let rejection = if candidate.total_code_words() > baseline.total_code_words() + allowance {
+    let rejection = if selected.total_code_words() > baseline.total_code_words() + allowance {
         Some(InlineRejection::CodeGrowth {
             baseline: baseline.total_code_words(),
-            candidate: candidate.total_code_words(),
+            candidate: selected.total_code_words(),
             allowance,
         })
     } else {
@@ -229,8 +296,74 @@ pub fn try_compile_with_inline_report(
             })
             .count();
         report.outcome = InlineOutcome::Applied;
-        Ok((candidate, report))
+        Ok((selected, report))
     }
+}
+
+fn smaller_wrapper_callers(
+    candidate: &mut HashMap<FuncName, IrFunc>,
+    trial: &mut HashMap<FuncName, IrFunc>,
+    callers: &BTreeSet<FuncName>,
+    ordinary_costs: &HashMap<FuncName, FunctionCost>,
+    selection: &InlineSelection<'_>,
+    options: &CompilerOptions,
+    main: FuncName,
+) -> Result<BTreeSet<FuncName>, BackendError> {
+    let mut selected = BTreeSet::new();
+    for &name in callers {
+        let (Some(ordinary), Some(original)) =
+            (ordinary_costs.get(name), selection.baseline_costs.get(name))
+        else {
+            continue;
+        };
+        let (function, allocation) =
+            match allocate_function(trial[name].clone(), options, name == main) {
+                Ok(result) => result,
+                Err(error) if error.is_resource_limit() => continue,
+                Err(error) => return Err(error),
+            };
+        let cost = allocation_cost(&function, &allocation);
+        if original
+            .allocation
+            .compare(name, &cost)
+            .rejection()
+            .is_some()
+        {
+            continue;
+        }
+        // Compare fully allocated caller bodies before relaxation, including
+        // ABI moves, frame setup, and spill addresses and transfers.
+        let body = lower_function(&function, &allocation, name == main, options.stack_init);
+        if body.size_words() < ordinary.words {
+            candidate.insert(name, trial.remove(name).unwrap());
+            selected.insert(name);
+        }
+    }
+    Ok(selected)
+}
+
+fn site_origins(
+    ir: &InlineReport,
+    debug: &rcc::frontend::FrontendDebug,
+) -> Vec<InlineSourceOrigin> {
+    let file = |name| {
+        debug
+            .funcs
+            .iter()
+            .find(|d| d.name == name)
+            .and_then(|d| debug.files.get(d.file as usize))
+            .cloned()
+    };
+    ir.sites
+        .iter()
+        .enumerate()
+        .map(|(site, s)| InlineSourceOrigin {
+            site,
+            caller_file: file(s.caller),
+            source_file: file(s.source_function),
+            callee_file: file(s.callee),
+        })
+        .collect()
 }
 
 #[cfg(test)]

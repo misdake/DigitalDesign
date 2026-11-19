@@ -1,13 +1,16 @@
 //! Native draw-group replay, fixed indirect parameters and same-page LCOPY.
 use cpu_v3::{rcc_backend, CpuV3Sim, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::{
+    compile_program_named_with_libraries_checked, rustc_check::RustcCheck, ModuleNamespace,
+    ModuleSource,
+};
 use std::path::Path;
 
-const SOURCE: &str = r#"mod gpu_group;mod gpu_mesh;mod gpu_arena;mod gpu_execute;mod gpu_present;mod gpu_api_fault;
+const SOURCE: &str = r#"use gpu_bind::*;
 static STEP:u16=0;static ROW:Buf<u16,64>=Buf::new([0;64]);static MESH:Buf<u16,16>=Buf::new([0;16]);
 static FACTS:Buf<u16,8>=Buf::new([0xa000,32,1,1,0xa100,4,2,1]);
 fn check(ok:bool){if !ok{halt(0xd000+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
-fn main(){let fact_plan:Buf<u16,2>=Buf::new([0;2]);gpu_record_init();let saved=read_dseg_page(3);
+pub fn prepared_group_test(){let fact_plan:Buf<u16,2>=Buf::new([0;2]);gpu_record_init();let saved=read_dseg_page(3);
  check(gpu_record_configure(0,0x9801,8,0x9a00,16));check(!gpu_group_enable(0));
  check(gpu_record_configure(0,0x9800,512,0x9a00,512));check(gpu_group_enable(0));check(!gpu_group_enable(0));
  check(gpu_record_configure(1,0xfc00,512,0xfe00,512));check(!gpu_group_ready(1));
@@ -23,7 +26,7 @@ fn main(){let fact_plan:Buf<u16,2>=Buf::new([0;2]);gpu_record_init();let saved=r
  check(!gpu_window_copy_lines(0x9800,0,0x98ff,64,16));
  check(gpu_window_copy_lines(65535,65535,0,0,0));
  check(gpu_window_read_words(0x9880,0,ROW.as_array(),1));check(ROW[0u16]==0x1234);
- let memory:GpuMemory=GpuMemory{first_sector:0xa000,sector_count:32};
+ let memory:GpuMemory=unsafe{GpuMemory::from_sectors(0xa000,32)};
  let desc:MeshDesc=MeshDesc{directory_sector:0xa000,directory_word:0,meshlet_count:2,storage:memory};
  check(gpu_mesh_init(MESH.as_array(),desc));ROW[0u16]=0xa004;ROW[1u16]=1;ROW[2u16]=0xa008;ROW[3u16]=2;
  check(gpu_window_write_words(0xa000,0,ROW.as_array(),4));
@@ -34,6 +37,7 @@ fn main(){let fact_plan:Buf<u16,2>=Buf::new([0;2]);gpu_record_init();let saved=r
  check(gpu_mesh_draw(0,MESH.as_array(),native));
  check(gpu_record_resource_room(0,FACTS.as_array(),2, fact_plan.as_array()));gpu_record_resource_commit(0,FACTS.as_array(),2, fact_plan.as_array());
  check(gpu_group_end(0));check(!gpu_group_end(0));check(gpu_group_ready(0));
+ if EXPECT_RESIDENT {check(GPU_GROUP_RESIDENT[0u16]!=0);}else{check(GPU_GROUP_RESIDENT[0u16]==0);}
  check(c[GPU_RECORD_VALID]&31==3&&c[GPU_GROUP_FACT_COUNT]==2);
  let prefix=c[GPU_GROUP_PUSH_END];let words=c[GPU_GROUP_WORDS];check(words!=0&&words&15==0);
  gpu_bind_copy(native,0,c,GPU_CB_GLOBAL,48);
@@ -55,22 +59,42 @@ fn main(){let fact_plan:Buf<u16,2>=Buf::new([0;2]);gpu_record_init();let saved=r
  check(gpu_mesh_draw(0,MESH.as_array(),native));check(gpu_group_end(0));
  check(gpu_record_close_pass(0));check(gpu_record_seal(0));
  check(gpu_group_clear(0));check(!gpu_group_ready(0)&&c[GPU_RECORD_PUSH_USED]==prefix&&c[GPU_RECORD_COMMAND_USED]==0);
+ check(GPU_GROUP_RESIDENT[0u16]==0&&GPU_GROUP_RESIDENT[1u16]==0);
  check(read_dseg_page(3)==saved);halt(0x600d);}"#;
 
 #[test]
 fn prepared_group_preserves_snapshots_facts_and_rejects_invalid_line_copies() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("rcc")
+        .canonicalize()
+        .unwrap();
     let out = root.join("../../../target/bloxorz-command-assembly/group-core");
-    for enabled in [false, true] {
+    for (enabled, resident) in [(false, true), (true, false)] {
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = enabled;
-        let parsed = compile_program_named_checked(
+        if !resident {
+            // A native part with its two bindings cannot fit in this heap.
+            options.heap_size = 64;
+        }
+        let parsed = compile_program_named_with_libraries_checked(
             "group-core",
-            SOURCE,
+            "mod gpu_api; fn main() { gpu_api::prepared_group_test(); }",
             &options,
+            &[root.join("gpu_api.rs")],
             &RustcCheck::new(out.join(format!("rustc-{enabled}"))),
             &mut |name| {
-                std::fs::read_to_string(root.join(format!("{name}.rs"))).map_err(|e| e.to_string())
+                let origin = root.join(format!("{name}.rs"));
+                let mut source = std::fs::read_to_string(&origin).map_err(|e| e.to_string())?;
+                if name == "gpu_api" {
+                    source.push_str("\n");
+                    source.push_str(SOURCE);
+                    source.push_str(&format!("\nconst EXPECT_RESIDENT: bool = {resident};"));
+                }
+                Ok(ModuleSource {
+                    source,
+                    namespace: ModuleNamespace::Flat,
+                    origin: Some(origin),
+                })
             },
         )
         .unwrap();

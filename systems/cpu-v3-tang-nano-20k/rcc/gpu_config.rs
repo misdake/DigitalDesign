@@ -6,6 +6,8 @@ mod gpu_arena;
 use gpu_arena::*;
 mod gpu_execute;
 use gpu_execute::*;
+mod gpu_group;
+use gpu_group::*;
 
 fn gpu_config_command_valid(memory: CommandMemory) -> bool {
     let command: GpuMemory = memory.commands;
@@ -132,6 +134,9 @@ fn gpu_config_drop_buffer(slot: u16) -> bool {
     let mut c = gpu_record_data(slot);
     if c[GPU_RECORD_PHASE] != GPU_RECORD_READY && c[GPU_RECORD_PHASE] != GPU_RECORD_SEALED {
         return false;
+    }
+    if c[GPU_GROUP_TEMPLATE] != 0 {
+        gpu_group_release_all_metadata(slot);
     }
     c[GPU_RECORD_PHASE] = 0;
     // The configured CB is not a pool allocation: Drop does not reissue it.

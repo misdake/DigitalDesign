@@ -102,11 +102,12 @@ ordinary grid/glyph debug checks and external-memory publication contract.
 `CommandBuffer::enable_prepared_group()` partitions an existing nonzero,
 32-KiB-aligned 64-KiB command reservation. The first16KiB holds sixteen1KiB
 command templates; the next16KiB is the active stream, in the same physical
-DSEG3 page. The upper32KiB holds private metadata and remains GPU-unfetched.
+DSEG3 page. The upper32KiB remains GPU-unfetched and backs metadata if the
+CPU heap has no suitable block.
 Ordinary CBs retain their configured capacities. An enabled CB also requires
 64KiB push backing: part0 owns its first16KiB, parts1..15 own2KiB each, and
-ordinary immediate recording uses the remaining18KiB. No external allocation
-or larger CPU record is required. The explicit
+ordinary immediate recording uses the remaining18KiB. No extra external
+allocation is required. The explicit
 `enable_prepared_parts(PreparedPartsLayout::SplitWide)` alternative divides the
 original wide area into two8KiB partitions: part0 at push words[0,4096), part15
 at[4096,8192). Parts1..14 retain their original2KiB partitions. The old part15
@@ -153,12 +154,15 @@ SceneBinding values. Slot/context ownership, scalar publication, execution owner
 submit and wait remain unchanged. Templates, metadata and push snapshots cannot
 change while the GPU owns the CB.
 
-Metadata begins256sectors after the original command base. Each part uses384
-16-bit words: header0..7, entry Global/Render48 at16, exit48 at64, and up to64
-four-word Mesh/Texture facts at128. Header words0..3 contain executable words,
-fact count, native-state flag and actual private push end; words4..7 are zero.
-The table occupies12KiB of the upper32KiB. End/append reuse existing native
-scratch for transfer and fact merging; old surface facts are excluded. Each
+Each part's CPU metadata has a three-word header (executable words, fact count
+and native-state flag). A native part follows the header with its two 48-word
+Global/Render snapshots and only the recorded four-word Mesh/Texture facts.
+Append compares and merges directly from this allocation. Invalidating,
+rebuilding, clearing or dropping a part releases its CPU allocation.
+If a part cannot allocate, its same compact record uses the original
+384-word private stride starting 256 sectors after the command base, and
+append reads it through a bounded CPU staging buffer. The separate fact plan
+reuses native scratch after reservation. Each
 1KiB template and the active16KiB stream include their own padding; the active
 stream also includes ordinary commands and terminal/fetch reservations. Bounds
 reject overflows before append writes; partial transport failures poison the CB.
@@ -204,6 +208,10 @@ flowchart LR
 The arrows describe sequential CPU recording while the CB is CPU-owned. They do
 not submit GPU work. Capacity rejection precedes external writes; successful
 recording remains subject to the later submission publication boundary.
+CPU-owned binding and prepared metadata copies transfer complete eight-word
+chunks through vector registers as raw bits. A scalar tail handles shorter
+ranges, and copies with a destination inside the source at a higher address
+keep forward word order.
 
 Native scene preparation initializes only padding and fixed fields before
 writing the final numerical fields. In particular Instance0..41 are written
@@ -212,6 +220,14 @@ cleared. Instance42..63 retain the homogeneous constant, RGBA and zero-padding
 contract. Global/Render reserved fields are still explicitly zeroed.
 
 Public matrix operations retain value arguments and their isolated snapshots.
+Scene scalar and three-component reads and writes use exact two- and six-word
+FPU transfers for the existing low-word-first layout.
+Euler rotation prepares three padded Q16.16 rows using vector stores. Camera
+pose reads the columns of that scratch matrix; Model pose reads the rows.
+Draw header preparation and scene patches share the view-light encoder. It
+reads each complete camera row with a vector load and transforms the light
+direction with its first three components. A patch uses the supplied Camera
+and the stored RenderState directly.
 Internal camera/model writers borrow those snapshots through typed CPU views:
 three vec4 imports/exports copy a 24-word world/view matrix, and two vec4 pairs
 plus two scalar word copies write exactly eighteen normal-matrix words. No row
@@ -393,8 +409,10 @@ retirement and choosing the current Back remain the application's responsibility
 The update preserves commands, mesh packets, Render blocks, word counts,
 END/padding and Instance words42..63. It replaces Target's16-word push block,
 recomputes Global view-light with the existing numerical order, and writes the
-42 position/normal coefficients using the Model-owned dependency cache. All
-preflight and light validation precede external writes. Successful writes commit
+42 position/normal coefficients using the Model-owned dependency cache. Five
+vector transfers and two scalar word copies move exactly those coefficients
+into the native staging span. All preflight and light validation precede
+external writes. Successful writes commit
 Camera/revision, Global/Instance shadows and replace the existing color/depth
 fact addresses. It neither adds stale target facts nor submits work. The normal
 submission publication remains required for scalar stores.
@@ -495,10 +513,12 @@ Color, Depth, Buffer; access bit0 declares reads and bit1 declares writes.
 These are allocation provenance, not wire capture flags or immutable evidence.
 Equal base/count/kind entries merge access. Group preflight resolves existing
 and intra-group duplicates into a caller-local array of final table positions,
-rejecting exhaustion before native emission. It changes neither input nor
-recorded facts. With no intervening fact mutation, successful native emission
-consumes these positions directly; CPU-only commit performs no second lookup,
-cannot allocate and cannot fail. Ordinary operations need one or two plan words;
+rejecting exhaustion before native emission. Its scans advance by the four-word
+record width and convert matching offsets to table positions. Preflight leaves
+the input and recorded facts intact. With no intervening fact mutation,
+successful native emission consumes these positions directly. The CPU-only
+commit performs no second lookup, cannot allocate and cannot fail. Ordinary
+operations need one or two plan words;
 prepared append uses a bounded64-word local plan for its complete fact group.
 Pass construction records the full color/depth allocation, including distinct
 1,600/2,048-sector capacities, rather than retaining live descriptor references.

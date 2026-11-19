@@ -429,8 +429,8 @@ approximation make the ordinary-distance boundary approximate.</p>
     <table>
       <tr><th>Offset from current SP</th><th>Contents</th></tr>
       <tr><td class="mono">0 .. saved-1</td><td>Actually used callee-saved registers; a non-leaf function includes r14.</td></tr>
-      <tr><td class="mono">saved .. saved+locals-1</td><td>Addressable local words and local arrays.</td></tr>
-      <tr><td class="mono">saved+locals .. frame-1</td><td>Linear-scan spill slots.</td></tr>
+      <tr><td class="mono">saved .. saved+locals+spills-1</td><td>Contiguous local and GPR spill areas. Their order minimizes the number of immediate prefixes.</td></tr>
+      <tr><td>After both scalar areas</td><td>FPU spill slots and alignment padding, when used.</td></tr>
     </table>
     <p>The prologue subtracts the complete frame size from r13, then stores saved registers. The epilogue reloads them, adds the frame size, and jumps through r14.</p>
     <p>Direct calls currently use deterministic two-word wide relative linking. Indirect calls place the target in r12 and execute <code>JALR r14, r12</code>.</p>

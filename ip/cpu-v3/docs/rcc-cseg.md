@@ -1,7 +1,7 @@
 ---
 id: cpu-v3-rcc-cseg
 status: active
-last-verified: 2026-11-13
+last-verified: 2026-11-19
 ---
 
 # RCC code segment linking
@@ -53,7 +53,14 @@ stack ordinary two-word return records without global scratch state.
 Synthetic islands, target stubs and shared entries have an unconditional
 continuation, so they have no trailing HALT guard. Once block order is fixed,
 a tail jump to the immediately following block is removed as proven fallthrough.
-Ordinary function guards remain unchanged. The Bloxorz closed shadow-math placement uses one 8-byte
+Optimized images omit an interior ordinary function's guard when the final
+instruction unconditionally transfers control or halts. The last ordinary
+function keeps its guard. The linker can group functions whose late calls can
+reach the next body with a short relative offset. Entry, return islands and
+stubs keep their roles. The original order is retained if branch relaxation
+finds no gain or absolute stub-width changes enlarge a bank.
+
+The Bloxorz closed shadow-math placement uses one 8-byte
 return island in CSEG6, a 12-byte shared entry in CSEG7, and three target stubs
 of 6/8/6 bytes. CSEG7 has no incoming far calls and needs no header. Its total
 adapter overhead is 40 bytes; the source call sites remain ordinary JALREL.

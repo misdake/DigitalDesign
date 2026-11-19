@@ -6,11 +6,15 @@ use super::*;
 use crate::FuncName;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+const HINTED_FPU_LEAF_ALLOWANCE: usize = 16;
+
 #[derive(Clone, Debug)]
 pub struct InlineOptions {
     pub enabled: bool,
     /// Select small unannotated direct callees as well as explicit hints.
     pub automatic: bool,
+    /// Let the target compare an additional plan for single-use wrappers.
+    pub size_aware_wrappers: bool,
     pub maximum_automatic_nodes: usize,
     pub maximum_automatic_blocks: usize,
     pub maximum_depth: usize,
@@ -26,6 +30,7 @@ impl Default for InlineOptions {
         Self {
             enabled: true,
             automatic: true,
+            size_aware_wrappers: true,
             maximum_automatic_nodes: 24,
             maximum_automatic_blocks: 4,
             maximum_depth: 2,
@@ -68,11 +73,15 @@ pub struct InlineSite {
     pub depth: usize,
     pub automatic: bool,
     pub decision: InlineDecision,
+    /// Clone and glue nodes introduced by this site, or zero if it stayed a call.
+    pub introduced_nodes: usize,
 }
 #[derive(Clone, Debug, Default)]
 pub struct InlineReport {
     pub sites: Vec<InlineSite>,
     pub introduced_nodes: usize,
+    /// Callers with expansions admitted only by the single-use wrapper trial.
+    pub wrapper_callers: BTreeSet<FuncName>,
 }
 impl InlineReport {
     pub fn expanded_sites(&self) -> usize {
@@ -201,6 +210,47 @@ pub fn inline_calls(
     entries: &HashSet<FuncName>,
     options: &InlineOptions,
 ) -> Result<InlineReport, InlineError> {
+    inline_calls_impl(functions, callers, entries, options, &HashSet::new())
+}
+
+/// Consider near-threshold forwarding wrappers for target size comparison.
+pub fn inline_calls_with_single_use_wrappers(
+    functions: &mut HashMap<FuncName, IrFunc>,
+    callers: &HashSet<FuncName>,
+    entries: &HashSet<FuncName>,
+    options: &InlineOptions,
+) -> Result<InlineReport, InlineError> {
+    let mut references = HashMap::new();
+    for &name in callers {
+        let function = functions
+            .get(&name)
+            .ok_or_else(|| invalid(format!("missing inline caller {name}")))?;
+        for instruction in function
+            .rpo()
+            .iter()
+            .flat_map(|&id| &function.blocks[id].insts)
+        {
+            if let Instr::Call { func, .. } | Instr::LoadFuncAddr { func, .. } = instruction {
+                *references.entry(*func).or_insert(0usize) += 1;
+            }
+        }
+    }
+    let wrappers = references
+        .into_iter()
+        .filter_map(|(name, count)| {
+            (count == 1 && functions.get(name).is_some_and(|f| calls(f).len() == 1)).then_some(name)
+        })
+        .collect();
+    inline_calls_impl(functions, callers, entries, options, &wrappers)
+}
+
+fn inline_calls_impl(
+    functions: &mut HashMap<FuncName, IrFunc>,
+    callers: &HashSet<FuncName>,
+    entries: &HashSet<FuncName>,
+    options: &InlineOptions,
+    wrappers: &HashSet<FuncName>,
+) -> Result<InlineReport, InlineError> {
     let mut report = InlineReport::default();
     if !options.enabled {
         return Ok(report);
@@ -282,6 +332,7 @@ pub fn inline_calls(
             depth: site.depth,
             automatic,
             decision: InlineDecision::Expanded,
+            introduced_nodes: 0,
         };
         let blocks = callee.rpo();
         // Spill IR belongs to a later pipeline stage, not to source eligibility.
@@ -301,6 +352,24 @@ pub fn inline_calls(
         }
         let count = nodes(callee);
         let cost = count + rets.len() + 1;
+        let exceeds_automatic_budget = automatic
+            && (count > options.maximum_automatic_nodes
+                || blocks.len() > options.maximum_automatic_blocks);
+        let try_wrapper = exceeds_automatic_budget && site.depth == 1 && wrappers.contains(&func);
+        // A short hinted leaf with an FPU argument or result can remove a
+        // clobber boundary for other live FPU values. Bound the extra cloning
+        // within this caller and leave target frame and code checks in place.
+        let caller_budget = if callee.inline_hint == InlineHint::Hint
+            && args
+                .iter()
+                .chain(&rets)
+                .any(|&value| caller.class_of(value) == RegClass::Fpu)
+            && calls(callee).is_empty()
+        {
+            state.budget + HINTED_FPU_LEAF_ALLOWANCE
+        } else {
+            state.budget
+        };
         let decision = if callee.inline_hint == InlineHint::Never {
             Some(InlineDecision::Never)
         } else if entries.contains(&func) {
@@ -356,14 +425,11 @@ pub fn inline_calls(
             || callee.vreg_count as usize > options.maximum_callee_vregs
         {
             Some(InlineDecision::CalleeBudget)
-        } else if automatic
-            && (count > options.maximum_automatic_nodes
-                || blocks.len() > options.maximum_automatic_blocks)
-        {
+        } else if exceeds_automatic_budget && !try_wrapper {
             Some(InlineDecision::AutomaticBudget)
         } else if automatic && has_cycle(callee, &blocks) {
             Some(InlineDecision::AutomaticCycle)
-        } else if state.charged + cost > state.budget {
+        } else if state.charged + cost > caller_budget {
             Some(InlineDecision::CallerBudget)
         } else if options
             .maximum_program_nodes
@@ -404,6 +470,10 @@ pub fn inline_calls(
         }
         state.charged += cost;
         report.introduced_nodes += cost;
+        if try_wrapper {
+            report.wrapper_callers.insert(name);
+        }
+        record.introduced_nodes = cost;
         report.sites.push(record);
     }
     for state in states {
@@ -470,11 +540,6 @@ fn clone_call(
             }
         }
     }
-    // auto_init reserves unused metadata tail entries. Fresh SSA allocation
-    // appends at vreg_count, so canonicalize only this owned candidate copy;
-    // all occupied ids and the independent baseline remain untouched.
-    caller.vreg_class.truncate(caller.vreg_count as usize);
-    caller.vreg_lanes.truncate(caller.vreg_count as usize);
     let continuation = caller.blocks.len();
     let mut block_map = vec![usize::MAX; callee.blocks.len()];
     for (i, &b) in blocks.iter().enumerate() {
@@ -835,6 +900,48 @@ mod tests {
                 .any(|s| s.callee == "hinted" && s.decision == InlineDecision::Expanded));
         }
     }
+
+    #[test]
+    fn extra_caller_allowance_is_bounded_to_hinted_fpu_leaves() {
+        let mut source = String::from(
+            "#[inline] fn hinted_fpu(x: fix32) -> fix32 { x }
+             #[inline] fn hinted_integer(x: u16) -> u16 { x }
+             fn automatic_fpu(x: fix32) -> fix32 { x }",
+        );
+        for (caller, callee, ty) in [
+            ("use_hint", "hinted_fpu", "fix32"),
+            ("use_integer", "hinted_integer", "u16"),
+            ("use_automatic", "automatic_fpu", "fix32"),
+        ] {
+            source.push_str(&format!("fn {caller}(x: {ty}) -> {ty} {{"));
+            for _ in 0..20 {
+                source.push_str(&format!("let x = {callee}(x);"));
+            }
+            source.push_str("x}");
+        }
+        let mut fs = functions(&source);
+        let report = apply(&mut fs);
+        for (caller, callee, budget) in [
+            ("use_hint", "hinted_fpu", 32 + HINTED_FPU_LEAF_ALLOWANCE),
+            ("use_integer", "hinted_integer", 32),
+            ("use_automatic", "automatic_fpu", 32),
+        ] {
+            let expanded = report
+                .sites
+                .iter()
+                .filter(|site| site.caller == caller && site.decision == InlineDecision::Expanded)
+                .count();
+            assert_eq!(expanded, budget / (nodes(&fs[callee]) + 2), "{caller}");
+            assert!(
+                report
+                    .sites
+                    .iter()
+                    .any(|site| site.caller == caller
+                        && site.decision == InlineDecision::CallerBudget)
+            );
+        }
+    }
+
     #[test]
     fn automatic_cycles_and_source_frames_are_kept_as_calls() {
         let mut fs = functions("fn spin(input:u16)->u16{let mut x=input;while x<4{x+=1;}x} fn local(x:u16)->u16{x} fn main()->u16{local(spin(1))}");

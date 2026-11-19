@@ -172,12 +172,13 @@ fn gpu_scene_row_read(data: Array<u16>, at: u16) -> Vec4 {
     }
 }
 fn gpu_scene_rotation(out: Array<u16>, angles: Vec3) {
+    let target = out.as_ptr();
     let zero = fix32::zero();
     if angles.x == zero && angles.y == zero && angles.z == zero {
-        gpu_scene_zero(out, 18);
-        gpu_scene_fix_write(out, 0, fix32::from_int(1));
-        gpu_scene_fix_write(out, 8, fix32::from_int(1));
-        gpu_scene_fix_write(out, 16, fix32::from_int(1));
+        let one = fix32::from_int(1);
+        vec4::export(vec4::new(one, zero, zero, zero), target);
+        vec4::export(vec4::new(zero, one, zero, zero), target.add(8));
+        vec4::export(vec4::new(zero, zero, one, zero), target.add(16));
         return;
     }
     let x = fsincos(angles.x);
@@ -189,15 +190,17 @@ fn gpu_scene_rotation(out: Array<u16>, angles: Vec3) {
     let cy = y.y();
     let sz = z.x();
     let cz = z.y();
-    gpu_scene_fix_write(out, 0, cz * cy);
-    gpu_scene_fix_write(out, 2, cz * sy * sx - sz * cx);
-    gpu_scene_fix_write(out, 4, cz * sy * cx + sz * sx);
-    gpu_scene_fix_write(out, 6, sz * cy);
-    gpu_scene_fix_write(out, 8, sz * sy * sx + cz * cx);
-    gpu_scene_fix_write(out, 10, sz * sy * cx - cz * sx);
-    gpu_scene_fix_write(out, 12, -sy);
-    gpu_scene_fix_write(out, 14, cy * sx);
-    gpu_scene_fix_write(out, 16, cy * cx);
+    let cz_sy = cz * sy;
+    let sz_sy = sz * sy;
+    vec4::export(
+        vec4::new(cz * cy, cz_sy * sx - sz * cx, cz_sy * cx + sz * sx, zero),
+        target,
+    );
+    vec4::export(
+        vec4::new(sz * cy, sz_sy * sx + cz * cx, sz_sy * cx - cz * sx, zero),
+        target.add(8),
+    );
+    vec4::export(vec4::new(-sy, cy * sx, cy * cx, zero), target.add(16));
 }
 
 pub fn gpu_scene_camera_projection(mut out: Array<u16>, projection: Projection) -> bool {
@@ -210,15 +213,15 @@ pub fn gpu_scene_camera_projection(mut out: Array<u16>, projection: Projection) 
 }
 
 pub fn gpu_scene_camera_pose(out: Array<u16>, eye: Vec3, angles: Vec3) -> bool {
-    let mut rotation: Buf<u16, 18> = Buf::new([0; 18]);
+    let rotation: Buf<u16, 24> = Buf::new([0; 24]);
     gpu_scene_rotation(rotation.as_array(), angles);
     let origin = vec3::new(eye.x, eye.y, eye.z);
     let mut row: u16 = 0;
     while row < 3 {
         let basis = vec3::new(
             gpu_scene_fix_read(rotation.as_array(), row * 2),
-            gpu_scene_fix_read(rotation.as_array(), 6 + row * 2),
-            gpu_scene_fix_read(rotation.as_array(), 12 + row * 2),
+            gpu_scene_fix_read(rotation.as_array(), 8 + row * 2),
+            gpu_scene_fix_read(rotation.as_array(), 16 + row * 2),
         );
         gpu_scene_vec_write(out, GPU_CAMERA_VIEW + row * 8, basis);
         gpu_scene_fix_write(out, GPU_CAMERA_VIEW + row * 8 + 6, -fdot(basis, origin));
@@ -313,7 +316,7 @@ pub fn gpu_scene_model_init(mut out: Array<u16>, transform: Transform) -> bool {
     {
         return false;
     }
-    let mut rotation: Buf<u16, 18> = Buf::new([0; 18]);
+    let rotation: Buf<u16, 24> = Buf::new([0; 24]);
     gpu_scene_rotation(rotation.as_array(), transform.angles);
     let ix = frcp(transform.scale.x);
     let iy = frcp(transform.scale.y);
@@ -332,7 +335,7 @@ pub fn gpu_scene_model_init(mut out: Array<u16>, transform: Transform) -> bool {
                 scale = transform.scale.z;
                 inverse = iz;
             }
-            let value = gpu_scene_fix_read(rotation.as_array(), (row * 3 + col) * 2);
+            let value = gpu_scene_fix_read(rotation.as_array(), row * 8 + col * 2);
             gpu_scene_fix_write(out, GPU_MODEL_WORLD + row * 8 + col * 2, value * scale);
             gpu_scene_fix_write(out, GPU_MODEL_NORMAL + (row * 3 + col) * 2, value * inverse);
             col += 1;

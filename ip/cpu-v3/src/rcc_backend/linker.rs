@@ -7,7 +7,116 @@ use super::{
 };
 use crate as cpu_v3;
 use crate::{TestCondition, Word};
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    ops::Range,
+};
+
+/// Retain the terminal guard at the end of the ordinary code in each bank.
+/// Interior guards can vanish when the emitted predecessor transfers control
+/// unconditionally, including when the IR ends with an explicit halt.
+pub(super) fn trim_interior_guards(functions: &mut [LoweredFunction]) {
+    if let Some((_, interior)) = functions.split_last_mut() {
+        for function in interior {
+            let terminal = match function.lines.last() {
+                Some(Line::Jump { .. } | Line::TailCall { .. }) => true,
+                Some(Line::Word { word, .. }) => {
+                    *word == cpu_v3::halt()
+                        || matches!(
+                            cpu_v3::decode(*word),
+                            cpu_v3::Instruction::JumpRegister { .. }
+                                | cpu_v3::Instruction::JumpSegment { .. }
+                        )
+                }
+                _ => false,
+            };
+            if terminal {
+                function.trailing_guard = false;
+            }
+        }
+    }
+}
+
+/// Try grouping forward calls whose sites are close enough to their caller's
+/// end to reach the next function. Keep the original order unless actual
+/// branch relaxation finds a smaller image. Bank entry/return islands and
+/// stubs are outside the ordinary-body range.
+pub(super) fn place_near_calls(
+    functions: &mut Vec<LoweredFunction>,
+    bodies: Range<usize>,
+    code_base: usize,
+) {
+    if bodies.len() < 3 {
+        return;
+    }
+    let indices: HashMap<_, _> = functions
+        .iter()
+        .enumerate()
+        .map(|(i, function)| (function.name, i))
+        .collect();
+    let mut placed = vec![false; functions.len()];
+    let mut order = Vec::with_capacity(bodies.len());
+    let mut neighbors = vec![Vec::new(); functions.len()];
+    for i in bodies.clone() {
+        let function = &functions[i];
+        let mut tail = usize::from(function.trailing_guard);
+        let mut votes = BTreeMap::new();
+        for line in function.lines.iter().rev() {
+            if tail >= 128 {
+                break;
+            }
+            if let Line::Call {
+                function: target, ..
+            }
+            | Line::TailCall {
+                function: target, ..
+            } = line
+            {
+                let j = indices[target];
+                if j > bodies.start && j < bodies.end - 1 && j != i {
+                    *votes.entry(j).or_insert(0usize) += 1;
+                }
+            }
+            tail += line.size();
+        }
+        let mut votes: Vec<_> = votes.into_iter().collect();
+        votes.sort_unstable_by_key(|&(j, count)| (std::cmp::Reverse(count), j));
+        neighbors[i] = votes;
+    }
+    for root in bodies.clone().take(bodies.len() - 1) {
+        let mut next = Some(root);
+        while let Some(i) = next.filter(|&i| !placed[i]) {
+            order.push(i);
+            placed[i] = true;
+            next = neighbors[i]
+                .iter()
+                .find(|&&(j, _)| !placed[j])
+                .map(|&(j, _)| j);
+        }
+    }
+    // Keep the final ordinary body and its bank-end guard at the boundary.
+    order.push(bodies.end - 1);
+    if order.iter().copied().eq(bodies.clone()) {
+        return;
+    }
+    let mut original = functions.clone();
+    relax_branches(&mut original, code_base);
+    let original_words: usize = original.iter().map(LoweredFunction::size_words).sum();
+    let mut arranged: Vec<_> = (0..bodies.start)
+        .chain(order)
+        .chain(bodies.end..functions.len())
+        .map(|i| functions[i].clone())
+        .collect();
+    relax_branches(&mut arranged, code_base);
+    if arranged
+        .iter()
+        .map(LoweredFunction::size_words)
+        .sum::<usize>()
+        < original_words
+    {
+        *functions = arranged;
+    }
+}
 
 /// One relaxation decision: shrink to the one-word form when the target is
 /// reachable with a signed 8-bit offset from the following word.
@@ -420,7 +529,7 @@ pub(super) fn link_segment(
                             let mut v = v.clone();
                             match v.loc {
                                 rcc::VarLoc::Frame(slot) => {
-                                    v.loc = rcc::VarLoc::Frame(function.callee_saved as u8 + slot);
+                                    v.loc = rcc::VarLoc::Frame(function.local_base + slot);
                                 }
                                 rcc::VarLoc::ParamIndex(index) => {
                                     v.loc = rcc::VarLoc::Param(

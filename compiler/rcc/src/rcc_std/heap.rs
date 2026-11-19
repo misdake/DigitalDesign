@@ -199,10 +199,19 @@ pub fn init_heap(begin: u16, size: u16) {
 }
 
 pub fn malloc(size: u16) -> Ptr {
+    let pointer = try_malloc(size);
+    if pointer.addr() == 0 {
+        halt(HEAP_OUT_OF_MEMORY);
+    }
+    pointer
+}
+
+/// Allocate a block, returning a null pointer when no block fits.
+pub fn try_malloc(size: u16) -> Ptr {
     let need = heap_total_size(size);
     let node = heap_find_fit(need);
     if node == 0 {
-        halt(HEAP_OUT_OF_MEMORY);
+        return Ptr::from_addr(0);
     }
 
     let header = node - 1;

@@ -160,6 +160,37 @@ fn code_growth_soft_budget_selects_baseline_without_masking_errors() {
 }
 
 #[test]
+fn single_use_wrapper_is_selected_when_its_call_spills_cost_more() {
+    let source = "
+        static INPUT: u16 = 4;
+        #[inline] fn increase(x: u16) -> u16 { x + 1 }
+        fn choose(x: u16) -> u16 {
+            if x > 7 { increase(x) } else { x - 1 }
+        }
+        fn main() {
+            let x = INPUT;
+            let a = fix32::from_int((x + 1) as i16);
+            let b = fix32::from_int((x + 2) as i16);
+            let tag = choose(x);
+            halt((a + b).to_int() as u16 + tag);
+        }
+    ";
+    let mut options = CompilerOptions::default();
+    options.inline.maximum_automatic_nodes = 4;
+    options.inline.size_aware_wrappers = false;
+    let (ordinary, _) = build(source, &options);
+    options.inline.size_aware_wrappers = true;
+    let (smaller, report) = build(source, &options);
+
+    assert_eq!(run(&ordinary).0, 14);
+    assert_eq!(run(&smaller).0, 14);
+    assert!(report.ir.wrapper_callers.contains("main"), "{report}");
+    assert!(smaller.total_code_words() < ordinary.total_code_words());
+    assert!(ordinary.debug.functions.iter().any(|f| f.name == "choose"));
+    assert!(!smaller.debug.functions.iter().any(|f| f.name == "choose"));
+}
+
+#[test]
 fn automatic_small_wrappers_execute_equally_and_can_be_disabled_without_losing_hints() {
     let source="static INPUT:u16=4; fn choose(x:u16)->u16{if x>7{x*2+1}else{x+3}} fn wrapper(x:u16)->u16{choose(x)+2} #[inline] fn hinted(x:u16)->u16{x+1} #[inline(never)] fn barrier(x:u16)->u16{x} fn main(){halt(barrier(hinted(wrapper(INPUT))));}";
     let options = CompilerOptions::default();
@@ -508,7 +539,10 @@ fn caller_spill_rejection_keeps_other_bodies_and_rebuilds_selected_reachability(
         .unwrap()
         .rejection()
         .is_none());
-    assert_eq!(actual_costs["bad"].frame, costs["bad"].frame);
+    assert_eq!(
+        actual_costs["bad"].allocation.frame,
+        costs["bad"].allocation.frame
+    );
     let linked = |name| selected.debug.functions.iter().any(|f| f.name == name);
     assert!(linked("removed"), "restored body must revive its callee");
     assert!(

@@ -61,6 +61,7 @@ fn run(plan_path: &Path) -> Result<bool, String> {
     if p["site_observation"] != "first-unheld-execute" {
         return Err("explicit first-unheld-execute site policy required".into());
     }
+    let dedicated_final_wait = p["dedicated_final_wait"] == true;
     let logic = number(&p, "max_logic_cycles", runner::MAX_LOGIC)?;
     let host = number(&p, "max_host_seconds", runner::MAX_HOST)?;
     let events = number(&p, "max_events", runner::MAX_EVENTS)?;
@@ -99,11 +100,14 @@ fn run(plan_path: &Path) -> Result<bool, String> {
         "mask",
         "transition",
         "motion_age",
-        "epoch",
     ] {
         if !words.contains_key(name) {
             return Err(format!("missing CPU probe {name}"));
         }
+    }
+    let epoch = words.get("epoch").copied();
+    if !dedicated_final_wait && epoch.is_none() {
+        return Err("legacy wait requires a CPU epoch probe".into());
     }
     for i in 1..=9 {
         if !words.contains_key(&format!("switch_age_{i}")) {
@@ -183,13 +187,15 @@ fn run(plan_path: &Path) -> Result<bool, String> {
         let mut retired = 0;
         let step = system.step_observing(|o| {
             recorder.observe(o);
-            device = runner::cpu_device(o).map(|mut event| {
-                // Exact linked ordinary-wait ABI, not a System/device contract.
-                event["wait_started_r8"] = json!(o.cpu_registers[8]);
-                event["wait_start_epoch_r9"] = json!(o.cpu_registers[9]);
-                event["finish_r10"] = json!(o.cpu_registers[10]);
-                event
-            });
+            device = runner::cpu_device(o);
+            if !dedicated_final_wait {
+                if let Some(event) = &mut device {
+                    // Legacy shared wait's linked ABI.
+                    event["wait_started_r8"] = json!(o.cpu_registers[8]);
+                    event["wait_start_epoch_r9"] = json!(o.cpu_registers[9]);
+                    event["finish_r10"] = json!(o.cpu_registers[10]);
+                }
+            }
             if let Some(c) = o.cpu {
                 retired = c.core.retired_words;
                 let arrival = execute_arrival.observe(o);
@@ -213,7 +219,7 @@ fn run(plan_path: &Path) -> Result<bool, String> {
         }
         if let Some(mut e) = device {
             e["committed"] = json!(system.core().retired_words() as u64 > retired);
-            e["epoch"] = json!(system.inspect_cpu_word(words["epoch"]));
+            e["epoch"] = json!(epoch.and_then(|address| system.inspect_cpu_word(address)));
             selection.device(&e);
             if let Err(e) = log(&mut sidecar, &e, &mut side_count) {
                 reason = e;
@@ -222,7 +228,7 @@ fn run(plan_path: &Path) -> Result<bool, String> {
         }
         if let Some(pc) = site {
             for name in &sites[&pc] {
-                if !selection::site_enabled(name, site_r10) {
+                if !dedicated_final_wait && !selection::site_enabled(name, site_r10) {
                     continue;
                 }
                 log(
@@ -231,7 +237,7 @@ fn run(plan_path: &Path) -> Result<bool, String> {
                         "observation":"first-unheld-execute",
                         "finish_r10":site_r10,
                         "next_present":system.statistics.present_requests+1,
-                        "epoch":system.inspect_cpu_word(words["epoch"])}),
+                        "epoch":epoch.and_then(|address| system.inspect_cpu_word(address))}),
                     &mut side_count,
                 )?;
             }

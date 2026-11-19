@@ -229,6 +229,8 @@ they are not part of this surface.
 | rounding | `.floor()`, `.ceil()`, `.round()`, `.trunc()` on `fix32` | scalar-only; vector methods are rejected, so apply to individual lanes; `round` is round-half-up and `trunc` is toward zero |
 | vec4 memory load | `vec4::import(ptr: Ptr) -> vec4` | `FLDV4`: four adjacent Q16.16 values, each stored as low word then high word |
 | vec4 memory store | `vec4::export(v: vec4, ptr: Ptr)` | `FSTV4`: store the same eight-word layout |
+| typed word load | `T::load_words(words: Array<u16>, at: u16) -> T` for `fix32`, `vec2`, `vec3`, `vec4` | load exactly two words per lane starting at word offset `at`, low half first (`FLD` or `FLDV`) |
+| typed word store | `T::store_words(words: Array<u16>, at: u16, value: T)` | write the same exact span (`FST` or `FSTV`); ordinary word alignment suffices |
 | dot product | `fdot(a: vecN, b: vecN) -> fix32` | exact Q32.32 products accumulate in the 64-bit ACC, then one `DOTSTORE` narrowing |
 | reciprocal | `frcp(x: fix32) -> fix32` | approximate `RCP`; returns zero for zero input |
 | reciprocal square root | `frsqrt(x: fix32) -> fix32` | approximate `RSQRT`; returns zero for `x <= 0` |
@@ -614,8 +616,13 @@ There is no general `&` operator (except the direct resource-call borrow in §15
 Any local whose address is taken, and every local buffer, becomes **memory-resident**: all
 its reads/writes go through frame slots (the existing `load_sp`/`store_sp` machinery).
 The frontend decides residency statically by scanning for `addr_of` uses and buffer-typed
-`let`s — no escape analysis. The frame layout becomes
-`[callee-save saves][locals/buffers][spill slots]`, all sized at compile time.
+`let`s — no escape analysis. The saved registers come first. The CPU V3 backend
+then places the two word-aligned areas for locals and GPR spills in whichever
+order needs fewer immediate prefixes for loads, stores and local addresses.
+Locals come first on a tie. The FPU spill area follows both, and the debugger
+uses the selected locals base.
+Within a basic block, register allocation can reuse a local or FPU spill
+address when the destination register already holds it.
 The entry function has no caller and never returns, so it omits callee-save and return-address
 saves; any locals and spills still allocate their normal frame slots.
 
@@ -760,8 +767,12 @@ iterative trial-compilation search.
 The default compilation limits are 32 reachable instruction/phi/terminator nodes,
 eight blocks and 48 source vregs per callee; two expansion levels; cumulative
 introduced clone/glue nodes at most `max(32, ceil(original caller nodes / 4))` per
-caller. There is no default program-wide node quota: adding expansions in other
-callers cannot spend this caller's allowance. `maximum_program_nodes` defaults to
+caller. Explicitly hinted leaf calls with an FPU argument or result may use
+up to 16 additional nodes within that caller. These calls can eliminate the
+need to spill live FPU values at the call boundary. Automatic and integer-only
+calls retain the regular allowance. There is no default program-wide node
+quota: adding expansions in other callers cannot spend this caller's
+allowance. `maximum_program_nodes` defaults to
 `None`; an explicit `Some(limit)` additionally caps cumulative introduced nodes
 as a compilation-work limit for constrained hosts. It is not a target memory or
 performance limit. Removed calls, DCE and dead original bodies do not refund
@@ -776,16 +787,30 @@ charges only within their caller, unless an explicit program work limit is set.
 
 A changed caller retains its expanded body only when frame growth is at most
 16 words and FPU spill-area growth at most eight words (including alignment).
+On CPU V3, functions with repeated FPU spill accesses may align their frame
+once and use fixed offsets for all spill slots. The frame restores the exact
+incoming stack pointer and the compiler charges its maximum alignment slack
+against the frame budget.
 Allocation costs are measured against that caller's independently lowered
 original. A soft rejection restores only that caller's original body; other
 callers keep their selections. Callee reachability follows selected bodies, so
 restoration revives required calls without retaining callees of discarded bodies.
-Each function is allocated once as a candidate, and a rejected caller is allocated
-again from its original IR; there is no third whole-program lowering or search.
+The normal plan allocates each function once as a candidate and allocates
+rejected callers again from their original IR.
 Dependencies are collected from the selected body after ordinary optimization
 and allocation, including function-address references. Constant-disabled calls
 therefore do not retain their original callees.
 Final layout keeps the entry first and sorts remaining functions by name.
+
+CPU V3 also tries a size-oriented plan for direct calls to single-use wrappers
+that contain one direct call. The trial can exceed the automatic callee limit
+while honoring the hard callee, caller and depth limits. Direct calls and
+function-address references in the original reachable IR both count as uses.
+Each changed caller must emit fewer words before relaxation, including
+argument/result moves, frame code and spills. The backend relinks the smaller
+caller bodies together and uses them only if the linked image is strictly
+smaller. `inline.size_aware_wrappers` controls this trial and defaults to true.
+An explicit program-wide node quota keeps the normal plan.
 
 The selected application must still keep whole-program code growth within
 `max(64 words, ceil(baseline code words / 10))`.
@@ -796,7 +821,7 @@ is normal product selection, not recovery from an arbitrary compiler error.
 
 `try_compile_with_inline_report` returns site decisions and source/callsite origins,
 cumulative cost, attempted versus retained expansions, baseline/candidate words,
-changed-caller attempted frame/spill costs and caller-local restoration reasons,
+linked wrapper trial sizes, changed-caller attempted frame/spill costs and caller-local restoration reasons,
 target-lowering durations and the whole-program fallback reason/count. IR site
 decisions describe attempted expansion; the retained count excludes restored
 callers. Sites distinguish automatic selection from explicit requests. The
@@ -815,16 +840,17 @@ frontend type checking. Displacements wrap at sixteen bits before DSEG translati
 mutable bases retain their earlier address snapshots. Named constants therefore
 use the same addressing modes as literal indices without bypassing type rules.
 
-With `opt.cse`, basic-block word-memory forwarding reuses an exact preceding
-load or stored value. Frame-address identities unify direct local accesses and
-constant-offset accesses through separately computed local pointers, without
-extending a pointer's register lifetime. Only single-definition values and bases
-are cached. A known frame-word store preserves other frame words; an unknown
-write clears saved local values. Raw-pointer stores clear other raw locations,
-even at different offsets: independent DSEG windows may alias physical memory.
-Calls, device/cache operations, DSEG changes, signals and other memory writes are
-barriers. This does not infer no-alias promises, eliminate stores or change
-argument snapshot timing.
+With `opt.cse`, word-memory forwarding reuses an exact preceding load or stored
+value. Constant-offset accesses through single-definition frame pointers lower
+to direct accesses to the matching frame word. A known local value can cross a
+control-flow join when all predecessors are available and agree on the same SSA
+value. Forwarding ignores unknown incoming values and unvisited loop backedges.
+Other pointer loads still forward only within the block. A known frame-word
+store preserves the other frame words. Unknown writes, calls, device/cache
+operations, DSEG changes and signals invalidate saved values where they may
+observe or change memory. Raw-pointer stores clear other raw locations because
+independent DSEG windows may alias physical memory. Argument snapshot timing
+and the original store order are preserved.
 
 CPU V3 shares a function's callee-save/stack restoration tail between multiple
 returns when that tail exceeds the maximum two-word relative jump. The last
@@ -924,13 +950,14 @@ lexical lifetime; optimized builds may report such SSA locals as unavailable.
 ### 13.4 Library parameters and runtime cells
 
 `init_heap` stores the heap bounds in static cells (`HEAP_BEGIN`/`HEAP_END` in the data
-section) which `malloc`/`free` read at run time — no compile-time patching of library code.
+section) which the allocator reads at run time — no compile-time patching of library code.
 `init_vec` does the same for `VEC_INIT_CAP`.
 
 The heap uses boundary tags plus four segregated intrusive free lists. Allocation chooses the
 smallest fitting block in the first usable size class; `free` coalesces both neighbours, and
 `heap_realloc` first tries to resize in place. Invalid frees, exhaustion, and invalid heap
 configuration halt with `0xffe2`, `0xffe1`, and `0xffe0` respectively.
+`try_malloc` returns a null pointer when a valid allocation request cannot fit.
 
 The `u16` vector API provides `vec_new`/`vec_with_capacity`, checked `vec_get`/`vec_set`,
 `vec_push`/`vec_pop`, `vec_reserve`, `vec_clear`, `vec_shrink_to_fit`, and `vec_free`. Growth is

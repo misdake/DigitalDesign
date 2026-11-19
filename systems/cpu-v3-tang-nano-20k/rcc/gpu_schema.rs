@@ -92,7 +92,6 @@ pub const GPU_SCRATCH_RENDER: u16 = 32;
 pub const GPU_SCRATCH_TARGET: u16 = 48;
 pub const GPU_SCRATCH_INSTANCE: u16 = 64;
 pub const GPU_SCRATCH_UI: u16 = 128;
-pub const GPU_SCRATCH_MATH: u16 = 144;
 
 // Shared external extent value. A owns its public unsafe registration/factory.
 #[derive(Copy, Clone)]

@@ -41,16 +41,7 @@ pub(in super::super) fn render_time(fade: bool) -> ApplicationCase {
                 "session_init();HUD[0u16]=1;"
             },
         );
-        assert_eq!(
-            source
-                .matches("render_start = time_milliseconds();")
-                .count(),
-            1
-        );
-        source = source.required_replace(
-            "render_start = time_milliseconds();",
-            "signal(8,number);render_start = time_milliseconds();",
-        );
+        source = source.required_replace("run(3, false, 128);", "run(4, false, 128);");
 
         source
     })

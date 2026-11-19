@@ -8,20 +8,15 @@ fn gpu_bind_copy(c: Array<u16>, dst: u16, data: Array<u16>, src: u16, words: u16
     let mut to = c.as_ptr().add(dst as i16);
     let mut from = data.as_ptr().add(src as i16);
     let mut left = words;
-    while left >= 8 {
-        unsafe {
-            to.write(0, from.read(0));
-            to.write(1, from.read(1));
-            to.write(2, from.read(2));
-            to.write(3, from.read(3));
-            to.write(4, from.read(4));
-            to.write(5, from.read(5));
-            to.write(6, from.read(6));
-            to.write(7, from.read(7));
+    // A forward-overlapping destination observes the earlier scalar writes.
+    // Other CPU-owned spans can copy eight raw words at a time.
+    if to.addr() <= from.addr() || to.addr() - from.addr() >= words {
+        while left >= 8 {
+            vec4::export(vec4::import(from), to);
+            to = to.add(8);
+            from = from.add(8);
+            left -= 8;
         }
-        to = to.add(8);
-        from = from.add(8);
-        left -= 8;
     }
     while left != 0 {
         unsafe {

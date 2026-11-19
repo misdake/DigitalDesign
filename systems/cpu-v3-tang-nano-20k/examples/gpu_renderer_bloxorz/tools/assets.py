@@ -83,7 +83,7 @@ def pack(output,main_log2=8,marker_log2=8):
     manifest['resources'].append(dict(kind='background',file='background.bin',address=0x580000,bytes=len(data)))
     manifest['hud_font']=json.loads(H.PROVENANCE.read_text())
     ui=H.atlas(H.load_rows())
-    assert all(any(ui[g*256:(g+1)*256]) for g in set(b'LEVEL DRAW MS')-{32})
+    assert all(any(ui[g*256:(g+1)*256]) for g in set(b'LEVEL DRAW MS.0123456789-')-{32})
     (output/'atlas.bin').write_bytes(ui)
     H.preview(ui).save(output/'hud-font-atlas-1x1.png')
     marker_data,marker_image,marker_groups,marker_items=M.prepare(SYSTEM,W)

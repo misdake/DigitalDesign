@@ -184,24 +184,20 @@ contributes none. Dynamic source,
 optional veil consumer and final UI all contribute. Counts are saved only after
 successful GPU completion. They are checked against actual submitted opcodes.
 
-`MS` reports the previous completed render interval: the active-clock timestamp
-immediately after the preceding `Display::wait_vblank` returns, through the
-immediate return of this frame's **last** `Gpu::wait`. This includes input/CPU
-preparation after that vblank and every static/source/consumer GPU wait, but
-excludes the subsequent present/vblank wait and input recovery after the last
-GPU completion. It is not the distance between loop starts or GPU-only time.
-The existing16-bit active millisecond counter is sampled without fractional
-interpolation; subtraction is modulo65536, with1ms integer precision. Profiler
-suspension is excluded by that clock. Animation continues to use its independent
-loop elapsed value.
+`MS` reports the previous completed render interval in milliseconds with two
+decimal digits. The game clears the Device0 channel-11 microsecond timer after
+the preceding `Display::wait_vblank` returns and reads it immediately after
+this frame's **last** `Gpu::wait` returns. The interval includes input and CPU
+preparation and all static/source/consumer GPU waits. The subsequent present
+request and vblank wait occur after the read. The independent channel-10
+millisecond clock still drives animation.
 
 The completed interval is shown on the next frame; no extra submission is made
-for an immediately updated number. Cold F1 has no preceding vblank timestamp,
-so its MS value is unknown, independent of the available DRAW count. The HUD
-shows dashes until a complete interval exists (normally visible in F3).
-Functional simulation checks known1/2/3-CB intervals, timer wrap and excluded
-present waits using the real simulator timer; those injected values are not
-hardware frame-time or FPS measurements.
+for an immediately updated number. Cold F1 has no preceding timer clear.
+Cold and saturated (65535 us) intervals display dashes on the following frame.
+The next clear starts a fresh interval. Valid readings round to the nearest
+0.01 ms, with ties rounded up. Functional simulation advances the device clock
+at real GPU submissions and vblank waits to check rounding, saturation and recovery.
 The application uses frozen VonwaonBitmap16pxLite1.02 ASCII at native16px,
 baseline14 and advance8, rendered as binary8×16 cells without resizing, smoothing
 or extra row spacing. Source identity and regeneration are described in the

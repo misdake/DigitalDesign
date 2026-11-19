@@ -37,7 +37,7 @@ fn gpu_model_cache_init(mut cache: Array<u16>) {
     }
 }
 fn gpu_model_matrix_prepare(
-    desired: Array<u16>,
+    camera: Array<u16>,
     model: Array<u16>,
     mut native: Array<u16>,
     mut cache: Array<u16>,
@@ -51,7 +51,7 @@ fn gpu_model_matrix_prepare(
         i += 1;
     }
     if cache[GPU_MODEL_DIRTY] != 0 {
-        gpu_scene_matrix_prepare(desired, model, cache);
+        gpu_scene_matrix_prepare(camera, model, cache);
         i = 0;
         while i < 4 {
             cache[GPU_MODEL_VIEW_REVISION + i] = revision[i];
@@ -59,9 +59,14 @@ fn gpu_model_matrix_prepare(
         }
         cache[GPU_MODEL_DIRTY] = 0;
     }
-    i = 0;
-    while i < 42 {
-        native[GPU_SCRATCH_INSTANCE + i] = cache[i];
-        i += 1;
+    let source = cache.as_ptr();
+    let target = native.as_ptr().add(GPU_SCRATCH_INSTANCE as i16);
+    let mut offset: i16 = 0;
+    while offset < 40 {
+        vec4::export(vec4::import(source.add(offset)), target.add(offset));
+        offset += 8;
     }
+    // The next words in the cache are metadata, not Instance coefficients.
+    native[GPU_SCRATCH_INSTANCE + 40] = cache[40u16];
+    native[GPU_SCRATCH_INSTANCE + 41] = cache[41u16];
 }

@@ -22,6 +22,7 @@ def require(value, message):
 
 def derive(events, plan, origin, end):
     require(type(events) is list and len(events)<=100000, 'sidecar bound')
+    dedicated = plan.get('dedicated_final_wait') is True
     previous=origin;clear=None;intervals=[];selected=[];inputs=[]
     for e in events:
         tick=e.get('tick')
@@ -38,7 +39,7 @@ def derive(events, plan, origin, end):
             require(e.get('name') in ('vblank_return','final_wait_return') and
                     list(e.get('pc',[]))==plan['sites'][e['name']]
                     and e.get('observation','retired')==plan.get('site_observation','retired'), 'timing site observation')
-            if e.get('observation')=='first-unheld-execute':
+            if not dedicated and e.get('observation')=='first-unheld-execute':
                 require(type(e.get('finish_r10')) is int and 0<=e['finish_r10']<65536
                         and (e['name']!='final_wait_return' or e['finish_r10']!=0),'final wait finish discriminator')
         elif kind=='selected':
@@ -72,18 +73,24 @@ def derive(events, plan, origin, end):
                     if clear is not None:
                         require((tick-clear['tick'])%148==0 and row['cycles']>0,'timer clock alignment')
                         require(e['value']==min(65535,(row['cycles']-1)//54),'timer prescaler/read-before-edge')
-                    row['valid']=bool(clear is not None and e['value']<65535 and
-                                      row['start_epoch'] is not None and row['start_epoch']==row['end_epoch'])
-                    if plan.get('site_observation')=='first-unheld-execute':
-                        row['valid']=row['valid'] and type(row['wait_started_r8']) is int and row['wait_started_r8']!=0 \
-                                     and row['wait_start_epoch_r9']==row['end_epoch']
-                    row['reason']='actual CPU clear/RECV with unchanged epoch' if row['valid'] else 'cold, saturated or changed/unknown epoch'
+                    row['valid']=clear is not None and e['value']<65535
+                    if dedicated:
+                        row['reason']='actual CPU clear/RECV' if row['valid'] else 'cold or saturated'
+                    else:
+                        row['valid']=row['valid'] and row['start_epoch'] is not None and row['start_epoch']==row['end_epoch']
+                        if plan.get('site_observation')=='first-unheld-execute':
+                            row['valid']=row['valid'] and type(row['wait_started_r8']) is int and row['wait_started_r8']!=0 \
+                                         and row['wait_start_epoch_r9']==row['end_epoch']
+                        row['reason']='actual CPU clear/RECV with unchanged epoch' if row['valid'] else 'cold, saturated or changed/unknown epoch'
                     intervals.append(row)
+                    if dedicated:
+                        clear=None
     require(inputs and inputs[0]['buttons_active_low']==65535,'initial neutral')
     require([e['buttons_active_low'] for e in inputs] in ([65535],[65535,65503],[65535,65503,65535]),
             'one real press/release sequence')
     return dict(events=events,plan=plan,intervals=intervals,selections=selected,
-                scope='Actual CPU MMIO Execute edges; watches excluded. RAM epoch sampled passively after that edge. '
+                scope='Actual CPU MMIO Execute edges; watches excluded. '
+                      + ('' if dedicated else 'RAM epoch sampled passively after that edge. ') +
                       'Timer interval is distinct from applied-to-applied frame window.')
 
 
@@ -124,7 +131,7 @@ def timing_report(data):
                          and tick is not None and e['tick']<=tick),None)
         begin=site('vblank_return',row['clear_tick']);finish=site('final_wait_return',row['read_tick'])
         bound=begin is not None and finish is not None and row['clear_tick']<=finish<=row['read_tick']
-        if r['plan'].get('site_observation')=='first-unheld-execute':
+        if r['plan'].get('site_observation')=='first-unheld-execute' and not r['plan'].get('dedicated_final_wait'):
             bound=bound and row['finish_r10'] is not None and row['finish_r10']!=0
         return_cycles=(finish-begin)//148 if bound else None
         rows.append(dict(row,presentation=n,vblank_return_tick=begin,final_wait_return_tick=finish,

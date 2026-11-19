@@ -195,7 +195,7 @@ pub(super) fn collect(
                 pending.extend(method_names.get(method).into_iter().flatten().cloned());
             }
         }
-        if name == "malloc" || name == "free" {
+        if matches!(name.as_str(), "malloc" | "try_malloc" | "free") {
             pending.push("init_heap".to_owned());
         }
         if name.starts_with("vec_") {

@@ -872,9 +872,10 @@ fn frame_addresses(f: &IrFunc, mutable: &HashSet<VReg>) -> HashMap<VReg, u16> {
     addresses
 }
 
-// Forward only exact word locations within a block. Unknown writes invalidate
-// both maps: different logical addresses may alias through DSEG mappings, and a
-// raw pointer can name a frame local. No alias/disjointness promise is inferred.
+// Resolve scalar fields of local aggregates to their exact frame words. Carry a
+// word's value across a join only when all predecessors have been visited and
+// supply the same SSA value. Unknown writes invalidate both maps: raw pointers
+// and different DSEG windows can alias the frame.
 fn forward_memory_values(f: &mut IrFunc) -> bool {
     let mutable = mutable_values(f);
     let addresses = frame_addresses(f, &mutable);
@@ -886,8 +887,21 @@ fn forward_memory_values(f: &mut IrFunc) -> bool {
             .map(|slot| slot as u8)
     };
     let mut changed = false;
-    for block in &mut f.blocks {
-        let mut locals: HashMap<u8, VReg> = HashMap::new();
+    let mut outgoing: Vec<Option<HashMap<u8, VReg>>> = vec![None; f.blocks.len()];
+    for id in f.rpo() {
+        let block = &mut f.blocks[id];
+        let mut locals = HashMap::new();
+        if let Some((first, rest)) = block.preds.split_first() {
+            if id != f.entry && rest.iter().all(|&pred| outgoing[pred].is_some()) {
+                if let Some(values) = &outgoing[*first] {
+                    locals.clone_from(values);
+                    for &pred in rest {
+                        let incoming = outgoing[pred].as_ref().unwrap();
+                        locals.retain(|slot, value| incoming.get(slot) == Some(value));
+                    }
+                }
+            }
+        }
         let mut memory: HashMap<(VReg, i16), VReg> = HashMap::new();
         for inst in &mut block.insts {
             match *inst {
@@ -904,8 +918,12 @@ fn forward_memory_values(f: &mut IrFunc) -> bool {
                         if let Some(&src) = locals.get(&slot) {
                             *inst = Instr::Mov { dst, src };
                             changed = true;
-                        } else if !mutable.contains(&dst) {
-                            locals.insert(slot, dst);
+                        } else {
+                            *inst = Instr::LoadLocal { dst, slot };
+                            changed = true;
+                            if !mutable.contains(&dst) {
+                                locals.insert(slot, dst);
+                            }
                         }
                         continue;
                     }
@@ -926,6 +944,8 @@ fn forward_memory_values(f: &mut IrFunc) -> bool {
                 Instr::StoreMem { base, offset, src } => {
                     memory.clear();
                     if let Some(slot) = local(base, offset) {
+                        *inst = Instr::StoreLocal { slot, src };
+                        changed = true;
                         locals.remove(&slot);
                         if !mutable.contains(&src) {
                             locals.insert(slot, src);
@@ -947,6 +967,7 @@ fn forward_memory_values(f: &mut IrFunc) -> bool {
                 _ => {}
             }
         }
+        outgoing[id] = Some(locals);
     }
     changed
 }
@@ -1577,10 +1598,34 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(moves, vec![(a, value), (c, value), (d, value)]);
-        assert!(f.blocks[0]
-            .insts
-            .iter()
-            .any(|inst| matches!(inst, Instr::LoadMem { dst, .. } if *dst == e)));
+        assert!(f.blocks[0].insts.iter().any(
+            |inst| matches!(inst, Instr::LoadLocal { dst, slot } if *dst == e && *slot == slots + 1)
+        ));
+    }
+
+    #[test]
+    fn frame_word_forwarding_requires_agreement_at_a_join() {
+        for overwrite in [false, true] {
+            let (mut b, args) = FuncBuilder::new("join", 1, 1);
+            let value = b.get(args[0]);
+            let slot = b.alloc_local_slots(1);
+            b.store_local(slot, value);
+            let test = b.cmp(value, CmpRhs::Imm(0), CompareOp::Equal);
+            b.if_then(test, |b| {
+                if overwrite {
+                    let other = b.load_imm(42);
+                    b.store_local(slot, other);
+                }
+            });
+            let result = b.load_local(slot);
+            b.ret(&[result]);
+            let mut function = b.finish();
+            forward_memory_values(&mut function);
+            let forwarded = function.blocks.iter().flat_map(|block| &block.insts).any(
+                |inst| matches!(inst, Instr::Mov { dst, src } if *dst == result && *src == value),
+            );
+            assert_eq!(forwarded, !overwrite);
+        }
     }
 
     #[test]

@@ -626,21 +626,12 @@ fn capture_buttons(elapsed: u16) -> u16 {
     0
 }
 
-fn submit_game(
-    gpu: &mut Gpu,
-    commands: CommandBuffer,
-    finish: bool,
-    begin: u16,
-    started: bool,
-) -> CommandBuffer {
+#[inline(never)]
+fn finish_frame(gpu: &mut Gpu, commands: CommandBuffer, started: bool) -> CommandBuffer {
     gpu.submit(commands);
-    wait_game(gpu, finish, begin, started)
-}
-fn wait_game(gpu: &mut Gpu, finish: bool, begin: u16, started: bool) -> CommandBuffer {
     let completed = gpu.wait();
-    if finish {
-        render_time_complete(begin, time_milliseconds(), started);
-    }
+    let elapsed = time_microseconds();
+    render_time_complete(elapsed, started);
     completed
 }
 fn record_static_scene(
@@ -709,19 +700,7 @@ fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
                 b"----",
             );
         }
-        if FRAME_RENDER_MS[1u16] != 0 {
-            text_u16_field(grid, 3, 2, 5, FRAME_RENDER_MS[0u16]);
-        } else {
-            grid.write(
-                CellRect {
-                    x: 3,
-                    y: 2,
-                    width: 5,
-                    height: 1,
-                },
-                b"-----",
-            );
-        }
+        draw_render_time(grid, 3, 2);
         counted_ui(
             pass,
             grid,
@@ -801,7 +780,6 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     BLOCK_POSE_KEY[0u16] = 0;
     gamepad_init();
     let mut previous = time_milliseconds();
-    let mut render_start: u16 = 0;
     let mut render_started = false;
     let mut number: u16 = 0;
     let mut back_b = true;
@@ -907,7 +885,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 );
 
                 gpu.submit(scene_commands);
-                scene_commands = wait_game(&mut gpu, false, 0, false);
+                scene_commands = gpu.wait();
                 scene_generation = LEVEL_GENERATION[0u16];
                 scene_background = BACKGROUND[0u16];
                 scene_hidden = fragile_hidden(fragile_owner);
@@ -1141,9 +1119,10 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
             // The other CB is CPU-owned while the immutable static CB runs.
             // Its Load dependency is checked only after static completion,
             // when it is submitted; recording does not reclaim that producer.
-            scene_commands = wait_game(&mut gpu, false, 0, false);
+            scene_commands = gpu.wait();
             if fade {
-                commands = submit_game(&mut gpu, commands, false, 0, false);
+                gpu.submit(commands);
+                commands = gpu.wait();
                 snapshot_valid = true;
                 snapshot_generation = LEVEL_GENERATION[0u16];
                 session_captured();
@@ -1220,7 +1199,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         if automatic_capture {
             capture_report(68, color);
         }
-        commands = submit_game(&mut gpu, commands, true, render_start, render_started);
+        commands = finish_frame(&mut gpu, commands, render_started);
         if automatic_capture {
             capture_report(69, color);
         }
@@ -1228,7 +1207,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         HUD[2u16] = 1;
         display.set_next_swap(back.ptr());
         display.wait_vblank();
-        render_start = time_milliseconds();
+        time_clear_microseconds();
         render_started = true;
         gamepad_capture();
         signal(12, SESSION[0u16]);

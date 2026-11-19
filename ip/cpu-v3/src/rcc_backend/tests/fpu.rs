@@ -1,4 +1,5 @@
 use super::*;
+use crate::rcc_backend::abi::REG_SP;
 
 /// Scalar `fix32` lowers end to end through the two-word v2 ISA:
 /// construction, arithmetic, unary operations, and numeric conversion.
@@ -48,6 +49,58 @@ fn scalar_fix32_values_spill_across_calls() {
             }
         "#;
     assert_eq!(run(source), 11);
+}
+
+#[test]
+fn aligned_spill_frame_preserves_each_caller_stack_alignment() {
+    let source = r#"
+        #[inline(never)]
+        fn called(x: fix32) -> fix32 { x * fix32::from_int(4) }
+        #[inline(never)]
+        fn probe(x: fix32) -> fix32 {
+            let a = x + fix32::from_int(1);
+            let b = x * fix32::from_int(2);
+            let c = x - fix32::from_int(3);
+            let d = called(x);
+            a + b + c + d
+        }
+        fn main() { halt(probe(fix32::from_int(5)).to_int() as u16); }
+    "#;
+    for alignment in 0..4 {
+        let initial_stack = 0xfff0 + alignment;
+        let options = CompilerOptions {
+            stack_init: initial_stack,
+            ..CompilerOptions::default()
+        };
+        let program = compile(source, options);
+        assert!(
+            program.listing.contains("andi r12, 3"),
+            "{}",
+            program.listing
+        );
+        let (result, machine) = execute(program);
+        assert_eq!(result, 38);
+        assert_eq!(machine.registers()[usize::from(REG_SP)], initial_stack);
+    }
+}
+
+#[test]
+fn heap_initialization_keeps_spill_register_classes_without_inlining() {
+    let source = r#"
+        fn multiply(x: fix32) -> fix32 { x * fix32::from_int(4) }
+        fn main() {
+            let block = try_malloc(8);
+            let a = fix32::from_int(5);
+            let b = multiply(a);
+            free(block);
+            halt((a + b).to_int() as u16);
+        }
+    "#;
+    let mut options = CompilerOptions::default();
+    options.inline.enabled = false;
+    let program = compile_with_std_options(source, &options);
+    assert!(program.listing.contains("fst"));
+    assert_eq!(execute(program).0, 25);
 }
 
 /// fix32 comparisons feed the shared pending test; a materialized bool uses
@@ -131,6 +184,27 @@ fn fdot_and_vec4_memory_import_export_run() {
             }
         "#;
     assert_eq!(run_vector(source), 54);
+}
+
+#[test]
+fn fixed_width_word_transfer_preserves_neighbouring_words() {
+    let source = r#"
+        fn main() {
+            let words: Buf<u16, 6> = Buf::new([0xa55a; 6]);
+            let view = words.as_array();
+            let value = vec2::new(fix32::from_words(0x1234, 0xfedc), fix32::from_words(0xffff, 0x8000));
+            vec2::store_words(view, 1, value);
+            let back = vec2::load_words(view, 1);
+            if words[0u16] != 0xa55a || words[5u16] != 0xa55a
+                || back.x().lo_bits() != 0x1234 || back.x().hi_bits() != 0xfedc
+                || back.y().lo_bits() != 0xffff || back.y().hi_bits() != 0x8000
+            {
+                halt(0xdead);
+            }
+            halt(0x600d);
+        }
+    "#;
+    assert_eq!(run_vector(source), 0x600d);
 }
 
 /// A vector loop accumulator becomes a phi over a contiguous range; the

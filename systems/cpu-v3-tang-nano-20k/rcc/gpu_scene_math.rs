@@ -5,13 +5,12 @@ use gpu_schema::*;
 
 #[inline]
 pub fn gpu_scene_fix_read(data: Array<u16>, at: u16) -> fix32 {
-    fix32::from_words(data[at], data[at + 1])
+    fix32::load_words(data, at)
 }
 
 #[inline]
-pub fn gpu_scene_fix_write(mut data: Array<u16>, at: u16, value: fix32) {
-    data[at] = value.lo_bits();
-    data[at + 1] = value.hi_bits();
+pub fn gpu_scene_fix_write(data: Array<u16>, at: u16, value: fix32) {
+    fix32::store_words(data, at, value);
 }
 
 pub fn gpu_scene_zero(mut data: Array<u16>, count: u16) {
@@ -24,21 +23,12 @@ pub fn gpu_scene_zero(mut data: Array<u16>, count: u16) {
 
 #[inline]
 pub fn gpu_scene_vec_read(data: Array<u16>, at: u16) -> vec3 {
-    vec3::new(
-        fix32::from_words(data[at], data[at + 1]),
-        fix32::from_words(data[at + 2], data[at + 3]),
-        fix32::from_words(data[at + 4], data[at + 5]),
-    )
+    vec3::load_words(data, at)
 }
 
 #[inline]
-pub fn gpu_scene_vec_write(mut data: Array<u16>, at: u16, value: vec3) {
-    data[at] = value.x().lo_bits();
-    data[at + 1] = value.x().hi_bits();
-    data[at + 2] = value.y().lo_bits();
-    data[at + 3] = value.y().hi_bits();
-    data[at + 4] = value.z().lo_bits();
-    data[at + 5] = value.z().hi_bits();
+pub fn gpu_scene_vec_write(data: Array<u16>, at: u16, value: vec3) {
+    vec3::store_words(data, at, value);
 }
 
 pub fn gpu_scene_normalize(raw: vec3) -> vec3 {
@@ -250,6 +240,23 @@ fn gpu_scene_light_encode(raw: vec3, mut native: Array<u16>) -> bool {
     false
 }
 
+pub fn gpu_scene_encode_view_light(
+    camera: Array<u16>,
+    state: Array<u16>,
+    native: Array<u16>,
+) -> bool {
+    let light = gpu_scene_vec_read(state, GPU_STATE_LIGHT);
+    let camera = camera.as_ptr().add(GPU_CAMERA_VIEW as i16);
+    let row0 = vec4::import(camera);
+    let x = -fdot(vec3::new(row0.x(), row0.y(), row0.z()), light);
+    let row1 = vec4::import(camera.add(8));
+    let y = fdot(vec3::new(row1.x(), row1.y(), row1.z()), light);
+    let row2 = vec4::import(camera.add(16));
+    let z = fdot(vec3::new(row2.x(), row2.y(), row2.z()), light);
+    let view_light = vec3::new(x, y, z);
+    gpu_scene_light_encode(view_light, native)
+}
+
 // Build final native fields; the coefficient producer owns Instance0..41.
 pub fn gpu_scene_draw_header(
     desired: Array<u16>,
@@ -264,17 +271,12 @@ pub fn gpu_scene_draw_header(
             .add(GPU_DESIRED_STATE as i16)
             .as_u16_array()
     };
-    let light = gpu_scene_vec_read(state, GPU_STATE_LIGHT);
-    let row0 = gpu_scene_vec_read(desired, GPU_CAMERA_VIEW);
-    let row1 = gpu_scene_vec_read(desired, GPU_CAMERA_VIEW + 8);
-    let row2 = gpu_scene_vec_read(desired, GPU_CAMERA_VIEW + 16);
-    let view_light = vec3::new(-fdot(row0, light), fdot(row1, light), fdot(row2, light));
     let mut padding: u16 = 11;
     while padding < 32 {
         native[padding] = 0;
         padding += 1;
     }
-    if !gpu_scene_light_encode(view_light, native) {
+    if !gpu_scene_encode_view_light(desired, state, native) {
         return false;
     }
     if !gpu_scene_light_response(state, material, native) {

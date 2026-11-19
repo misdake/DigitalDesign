@@ -15,6 +15,35 @@ derive, timing_report, launch = bloxorz_profile.derive, bloxorz_profile.timing_r
 
 
 class BloxorzProfile(unittest.TestCase):
+    def test_dedicated_final_wait_measures_without_legacy_registers(self):
+        plan = dict(
+            dedicated_final_wait=True, site_observation='first-unheld-execute',
+            sites={'vblank_return': [7, 16], 'final_wait_return': [7, 54]},
+            clock_sites={'clear': {'code_segment': 7, 'pc': 18},
+                         'read': {'code_segment': 7, 'pc': 55}},
+        )
+        events = [dict(kind='input', tick=0, buttons_active_low=65535)]
+
+        def site(name, cycle):
+            events.append(dict(kind='site', name=name, tick=cycle*148,
+                               pc=plan['sites'][name], observation='first-unheld-execute',
+                               next_present=2, epoch=None))
+
+        def clock(cycle, pc, write, value):
+            events.append(dict(kind='device', tick=cycle*148, pc=[7, pc],
+                               device=0, channel=11, write=write, value=value, committed=True))
+
+        clock(4, 55, False, 0)
+        site('vblank_return', 10)
+        clock(13, 18, True, 1)
+        site('final_wait_return', 121)
+        clock(122, 55, False, 2)
+        r = derive(events, plan, 0, 122*148)
+        self.assertEqual([row['valid'] for row in r['intervals']], [False, True])
+        report = timing_report(dict(system=dict(runner=r, presents=[[130*148, 'present_request', 2]])))
+        self.assertEqual(report['intervals'][-1]['return_interval_cycles'], 111)
+        self.assertEqual(report['intervals'][-1]['wait_return_to_read_cycles'], 1)
+
     def test_nonretiring_return_and_intermediate_wait_keep_distinct_endpoints(self):
         plan=dict(site_observation='first-unheld-execute',gates={},
                   sites=dict(vblank_return=[7,41816],final_wait_return=[7,47954]),

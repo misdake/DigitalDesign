@@ -471,18 +471,22 @@ fn all_stages_and_new_presentations_render_with_real_cpu_gpu_and_display() {
                                 .unwrap()
                         );
                         if let Some(previous) =
-                            frames.last().filter(|frame| frame["render_ms"][1] == 1)
+                            frames.last().filter(|frame| frame["render_us"][1] == 1)
                         {
-                            assert_eq!(
-                                u64::from(actual_hud_number(&row2[3..8])),
-                                previous["render_ms"][0].as_u64().unwrap()
-                            );
+                            let hundredths = (previous["render_us"][0].as_u64().unwrap() + 5) / 10;
+                            let expected =
+                                format!("{:2}.{:02}", hundredths / 100, hundredths % 100);
+                            let expected = expected
+                                .bytes()
+                                .map(|b| if b == b' ' { 255 } else { b })
+                                .collect::<Vec<_>>();
+                            assert_eq!(&row2[3..8], expected);
                         } else {
                             assert_eq!(&row2[3..8], b"-----");
                         }
                     }
                 }
-                frames.push(serde_json::json!({"frame":frame,"executed_draw_calls":calls,"hud":m[hud..hud+3],"render_ms":m[global(&program,"FRAME_RENDER_MS")..global(&program,"FRAME_RENDER_MS")+2],"level":m[motion+6]+1,"steps":step,"game":m[game..game+10],"session":m[session..session+2],"motion":m[motion..motion+17],"submissions":std::mem::take(&mut submissions)}));
+                frames.push(serde_json::json!({"frame":frame,"executed_draw_calls":calls,"hud":m[hud..hud+3],"render_us":m[global(&program,"FRAME_RENDER_US")..global(&program,"FRAME_RENDER_US")+2],"level":m[motion+6]+1,"steps":step,"game":m[game..game+10],"session":m[session..session+2],"motion":m[motion..motion+17],"submissions":std::mem::take(&mut submissions)}));
                 assert!(sim.gpu().last_error().is_none());
                 if frame >= 33 {
                     for (file, base) in [

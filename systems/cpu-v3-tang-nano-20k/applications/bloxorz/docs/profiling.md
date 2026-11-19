@@ -62,18 +62,18 @@ selected presentation's stable 800x480 registered raster.
 
 Action gates retain an unheld Execute arrival until its instruction retires;
 a cache-miss return LOAD need not retire on its Execute edge. Timing sites use
-the first unheld Execute arrival. The legacy wait fields retain their recorded
-v1 names. The current automatically bound wait uses r8/r9/r10/r11 for started,
-begin milliseconds, finish and resume epoch, with the exact argument/return
-instructions checked before launch. It has no channel-11 timer interval.
-Only finish!=0 enables final_wait_return. These meanings are application ABI,
-not device ABI; the runner attaches the original named fields to sidecar events.
+the first unheld Execute arrival. The current package has a dedicated final GPU
+wait in `finish_frame`. The planner verifies the call and return instructions
+and binds the actual channel-11 clear/read opcodes from the same-build listing.
+This path needs no shared-wait register discriminator or resume epoch. Legacy
+v1 plans retain their original shared-wait and epoch checks.
 
 The codec checks committed physical Device0/channel-11 timer clear/read pairs,
-read-before-edge prescaling, source PCs and unchanged epoch. It reports MMIO
+read-before-edge prescaling and source PCs. Legacy plans also check the epoch.
+Cold and saturated reads produce invalid intervals. It reports MMIO
 intervals separately from vblank-return to final-wait-return intervals and from
-applied-to-applied frame windows. The 900000-cycle comparisons require valid
-epoch and bound source endpoints. Common interval activity accounting remains
+applied-to-applied frame windows. The 900000-cycle comparisons require a valid
+interval and bound source endpoints. Common interval activity accounting remains
 in the system profiler.
 
 ## Bounds and report compatibility

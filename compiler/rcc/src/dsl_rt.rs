@@ -594,6 +594,15 @@ impl fix32 {
     pub const fn from_words(lo: u16, hi: u16) -> fix32 {
         fix32((((hi as u32) << 16) | lo as u32) as i32)
     }
+    /// Load two consecutive Q16.16 words, low half first (`FLD`).
+    pub fn load_words(words: Array<u16>, at: u16) -> Self {
+        Self::from_words(words[at], words[at.wrapping_add(1)])
+    }
+    /// Store two consecutive Q16.16 words, low half first (`FST`).
+    pub fn store_words(mut words: Array<u16>, at: u16, value: Self) {
+        words[at] = value.lo_bits();
+        words[at.wrapping_add(1)] = value.hi_bits();
+    }
     /// Named const arithmetic; runtime operators retain the same target meaning.
     pub const fn wrapping_add(self, rhs: Self) -> Self {
         Self(self.0.wrapping_add(rhs.0))
@@ -716,6 +725,22 @@ macro_rules! fpu_vec {
             }
             pub const fn x(self) -> fix32 {
                 self.0[0]
+            }
+            /// Load consecutive Q16.16 lanes, low word first within each lane
+            /// (`FLDV`).
+            pub fn load_words(words: Array<u16>, at: u16) -> Self {
+                let mut lanes = [fix32(0); 4];
+                for (index, lane) in lanes.iter_mut().take($lanes).enumerate() {
+                    *lane = fix32::load_words(words, at.wrapping_add(2 * index as u16));
+                }
+                Self(lanes)
+            }
+            /// Store consecutive Q16.16 lanes in the same word layout
+            /// (`FSTV`).
+            pub fn store_words(words: Array<u16>, at: u16, value: Self) {
+                for (index, lane) in value.0.iter().take($lanes).enumerate() {
+                    fix32::store_words(words, at.wrapping_add(2 * index as u16), *lane);
+                }
             }
             pub fn abs(self) -> $name {
                 self.map(fix32_abs)

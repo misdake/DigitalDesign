@@ -21,8 +21,46 @@ pub fn counted_ui(pass: &mut Pass, grid: &UiGrid, rect: CellRect) {
 }
 
 // Value and validity are separate from DRAW: cold F1 has no preceding vblank.
-pub static FRAME_RENDER_MS: Buf<u16, 2> = Buf::new([0; 2]);
-pub fn render_time_complete(begin: u16, end: u16, started: bool) {
-    FRAME_RENDER_MS[0u16] = end - begin;
-    FRAME_RENDER_MS[1u16] = if started { 1u16 } else { 0u16 };
+pub static FRAME_RENDER_US: Buf<u16, 2> = Buf::new([0; 2]);
+pub fn render_time_complete(elapsed: u16, started: bool) {
+    FRAME_RENDER_US[0u16] = elapsed;
+    FRAME_RENDER_US[1u16] = if started && elapsed != 65535 {
+        1u16
+    } else {
+        0u16
+    };
+}
+
+pub fn draw_render_time(grid: &mut UiGrid, x: u16, y: u16) {
+    if FRAME_RENDER_US[1u16] == 0 {
+        grid.write(
+            CellRect {
+                x,
+                y,
+                width: 5,
+                height: 1,
+            },
+            b"-----",
+        );
+        return;
+    }
+    let elapsed = FRAME_RENDER_US[0u16];
+    // The last four valid readings already round down. Avoid overflowing u16.
+    let rounded = if elapsed <= 65530 {
+        elapsed + 5
+    } else {
+        elapsed
+    };
+    let hundredths = rounded / 10;
+    let milliseconds = hundredths / 100;
+    let leading = if milliseconds < 10 {
+        255u16
+    } else {
+        48 + milliseconds / 10
+    };
+    grid.write_glyph(x, y, leading as u8);
+    grid.write_glyph(x + 1, y, (48 + milliseconds % 10) as u8);
+    grid.write_glyph(x + 2, y, 46);
+    grid.write_glyph(x + 3, y, (48 + (hundredths / 10) % 10) as u8);
+    grid.write_glyph(x + 4, y, (48 + hundredths % 10) as u8);
 }

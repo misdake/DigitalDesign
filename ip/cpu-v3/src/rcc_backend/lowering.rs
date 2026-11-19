@@ -136,20 +136,113 @@ impl Lines {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct LoweredFunction {
-    /// Ordinary bodies keep a guard; proven terminal synthetic blocks need none.
+    /// Ordinary bodies start with a guard. Linking can prove it unreachable.
     pub(super) trailing_guard: bool,
     pub(super) cseg: Option<u16>,
     pub(super) name: FuncName,
     pub(super) lines: Vec<Line>,
     pub(super) static_addresses: Vec<u16>,
     pub(super) frame_size: usize,
-    pub(super) callee_saved: usize,
+    pub(super) local_base: u8,
 }
 
 impl LoweredFunction {
     pub(super) fn size_words(&self) -> usize {
         self.lines.iter().map(Line::size).sum::<usize>() + usize::from(self.trailing_guard)
+    }
+}
+
+struct FrameLayout {
+    local_base: u8,
+    spill_base: u8,
+    fpu_base: u8,
+    aligned_spills: Option<AlignedSpillFrame>,
+}
+
+impl FrameLayout {
+    fn new(function: &IrFunc, allocation: &Allocation, blocks: &[usize]) -> Self {
+        let saved = allocation.local_frame_slot(0);
+        let mut frame = Self {
+            local_base: saved,
+            spill_base: allocation.spill_frame_slot(0),
+            fpu_base: allocation.fpu_area_offset(),
+            aligned_spills: AlignedSpillFrame::for_function(function, allocation),
+        };
+        if frame.fpu_base <= 16 || allocation.local_slots == 0 || allocation.spill_slots == 0 {
+            return frame;
+        }
+
+        // The two scalar areas are contiguous and have word alignment.
+        // Choose the order that uses fewer prefixes without changing the
+        // frame size, saved-register slots or aligned FPU spill area.
+        let spill_first_local = saved + allocation.spill_slots;
+        let mut local_first_prefixes = 0;
+        let mut spill_first_prefixes = 0;
+        for instruction in blocks.iter().flat_map(|&id| &function.blocks[id].insts) {
+            let (slot, local_first, spill_first) = match instruction {
+                Instr::LoadSp { slot, .. } | Instr::StoreSp { slot, .. } => {
+                    (*slot, frame.spill_base, saved)
+                }
+                Instr::LoadLocal { slot, .. }
+                | Instr::StoreLocal { slot, .. }
+                | Instr::AddrOfLocal { slot, .. } => (*slot, saved, spill_first_local),
+                _ => continue,
+            };
+            local_first_prefixes += usize::from(local_first + slot > 15);
+            spill_first_prefixes += usize::from(spill_first + slot > 15);
+        }
+        if spill_first_prefixes < local_first_prefixes {
+            frame.local_base = spill_first_local;
+            frame.spill_base = saved;
+        }
+        frame
+    }
+}
+
+/// One aligned SP per invocation, with the caller's adjustment saved just
+/// below the spill area. Sparse users keep the original per-access alignment.
+#[derive(Clone, Copy)]
+pub(super) struct AlignedSpillFrame {
+    base: u16,
+    words: u16,
+}
+
+impl AlignedSpillFrame {
+    pub(super) fn for_function(function: &IrFunc, allocation: &Allocation) -> Option<Self> {
+        if allocation.fpu_spill_slots == 0 {
+            return None;
+        }
+        let base = (u16::from(allocation.fpu_area_offset()) + 1).next_multiple_of(4);
+        let words = base + u16::from(allocation.fpu_spill_slots) * 4;
+        let uses = function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter(|instruction| matches!(instruction, Instr::AddrOfFpuSpill { .. }))
+            .take(4)
+            .count();
+        (uses == 4 && usize::from(words) + 3 <= CPU_V3_REGISTER_CONVENTION.maximum_frame_words)
+            .then_some(Self { base, words })
+    }
+
+    pub(super) fn maximum_words(self) -> usize {
+        usize::from(self.words) + 3
+    }
+
+    fn enter(self, lines: &mut Lines) {
+        lines.word(cpu_v3::move_register(REG_TMP, REG_SP));
+        lines.word(cpu_v3::immediate_unsigned(ImmediateOp::And, REG_TMP, 3));
+        emit_immediate(lines, ImmediateOp::Sub, REG_SP, self.words, true);
+        lines.word(cpu_v3::alu(AluOp::Sub, REG_SP, REG_SP, REG_TMP));
+        emit_store(lines, REG_TMP, REG_SP, (self.base - 1) as i16);
+    }
+
+    fn leave(self, lines: &mut Lines) {
+        emit_load(lines, REG_TMP, REG_SP, (self.base - 1) as i16);
+        emit_immediate(lines, ImmediateOp::Add, REG_SP, self.words, true);
+        lines.word(cpu_v3::alu(AluOp::Add, REG_SP, REG_SP, REG_TMP));
     }
 }
 
@@ -162,6 +255,9 @@ pub(super) fn lower_function(
     let mut lines = Lines::new();
     let mut static_addresses = vec![];
     let register = |vreg: VReg| allocation.reg[&vreg];
+    let layout = function.rpo();
+    let frame = FrameLayout::new(function, allocation, &layout);
+    let aligned_spills = frame.aligned_spills;
 
     // prologue is compiler-generated (no source line)
     lines.set_line(None);
@@ -169,31 +265,38 @@ pub(super) fn lower_function(
         emit_load_immediate(&mut lines, REG_SP, stack_init);
     }
     if allocation.frame_size() != 0 {
-        emit_immediate(
-            &mut lines,
-            ImmediateOp::Sub,
-            REG_SP,
-            allocation.frame_size() as u16,
-            true,
-        );
+        if let Some(frame) = aligned_spills {
+            frame.enter(&mut lines);
+        } else {
+            emit_immediate(
+                &mut lines,
+                ImmediateOp::Sub,
+                REG_SP,
+                allocation.frame_size() as u16,
+                true,
+            );
+        }
         for (slot, &register) in allocation.callee_saved.iter().enumerate() {
             emit_store(&mut lines, register, REG_SP, slot as i16);
         }
     }
 
-    let layout = function.rpo();
     let mut return_tail = Lines::new();
     for (slot, &register) in allocation.callee_saved.iter().enumerate() {
         emit_load(&mut return_tail, register, REG_SP, slot as i16);
     }
     if allocation.frame_size() != 0 {
-        emit_immediate(
-            &mut return_tail,
-            ImmediateOp::Add,
-            REG_SP,
-            allocation.frame_size() as u16,
-            true,
-        );
+        if let Some(frame) = aligned_spills {
+            frame.leave(&mut return_tail);
+        } else {
+            emit_immediate(
+                &mut return_tail,
+                ImmediateOp::Add,
+                REG_SP,
+                allocation.frame_size() as u16,
+                true,
+            );
+        }
     }
     return_tail.word(cpu_v3::jump_register(REG_LINK));
     let returns = layout
@@ -234,7 +337,7 @@ pub(super) fn lower_function(
                 function,
                 instruction,
                 &register,
-                allocation,
+                &frame,
                 &mut lines,
                 &mut static_addresses,
             );
@@ -313,8 +416,8 @@ pub(super) fn lower_function(
         name: function.name,
         lines: lines.items,
         static_addresses,
-        frame_size: allocation.frame_size(),
-        callee_saved: allocation.callee_saved.len(),
+        frame_size: aligned_spills.map_or_else(|| allocation.frame_size(), |f| f.maximum_words()),
+        local_base: frame.local_base,
     }
 }
 
@@ -322,7 +425,7 @@ fn lower_instruction(
     function: &IrFunc,
     instruction: &Instr,
     register: &dyn Fn(VReg) -> u8,
-    allocation: &Allocation,
+    frame: &FrameLayout,
     lines: &mut Lines,
     static_addresses: &mut Vec<u16>,
 ) {
@@ -546,25 +649,25 @@ fn lower_instruction(
             lines,
             register(*dst),
             REG_SP,
-            (allocation.callee_saved.len() as u8 + allocation.local_slots + *slot) as i16,
+            i16::from(frame.spill_base + *slot),
         ),
         Instr::StoreSp { slot, src } => emit_store(
             lines,
             register(*src),
             REG_SP,
-            (allocation.callee_saved.len() as u8 + allocation.local_slots + *slot) as i16,
+            i16::from(frame.spill_base + *slot),
         ),
         Instr::LoadLocal { dst, slot } => emit_load(
             lines,
             register(*dst),
             REG_SP,
-            (allocation.callee_saved.len() as u8 + *slot) as i16,
+            i16::from(frame.local_base + *slot),
         ),
         Instr::StoreLocal { slot, src } => emit_store(
             lines,
             register(*src),
             REG_SP,
-            (allocation.callee_saved.len() as u8 + *slot) as i16,
+            i16::from(frame.local_base + *slot),
         ),
         Instr::AddrOfLocal { dst, slot } => {
             let dst = register(*dst);
@@ -573,7 +676,7 @@ fn lower_instruction(
                 lines,
                 ImmediateOp::Add,
                 dst,
-                u16::from(allocation.callee_saved.len() as u8 + *slot),
+                u16::from(frame.local_base + *slot),
                 true,
             );
         }
@@ -692,21 +795,25 @@ fn lower_instruction(
             emit_fpu_aux(lines, addr, register(*src), 0, FpuAuxSubop::Fst);
         }
         Instr::AddrOfFpuSpill { dst, slot } => {
-            // dst = align4(sp + fpu_area_offset) + 4 * slot; alignment is
-            // computed at run time because nothing guarantees sp mod 4 == 0.
             let dst = register(*dst);
             lines.word(cpu_v3::move_register(dst, REG_SP));
+            let slot_offset = 4 * u16::from(*slot);
+            if let Some(frame) = frame.aligned_spills {
+                emit_immediate(lines, ImmediateOp::Add, dst, frame.base + slot_offset, true);
+                return;
+            }
+            // No aligned frame: round up the start of the spill area here.
             emit_immediate(
                 lines,
                 ImmediateOp::Add,
                 dst,
-                u16::from(allocation.fpu_area_offset()) + 3,
+                u16::from(frame.fpu_base) + 3,
                 true,
             );
             emit_load_immediate(lines, REG_TMP, 0xfffc);
             lines.word(cpu_v3::alu(AluOp::And, dst, dst, REG_TMP));
             if *slot != 0 {
-                emit_immediate(lines, ImmediateOp::Add, dst, 4 * u16::from(*slot), true);
+                emit_immediate(lines, ImmediateOp::Add, dst, slot_offset, true);
             }
         }
         Instr::FpuVecBin { dst, op, lhs, rhs } => {
