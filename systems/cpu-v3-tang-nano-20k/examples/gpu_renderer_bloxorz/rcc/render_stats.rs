@@ -13,6 +13,16 @@ pub fn counted_draw(
     pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
     DRAW_CALLS[0u16] += mesh.meshlet_count();
 }
+pub fn counted_part_draw(
+    recording: &mut PreparedPart,
+    mesh: &Mesh,
+    model: &Model,
+    material: &Material,
+    view: &TextureView,
+) {
+    recording.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
+    DRAW_CALLS[0u16] += mesh.meshlet_count();
+}
 pub fn counted_ui(pass: &mut Pass, grid: &UiGrid, rect: CellRect) {
     pass.draw_ui(grid.ptr(), rect);
     if rect.width != 0 && rect.height != 0 {

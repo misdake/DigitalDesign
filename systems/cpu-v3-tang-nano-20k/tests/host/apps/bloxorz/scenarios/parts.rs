@@ -14,13 +14,13 @@ pub(in super::super) fn button_parts(fresh: bool) -> ApplicationCase {
                 "button_test_pose(number);",
             )
             .required_replace(
-                "pass.begin_prepared_part(part);",
-                "if part>0 && part<14 {signal(14,part);}pass.begin_prepared_part(part);",
+                "let mut recording = commands.prepare_part(part);",
+                "if part>0 && part<14 {signal(14,part);}let mut recording = commands.prepare_part(part);",
             );
         if fresh {
             source = source.required_replace(
                 "sync_bridge_group(&mut commands);",
-                "sync_bridge_group(&mut commands);commands.clear_prepared_group();",
+                "sync_bridge_group(&mut commands);commands.clear_prepared_parts();",
             );
         }
         source += r#"

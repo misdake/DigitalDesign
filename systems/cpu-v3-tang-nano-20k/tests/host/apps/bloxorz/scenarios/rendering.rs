@@ -169,18 +169,12 @@ pub(in super::super) fn hint_order(early: bool) -> ApplicationCase {
             );
 
         if early {
-            let start = source.rfind("    draw_bridge_group(\n").unwrap();
-            let end = start + source[start..].find("\n    );").unwrap() + "\n    );".len();
-            let call = source[start..end].to_string();
-            assert!(call.contains("true,"));
-            source.replace_range(start..end, "");
-            let at = source.find("    draw_block(pass, &scene.block,").unwrap();
-            source.insert_str(
-                at,
-                &format!(
-                    "{call}\n                pass.set_camera(scene.camera.ptr());pass.set_state(scene.state.ptr());\n"
-                ),
-            );
+            let hint =
+                "    pass.draw_prepared(15);\n    DRAW_CALLS[0u16] += BRIDGE_COMMANDS[4u16];\n";
+            let block =
+                "    draw_block(pass, &scene.block, &mut scene.block_model, &scene.material);";
+            source = source.required_replace(hint, "");
+            source = source.required_replace(block, &format!("{hint}{block}"));
         }
 
         source

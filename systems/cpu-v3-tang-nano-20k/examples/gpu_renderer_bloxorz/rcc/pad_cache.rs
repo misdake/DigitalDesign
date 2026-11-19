@@ -161,7 +161,7 @@ pub fn pad_carrier_texture() -> Texture {
     })
 }
 pub fn draw_pad_part(
-    pass: &mut Pass,
+    recording: &mut PreparedPart,
     box_mesh: &Mesh,
     model: &mut Model,
     material: &Material,
@@ -217,7 +217,7 @@ pub fn draw_pad_part(
         cache[3u16] |= bit;
     }
     if role >= 3 {
-        counted_draw(pass, box_mesh, model, material, view);
+        counted_part_draw(recording, box_mesh, model, material, view);
     } else {
         let mut first = TILE0_FIRST;
         if role == 2 {
@@ -226,7 +226,7 @@ pub fn draw_pad_part(
             first = GOAL_HATCH_FIRST + cache[6u16];
         }
         let mesh = game_mesh_part(first, 1);
-        counted_draw(pass, &mesh, model, material, view);
+        counted_part_draw(recording, &mesh, model, material, view);
     }
 }
 

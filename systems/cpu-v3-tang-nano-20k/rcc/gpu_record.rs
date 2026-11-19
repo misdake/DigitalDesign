@@ -233,9 +233,6 @@ fn gpu_record_command_room(c: Array<u16>, add: u16, tail: u16) -> bool {
         return false;
     }
     let end = used + add + tail;
-    if c[GPU_GROUP_RECORDING] != 0 && end - c[GPU_GROUP_START] > GPU_GROUP_CODE_WORDS {
-        return false;
-    }
     ((end + 63) & 65472) <= capacity
 }
 // 65535 is an internal failure sentinel; valid offsets include 32768.
@@ -281,6 +278,10 @@ fn gpu_record_preflight(slot: u16, command_words: u16, push_end: u16) -> bool {
     let mut tail: u16 = 2;
     if phase == GPU_RECORD_PASS || c[GPU_RECORD_TERMINAL] == 0 {
         tail = 6;
+    }
+    // Templates have their own word limit and no enclosing Pass/END tail.
+    if c[GPU_GROUP_RECORDING] != 0 {
+        tail = 0;
     }
     gpu_record_command_room(c, command_words, tail)
         && push_end >= c[GPU_RECORD_PUSH_USED]
@@ -454,6 +455,5 @@ fn gpu_record_reset(slot: u16) -> bool {
         i += 1;
     }
     c[GPU_RECORD_PUSH_USED] = c[GPU_GROUP_PUSH_END];
-    c[GPU_GROUP_REFERENCED] = 0;
     gpu_record_new_generation(c)
 }

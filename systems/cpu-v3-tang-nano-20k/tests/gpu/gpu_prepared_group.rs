@@ -9,13 +9,14 @@ use std::path::Path;
 const SOURCE: &str = r#"use gpu_bind::*;
 static STEP:u16=0;static ROW:Buf<u16,64>=Buf::new([0;64]);static MESH:Buf<u16,16>=Buf::new([0;16]);
 static FACTS:Buf<u16,8>=Buf::new([0xa000,32,1,1,0xa100,4,2,1]);
+static OTHER_FACTS:Buf<u16,8>=Buf::new([0xa000,32,1,1,0xa200,4,2,1]);
 fn check(ok:bool){if !ok{halt(0xd000+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
 pub fn prepared_group_test(){let fact_plan:Buf<u16,2>=Buf::new([0;2]);gpu_record_init();let saved=read_dseg_page(3);
- check(gpu_record_configure(0,0x9801,8,0x9a00,16));check(!gpu_group_enable(0));
- check(gpu_record_configure(0,0x9800,512,0x9a00,512));check(gpu_group_enable(0));check(!gpu_group_enable(0));
- check(gpu_record_configure(1,0xfc00,512,0xfe00,512));check(!gpu_group_ready(1));
+ check(gpu_record_configure(0,0x9801,8,0x9a00,16));check(!gpu_group_enable_layout(0,0));
+ check(gpu_record_configure(0,0x9800,512,0x9a00,512));check(gpu_group_enable_layout(0,0));check(!gpu_group_enable_layout(0,0));
+ check(gpu_record_configure(1,0xfc00,512,0xfe00,512));check(!gpu_group_part_ready(1,0));
  let mut c=gpu_record_data(0);check(c[GPU_RECORD_COMMAND_BASE]==0x9880&&c[GPU_RECORD_COMMAND_CAPACITY]==8192);
- check(!gpu_group_begin(0)&&!gpu_group_append(0));
+ check(!gpu_group_part_append(0,0));
  // Dirty source must win; dirty destination must not later overwrite the copy.
  unsafe{write_dseg_page(3,0x98);let src=Ptr::from_addr(0xc000);let dst=Ptr::from_addr(0xe000);
  src.write(0,0x1234);dst.write(0,0xdead);write_dseg_page(3,saved);}
@@ -31,34 +32,50 @@ pub fn prepared_group_test(){let fact_plan:Buf<u16,2>=Buf::new([0;2]);gpu_record
  check(gpu_mesh_init(MESH.as_array(),desc));ROW[0u16]=0xa004;ROW[1u16]=1;ROW[2u16]=0xa008;ROW[3u16]=2;
  check(gpu_window_write_words(0xa000,0,ROW.as_array(),4));
  let mut native=gpu_native_scratch();native[1u16]=199;native[3u16]=16384;native[36u16]=9;native[65u16]=1;native[108u16]=65535;
- check(gpu_packet_begin(0,0x8000,0x9000,0,0,0));c[GPU_RECORD_VALID]|=24;
- check(gpu_group_begin(0));check(!gpu_group_begin(0));check(!gpu_record_close_pass(0));
+ check(gpu_group_part_begin(0,0));check(!gpu_group_part_begin(0,0));check(!gpu_record_close_pass(0));
  check(gpu_mesh_draw(0,MESH.as_array(),native));native[36u16]=11;native[108u16]=0x4567;
  check(gpu_mesh_draw(0,MESH.as_array(),native));
- check(gpu_record_resource_room(0,FACTS.as_array(),2, fact_plan.as_array()));gpu_record_resource_commit(0,FACTS.as_array(),2, fact_plan.as_array());
- check(gpu_group_end(0));check(!gpu_group_end(0));check(gpu_group_ready(0));
+ check(gpu_record_resource_room(0,FACTS.as_array(),2,fact_plan.as_array()));
+ gpu_record_resource_commit(0,FACTS.as_array(),2,fact_plan.as_array());
+ let words=c[GPU_RECORD_COMMAND_USED];let rounded=(words+15)&65520;
+ check(gpu_group_end(0));check(!gpu_group_end(0));check(gpu_group_part_ready(0,0));
  if EXPECT_RESIDENT {check(GPU_GROUP_RESIDENT[0u16]!=0);}else{check(GPU_GROUP_RESIDENT[0u16]==0);}
- check(c[GPU_RECORD_VALID]&31==3&&c[GPU_GROUP_FACT_COUNT]==2);
- let prefix=c[GPU_GROUP_PUSH_END];let words=c[GPU_GROUP_WORDS];check(words!=0&&words&15==0);
- gpu_bind_copy(native,0,c,GPU_CB_GLOBAL,48);
- c[GPU_RECORD_VALID]|=24;check(gpu_group_part_begin(0,1));native[108u16]=0x9876;
- check(gpu_mesh_draw(0,MESH.as_array(),native));check(gpu_group_end(0));let second=c[GPU_GROUP_WORDS];
- check(gpu_group_ready(0)&&gpu_group_part_ready(0,1)&&!gpu_group_part_ready(1,1));
- check(gpu_record_close_pass(0));check(gpu_record_seal(0));check(gpu_record_reset(0));
- check(c[GPU_RECORD_PUSH_USED]==prefix&&c[GPU_RECORD_FACT_COUNT]==0&&gpu_group_ready(0));
+ check(c[GPU_RECORD_VALID]==0&&c[GPU_RECORD_FACT_COUNT]==0&&c[GPU_RECORD_COMMAND_USED]==0);
+ let prefix=c[GPU_GROUP_PUSH_END];check(rounded!=0);
+ check(gpu_group_part_begin(0,1));native[108u16]=0x9876;
+ check(gpu_mesh_draw(0,MESH.as_array(),native));
+ check(gpu_record_resource_room(0,OTHER_FACTS.as_array(),2,fact_plan.as_array()));
+ gpu_record_resource_commit(0,OTHER_FACTS.as_array(),2,fact_plan.as_array());
+ let second=(c[GPU_RECORD_COMMAND_USED]+15)&65520;
+ check(gpu_group_end(0));check(gpu_group_part_ready(0,1)&&!gpu_group_part_ready(1,1));
+ check(gpu_group_part_begin(0,2));check(gpu_group_end(0));
+ check(gpu_group_part_begin(0,3));gpu_group_abandon(0);check(!gpu_group_part_ready(0,3));
+ check(c[GPU_RECORD_PUSH_USED]==prefix);
  check(gpu_packet_begin(0,0x8800,0x9000,0,0,0));
- c[GPU_RECORD_COMMAND_USED]=8180;check(!gpu_group_append(0));check(c[GPU_RECORD_COMMAND_USED]==8180&&c[GPU_RECORD_FACT_COUNT]==0);
- c[GPU_RECORD_COMMAND_USED]=10;check(gpu_group_append(0));check(c[GPU_RECORD_COMMAND_USED]==16+words);
- check(c[GPU_RECORD_PUSH_USED]==prefix+16&&c[GPU_RECORD_FACT_COUNT]==2);
- // Matching complete entry state omits one32-byte Global/Render prefix.
- check(gpu_group_part_append(0,1));check(c[GPU_RECORD_COMMAND_USED]==words+second);
- c[GPU_RECORD_VALID]|=24;check(!gpu_group_part_begin(0,1));check(!gpu_group_part_begin(0,16));
- check(gpu_record_close_pass(0));check(gpu_record_seal(0));
- check(gpu_record_reset(0));check(gpu_packet_begin(0,0x8800,0x9000,0,0,0));c[GPU_RECORD_VALID]|=24;
+ let used=c[GPU_RECORD_COMMAND_USED];let count=c[GPU_RECORD_FACT_COUNT];
+ check(gpu_group_part_append(0,2));check(c[GPU_RECORD_COMMAND_USED]==used&&c[GPU_RECORD_FACT_COUNT]==count);
+ // Appending only part1 carries its own texture and the shared mesh.
+ check(gpu_group_part_append(0,1));
+ let facts=gpu_record_resource_facts(0);
+ check(c[GPU_RECORD_FACT_COUNT]==count+2&&facts[count*4]==0xa000&&facts[(count+1)*4]==0xa200);
+ check(gpu_record_close_pass(0));check(gpu_record_reset(0));
+ check(gpu_packet_begin(0,0x8800,0x9000,0,0,0));
+ c[GPU_RECORD_VALID]|=24;c[GPU_CB_CAMERA]=117;c[GPU_CB_STATE]=221;
+ let count=c[GPU_RECORD_FACT_COUNT];
+ c[GPU_RECORD_COMMAND_USED]=8180;check(!gpu_group_part_append(0,0));
+ check(c[GPU_RECORD_COMMAND_USED]==8180&&c[GPU_RECORD_FACT_COUNT]==count);
+ c[GPU_RECORD_COMMAND_USED]=10;check(gpu_group_part_append(0,0));
+ check(c[GPU_RECORD_COMMAND_USED]==16+rounded);
+ check(c[GPU_RECORD_PUSH_USED]==prefix+16&&c[GPU_RECORD_FACT_COUNT]==count+2);
+ // Matching entry Global/Render omits one line. Desired state survives both parts.
+ check(gpu_group_part_append(0,1));check(c[GPU_RECORD_COMMAND_USED]==rounded+second);
+ check(c[GPU_RECORD_FACT_COUNT]==count+3);
+ check(c[GPU_RECORD_VALID]&31==27&&c[GPU_CB_CAMERA]==117&&c[GPU_CB_STATE]==221);
+ check(!gpu_group_part_begin(0,1));check(!gpu_group_part_begin(0,16));
+ check(gpu_record_close_pass(0));check(gpu_record_seal(0));check(gpu_record_reset(0));
  check(gpu_group_part_begin(0,1));native[108u16]=0xabcd;
  check(gpu_mesh_draw(0,MESH.as_array(),native));check(gpu_group_end(0));
- check(gpu_record_close_pass(0));check(gpu_record_seal(0));
- check(gpu_group_clear(0));check(!gpu_group_ready(0)&&c[GPU_RECORD_PUSH_USED]==prefix&&c[GPU_RECORD_COMMAND_USED]==0);
+ check(gpu_group_clear(0));check(!gpu_group_part_ready(0,0)&&c[GPU_RECORD_PUSH_USED]==prefix&&c[GPU_RECORD_COMMAND_USED]==0);
  check(GPU_GROUP_RESIDENT[0u16]==0&&GPU_GROUP_RESIDENT[1u16]==0);
  check(read_dseg_page(3)==saved);halt(0x600d);}"#;
 

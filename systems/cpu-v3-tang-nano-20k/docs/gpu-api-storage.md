@@ -102,73 +102,62 @@ ordinary grid/glyph debug checks and external-memory publication contract.
 
 ### Prepared command parts
 
-`CommandBuffer::enable_prepared_group()` partitions an existing nonzero,
-32-KiB-aligned 64-KiB command reservation. The first16KiB holds sixteen1KiB
-command templates; the next16KiB is the active stream, in the same physical
-DSEG3 page. The upper32KiB remains GPU-unfetched and backs metadata if the
-CPU heap has no suitable block.
-Ordinary CBs retain their configured capacities. An enabled CB also requires
-64KiB push backing: part0 owns its first16KiB, parts1..15 own2KiB each, and
-ordinary immediate recording uses the remaining18KiB. No extra external
-allocation is required. The explicit
-`enable_prepared_parts(PreparedPartsLayout::SplitWide)` alternative divides the
-original wide area into two8KiB partitions: part0 at push words[0,4096), part15
-at[4096,8192). Parts1..14 retain their original2KiB partitions. The old part15
-area remains unused; the46KiB fixed prefix and18KiB transient tail do not move.
-`SingleWide` and the no-argument entry retain the original layout. Layout is
-chosen before recording, persists across reset/clear and does not change leases.
+`CommandBuffer::enable_prepared_parts(layout)` partitions a nonzero,
+32-KiB-aligned 64-KiB command reservation. The first 16 KiB holds sixteen
+1-KiB command templates. The next 16 KiB is the active stream, in the same
+physical DSEG3 page. The upper 32 KiB is private CPU backing for metadata
+that cannot fit in the heap.
 
-Inside a Pass, install camera/state, call `begin_prepared_part(part)`, record
-mesh draws and their camera/state choices, then call `end_prepared_group()`.
-Part IDs are0..15; the no-argument group methods select part0. UI and texture
-invalidation are rejected while a part is open; Pass close rejects unfinished
-parts. Begin saves the transient cursor/capacity and selects that part's fixed
-push partition. Rebuilding a part cannot overwrite another part's snapshots.
-A referenced-part mask prevents replacement after that part has been copied or
-recorded into the current stream. Reset clears this mask after normal ownership
-has returned to the CPU.
+An enabled CB also requires 64 KiB of push backing. `SingleWide` reserves
+16 KiB for part0 and 2 KiB for each other part. `SplitWide` assigns 8 KiB
+each to part0 and part15 in the original wide area. Parts1..14 keep their
+2-KiB partitions. Both layouts leave an 18-KiB active push tail after the
+46-KiB prefix.
 
-Begin invalidates native bindings so the first mesh draw emits complete Global
-and Render bindings. A NOP pads this initial prefix to32bytes. Later draws use
-ordinary canonical-state deduplication and meshlet ping-pong commands. Legal
-NOPs align template boundaries to32bytes; templates contain no Target or END.
-End copies command lines into the selected template, saves canonical entry/exit
-Global/Render states and Mesh/Texture allocation facts, and restores the
-transient push cursor/capacity. Separate draws retain separate immutable
-Instances even when one temporary Model is reused. Source descriptors need not
-survive, but referenced resource backing must remain valid and stable.
+On an empty, CPU-owned CB, `prepare_part(id)` borrows the CB and returns
+a mesh-only recorder. IDs range from 0 through 15. The recorder has its own
+camera and state selection. Its draw methods use the same native encoder
+as Pass draws, with cursors directed into the selected template and push
+partition. The empty CB lends its recorder and fact table for this operation.
+The resource invariant prevents use of the CB while its recorder is live.
+`finish()` publishes the part and restores the empty CB. Dropping an
+unfinished recorder abandons the replacement without publishing it.
 
-`prepared_part_ready(part)` tests the valid mask. `append_prepared_part(part)`
-preflights command/fact capacity, aligns the cursor and LCOPYs the template.
-When both current Global/Render states equal the entire saved entry state,
-append skips the initial32-byte binding prefix. It then restores the saved
-canonical exit state for subsequent binding comparisons. Both append and end
-invalidate Instance, desired camera/state and scene identities; callers reinstall
-camera/state before the next part or immediate draw. This retains only proved
-native bindings and avoids redundant render drains. Single-scene patch bindings
-reject part-bearing streams. No mutable Instance patch API is exposed.
+A nonempty template starts with a complete binding. The initial Global and
+Render commands occupy one 32-byte line. A NOP supplies the final padding.
+Templates include whole 32-byte lines and store immutable Instance data in
+their push partition. The recorder writes the template directly. The
+result contains mesh draw commands and state uploads; target and final
+fences belong to the enclosing Pass. Source descriptors can be dropped
+after recording. Referenced mesh and texture backing must stay valid and
+stable through execution.
 
-`reset()` retains all valid parts and restores the transient cursor to the fixed
-46-KiB prefix end. `invalidate_prepared_part(part)` clears one valid bit between
-recordings, retaining all other templates and snapshots. `clear_prepared_group()`
-clears the bank and resets the CB, retaining the reserved partitions. Reset/clear
-advance the ordinary binding generation, invalidating old TargetBinding and
-SceneBinding values. Slot/context ownership, scalar publication, execution ownership,
-submit and wait remain unchanged. Templates, metadata and push snapshots cannot
-change while the GPU owns the CB.
+`CommandBuffer::prepared_part_ready(id)` tests whether a part is published.
+`Pass::draw_prepared(id)` preflights command and resource-table capacity,
+aligns the active cursor, and LCOPYs the template into the active stream.
+The first use follows this same path. If current Global and Render match
+the part's entry snapshot, the copy skips the initial 32-byte binding line.
+The exit snapshot becomes the recorded Global and Render state. Instance
+residency, UI continuity and source identities are cleared. The Pass keeps
+its selected camera and RenderState for subsequent ordinary draws. An empty
+part has no effect on state, commands or resources.
 
-Each part's CPU metadata has a three-word header (executable words, fact count
-and native-state flag). A native part follows the header with its two 48-word
-Global/Render snapshots and only the recorded four-word Mesh/Texture facts.
-Append compares and merges directly from this allocation. Invalidating,
-rebuilding, clearing or dropping a part releases its CPU allocation.
-If a part cannot allocate, its same compact record uses the original
-384-word private stride starting 256 sectors after the command base, and
-append reads it through a bounded CPU staging buffer. The separate fact plan
-reuses native scratch after reservation. Each
-1KiB template and the active16KiB stream include their own padding; the active
-stream also includes ordinary commands and terminal/fetch reservations. Bounds
-reject overflows before append writes; partial transport failures poison the CB.
+Each part's CPU metadata begins with two words for command length and fact
+count. A nonempty part stores two 48-word binding snapshots followed by
+its deduplicated four-word Mesh/Texture facts. During part recording the
+fact table receives only resources used by that part. Append merges these
+records into the active table after preflight. The heap and the bounded
+SDRAM fallback use the same metadata header validation. Empty parts require
+zero facts. The external fallback uses a 384-word stride starting 256
+sectors after the original command base. Failed transport poisons the CB.
+
+An appended nonempty part is immutable until the CB retires and resets.
+`reset()` keeps finished parts and clears references from the active stream.
+`invalidate_prepared_part(id)` discards one part between recordings.
+`clear_prepared_parts()` discards the entire bank and resets the CB.
+Both keep the configured partitions. Single-scene patches require an
+ordinary draw sequence and reject nonempty prepared parts.
+
 Standalone appends compute one aligned payload offset and preflight their extent.
 Mesh/binding operations preflight their complete layout once. They write one
 contiguous native payload span, assemble binding and meshlet commands together
@@ -187,9 +176,8 @@ A zero-payload command append advances to the operation's preflighted push end.
 
 Instance equality also proves residency in uniform block320 while VALID bit2 is
 set. Equal subsequent draws omit both its DMA and WAIT. Target, UI, Global and
-Render commands do not overwrite that block. Reset/configuration, and prepared
-part begin/end/append boundaries invalidate this proof; their next draw emits a
-complete Instance load. This is recorded-stream state, not residency across CB
+Render commands do not overwrite that block. Reset/configuration and a nonempty prepared-part append invalidate this proof.
+The next ordinary draw emits a complete Instance load. This is recorded-stream state, not residency across CB
 submissions.
 
 A mesh directory of at most eight entries remains in scratch144..159 after its
@@ -451,7 +439,7 @@ The implemented control words are:
 
 | Word | Meaning |
 | --- | --- |
-| 0 | Disabled=0, recordable=1, open Pass=2, sealed=3, poisoned=4 |
+| 0 | Disabled=0, recordable=1, open draw encoder=2, sealed=3, poisoned=4 |
 | 1 / 2 | Command first sector / word capacity |
 | 3 / 4 | Push first sector / word capacity |
 | 5 / 6 | Command / push words used |
@@ -469,14 +457,12 @@ The implemented control words are:
 | 27 / 28 | Color / depth fact index plus one after binding |
 | 29..31 | Recording Model / Material / Camera identity; 65535 rejects a mixed/reused group |
 | 208 | Template first sector, zero when disabled |
-| 209 / 210 | Valid-part bit mask / most recently used aligned fragment words |
-| 211 / 212 | Fixed persistent push end / most recent part Mesh/Texture fact count |
-| 213 / 214 | Open part ID plus one / active command start while recording |
-| 215 / 216 | Saved transient push cursor / capacity while recording a part |
-| 217 / 218 | First part Global / Render push offset plus one |
+| 209 | Valid-part bit mask |
+| 211 | Fixed persistent push end |
+| 213 | Open part ID plus one |
+| 217 | First part Global push offset plus one |
 | 219 | Prepared push layout:0 original single-wide,1 split-wide |
-| 220 | Parts already referenced by the current recording |
-| 221..223 | Reserved, zero |
+| 210, 212, 214..216, 218, 220..223 | Reserved |
 
 Each configured extent has 1..512 sectors, fits physical memory, and is disjoint
 from the other extent in that record. Configuration is init-time only; Gpu's
@@ -486,10 +472,11 @@ external lifetime. The record phase is not evidence of GPU retirement.
 `gpu_record_preflight(slot, command_words, final_push_words)` checks the entire
 planned operation before its first store. Its caller accounts for all payload
 alignment gaps. The final push cursor cannot move backward or exceed capacity.
-An open Pass reserves four words for `WAIT(all), FLUSH`; an outside-Pass stream
-without a known terminal fence reserves the same four words. Every recording
-also reserves two for END and rounds the resulting span to 128-byte fetch
-alignment. Word counts represent the full 64-KiB capacity without truncation.
+An open Pass reserves four words for `WAIT(all), FLUSH`. An outside-Pass stream
+without a known terminal fence reserves the same four words. Active recordings
+also reserve two words for END and round the resulting span to 128-byte fetch
+alignment. Prepared templates use their fixed command limit without the
+terminal tail. Word counts represent the full 64-KiB capacity without truncation.
 
 Individual append batches contain at most64 command words and128 push words.
 Nonempty payload alignment is 16, 32 or 64 words. Append first checks capacity,

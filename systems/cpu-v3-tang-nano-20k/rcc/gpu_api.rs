@@ -271,6 +271,11 @@ pub struct CommandBuffer {
 pub struct Pass {
     slot: u16,
 }
+/// Records an immutable mesh-only part in its parent's prepared storage.
+#[rcc_resource(parent=CommandBuffer)]
+pub struct PreparedPart {
+    slot: u16,
+}
 #[rcc_resource]
 pub struct ColorBuffer {
     slot: u16,
@@ -468,18 +473,22 @@ pub enum PreparedPartsLayout {
     SplitWide,
 }
 impl CommandBuffer {
-    /// Reserve a slot-private 16 KiB template and 16 KiB active command area
-    /// inside this CB's existing aligned 64 KiB command allocation.
-    pub fn enable_prepared_group(&mut self) {
-        gpu_api_checked(gpu_group_enable(self.slot), 15);
-    }
     /// SplitWide gives parts0/15 4096 words each; parts1..14 retain1024.
     /// SingleWide preserves the original8192-word part0 and1024-word tail.
     pub fn enable_prepared_parts(&mut self, layout: PreparedPartsLayout) {
         gpu_api_checked(gpu_group_enable_layout(self.slot, layout as u16), 15);
     }
+    /// Test whether this command buffer has a completed part.
+    pub fn prepared_part_ready(&self, part: u16) -> bool {
+        gpu_group_part_ready(self.slot, part)
+    }
+    /// Build in the part's own command and push storage while this CB is empty.
+    pub fn prepare_part(&mut self, part: u16) -> PreparedPart {
+        gpu_api_checked(gpu_group_part_begin(self.slot, part), 15);
+        PreparedPart { slot: self.slot }
+    }
     /// Clear all saved parts and reset the active stream, retaining partitions.
-    pub fn clear_prepared_group(&mut self) {
+    pub fn clear_prepared_parts(&mut self) {
         gpu_api_checked(gpu_group_clear(self.slot), 15);
     }
     /// Invalidate one part between recordings, retaining every other part.
@@ -629,34 +638,9 @@ impl Drop for CommandBuffer {
     }
 }
 impl Pass {
-    /// Test whether this slot has a completed part in the range 0..16.
-    pub fn prepared_part_ready(&self, part: u16) -> bool {
-        gpu_group_part_ready(self.slot, part)
-    }
-    /// Record or replace a CPU-owned part not yet referenced by this recording.
-    pub fn begin_prepared_part(&mut self, part: u16) {
-        gpu_api_checked(gpu_group_part_begin(self.slot, part), 15);
-    }
-    /// Append a saved part; reinstall camera/state before subsequent draws.
-    pub fn append_prepared_part(&mut self, part: u16) {
+    /// Append an immutable part while retaining the next immediate draw's state.
+    pub fn draw_prepared(&mut self, part: u16) {
         gpu_api_checked(gpu_group_part_append(self.slot, part), 15);
-    }
-    pub fn prepared_group_ready(&self) -> bool {
-        gpu_group_ready(self.slot)
-    }
-    /// Record only mesh draws and their camera/state choices until end.
-    /// Native parameter snapshots persist; source objects need not persist.
-    pub fn begin_prepared_group(&mut self) {
-        gpu_api_checked(gpu_group_begin(self.slot), 15);
-    }
-    /// Finish the open part. Reinstall camera and state before drawing.
-    pub fn end_prepared_group(&mut self) {
-        gpu_api_checked(gpu_group_end(self.slot), 15);
-    }
-    /// Append via LCOPY without scene math, parameter uploads or mesh expansion.
-    /// Reinstall camera and state before subsequent immediate draws.
-    pub fn append_prepared_group(&mut self) {
-        gpu_api_checked(gpu_group_append(self.slot), 15);
     }
     pub fn invalidate_textures(&mut self) {
         gpu_api_checked(gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0, 15);
@@ -1151,22 +1135,65 @@ impl UiGrid {
     }
 }
 
-impl Pass {
+fn gpu_api_set_camera(slot: u16, camera: CameraPtr) {
+    let camera_slot = gpu_arena_resolve(camera.handle, GPU_KIND_CAMERA);
+    let data = gpu_arena_data(camera_slot);
+    gpu_api_checked(gpu_bind_desired(slot, true, data), 1);
+    gpu_patch_note(slot, GPU_RECORD_SCENE_CAMERA, camera_slot);
+    gpu_bind_copy(
+        gpu_record_data(slot),
+        GPU_CB_CAMERA_REVISION,
+        data,
+        GPU_CAMERA_REVISION,
+        4,
+    );
+}
+fn gpu_api_set_state(slot: u16, state: RenderStatePtr) {
+    gpu_api_checked(gpu_bind_desired(slot, false, state.data()), 4);
+}
+fn gpu_api_draw_textured(
+    slot: u16,
+    mesh: MeshPtr,
+    model: ModelPtr,
+    material: MaterialPtr,
+    view: TextureViewPtr,
+) {
+    gpu_api_draw(
+        slot,
+        gpu_arena_resolve(mesh.handle, GPU_KIND_MESH),
+        gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
+        gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
+        gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
+        true,
+    );
+}
+fn gpu_api_draw_colored(slot: u16, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
+    gpu_api_draw(
+        slot,
+        gpu_arena_resolve(mesh.handle, GPU_KIND_MESH),
+        gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
+        gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
+        0,
+        false,
+    );
+}
+
+impl Drop for PreparedPart {
+    fn drop(&mut self) {
+        gpu_group_abandon(self.slot);
+    }
+}
+impl PreparedPart {
+    /// Publish this part for use in later passes.
+    pub fn finish(self) {
+        gpu_api_checked(gpu_group_end(self.slot), 15);
+        resource_disarm(self);
+    }
     pub fn set_camera(&mut self, camera: CameraPtr) {
-        let camera_slot = gpu_arena_resolve(camera.handle, GPU_KIND_CAMERA);
-        let data = gpu_arena_data(camera_slot);
-        gpu_api_checked(gpu_bind_desired(self.slot, true, data), 1);
-        gpu_patch_note(self.slot, GPU_RECORD_SCENE_CAMERA, camera_slot);
-        gpu_bind_copy(
-            gpu_record_data(self.slot),
-            GPU_CB_CAMERA_REVISION,
-            data,
-            GPU_CAMERA_REVISION,
-            4,
-        );
+        gpu_api_set_camera(self.slot, camera);
     }
     pub fn set_state(&mut self, state: RenderStatePtr) {
-        gpu_api_checked(gpu_bind_desired(self.slot, false, state.data()), 4);
+        gpu_api_set_state(self.slot, state);
     }
     pub fn draw(
         &mut self,
@@ -1175,24 +1202,30 @@ impl Pass {
         material: MaterialPtr,
         view: TextureViewPtr,
     ) {
-        gpu_api_draw(
-            self.slot,
-            gpu_arena_resolve(mesh.handle, GPU_KIND_MESH),
-            gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
-            gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
-            gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
-            true,
-        );
+        gpu_api_draw_textured(self.slot, mesh, model, material, view);
     }
     pub fn draw_colored(&mut self, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
-        gpu_api_draw(
-            self.slot,
-            gpu_arena_resolve(mesh.handle, GPU_KIND_MESH),
-            gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
-            gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
-            0,
-            false,
-        );
+        gpu_api_draw_colored(self.slot, mesh, model, material);
+    }
+}
+impl Pass {
+    pub fn set_camera(&mut self, camera: CameraPtr) {
+        gpu_api_set_camera(self.slot, camera);
+    }
+    pub fn set_state(&mut self, state: RenderStatePtr) {
+        gpu_api_set_state(self.slot, state);
+    }
+    pub fn draw(
+        &mut self,
+        mesh: MeshPtr,
+        model: ModelPtr,
+        material: MaterialPtr,
+        view: TextureViewPtr,
+    ) {
+        gpu_api_draw_textured(self.slot, mesh, model, material, view);
+    }
+    pub fn draw_colored(&mut self, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
+        gpu_api_draw_colored(self.slot, mesh, model, material);
     }
     pub fn draw_ui(&mut self, grid: UiGridPtr, clip: CellRect) {
         gpu_api_checked(gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0, 15);

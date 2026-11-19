@@ -108,8 +108,9 @@ fn gpu_bind_plan(slot: u16, native: Array<u16>, mut plan: Array<u16>) -> bool {
         commands = 4;
     }
     if c[GPU_GROUP_RECORDING] != 0 && c[GPU_GROUP_FIRST_GLOBAL] == 0 {
-        // First Global/Render binding occupies exactly one copyable line.
-        if changes & 3 != 3 {
+        // The first draw starts with no bindings. Its Global and Render payloads
+        // are contiguous and their commands occupy exactly one copyable line.
+        if changes != 7 {
             return false;
         }
         commands += 2;
@@ -248,7 +249,6 @@ fn gpu_bind_commit(slot: u16, native: Array<u16>, plan: Array<u16>) {
     let changes = plan[0u16];
     if c[GPU_GROUP_RECORDING] != 0 && c[GPU_GROUP_FIRST_GLOBAL] == 0 {
         c[GPU_GROUP_FIRST_GLOBAL] = plan[1u16] + 1;
-        c[GPU_GROUP_FIRST_RENDER] = plan[2u16] + 1;
     }
     if changes & 1 != 0 {
         gpu_bind_copy(c, GPU_CB_GLOBAL, native, GPU_SCRATCH_GLOBAL, 32);

@@ -280,7 +280,7 @@ fn button_cache_rebuild() {
 }
 fn sync_bridge_group(commands: &mut CommandBuffer) {
     if BRIDGE_COMMANDS[0u16] != LEVEL_GENERATION[0u16] {
-        commands.clear_prepared_group();
+        commands.clear_prepared_parts();
         button_cache_rebuild();
         BRIDGE_COMMANDS[0u16] = LEVEL_GENERATION[0u16];
         BRIDGE_COMMANDS[1u16] = visual_mask();
@@ -290,56 +290,31 @@ fn sync_bridge_group(commands: &mut CommandBuffer) {
         BRIDGE_COMMANDS[1u16] = visual_mask();
     }
 }
-// Part14 is available in every shipped stage (at most13 buttons).
-fn begin_pad_group(pass: &mut Pass, mut cache: Array<u16>) -> bool {
-    if pass.prepared_part_ready(14)
-        && cache[11u16] == cache[1u16]
-        && cache[12u16] == cache[2u16]
-        && cache[13u16] == cache[5u16]
-    {
-        pass.append_prepared_part(14);
-        DRAW_CALLS[0u16] += cache[14u16];
-        return false;
-    }
-    pass.begin_prepared_part(14);
-    cache[11u16] = cache[1u16];
-    cache[12u16] = cache[2u16];
-    cache[13u16] = cache[5u16];
-    cache[14u16] = DRAW_CALLS[0u16];
-    true
-}
-fn end_pad_group(pass: &mut Pass, mut cache: Array<u16>) {
-    pass.end_prepared_group();
-    cache[14u16] = DRAW_CALLS[0u16] - cache[14u16];
-}
-// Two independent command parts keep opaque depth ahead of alpha blending.
-// Shipped stages use at most13 buttons: parts1..13, pads14, hints15.
-fn draw_bridge_group(
-    pass: &mut Pass,
-    model: &mut Model,
-    material: &mut Material,
-    state: &RenderState,
-    hint_state: &RenderState,
-    transparent: bool,
-) {
+// The stage owns the mapping: opaque bridges0, up to thirteen switches,
+// pads14 and translucent bridge hints15.
+fn prepare_bridges(commands: &mut CommandBuffer, scene: &mut SceneResources, transparent: bool) {
     let part = if transparent { 15u16 } else { 0u16 };
-    let count = if transparent { 4u16 } else { 2u16 };
-    if pass.prepared_part_ready(part) {
-        pass.append_prepared_part(part);
-        DRAW_CALLS[0u16] += BRIDGE_COMMANDS[count];
-    } else {
-        let before = DRAW_CALLS[0u16];
-        pass.begin_prepared_part(part);
-        if transparent {
-            pass.set_state(hint_state.ptr());
-        } else {
-            pass.set_state(state.ptr());
-        }
-        draw_bridges(pass, model, material, transparent);
-        pass.set_state(state.ptr());
-        pass.end_prepared_group();
-        BRIDGE_COMMANDS[count] = DRAW_CALLS[0u16] - before;
+    if commands.prepared_part_ready(part) {
+        return;
     }
+    let before = DRAW_CALLS[0u16];
+    let mut recording = commands.prepare_part(part);
+    recording.set_camera(scene.camera.ptr());
+    if transparent {
+        recording.set_state(scene.hint_state.ptr());
+    } else {
+        recording.set_state(scene.state.ptr());
+    }
+    draw_bridges(
+        &mut recording,
+        &mut scene.floor_model,
+        &mut scene.floor_material,
+        transparent,
+    );
+    recording.finish();
+    let count = if transparent { 4u16 } else { 2u16 };
+    BRIDGE_COMMANDS[count] = DRAW_CALLS[0u16] - before;
+    DRAW_CALLS[0u16] = before;
 }
 
 fn visible_tile_side(i: u16) -> u16 {
@@ -357,7 +332,12 @@ fn visible_tile_side(i: u16) -> u16 {
         0u16
     }
 }
-fn draw_bridges(pass: &mut Pass, model: &mut Model, material: &mut Material, transparent: bool) {
+fn draw_bridges(
+    recording: &mut PreparedPart,
+    model: &mut Model,
+    material: &mut Material,
+    transparent: bool,
+) {
     let texture = game_texture();
     let view = clamped_texture_view(&texture);
     let mut i: u16 = 0;
@@ -385,7 +365,7 @@ fn draw_bridges(pass: &mut Pass, model: &mut Model, material: &mut Material, tra
             }
             material.set_uniform_color(color);
             model.set_pose(tile_pose(i, fix32::zero()));
-            counted_draw(pass, &mesh, model, material, &view);
+            counted_part_draw(recording, &mesh, model, material, &view);
         }
         i += 1;
     }
@@ -416,7 +396,7 @@ fn draw_fragile_batches(pass: &mut Pass, model: &mut Model, material: &mut Mater
     counted_draw(pass, &mesh, model, material, &view);
 }
 fn draw_switch_tile(
-    pass: &mut Pass,
+    recording: &mut PreparedPart,
     model: &mut Model,
     material: &mut Material,
     i: u16,
@@ -456,7 +436,7 @@ fn draw_switch_tile(
             }
             material.set_uniform_color(Rgba8::white());
             model.set_pose(tile_pose(i, y));
-            counted_draw(pass, &mesh, model, material, &marked_view);
+            counted_part_draw(recording, &mesh, model, material, &marked_view);
         } else {
             let base = game_mesh_part(
                 MARKED_HEAVY_FIRST + (channel & 7) * 2 + if active { 1u16 } else { 0u16 },
@@ -464,16 +444,14 @@ fn draw_switch_tile(
             );
             material.set_uniform_color(Rgba8::white());
             model.set_pose(tile_pose(i, fix32::zero()));
-            counted_draw(pass, &base, model, material, &marked_view);
+            counted_part_draw(recording, &base, model, material, &marked_view);
         }
     }
 }
-fn draw_switches(
-    pass: &mut Pass,
-    model: &mut Model,
+fn prepare_switches(
+    commands: &mut CommandBuffer,
+    scene: &mut SceneResources,
     material: &mut Material,
-    camera: &Camera,
-    state: &RenderState,
 ) {
     let mut cache = button_cache_data();
     let mask = visual_mask();
@@ -489,19 +467,34 @@ fn draw_switches(
             0u16
         };
         let part = j + 1;
-        if pass.prepared_part_ready(part) && cache[2 + j * 3] == key {
-            pass.append_prepared_part(part);
-            DRAW_CALLS[0u16] += cache[3 + j * 3];
-        } else {
+        if !commands.prepared_part_ready(part) || cache[2 + j * 3] != key {
             let before = DRAW_CALLS[0u16];
-            pass.begin_prepared_part(part);
-            draw_switch_tile(pass, model, material, i, kind, channel);
-            pass.end_prepared_group();
+            let mut recording = commands.prepare_part(part);
+            recording.set_camera(scene.camera.ptr());
+            recording.set_state(scene.state.ptr());
+            draw_switch_tile(
+                &mut recording,
+                &mut scene.pad_model,
+                material,
+                i,
+                kind,
+                channel,
+            );
+            recording.finish();
             cache[2 + j * 3] = key;
             cache[3 + j * 3] = DRAW_CALLS[0u16] - before;
+            DRAW_CALLS[0u16] = before;
         }
-        pass.set_camera(camera.ptr());
-        pass.set_state(state.ptr());
+        j += 1;
+    }
+}
+
+fn draw_switches(pass: &mut Pass) {
+    let cache = button_cache_data();
+    let mut j: u16 = 0;
+    while j < cache[0u16] {
+        pass.draw_prepared(j + 1);
+        DRAW_CALLS[0u16] += cache[3 + j * 3];
         j += 1;
     }
 }
@@ -863,167 +856,161 @@ fn record_static_copy(
     );
 }
 
-fn draw_pads(
-    pass: &mut Pass,
+fn prepare_pads(
+    commands: &mut CommandBuffer,
     scene: &mut SceneResources,
-    pad_cache: Array<u16>,
+    mut pad_cache: Array<u16>,
     pad_view: &TextureView,
     carrier_view: &TextureView,
 ) {
-    if begin_pad_group(pass, pad_cache) {
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.entry_hatch_model,
-            &scene.entry_hatch_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 0,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.entry0,
-            &scene.entry_ring_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 3,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.entry1,
-            &scene.entry_ring_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 4,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.entry2,
-            &scene.entry_ring_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 5,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.entry3,
-            &scene.entry_ring_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 6,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.goal_hatch_model,
-            &scene.goal_hatch_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 1,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.carrier_model,
-            &scene.carrier_material,
-            carrier_view,
-            PadPart {
-                cache: pad_cache,
-                role: 2,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.goal0,
-            &scene.goal_ring_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 7,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.goal1,
-            &scene.goal_ring_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 8,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.goal2,
-            &scene.goal_ring_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 9,
-            },
-        );
-        draw_pad_part(
-            pass,
-            &scene.pad,
-            &mut scene.goal3,
-            &scene.goal_ring_material,
-            pad_view,
-            PadPart {
-                cache: pad_cache,
-                role: 10,
-            },
-        );
-        end_pad_group(pass, pad_cache);
+    if commands.prepared_part_ready(14)
+        && pad_cache[11u16] == pad_cache[1u16]
+        && pad_cache[12u16] == pad_cache[2u16]
+        && pad_cache[13u16] == pad_cache[5u16]
+    {
+        return;
     }
+    let before = DRAW_CALLS[0u16];
+    let mut recording = commands.prepare_part(14);
+    recording.set_camera(scene.camera.ptr());
+    recording.set_state(scene.state.ptr());
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.entry_hatch_model,
+        &scene.entry_hatch_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 0,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.entry0,
+        &scene.entry_ring_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 3,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.entry1,
+        &scene.entry_ring_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 4,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.entry2,
+        &scene.entry_ring_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 5,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.entry3,
+        &scene.entry_ring_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 6,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.goal_hatch_model,
+        &scene.goal_hatch_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 1,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.carrier_model,
+        &scene.carrier_material,
+        carrier_view,
+        PadPart {
+            cache: pad_cache,
+            role: 2,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.goal0,
+        &scene.goal_ring_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 7,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.goal1,
+        &scene.goal_ring_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 8,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.goal2,
+        &scene.goal_ring_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 9,
+        },
+    );
+    draw_pad_part(
+        &mut recording,
+        &scene.pad,
+        &mut scene.goal3,
+        &scene.goal_ring_material,
+        pad_view,
+        PadPart {
+            cache: pad_cache,
+            role: 10,
+        },
+    );
+    recording.finish();
+    pad_cache[11u16] = pad_cache[1u16];
+    pad_cache[12u16] = pad_cache[2u16];
+    pad_cache[13u16] = pad_cache[5u16];
+    pad_cache[14u16] = DRAW_CALLS[0u16] - before;
+    DRAW_CALLS[0u16] = before;
 }
-fn record_dynamic_scene(
-    pass: &mut Pass,
-    scene: &mut SceneResources,
-    hatch_material: &mut Material,
-    pad_cache: Array<u16>,
-    pad_view: &TextureView,
-    carrier_view: &TextureView,
-) {
-    pass.set_camera(scene.camera.ptr());
-    pass.set_state(scene.state.ptr());
+
+fn record_dynamic_scene(pass: &mut Pass, scene: &mut SceneResources, pad_cache: Array<u16>) {
     prepare_block(&mut scene.block_model);
-    draw_bridge_group(
-        pass,
-        &mut scene.floor_model,
-        &mut scene.floor_material,
-        &scene.state,
-        &scene.hint_state,
-        false,
-    );
-    pass.set_camera(scene.camera.ptr());
-    pass.set_state(scene.state.ptr());
-    draw_switches(
-        pass,
-        &mut scene.pad_model,
-        hatch_material,
-        &scene.camera,
-        &scene.state,
-    );
-    draw_pads(pass, scene, pad_cache, pad_view, carrier_view);
+    pass.draw_prepared(0);
+    DRAW_CALLS[0u16] += BRIDGE_COMMANDS[2u16];
+    draw_switches(pass);
+    pass.draw_prepared(14);
+    DRAW_CALLS[0u16] += pad_cache[14u16];
+
     pass.set_camera(scene.camera.ptr());
     pass.set_state(scene.shadow_state.ptr());
     draw_shadow(
@@ -1055,14 +1042,8 @@ fn record_dynamic_scene(
     }
     // Opaque geometry and receiver shadows are complete. Inactive
     // bridge hints now test opaque depth without writing it.
-    draw_bridge_group(
-        pass,
-        &mut scene.floor_model,
-        &mut scene.floor_material,
-        &scene.state,
-        &scene.hint_state,
-        true,
-    );
+    pass.draw_prepared(15);
+    DRAW_CALLS[0u16] += BRIDGE_COMMANDS[4u16];
 }
 
 struct FrameOverlay {
@@ -1236,6 +1217,16 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 capture_report(66, number);
             }
             commands.reset();
+            prepare_bridges(&mut commands, &mut scene, false);
+            prepare_switches(&mut commands, &mut scene, &mut hatch_material);
+            prepare_pads(
+                &mut commands,
+                &mut scene,
+                pad_cache,
+                &pad_view,
+                &carrier_view,
+            );
+            prepare_bridges(&mut commands, &mut scene, true);
             {
                 let mut pass = commands.pass(
                     target.ptr(),
@@ -1243,14 +1234,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     ColorLoad::load(),
                     DepthLoad::load(),
                 );
-                record_dynamic_scene(
-                    &mut pass,
-                    &mut scene,
-                    &mut hatch_material,
-                    pad_cache,
-                    &pad_view,
-                    &carrier_view,
-                );
+                record_dynamic_scene(&mut pass, &mut scene, pad_cache);
                 if automatic_capture {
                     counted_ui(
                         &mut pass,
