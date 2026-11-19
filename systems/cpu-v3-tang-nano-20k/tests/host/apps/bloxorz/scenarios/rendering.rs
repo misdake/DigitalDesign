@@ -68,6 +68,7 @@ pub(in super::super) fn rerecord() -> ApplicationCase {
 
 pub(in super::super) fn goal_close() -> ApplicationCase {
     edited("renderer_game_three_frames", move |mut source| {
+        source = with_frame_number(source);
         source = source
             .required_replace("run(3, false, 128);", "run(5, false, 128);")
             .required_replace(
@@ -95,6 +96,7 @@ fn goal_close_frame(n:u16){
 
 pub(in super::super) fn orientation() -> ApplicationCase {
     edited("renderer_game_three_frames", move |mut source| {
+        source = with_frame_number(source);
         source = source
             .required_replace("run(3, false, 128);", "run(4, false, 128);")
             .required_replace(
@@ -129,7 +131,7 @@ pub(in super::super) fn goal_mid() -> ApplicationCase {
         source = source
             .required_replace("session_init();", "initialize_goal_mid();")
             .required_replace("run(3, false, 128);", "run(1, false, 128);")
-            .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;");
+            .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;");
         source.push_str(initialize);
 
         source
@@ -158,6 +160,7 @@ fn hint_order_module(source: &Path, target: &Path) {
 
 pub(in super::super) fn hint_order(early: bool) -> ApplicationCase {
     let mut case = edited("renderer_game_three_frames", move |mut source| {
+        source = with_frame_number(source);
         source = source
             .required_replace("run(3, false, 128);", "run(4, false, 128);")
             .required_replace(
@@ -166,12 +169,12 @@ pub(in super::super) fn hint_order(early: bool) -> ApplicationCase {
             );
 
         if early {
-            let start = source.rfind("                draw_bridge_group(").unwrap();
-            let end = start + source[start..].find("                );").unwrap() + 19;
+            let start = source.rfind("    draw_bridge_group(\n").unwrap();
+            let end = start + source[start..].find("\n    );").unwrap() + "\n    );".len();
             let call = source[start..end].to_string();
             assert!(call.contains("true,"));
             source.replace_range(start..end, "");
-            let at = source.find("                draw_block(").unwrap();
+            let at = source.find("    draw_block(pass, &scene.block,").unwrap();
             source.insert_str(
                 at,
                 &format!(

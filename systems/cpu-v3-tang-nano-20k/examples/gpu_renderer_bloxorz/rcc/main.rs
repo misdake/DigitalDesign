@@ -725,6 +725,410 @@ fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
     }
 }
 
+struct FrameClock {
+    previous: u16,
+}
+fn advance_gameplay(
+    clock: &mut FrameClock,
+    automatic_capture: bool,
+    capture_brightness: u16,
+) -> u16 {
+    gamepad_capture();
+    let input = gamepad_take_frame();
+    if !fading() && input.pressed & 8192 != 0 {
+        HUD[0u16] ^= 1;
+    }
+    if !fading() && input.pressed & 1 != 0 {
+        BACKGROUND[0u16] ^= 1;
+    }
+    let now = time_milliseconds();
+    let elapsed = now - clock.previous;
+    clock.previous = now;
+    let buttons = if automatic_capture {
+        capture_buttons(elapsed)
+    } else {
+        input.pressed
+    };
+    let held = if automatic_capture {
+        buttons & 240
+    } else {
+        input.buttons & 240
+    };
+    session_tick(buttons, held, elapsed);
+    if automatic_capture && CAPTURE_STIMULUS[0u16] == 3 && TRANSITION[0u16] == FADE_OUT {
+        let stop = if capture_brightness == 255 {
+            0u16
+        } else {
+            160u16
+        };
+        if TRANSITION[1u16] > stop {
+            TRANSITION[1u16] = stop;
+        }
+    }
+    input.connected
+}
+
+struct StaticScene {
+    color: ColorBuffer,
+    depth: DepthBuffer,
+    background: ColorBuffer,
+    generation: u16,
+    background_mode: u16,
+    hidden: u16,
+    valid: bool,
+}
+impl StaticScene {
+    fn new() -> Self {
+        let background = ColorBuffer::from_memory(unsafe {
+            GpuMemory::from_sectors(BLOX_BACKGROUND_SECTOR, 1600)
+        });
+        let color = ColorBuffer::from_memory(unsafe {
+            GpuMemory::from_sectors(BLOX_STATIC_COLOR_SECTOR, 2048)
+        });
+        let depth = DepthBuffer::from_memory(unsafe {
+            GpuMemory::from_sectors(BLOX_STATIC_DEPTH_SECTOR, 2048)
+        });
+        Self {
+            color: color,
+            depth: depth,
+            background: background,
+            generation: 0,
+            background_mode: 2,
+            hidden: 65535,
+            valid: false,
+        }
+    }
+}
+fn refresh_static_scene(
+    cache: &mut StaticScene,
+    gpu: &mut Gpu,
+    mut commands: CommandBuffer,
+    dynamic_commands: &mut CommandBuffer,
+    camera: &Camera,
+    fragile_owner: Ptr,
+) -> CommandBuffer {
+    if cache.generation != LEVEL_GENERATION[0u16] {
+        cache.valid = false;
+        commands.reset();
+        if ground_enabled() && !ground_matches_level() {
+            dynamic_commands.reset();
+            ground_rebuild();
+        }
+        if !fragile_matches_level(fragile_owner) {
+            dynamic_commands.reset();
+            fragile_rebuild(fragile_owner);
+        }
+    }
+    // Source indices can change only after both preceding CBs retired.
+    // Their changed coverage invalidates pixels as well as geometry.
+    fragile_sync(fragile_owner);
+    if !cache.valid
+        || cache.background_mode != BACKGROUND[0u16]
+        || cache.hidden != fragile_hidden(fragile_owner)
+    {
+        cache.valid = false;
+        commands.reset();
+        record_static_scene(
+            &mut commands,
+            &cache.color,
+            &cache.depth,
+            &cache.background,
+            camera,
+            fragile_owner,
+        );
+
+        gpu.submit(commands);
+        commands = gpu.wait();
+        cache.generation = LEVEL_GENERATION[0u16];
+        cache.background_mode = BACKGROUND[0u16];
+        cache.hidden = fragile_hidden(fragile_owner);
+        cache.valid = true;
+    }
+    commands
+}
+fn record_static_copy(
+    commands: &mut CommandBuffer,
+    cache: &StaticScene,
+    target: &ColorBuffer,
+    depth: &DepthBuffer,
+) {
+    commands.reset();
+    commands.copy_color(cache.color.ptr(), target.ptr());
+    commands.copy_depth(cache.depth.ptr(), depth.ptr());
+    let pass = commands.pass(
+        target.ptr(),
+        depth.ptr(),
+        ColorLoad::load(),
+        DepthLoad::load(),
+    );
+}
+
+fn draw_pads(
+    pass: &mut Pass,
+    scene: &mut SceneResources,
+    pad_cache: Array<u16>,
+    pad_view: &TextureView,
+    carrier_view: &TextureView,
+) {
+    if begin_pad_group(pass, pad_cache) {
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.entry_hatch_model,
+            &scene.entry_hatch_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 0,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.entry0,
+            &scene.entry_ring_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 3,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.entry1,
+            &scene.entry_ring_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 4,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.entry2,
+            &scene.entry_ring_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 5,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.entry3,
+            &scene.entry_ring_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 6,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.goal_hatch_model,
+            &scene.goal_hatch_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 1,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.carrier_model,
+            &scene.carrier_material,
+            carrier_view,
+            PadPart {
+                cache: pad_cache,
+                role: 2,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.goal0,
+            &scene.goal_ring_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 7,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.goal1,
+            &scene.goal_ring_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 8,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.goal2,
+            &scene.goal_ring_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 9,
+            },
+        );
+        draw_pad_part(
+            pass,
+            &scene.pad,
+            &mut scene.goal3,
+            &scene.goal_ring_material,
+            pad_view,
+            PadPart {
+                cache: pad_cache,
+                role: 10,
+            },
+        );
+        end_pad_group(pass, pad_cache);
+    }
+}
+fn record_dynamic_scene(
+    pass: &mut Pass,
+    scene: &mut SceneResources,
+    hatch_material: &mut Material,
+    pad_cache: Array<u16>,
+    pad_view: &TextureView,
+    carrier_view: &TextureView,
+) {
+    pass.set_camera(scene.camera.ptr());
+    pass.set_state(scene.state.ptr());
+    prepare_block(&mut scene.block_model);
+    draw_bridge_group(
+        pass,
+        &mut scene.floor_model,
+        &mut scene.floor_material,
+        &scene.state,
+        &scene.hint_state,
+        false,
+    );
+    pass.set_camera(scene.camera.ptr());
+    pass.set_state(scene.state.ptr());
+    draw_switches(
+        pass,
+        &mut scene.pad_model,
+        hatch_material,
+        &scene.camera,
+        &scene.state,
+    );
+    draw_pads(pass, scene, pad_cache, pad_view, carrier_view);
+    pass.set_camera(scene.camera.ptr());
+    pass.set_state(scene.shadow_state.ptr());
+    draw_shadow(
+        pass,
+        &scene.shadow_mesh,
+        &mut scene.shadow_model,
+        &scene.shadow_material,
+        &scene.block_model,
+    );
+    if split_visual() {
+        idle_cube_pose(&mut scene.idle_model);
+        draw_shadow(
+            pass,
+            &scene.shadow_mesh,
+            &mut scene.shadow_model,
+            &scene.shadow_material,
+            &scene.idle_model,
+        );
+    }
+    pass.set_state(scene.state.ptr());
+    draw_block(pass, &scene.block, &mut scene.block_model, &scene.material);
+    if split_visual() {
+        draw_block(
+            pass,
+            &scene.block,
+            &mut scene.idle_model,
+            &scene.idle_material,
+        );
+    }
+    // Opaque geometry and receiver shadows are complete. Inactive
+    // bridge hints now test opaque depth without writing it.
+    draw_bridge_group(
+        pass,
+        &mut scene.floor_model,
+        &mut scene.floor_material,
+        &scene.state,
+        &scene.hint_state,
+        true,
+    );
+}
+
+struct FrameOverlay {
+    offscreen_view: TextureView,
+    tint_material: Material,
+    previous_tint: u16,
+    automatic_capture: bool,
+}
+fn record_overlay(
+    pass: &mut Pass,
+    scene: &SceneResources,
+    overlay: &mut FrameOverlay,
+    grid: &mut UiGrid,
+    fade: bool,
+    color: u16,
+) {
+    if fade {
+        if overlay.previous_tint != color {
+            overlay.tint_material.set_uniform_color(Rgba8 {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: color as u8,
+            });
+            overlay.previous_tint = color;
+        }
+        pass.set_camera(scene.screen_camera.ptr());
+        pass.set_state(scene.screen_state.ptr());
+        counted_draw(
+            pass,
+            &scene.screen,
+            &scene.screen_model,
+            &overlay.tint_material,
+            &overlay.offscreen_view,
+        );
+        if overlay.automatic_capture {
+            counted_ui(
+                pass,
+                grid,
+                CellRect {
+                    x: 0,
+                    y: 0,
+                    width: 4,
+                    height: 1,
+                },
+            );
+        }
+    } else {
+        if overlay.automatic_capture {
+            counted_ui(
+                pass,
+                grid,
+                CellRect {
+                    x: 0,
+                    y: 0,
+                    width: 7,
+                    height: 1,
+                },
+            );
+        }
+    }
+    if !overlay.automatic_capture {
+        draw_hud(pass, grid);
+    }
+}
+
 fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     let mut gpu = Gpu::init(board_gpu_config());
     let mut commands = gpu.command_buffer();
@@ -736,26 +1140,14 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     let ground_owner = ground_begin();
     let shadow_owner = shadow_batch_begin();
     let fragile_owner = fragile_begin();
-    let mut scene_generation: u16 = 0;
-    let mut scene_background: u16 = 2;
-    let mut scene_hidden: u16 = 65535;
-    let mut scene_valid = false;
     let mut snapshot_generation: u16 = 0;
     let mut snapshot_valid = false;
-    let mut previous_tint: u16 = 65535;
     let offscreen = ColorBuffer::from_memory(unsafe { GpuMemory::from_sectors(0xc000, 2048) });
-    let background =
-        ColorBuffer::from_memory(unsafe { GpuMemory::from_sectors(BLOX_BACKGROUND_SECTOR, 1600) });
     let offscreen_view = offscreen.texture_view();
     let color_a = ColorBuffer::from_surface(BOARD_COLOR_A);
     let color_b = ColorBuffer::from_surface(BOARD_COLOR_B);
     let depth = board_depth();
-    let static_color = ColorBuffer::from_memory(unsafe {
-        GpuMemory::from_sectors(BLOX_STATIC_COLOR_SECTOR, 2048)
-    });
-    let static_depth = DepthBuffer::from_memory(unsafe {
-        GpuMemory::from_sectors(BLOX_STATIC_DEPTH_SECTOR, 2048)
-    });
+    let mut static_scene = StaticScene::new();
     let mut display = Display::open();
     let camera = game_camera();
     let mut camera_level: u16 = 0;
@@ -770,7 +1162,12 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     let pad_texture = game_texture();
     let pad_view = clamped_texture_view(&pad_texture);
     let mut hatch_material = game_material(Rgba8::white(), false);
-    let mut tint_material = game_material(Rgba8::white(), true);
+    let mut overlay = FrameOverlay {
+        offscreen_view: offscreen_view,
+        tint_material: game_material(Rgba8::white(), true),
+        previous_tint: 65535,
+        automatic_capture: automatic_capture,
+    };
     let mut grid = game_ui_grid();
     session_init();
     pad_cache_update(pad_cache);
@@ -779,7 +1176,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     shadow_invalidate();
     BLOCK_POSE_KEY[0u16] = 0;
     gamepad_init();
-    let mut previous = time_milliseconds();
+    let mut clock = FrameClock {
+        previous: time_milliseconds(),
+    };
     let mut render_started = false;
     let mut number: u16 = 0;
     let mut back_b = true;
@@ -789,40 +1188,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         if automatic_capture {
             capture_report(65, number);
         }
-        gamepad_capture();
-        let input = gamepad_take_frame();
-        if !fading() && input.pressed & 8192 != 0 {
-            HUD[0u16] ^= 1;
-        }
-        if !fading() && input.pressed & 1 != 0 {
-            BACKGROUND[0u16] ^= 1;
-        }
-        let now = time_milliseconds();
-        let elapsed = now - previous;
-        previous = now;
-        let buttons = if automatic_capture {
-            capture_buttons(elapsed)
-        } else {
-            input.pressed
-        };
-        let held = if automatic_capture {
-            buttons & 240
-        } else {
-            input.buttons & 240
-        };
-        session_tick(buttons, held, elapsed);
-        if automatic_capture && CAPTURE_STIMULUS[0u16] == 3 && TRANSITION[0u16] == FADE_OUT {
-            let stop = if capture_brightness == 255 {
-                0u16
-            } else {
-                160u16
-            };
-            if TRANSITION[1u16] > stop {
-                TRANSITION[1u16] = stop;
-            }
-        }
+        let connected = advance_gameplay(&mut clock, automatic_capture, capture_brightness);
         if camera_level != MOTION[6u16] {
-            scene_valid = false;
+            static_scene.valid = false;
             camera_level = MOTION[6u16];
             scene.camera.set_look_at_y_up(
                 level_eye(camera_level),
@@ -843,7 +1211,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         DRAW_CALLS[0u16] = 0;
         if automatic_capture {
             text_u16_field(&mut grid, 0, 0, 4, GAME[5u16]);
-            text_u16_field(&mut grid, 6, 0, 1, input.connected);
+            text_u16_field(&mut grid, 6, 0, 1, connected);
         }
         if prepare_scene {
             sync_bridge_group(&mut commands);
@@ -854,55 +1222,15 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 carrier_view = clamped_texture_view(&carrier_texture);
             }
             pad_cache_update(pad_cache);
-            if scene_generation != LEVEL_GENERATION[0u16] {
-                scene_valid = false;
-                scene_commands.reset();
-                if ground_enabled() && !ground_matches_level() {
-                    commands.reset();
-                    ground_rebuild();
-                }
-                if !fragile_matches_level(fragile_owner) {
-                    commands.reset();
-                    fragile_rebuild(fragile_owner);
-                }
-            }
-            // Source indices can change only after both preceding CBs retired.
-            // Their changed coverage invalidates pixels as well as geometry.
-            fragile_sync(fragile_owner);
-            if !scene_valid
-                || scene_background != BACKGROUND[0u16]
-                || scene_hidden != fragile_hidden(fragile_owner)
-            {
-                scene_valid = false;
-                scene_commands.reset();
-                record_static_scene(
-                    &mut scene_commands,
-                    &static_color,
-                    &static_depth,
-                    &background,
-                    &scene.camera,
-                    fragile_owner,
-                );
-
-                gpu.submit(scene_commands);
-                scene_commands = gpu.wait();
-                scene_generation = LEVEL_GENERATION[0u16];
-                scene_background = BACKGROUND[0u16];
-                scene_hidden = fragile_hidden(fragile_owner);
-                scene_valid = true;
-            }
-            scene_commands.reset();
-            scene_commands.copy_color(static_color.ptr(), target.ptr());
-            scene_commands.copy_depth(static_depth.ptr(), depth.ptr());
-            {
-                let pass = scene_commands.pass(
-                    target.ptr(),
-                    depth.ptr(),
-                    ColorLoad::load(),
-                    DepthLoad::load(),
-                );
-            }
-
+            scene_commands = refresh_static_scene(
+                &mut static_scene,
+                &mut gpu,
+                scene_commands,
+                &mut commands,
+                &scene.camera,
+                fragile_owner,
+            );
+            record_static_copy(&mut scene_commands, &static_scene, target, &depth);
             gpu.submit(scene_commands);
             if automatic_capture && fade {
                 capture_report(66, number);
@@ -915,193 +1243,13 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     ColorLoad::load(),
                     DepthLoad::load(),
                 );
-                pass.set_camera(scene.camera.ptr());
-                pass.set_state(scene.state.ptr());
-                prepare_block(&mut scene.block_model);
-                draw_bridge_group(
+                record_dynamic_scene(
                     &mut pass,
-                    &mut scene.floor_model,
-                    &mut scene.floor_material,
-                    &scene.state,
-                    &scene.hint_state,
-                    false,
-                );
-                pass.set_camera(scene.camera.ptr());
-                pass.set_state(scene.state.ptr());
-                draw_switches(
-                    &mut pass,
-                    &mut scene.pad_model,
+                    &mut scene,
                     &mut hatch_material,
-                    &scene.camera,
-                    &scene.state,
-                );
-                if begin_pad_group(&mut pass, pad_cache) {
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.entry_hatch_model,
-                        &scene.entry_hatch_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 0,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.entry0,
-                        &scene.entry_ring_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 3,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.entry1,
-                        &scene.entry_ring_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 4,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.entry2,
-                        &scene.entry_ring_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 5,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.entry3,
-                        &scene.entry_ring_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 6,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.goal_hatch_model,
-                        &scene.goal_hatch_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 1,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.carrier_model,
-                        &scene.carrier_material,
-                        &carrier_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 2,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.goal0,
-                        &scene.goal_ring_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 7,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.goal1,
-                        &scene.goal_ring_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 8,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.goal2,
-                        &scene.goal_ring_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 9,
-                        },
-                    );
-                    draw_pad_part(
-                        &mut pass,
-                        &scene.pad,
-                        &mut scene.goal3,
-                        &scene.goal_ring_material,
-                        &pad_view,
-                        PadPart {
-                            cache: pad_cache,
-                            role: 10,
-                        },
-                    );
-                    end_pad_group(&mut pass, pad_cache);
-                }
-                pass.set_camera(scene.camera.ptr());
-                pass.set_state(scene.shadow_state.ptr());
-                draw_shadow(
-                    &mut pass,
-                    &scene.shadow_mesh,
-                    &mut scene.shadow_model,
-                    &scene.shadow_material,
-                    &scene.block_model,
-                );
-                if split_visual() {
-                    idle_cube_pose(&mut scene.idle_model);
-                    draw_shadow(
-                        &mut pass,
-                        &scene.shadow_mesh,
-                        &mut scene.shadow_model,
-                        &scene.shadow_material,
-                        &scene.idle_model,
-                    );
-                }
-                pass.set_state(scene.state.ptr());
-                draw_block(
-                    &mut pass,
-                    &scene.block,
-                    &mut scene.block_model,
-                    &scene.material,
-                );
-                if split_visual() {
-                    draw_block(
-                        &mut pass,
-                        &scene.block,
-                        &mut scene.idle_model,
-                        &scene.idle_material,
-                    );
-                }
-                // Opaque geometry and receiver shadows are complete. Inactive
-                // bridge hints now test opaque depth without writing it.
-                draw_bridge_group(
-                    &mut pass,
-                    &mut scene.floor_model,
-                    &mut scene.floor_material,
-                    &scene.state,
-                    &scene.hint_state,
-                    true,
+                    pad_cache,
+                    &pad_view,
+                    &carrier_view,
                 );
                 if automatic_capture {
                     counted_ui(
@@ -1147,54 +1295,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         }
         {
             let mut pass = commands.pass(back.ptr(), depth.ptr(), color_load, DepthLoad::load());
-            if fade {
-                if previous_tint != color {
-                    tint_material.set_uniform_color(Rgba8 {
-                        r: 255,
-                        g: 255,
-                        b: 255,
-                        a: color as u8,
-                    });
-                    previous_tint = color;
-                }
-                pass.set_camera(scene.screen_camera.ptr());
-                pass.set_state(scene.screen_state.ptr());
-                counted_draw(
-                    &mut pass,
-                    &scene.screen,
-                    &scene.screen_model,
-                    &tint_material,
-                    &offscreen_view,
-                );
-                if automatic_capture {
-                    counted_ui(
-                        &mut pass,
-                        &grid,
-                        CellRect {
-                            x: 0,
-                            y: 0,
-                            width: 4,
-                            height: 1,
-                        },
-                    );
-                }
-            } else {
-                if automatic_capture {
-                    counted_ui(
-                        &mut pass,
-                        &grid,
-                        CellRect {
-                            x: 0,
-                            y: 0,
-                            width: 7,
-                            height: 1,
-                        },
-                    );
-                }
-            }
-            if !automatic_capture {
-                draw_hud(&mut pass, &mut grid);
-            }
+            record_overlay(&mut pass, &scene, &mut overlay, &mut grid, fade, color);
         }
         if automatic_capture {
             capture_report(68, color);

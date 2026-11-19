@@ -3,6 +3,7 @@ use super::*;
 
 pub(in super::super) fn cpu_shadow() -> ApplicationCase {
     edited("renderer_game_frames", move |mut source| {
+        source = with_frame_number(source);
         source = source
             .required_replace(
                 "session_init();",

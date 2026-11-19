@@ -3,8 +3,24 @@ use crate::dsl_rt::*;
 mod device_abi;
 use device_abi::*;
 
-// Magic, site, code, detail0, detail1, DSEG3, then ten zero reserved words.
+// Magic, site, code, detail0, detail1, DSEG3, then site-specific words.
 static GPU_API_FAULT: Buf<u16, 16> = Buf::new([0; 16]);
+fn gpu_api_handle_fault(
+    slot: u16,
+    kind: u16,
+    expected_low: u16,
+    expected_high: u16,
+    current_low: u16,
+    current_high: u16,
+) {
+    if GPU_API_FAULT[0u16] == 0 {
+        GPU_API_FAULT[6u16] = expected_low;
+        GPU_API_FAULT[7u16] = expected_high;
+        GPU_API_FAULT[8u16] = current_low;
+        GPU_API_FAULT[9u16] = current_high;
+    }
+    gpu_api_fail(16, 1, slot, kind);
+}
 fn gpu_api_uart_byte(value: u16) {
     while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 {}
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, value & 255);

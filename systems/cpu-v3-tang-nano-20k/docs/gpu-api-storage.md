@@ -23,14 +23,17 @@ remain caller-owned. There is no separate `OwnedMesh` layer. Keeping a body
 alive for the application's whole run avoids ordinary frame-scope destruction;
 runtime registration is not a Rust static initializer.
 
-Each body exposes `ptr()` returning its matching `*Ptr`, an opaque one-word
-`Copy`/`Clone` value. These nonowning references support object reads/updates;
-draw, pass-target and Display methods accept them by value. Body convenience
-methods forward to the same pointer operations. Creating/copying a pointer
-allocates nothing and does not retain or release an arena slot. Every copy
-becomes invalid when its resource body is released, even if that slot is later
-reused; the application must preserve that lifetime. Creation/static `*Desc`
-values are also copyable and remain distinct from registered bodies.
+Each body exposes `ptr()` returning its matching `*Ptr`, an opaque
+`Copy`/`Clone` handle with a slot and a 32-bit generation (three target words).
+These nonowning references support object reads and updates. Draw, pass-target
+and Display methods accept them by value. Resource bodies access their owned
+slot directly and share the implementation with the handle methods. Creating
+a pointer snapshots the live slot's
+generation. Copying a pointer does not allocate or extend its lifetime. Release
+clears the slot generation, and reuse assigns a new one. Both profiles compare
+the generation before dereferencing; GPU debug also checks the resource kind.
+The allocation serial persists across GPU initialization and refuses to wrap.
+Creation/static `*Desc` values remain plain copyable values.
 
 For example, `let mesh = Mesh::from_native(desc); let mesh_ptr = mesh.ptr();`
 creates one owner and a copyable reference. Calls to `pass.draw(mesh_ptr, ...)`
@@ -55,8 +58,8 @@ Initialization accepts a nonzero arena capacity, a multiple of 32 bytes up to
 1..512 sectors; all configured command/push extents are mutually disjoint.
 Validation precedes driver/arena mutation. Initialization checks GPU idle and
 does not read Display, wait for work, or recover from an active/faulted context.
-Normal reinitialization requires the caller to finish prior use and drop all
-old owners while their old context is still valid.
+Normal reinitialization requires the caller to finish prior use. Initialization
+rejects a context with live object registrations before resetting driver state.
 
 `Gpu::command_buffer` hands out each configured slot once, in A/B order. Drop or
 completion does not make it an unissued slot. A CPU-owned CB Drop disables its
@@ -719,7 +722,11 @@ ordinary-field privacy as enforced.
 
 `gpu_api_fault` reserves 16 low-memory words independently of the arena. Its
 first snapshot is magic `0xfa17`, site, code, two detail words, DSEG3, and ten
-reserved zero words. It emits exactly those 16 words, low byte first, waiting
+site-specific words that default to zero. An invalid object handle reports
+site 16, code 1. Detail words contain the slot and expected kind. Words 6–9
+contain the handle generation and the current slot generation, each low word
+first. Zero current generation denotes a free or invalid slot. It emits
+exactly those 16 words, low byte first, waiting
 for UART readiness before every byte and for the final stop bit before halting
 with `0xe001`. An existing first snapshot is retained. It does not allocate,
 unwind, release an active CB or attempt recovery. This is an internal CPU API

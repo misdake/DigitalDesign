@@ -10,6 +10,18 @@ fn edited(entry: &'static str, edit: impl FnOnce(String) -> String + 'static) ->
     }
 }
 
+fn with_frame_number(source: String) -> String {
+    source
+        .required_replace(
+            "    clock: &mut FrameClock,",
+            "    clock: &mut FrameClock,\n    number: u16,",
+        )
+        .required_replace(
+            "advance_gameplay(&mut clock, automatic_capture, capture_brightness)",
+            "advance_gameplay(&mut clock, number, automatic_capture, capture_brightness)",
+        )
+}
+
 mod parts;
 pub(super) use parts::{button_parts, cache_level, static_cache};
 mod timing;

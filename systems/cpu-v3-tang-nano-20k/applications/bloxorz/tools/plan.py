@@ -18,9 +18,15 @@ def bind(artifact):
         ('x','GAME',0),('z','GAME',1),('orientation','GAME',2),('mask','GAME',3),
         ('transition','TRANSITION',0),('motion_age','MOTION',4)]}
     words.update({f'switch_age_{i}': word('SWITCH_FX',i) for i in range(1,10)})
-    before = artifact.call('run','gamepad_capture','gamepad_capture();\n        let input = gamepad_take_frame();')
-    consumed = artifact.call('run','gamepad_take_frame')
-    sample = artifact.call('run','session_tick')
+    input_owner = 'run'
+    if 'advance_gameplay' in artifact.functions:
+        artifact.call('run', 'advance_gameplay')
+        input_owner = 'advance_gameplay'
+        before = artifact.call(input_owner, 'gamepad_capture')
+    else:
+        before = artifact.call('run','gamepad_capture','gamepad_capture();\n        let input = gamepad_take_frame();')
+    consumed = artifact.call(input_owner, 'gamepad_take_frame')
+    sample = artifact.call(input_owner, 'session_tick')
     vblank = artifact.call('run',artifact.caller('gpu_present_wait_vblank'))
     dedicated = 'finish_frame' in artifact.functions
     wait_owner = 'finish_frame' if dedicated else 'wait_game'

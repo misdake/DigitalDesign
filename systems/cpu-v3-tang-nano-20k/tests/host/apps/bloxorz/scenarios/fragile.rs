@@ -6,9 +6,10 @@ pub(in super::super) fn fragile_pad(
     frozen_assets: bool,
 ) -> ApplicationCase {
     let mut case = edited("renderer_game_frames", move |mut source| {
+        source = with_frame_number(source);
         source = source
             .required_replace("session_init();", "session_init();HUD[0u16]=0;")
-            .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;")
             .required_replace(
                 "session_tick(buttons, held, elapsed);",
                 "pad_surface_pose(number);",
@@ -36,8 +37,9 @@ pub(in super::super) fn fragile_atlas(
     frozen_assets: bool,
 ) -> ApplicationCase {
     let mut case = edited("renderer_game_frames", move |mut source| {
+        source = with_frame_number(source);
         source = source.required_replace("session_init();", "session_init();HUD[0u16]=0;")
-            .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;")
             .required_replace("session_tick(buttons, held, elapsed);", "let stage:u16=if number<2 || number==6 {3u16}else{if number==2 {29u16}else{if number==3 {14u16}else{if number==4 {16u16}else{7u16}}}};if MOTION[6u16]!=stage {level_reset(stage);}SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;SESSION[8u16]=0;TRANSITION[0u16]=0;if number==6 {GAME[0u16]=3;GAME[1u16]=0;GAME[2u16]=1;session_move(0);session_tick(0,0,50);session_tick(0,0,50);session_tick(0,0,10);}else{session_tick(0,0,0);}");
 
         source
@@ -49,9 +51,10 @@ pub(in super::super) fn fragile_atlas(
 
 pub(in super::super) fn fragile_flow() -> ApplicationCase {
     edited("renderer_game_frames", move |mut source| {
+        source = with_frame_number(source);
         source = source.required_replace("session_init();", "session_init();level_reset(3);SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;TRANSITION[0u16]=0;")
             .required_replace("let fragile_owner = fragile_begin();", "let fragile_owner = fragile_begin();signal(14,fragile_owner.addr());")
-            .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;")
             .required_replace("session_tick(buttons, held, elapsed);", "if number==1 {GAME[0u16]=3;GAME[1u16]=0;GAME[2u16]=1;session_move(0);let mut ticks:u16=0;while ticks<5 {session_tick(0,0,50);ticks+=1;}}else if number==2 {session_tick(8,0,0);TRANSITION[1u16]=320;}else if number==3 || number==6 {TRANSITION[1u16]=80;session_tick(0,0,0);}else if number==4 || number==7 {TRANSITION[1u16]=380;session_tick(0,0,0);}else if number==5 {session_tick(4096,0,0);TRANSITION[1u16]=320;}else {session_tick(buttons,held,elapsed);}");
 
         source
@@ -60,8 +63,9 @@ pub(in super::super) fn fragile_flow() -> ApplicationCase {
 
 pub(in super::super) fn fragile_representative(frozen_assets: bool) -> ApplicationCase {
     let mut case = edited("renderer_game_frames", move |mut source| {
+        source = with_frame_number(source);
         source = source.required_replace("session_init();", "session_init();HUD[0u16]=0;")
-            .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;")
             .required_replace("session_tick(buttons, held, elapsed);", "let stage:u16=if number==0 {7u16}else{if number==1 {14u16}else{if number==2 {16u16}else{if number==3 {29u16}else{0u16}}}};if MOTION[6u16]!=stage {level_reset(stage);}SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;SESSION[8u16]=0;TRANSITION[0u16]=0;session_tick(0,0,0);");
 
         source
@@ -73,9 +77,10 @@ pub(in super::super) fn fragile_representative(frozen_assets: bool) -> Applicati
 
 pub(in super::super) fn fragile_play(frozen_assets: bool) -> ApplicationCase {
     let mut case = edited("renderer_game_frames", move |mut source| {
+        source = with_frame_number(source);
         source = source
             .required_replace("session_init();", "session_init();level_reset(3);SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;SESSION[8u16]=0;TRANSITION[0u16]=0;HUD[0u16]=0;")
-            .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;")
             .required_replace("session_tick(buttons, held, elapsed);", "if number==3 {GAME[0u16]=3;GAME[1u16]=0;GAME[2u16]=1;session_move(0);let mut ticks:u16=0;while ticks<5 {session_tick(0,0,50);ticks+=1;}}else if number==4 {session_tick(0,0,50);session_tick(0,0,50);session_tick(0,0,40);}else if number==5 {session_tick(32768,0,0);}else {session_tick(buttons,held,elapsed);}");
 
         source

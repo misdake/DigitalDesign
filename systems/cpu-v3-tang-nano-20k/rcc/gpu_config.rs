@@ -65,6 +65,7 @@ fn gpu_config_init(config: GpuConfig) -> bool {
     if config.object_arena_bytes == 0
         || config.object_arena_bytes > GPU_API_ARENA_BYTES
         || config.object_arena_bytes & 31 != 0
+        || !gpu_arena_empty()
         || !gpu_config_command_valid(config.command_a)
     {
         return false;

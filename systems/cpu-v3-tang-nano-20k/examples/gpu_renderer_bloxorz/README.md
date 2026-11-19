@@ -14,6 +14,10 @@ frames restore independent static color/depth into Back before drawing dynamic
 content. Cache invalidation follows level, background, camera and fragile
 visibility changes; the transfer schedule and storage are specified in
 [transitions](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/transitions.md).
+The frame loop advances gameplay, refreshes the static scene when needed,
+records dynamic geometry while the color/depth copy runs, then records the
+overlay and presents. A fade capture retires its 3D snapshot before the overlay
+can sample it.
 A presented opaque endpoint gates reset; the presented transparent
 endpoint starts entry. Locked-period edges are discarded and held directions
 require release. Ordinary rendering always shows the current level; optional DRAW/MS values describe the previous completed frame. MS measures vblank return through the final GPU wait, with cold-start dashes until that interval is available.

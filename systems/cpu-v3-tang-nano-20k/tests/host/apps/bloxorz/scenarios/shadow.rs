@@ -4,6 +4,7 @@ use super::*;
 pub(in super::super) fn frame_schedule(pose: &str, shadow_cost: bool) -> ApplicationCase {
     let pose = pose.to_owned();
     let mut case = edited("renderer_game_three_frames", move |mut source| {
+        source = with_frame_number(source);
         let level = if pose.contains("split-lifetime") {
             7
         } else if pose.contains("fallback15") {
@@ -44,7 +45,7 @@ pub(in super::super) fn shadow_cache(forced: bool) -> ApplicationCase {
     edited("renderer_game_three_frames", move |mut source| {
         source = source
             .required_replace("run(3, false, 128);", "run(9, false, 128);")
-            .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;");
+            .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;");
         source=source.required_replace("    loop {",r#"    loop {
         if number==0 {level_reset(1);GAME[0u16]=4;GAME[1u16]=4;GAME[2u16]=0;SESSION[0u16]=PLAY;BACKGROUND[0u16]=0;}
         if number==2 {GAME[0u16]=5;}
@@ -128,7 +129,7 @@ pub(in super::super) fn shadow_diagnostic(variant: &str) -> ApplicationCase {
         ));
         source = source
             .required_replace("run(3, false, 128);", "run(1, false, 128);")
-            .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;");
+            .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;");
         let shadow_begin = source
             .find("let shadow_state = RenderState::new(RenderStateDesc {")
             .unwrap();
@@ -193,7 +194,7 @@ pub(in super::super) fn web_shadow(case_name: &str) -> ApplicationCase {
         );
         source = source
             .required_replace("run(3, false, 128);", "run(1, false, 128);")
-            .required_replace("let elapsed = now - previous;", "let elapsed:u16=0;");
+            .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;");
         let begin = source.find("fn prepare_block(").unwrap();
         let end = begin + source[begin..].find("\nfn draw_block(").unwrap();
         source.replace_range(begin..end, &shadow_reference_prepare(case));

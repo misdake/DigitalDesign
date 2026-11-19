@@ -92,6 +92,67 @@ fn main(){
     }
     panic!("copy pointer 200K step bound");
 }
+
+#[test]
+fn stale_handle_faults_after_release_reuse_and_gpu_reinitialization() {
+    use super::gpu_api_fault::{Peer, Uart};
+
+    for debug in [false, true] {
+        for (label, replacement, current) in [
+            ("released", "", 0),
+            (
+                "reused",
+                "let replacement=Model::new(Transform::identity());let pointer=replacement.ptr();let world=pointer.world();assert!(world.row0.w==fix!(0));",
+                3,
+            ),
+            (
+                "reinitialized",
+                "drop(gpu);let fresh=Gpu::init(GpuConfig::single(memory));let replacement=Model::new(Transform::identity());let pointer=replacement.ptr();let world=pointer.world();assert!(world.row0.w==fix!(0));",
+                3,
+            ),
+        ] {
+            let source = format!(
+                r#"mod gpu_api;use gpu_api::*;
+fn main(){{
+ let memory=CommandMemory::new(unsafe{{GpuMemory::from_sectors(0x9800,512)}},unsafe{{GpuMemory::from_sectors(0x9a00,512)}});
+ let gpu=Gpu::init(GpuConfig::single(memory));
+ let owner=Model::new(Transform::identity());
+ let stale=owner.ptr();
+ owner.release();
+ {replacement}
+ stale.set_pose(Transform::identity());
+ halt(0xbad);
+}}"#
+            );
+            let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+            options.gpu_debug = debug;
+            let parsed = parse(&source, label, debug).unwrap_or_else(|error| panic!("{error}"));
+            let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+            let uart = Rc::new(RefCell::new(Uart::default()));
+            let mut cpu = CpuV3Sim::default();
+            cpu.set_boot_window(&program.words);
+            cpu.attach_device(0, Box::new(Peer(uart.clone())));
+            cpu.attach_device(4, Box::new(IdleGpu));
+            let halted = (0..200_000).find_map(|_| match cpu.step().unwrap() {
+                StepOutcome::Halted { signal } => Some(signal),
+                _ => None,
+            });
+            assert_eq!(halted, Some(0xe001), "{label}, debug={debug}");
+            let uart = uart.borrow();
+            assert_eq!(uart.busy, 0);
+            let words: Vec<_> = uart
+                .bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            assert_eq!(
+                words,
+                [0xfa17, 16, 1, 4049, 2, 3, 1, 0, current, 0, 0, 0, 0, 0, 0, 0],
+                "{label}, debug={debug}"
+            );
+        }
+    }
+}
 #[test]
 fn approved_root_value_and_resource_factories_compile() {
     for (label, body) in [
