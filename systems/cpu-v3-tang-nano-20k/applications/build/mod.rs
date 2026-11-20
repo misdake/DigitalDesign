@@ -18,6 +18,7 @@ application_catalog! {
     core_demo => "../../examples/core_demo/application.rs",
     hello_gpu => "../../examples/hello_gpu/application.rs",
     demo => "../../examples/gpu_demo/application.rs",
+    tree_explosion => "../../examples/tree_explosion/application.rs",
     ds2 => "../../examples/dualshock2/application.rs",
     ds2_ui => "../../examples/dualshock2_ui/application.rs",
     renderer => "../../examples/gpu_renderer/application.rs",
