@@ -93,7 +93,7 @@ fn canonical_bindings_share_drains_and_reuse_immutable_instance_payloads() {
         .unwrap();
         let static_words = parsed.debug.static_data_end;
         assert!(static_words <= 8192);
-        for name in ["GPU_OBJECT_BACKING", "GPU_CB_RECORDS", "GPU_NATIVE_SCRATCH"] {
+        for name in ["GPU_OBJECT_CONTROL", "GPU_CB_RECORDS", "GPU_NATIVE_SCRATCH"] {
             assert!(parsed.debug.globals.iter().any(|g| g.name == name));
         }
         for name in ["CAPTURE_RESERVATION", "DEPENDENCY_RESERVATION"] {

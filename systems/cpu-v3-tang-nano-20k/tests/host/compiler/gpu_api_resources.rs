@@ -110,6 +110,11 @@ fn stale_handle_faults_after_release_reuse_and_gpu_reinitialization() {
                 "drop(gpu);let fresh=Gpu::init(GpuConfig::single(memory));let replacement=Model::new(Transform::identity());let pointer=replacement.ptr();let world=pointer.world();assert!(world.row0.w==fix!(0));",
                 3,
             ),
+            (
+                "above-resized-capacity",
+                "drop(gpu);let mut config=GpuConfig::single(memory);config.object_arena_bytes=4096;let fresh=Gpu::init(config);",
+                0,
+            ),
         ] {
             let source = format!(
                 r#"mod gpu_api;use gpu_api::*;
@@ -140,10 +145,12 @@ fn main(){{
             assert_eq!(halted, Some(0xe001), "{label}, debug={debug}");
             let uart = uart.borrow();
             assert_eq!(uart.busy, 0);
-            let words: Vec<_> = uart
-                .bytes
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            let (pairs, tail) = uart.bytes.as_chunks::<2>();
+            assert!(tail.is_empty());
+            let words: Vec<_> = pairs
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
                 .collect();
             assert_eq!(
                 words,

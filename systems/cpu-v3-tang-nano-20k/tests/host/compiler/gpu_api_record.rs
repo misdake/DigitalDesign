@@ -111,7 +111,7 @@ fn record_core_preflights_seals_and_replays_without_a_public_factory() {
         for name in [
             "GPU_CB_RECORDS",
             "GPU_NATIVE_SCRATCH",
-            "GPU_OBJECT_BACKING",
+            "GPU_OBJECT_CONTROL",
             "GPU_CB_RESOURCE_FACTS",
         ] {
             assert!(

@@ -128,13 +128,11 @@ fn run_fixture_with_check(
                 "{profile}: static budget exceeded: {} bytes",
                 static_words * 2
             );
-            assert_eq!(
-                code.debug
-                    .globals
-                    .iter()
-                    .any(|g| g.name == "GPU_OBJECT_TAGS"),
-                gpu_debug
-            );
+            assert!(!code
+                .debug
+                .globals
+                .iter()
+                .any(|g| g.name == "GPU_OBJECT_TAGS"));
         }
         let predicate = if label == "ui" {
             "gpu_ui_glyph_valid"

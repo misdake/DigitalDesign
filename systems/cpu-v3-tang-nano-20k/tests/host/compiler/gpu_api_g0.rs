@@ -37,7 +37,12 @@ impl CommandBuffer{fn id(&self)->u16{self.word}fn pass(&mut self)->Pass{Pass{wor
 impl Pass{fn touch(&mut self,value:CommandMemory){check(value.commands.sector_count()==512);}}
 fn main(){
  check(!gpu_arena_init(0));check(!gpu_arena_init(31));check(!gpu_arena_init(8193));
- check(gpu_arena_init(128));let small=gpu_arena_alloc(false,1);let large=gpu_arena_alloc(true,2);
+ check(gpu_arena_init(128));let backing=GPU_OBJECT_CONTROL[GPU_OBJECT_STORAGE];
+ check(gpu_arena_init(128));check(GPU_OBJECT_CONTROL[GPU_OBJECT_STORAGE]==backing);
+ let hold=try_malloc(28500);check(hold.addr()!=0);
+ check(!gpu_arena_init(8192));check(GPU_OBJECT_CONTROL[GPU_OBJECT_STORAGE]==backing&&GPU_OBJECT_CONTROL[1u16]==64);
+ free(hold);
+ let small=gpu_arena_alloc(false,1);let large=gpu_arena_alloc(true,2);
  check(small==1&&large==17);check(gpu_arena_alloc(false,1)==0);
  gpu_arena_data(small)[15u16]=0x1234;gpu_arena_data(large)[47u16]=0xabcd;
  check(gpu_arena_data(small).as_ptr().addr()&15==0);check(gpu_arena_data(large).as_ptr().addr()&15==0);
@@ -99,14 +104,13 @@ fn actual_rcc_g0_admission_and_affine_probe_both_profiles() {
             static_words <= 8192,
             "static prefix is {static_words} words"
         );
-        assert_eq!(
-            parsed
-                .debug
-                .globals
-                .iter()
-                .any(|v| v.name == "GPU_OBJECT_TAGS"),
-            enabled
-        );
+        for name in [
+            "GPU_OBJECT_BACKING",
+            "GPU_OBJECT_GENERATIONS",
+            "GPU_OBJECT_TAGS",
+        ] {
+            assert!(!parsed.debug.globals.iter().any(|v| v.name == name));
+        }
         let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
         std::fs::write(dir.join("program.lst"), &program.listing).unwrap();
         let mut cpu = CpuV3Sim::default();

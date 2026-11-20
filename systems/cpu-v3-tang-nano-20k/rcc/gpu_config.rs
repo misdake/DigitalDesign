@@ -12,10 +12,8 @@ use gpu_group::*;
 fn gpu_config_command_valid(memory: CommandMemory) -> bool {
     let command: GpuMemory = memory.commands;
     let push: GpuMemory = memory.push;
-    command.sector_count() != 0
-        && push.sector_count() != 0
-        && command.sector_count() <= 512
-        && push.sector_count() <= 512
+    gpu_record_extent(command.first_sector(), command.sector_count())
+        && gpu_record_extent(push.first_sector(), push.sector_count())
         && !gpu_record_overlap(
             command.first_sector(),
             command.sector_count(),
@@ -76,12 +74,10 @@ fn gpu_config_init(config: GpuConfig) -> bool {
             return false;
         }
     }
-    if !gpu_execute_init() {
+    if !gpu_execute_can_init() || !gpu_arena_init(config.object_arena_bytes) {
         return false;
     }
-    if !gpu_arena_init(config.object_arena_bytes) {
-        return false;
-    }
+    gpu_execute_init();
     gpu_record_init();
     if !gpu_config_record(0, config.command_a) {
         return false;

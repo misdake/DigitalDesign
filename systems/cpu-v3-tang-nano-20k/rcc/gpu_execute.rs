@@ -22,11 +22,14 @@ fn gpu_execute_fail(code: u16) -> bool {
     false
 }
 // Re-init is a caller-owned context boundary, not a wait/recovery operation.
-fn gpu_execute_init() -> bool {
+fn gpu_execute_can_init() -> bool {
     let status = dev_recv(GPU_DEVICE, GPU_STATUS);
     if status & (GPU_STATUS_BUSY | GPU_STATUS_TRANSPORT_ERROR) != 0 {
         return gpu_execute_fail(1);
     }
+    true
+}
+fn gpu_execute_init() {
     let mut i: u16 = 0;
     while i < 8 {
         GPU_EXECUTION[i] = 0;
@@ -34,7 +37,6 @@ fn gpu_execute_init() -> bool {
     }
     GPU_EXECUTION[4u16] = read_dseg_page(3);
     GPU_EXECUTION[0u16] = GPU_EXEC_IDLE;
-    true
 }
 fn gpu_execute_publish(slot: u16) -> bool {
     if GPU_EXECUTION[0u16] != GPU_EXEC_IDLE || slot >= 2 {

@@ -58,7 +58,7 @@ fn run(label: &str, body: &str, statuses: &[u16], cache_error: bool) -> Vec<(u8,
         .unwrap_or_else(|| root.join("../../../target/graphics-api-g0"))
         .join(format!("execution-{label}"));
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let source = format!("{SETUP}\nfn main(){{gpu_record_init();check(gpu_execute_init());make(0);make(1);{body}\nhalt(0x600d);}}");
+    let source = format!("{SETUP}\nfn main(){{gpu_record_init();check(gpu_execute_can_init());gpu_execute_init();make(0);make(1);{body}\nhalt(0x600d);}}");
     let parsed = crate::checked_flat_fixture::compile(
         "graphics-api-execution-peer",
         &source,

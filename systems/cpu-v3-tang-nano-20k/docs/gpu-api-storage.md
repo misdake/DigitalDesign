@@ -327,19 +327,29 @@ Empty draw/UI operations return before conversion, external reads or fact commit
 
 ## Arena
 
-The fixed low-memory reservation is 8,192 bytes plus at most 30 bytes of alignment
-slack. Initialization selects a nonzero multiple of 32 bytes within that limit.
+Initialization allocates one block from the CPU heap for the requested object
+capacity, alignment slack and slot metadata. The capacity is a nonzero multiple
+of 32 bytes up to 8,192 bytes. The block reserves 30 bytes of alignment slack so
+the payload base can be aligned to 32 bytes. It also reserves a 32-bit generation
+per minimum slot in both profiles and a 16-bit kind/size tag per slot in GPU debug.
+
+The arena keeps its block across GPU context transitions. Reinitialization with
+the same capacity resets and reuses the block. A capacity change acquires a new
+block before releasing the old one, leaving the old block and configuration
+intact on allocation failure. The global generation serial survives
+reinitialization. The driver requires all arena owners to have been released
+before starting a new GPU context.
+
 Small slots occupy 16 CPU words and grow upward; large slots occupy 48 words and
-grow downward from the fixed effective-capacity boundary. A handle is its word
-offset plus one. Zero is an internal allocation-failure/free-list sentinel.
+grow downward from the effective-capacity boundary. The slot in a handle is its
+word offset plus one. Zero is an internal allocation-failure/free-list sentinel.
 
 Each class reuses its own free list before growing its high-water mark. A freed
 payload's first word holds the link; there is no live payload header. Free space
 does not merge between classes and high-water marks do not shrink. Allocation
 does not initialize payloads: their producers fill defined fields and padding.
-The `gpu_debug` profile adds one type/live word per minimum slot; release removes
-that 256-word registry. Public adapters own allocation and Drop;
-scene helpers receive only a temporary payload span.
+Public adapters own allocation and Drop. Scene helpers receive only a temporary
+payload span after the handle generation matches its slot.
 
 Pure value constructors use `debug_assert!` for runtime layout diagnostics. The
 target `gpu_debug` setting, independent of host Cargo profile, retains these
