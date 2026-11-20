@@ -7,7 +7,7 @@ last-verified: 2026-10-02
 # GW2AR-18 BSRAM: construction, ports, edge timing
 
 Target: `GW2AR-LV18QN88C8/I7` (Tang Nano 20K), Gowin V1.9.8.11 Education.
-Verified: 2026-10-02. Executable evidence stays in `D:/fpga/experiments/gowin-bsram-timing/`.
+Verified: 2026-10-02.
 Scope: primitive geometry + functional edge timing. No new PnR/Fmax or board measurement.
 
 ## 1. Physical construction and cost

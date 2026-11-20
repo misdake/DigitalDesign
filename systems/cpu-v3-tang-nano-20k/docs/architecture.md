@@ -488,8 +488,8 @@ running disparity on every output pixel, including repeats. Repeating a cached
 ten-bit symbol would be incorrect. Serializer and sync alignment are preserved.
 
 Display retains strict priority. A caught-up refill is 50 segments per two source rows;
-initial fill is at most 100 segments. The conditional ideal scheduling estimate and its
-refresh/contention limitations are in the upgrade comparison (archived work-1 report).
+initial fill is at most 100 segments. Scheduling estimates depend on controller
+response timing, refresh and contention.
 
 Cold `boot_enable` gates row-group publication until the image writes complete.
 Before the first applied NEXT_SWAP, groups carry a black marker and generate
@@ -657,9 +657,8 @@ The native fit adds 211 Logic against that baseline and keeps the 54/108-MHz run
 The fitted controller clock limit is 136.790 MHz; the CPU limit is 55.547 MHz. Both setup
 and hold have zero violated endpoints and zero TNS; the tightest setup path is in the CPU
 core, with 0.516 ns slack. The full-system bitstream passed its generated-source audit.
-The previous consolidation retained all 22 frozen benchmark execution cycles; its
-benchmark and source evidence is archived in local record
-`cpu-v3-architecture-logic-2026-09-28`. The native fit is offline evidence until the
+The previous consolidation retained the execution cycle counts of all 22 frozen
+benchmarks. The native fit is offline evidence until the
 integrated image is checked on the board. The 108-MHz CL2 clock is 9.259 ns, below the
 10-ns CL2 minimum in the [EM638325 -6 reference](https://etron.com/wp-content/uploads/2022/04/EM638325_Rev-3.2.pdf);
 board success at this point is empirical overclock evidence, not a PVT guarantee.

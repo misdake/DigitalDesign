@@ -146,13 +146,13 @@
       {
         "mode": "portable",
         "passed": true,
-        "summary": "PASS color miter epochs=3 groups=6144 pixels=4608 CE0_and_inflight_reset=1 invalid_packet_fault=3\r\n\\?\\E:\\worktrees\\f207\\DigitalDesign-code\\target\\vliw-color-direct\\current-main-recheck\\replay\\portable\\tb.v:56: $finish called at 142548000 (1ps)\r\n",
+        "summary": "PASS color miter epochs=3 groups=6144 pixels=4608 CE0_and_inflight_reset=1 invalid_packet_fault=3\r\ntb.v:56: $finish called at 142548000 (1ps)\r\n",
         "source_sha256": "e8bf7f45d45643378bb3fae6021e170321c9f582f020ac3ab52bdfae486c750c"
       },
       {
         "mode": "native",
         "passed": true,
-        "summary": "PASS color miter epochs=3 groups=6144 pixels=4608 CE0_and_inflight_reset=1 invalid_packet_fault=3\r\n\\?\\E:\\worktrees\\f207\\DigitalDesign-code\\target\\vliw-color-direct\\current-main-recheck\\replay\\native\\tb.v:56: $finish called at 142548000 (1ps)\r\n",
+        "summary": "PASS color miter epochs=3 groups=6144 pixels=4608 CE0_and_inflight_reset=1 invalid_packet_fault=3\r\ntb.v:56: $finish called at 142548000 (1ps)\r\n",
         "source_sha256": "4f6f5c496dd7feb7df1ec1004eee3c8e679741d8429d7aee46a633e6d54be0a8"
       }
     ],

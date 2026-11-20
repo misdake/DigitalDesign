@@ -466,7 +466,7 @@ is published only after the prior directory has been archived and its hashes
 checked. The new `report-replacement.json` maps original paths to the archive and
 records previous file hashes. Unknown content, reparse points and mismatched
 generated HTML/profile data refuse replacement. Failed staging preserves the
-published entry; old archives and external historical image folders remain.
+published entry.
 The preview wrapper has an explicit author hidden rule, and no-image/empty-DRAW
 transitions remove both image sources while keeping their explanations visible.
 

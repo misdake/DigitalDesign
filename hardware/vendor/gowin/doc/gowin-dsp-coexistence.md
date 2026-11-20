@@ -132,10 +132,6 @@ the full-build totals rather than per-instance content.
 
 ## Evidence boundary and reproduction
 
-Conclusions are synthesis + PnR evidence on the stated device/tool version; they describe
-packing behavior, not on-board function, so no board run is applicable. Raw artifacts,
-all 18 case modules, the LFSR/checksum anti-optimization harness, build scripts, and the
-full case log live in `D:/fpga/experiments/gowin-dsp-coexistence/` (an untracked
-local working area outside this repository; rerun: `scripts/gen_builds.py`, then
-`scripts/run_all.sh`, then `scripts/parse_results.py`; full narrative in its
-`results.md`). If the tool version changes, rerun before relying on the packing rules.
+The synthesis and place-and-route results cover 18 cases on the stated device and
+tool version. They establish packing behavior. Revalidate the packing rules after
+changing the tool version.

@@ -40,8 +40,8 @@ a change counts as a finished unit, is unclear, ask instead of deciding silently
 
 - Developer roles persist; feature worktrees are temporary. Reuse a suitable existing feature
   branch/tree, and do not create a worktree for read-only analysis.
-- DigitalDesign linked worktrees belong under `E:\worktrees\DigitalDesign`; other projects belong
-  under `E:\worktrees\codex-others`. Do not create project worktrees in Codex task directories.
+- Follow the local DigitalDesign conventions for worktree placement. Do not create project
+  worktrees in Codex task directories.
 - One maintainer serializes integration into `code-v0.3`. Use fast-forward integration for small
   qualified changes and explicit merge boundaries for substantial multi-commit features.
 - Update private branches against accepted canonical dependencies before integration, then run
@@ -52,7 +52,6 @@ a change counts as a finished unit, is unclear, ask instead of deciding silently
   mainline inclusion. Preserve the `code-v0.*` version branches.
 - Active builds retain their caches. Authorized cleanup of paused work must first preserve unique
   evidence outside every disposable `target` directory, with source identities and SHA mappings.
-  Use project evidence storage such as `E:\worktrees\DigitalDesign\evidence`.
 - Confirm a tree is unused before moving it. Preserve HEAD, index, WIP and untracked files; prefer
   Git worktree operations and verify file hashes after migration. Never overwrite a destination
   or discard unique work. Local housekeeping does not authorize remote pushes.
