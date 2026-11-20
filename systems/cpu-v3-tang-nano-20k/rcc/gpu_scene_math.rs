@@ -375,6 +375,37 @@ pub fn gpu_scene_draw_finish(material: Array<u16>, mut native: Array<u16>) {
     native[instance + 44] = material[GPU_MATERIAL_RGBA];
     native[instance + 45] = material[GPU_MATERIAL_RGBA + 1];
 }
+
+pub fn gpu_scene_billboard_directions(desired: Array<u16>, native: Array<u16>, vertical: bool) {
+    let k = -(gpu_scene_fix_read(desired, GPU_CAMERA_FOCAL) * fix32::from_words(256, 0));
+    let directions = GPU_SCRATCH_INSTANCE + 48;
+    if vertical {
+        let camera = desired.as_ptr();
+        let right = vec4::import(camera);
+        let up = vec4::import(camera.add(8));
+        let back = vec4::import(camera.add(16));
+        let horizontal = vec3::new(right.x(), fix32::zero(), right.z());
+        gpu_scene_fix_write(
+            native,
+            directions,
+            fdot(horizontal, vec3::new(right.x(), right.y(), right.z())) * k,
+        );
+        gpu_scene_fix_write(
+            native,
+            directions + 4,
+            fdot(horizontal, vec3::new(up.x(), up.y(), up.z())) * k,
+        );
+        gpu_scene_fix_write(
+            native,
+            directions + 8,
+            -fdot(horizontal, vec3::new(back.x(), back.y(), back.z())),
+        );
+    } else {
+        // Camera right/up become the X/Y basis before projection.
+        gpu_scene_fix_write(native, directions, k);
+        gpu_scene_fix_write(native, directions + 6, k);
+    }
+}
 // The pure six-argument path retains no cache or object identity.
 pub fn gpu_scene_draw_prepare(
     desired: Array<u16>,

@@ -104,9 +104,7 @@ def assemble():
     assert len(code)<=len(addresses),len(code)
     return dict(zip(addresses,code))
 
-def update():
-    path=Path(__file__).with_name('control_rom.v')
-    source=path.read_text()
+def read_image(source):
     pairs={}
     for address,expression in re.findall(r"mem\[(\d+)\]=(.*?);",source):
         values=re.findall(r"72'h([0-9a-f]+)",expression)
@@ -115,10 +113,9 @@ def update():
         else:
             pairs[int(address)]=(int(values[0],16),)*2
     assert len(pairs)==512,len(pairs)
-    scheduled=assemble()
-    program={a:0 for a in list(range(128,256))+list(range(320,512))}
-    program.update(scheduled)
-    for a,value in program.items():pairs[a]=(value,value)
+    return pairs
+
+def render_image(source,pairs):
     used=0
     for c,d in pairs.values():used |= c
     source=re.sub(r"localparam \[71:0\] COMPACT_USED_BITS=72'h[0-9a-f]+;",
@@ -140,7 +137,17 @@ def update():
         return f".INIT_RAM_{i:02X}({value})"
     source=re.sub(r"\.INIT_RAM_([0-9A-F]{2})\([^)]*\)",init,source)
     assert bank==1
-    path.write_text(source)
-    print(f'Bounded-F16 T calendar: {len(scheduled)} slots; legacy T removed; V/bounds unchanged')
+    return source
+
+def update():
+    path=Path(__file__).with_name('control_rom.v')
+    source=path.read_text()
+    pairs=read_image(source)
+    scheduled=assemble()
+    for address in range(128,256):
+        value=scheduled.get(address,0)
+        pairs[address]=(value,value)
+    path.write_text(render_image(source,pairs))
+    print(f'Bounded-F16 T calendar: {len(scheduled)} slots at128..{127+len(scheduled)}')
 
 if __name__=='__main__':update()

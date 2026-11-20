@@ -59,6 +59,7 @@ pub(super) struct Meshlet {
     origin: [i128; 3],
     shift: u32,
     normal18: bool,
+    billboard: bool,
     pub uniform: usize,
     pub(super) rgb: bool,
     cull: bool,
@@ -72,7 +73,7 @@ impl Meshlet {
         let offset = ((h[0] >> 24) & 127) as usize;
         if h[0] & !0xff3f7f7f != 0
             || h[1] != 0
-            || h[2] & !0xfff0 != 0
+            || h[2] & !0xfff1 != 0
             || h[3] != 0
             || h[7] & !0x11f != 0
             || vertices > 64
@@ -85,10 +86,15 @@ impl Meshlet {
             return Err("native meshlet metadata/count/extent".into());
         }
         let rgb = h[2] & 16 != 0;
+        let billboard = h[2] & 1 != 0;
         let mut source = Vec::with_capacity(vertices);
         for i in 0..vertices {
             let v = std::array::from_fn(|j| word(payload, i * 3 + j));
-            if v[0] >> 30 != 0 || v[1] >> 30 != 0 || (rgb && v[2] >> 24 != 0) {
+            if v[0] >> 30 != 0
+                || v[1] >> 30 != 0
+                || (billboard && v[1] >> 20 != 0)
+                || (rgb && v[2] >> 24 != 0)
+            {
                 return Err("V96 reserved bits".into());
             }
             source.push(v);
@@ -115,6 +121,7 @@ impl Meshlet {
             origin: [h[4], h[5], h[6]].map(|v| i128::from(v as i32)),
             shift: h[7] & 31,
             normal18: h[7] & 256 != 0,
+            billboard,
             uniform: uniform - 20,
             rgb,
             cull: h[0] >> 31 != 0,
@@ -130,7 +137,11 @@ struct Vertex {
 }
 impl Meshlet {
     fn transform(&self, uniform: &[u32; 32]) -> Result<Vec<Vertex>, String> {
-        if uniform[21] != 65536 || uniform[23..].iter().any(|&v| v != 0) {
+        if uniform[21] != 65536
+            || uniform[23] != 0
+            || uniform[30..].iter().any(|&v| v != 0)
+            || (!self.billboard && uniform[24..30].iter().any(|&v| v != 0))
+        {
             return Err("Instance128 constant/reserved words".into());
         }
         self.vertices
@@ -145,12 +156,19 @@ impl Meshlet {
                 let n: [i128; 3] =
                     std::array::from_fn(|k| signed(i128::from(v[1] >> (10 * k)), 10) * 128);
                 let position = std::array::from_fn(|j| {
+                    let offset = if self.billboard {
+                        n[0] * i128::from(uniform[24 + 2 * j] as i32)
+                            + n[1] * i128::from(uniform[25 + 2 * j] as i32)
+                    } else {
+                        0
+                    };
                     signed(
                         (p.iter()
                             .enumerate()
                             .map(|(k, p)| p * i128::from(uniform[4 * j + k] as i32))
                             .sum::<i128>()
-                            + 65536 * i128::from(uniform[4 * j + 3] as i32))
+                            + 65536 * i128::from(uniform[4 * j + 3] as i32)
+                            + offset)
                             >> 16,
                         32,
                     )
@@ -162,6 +180,9 @@ impl Meshlet {
                     return Err("transformed position outside signed26".into());
                 }
                 let normal = std::array::from_fn(|j| {
+                    if self.billboard {
+                        return 0;
+                    }
                     let raw = signed(
                         n.iter()
                             .enumerate()

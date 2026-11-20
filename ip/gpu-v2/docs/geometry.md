@@ -97,6 +97,30 @@ Each normal result is an unnormalized S12F10 code. The normal16 path deliberatel
 discards v's low two bits before RNE. Performing that quantization earlier in
 the MAC changes the output. Attributes pass through without acquiring alpha.
 
+### Billboard transform
+
+The meshlet format bit selects the Billboard schedule. It uses the same base
+position decode and accumulates the normal Mesh position transform plus two
+terms before the single bits47:16 extraction for each row `j`:
+
+```text
+s = signed_10(offset0) * 128
+t = signed_10(offset1) * 128
+P[j] = signed_32((sum(p[k]*M[4*j+k]) + 65536*M[4*j+3] + s*A[j] + t*B[j]) >> 16)
+```
+
+For a vertical billboard, `p` stores a point on the center line and `A` is the
+view-projected world horizontal camera-right direction. The producer uses the
+original XZ components, sets the Y component to zero and supplies `t=0`. For a
+camera-plane billboard, `p` stores the center, `A/B` are view-projected camera
+right/up directions and `s/t` describe the rotated corner. Direction columns
+act after the model transform. The schedule publishes zero N36 for use with an
+unlit material. Attribute words and indexed triangles retain their usual layout.
+
+The base-position bounds prologue is bypassed for Billboard. A producer doing
+visibility culling must include the displacement in its bounds. T32 uses the
+same transformed-coordinate range and rejection rules as ordinary Mesh.
+
 ## Triangle coefficients and rejection
 
 T consumes V's signed32 F16 position directly. Each component must fit signed26,

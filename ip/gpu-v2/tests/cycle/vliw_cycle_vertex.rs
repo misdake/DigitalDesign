@@ -219,6 +219,21 @@ fn production_vertex_old_state_matches_every_sample() {
 }
 
 #[test]
+#[ignore = "short billboard schedule differential against production RTL"]
+fn billboard_schedule_selects_from_metadata_and_matches_every_sample() {
+    let root = support::rtl::root();
+    let r = support::run(support::Case {
+        vertices: 5,
+        billboard: true,
+        cull: 3,
+        slot: true,
+        ..Default::default()
+    });
+    assert_eq!(r.stats.writes, 25);
+    support::rtl::compare(&root, "billboard", &r);
+}
+
+#[test]
 fn native_memory_supplies_both_pages_uniforms_and_parallel_cache() {
     let r = support::native::run();
     println!("G2A_SAMPLE {{\"initialization_us\":{},\"stepping_us\":{},\"logic_edges\":{},\"native_cycles\":{},\"trace_collection\":true}}",r.initialization_us,r.stepping_us,r.vertex.trace.len(),r.native_cycles);

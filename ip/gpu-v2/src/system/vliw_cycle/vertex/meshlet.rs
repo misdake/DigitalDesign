@@ -58,6 +58,7 @@ pub struct Meshlet {
     pub uniform_base: u8,
     pub index_cursor: u8,
     pub attribute_mode: bool,
+    pub vertex_billboard: bool,
     pub normal_mode: bool,
     pub cull_negative: bool,
     pub sequence: u8,
@@ -119,6 +120,7 @@ impl Meshlet {
                 reset: i.reset,
                 ce: i.ce,
                 start_v: self.phase == Phase::VStart,
+                vertex_billboard: self.vertex_billboard,
                 start_t: self.phase == Phase::TStart,
                 triangle_descriptor: u32::from(self.generation) << 28
                     | u32::from(self.sequence) << 21
@@ -200,6 +202,7 @@ impl Meshlet {
             self.done,
             self.group_position,
             self.index_group,
+            self.vertex_billboard,
         );
         if i.reset {
             next = (
@@ -218,6 +221,7 @@ impl Meshlet {
                 false,
                 0,
                 0,
+                false,
             );
         } else if i.ce {
             next.12 = false;
@@ -251,6 +255,7 @@ impl Meshlet {
                 Phase::Meta1Q => {
                     let v = o.core.source_data.get(64, "meshlet header1")?;
                     next.6 = v & 16 != 0;
+                    next.15 = v & 1 != 0;
                     next.9 = ((v >> 5) & 127) as u8;
                     next.10 = ((v >> 12) & 15) as u8;
                     next.0 = Phase::Meta3;
@@ -349,6 +354,7 @@ impl Meshlet {
             self.done,
             self.group_position,
             self.index_group,
+            self.vertex_billboard,
         ) = next;
         Ok(())
     }

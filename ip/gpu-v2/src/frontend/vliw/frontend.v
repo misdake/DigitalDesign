@@ -23,7 +23,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  input[31:0]mesh_color,
 `endif
 
- input clk,reset,ce,start_v,start_t,meshlet_reset,
+ input clk,reset,ce,start_v,start_t,meshlet_reset,vertex_billboard,
  input [6:0] vertex_count,input [5:0] uniform_base,input [8:0] config_base,
  input [9:0] vertex_base,input [31:0] triangle_descriptor,input cull_negative,
  input dma_we,input [9:0] dma_addr,input [63:0] dma_data,input output_ready,
@@ -44,7 +44,8 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  reg [10:0] vp;reg [9:0] op;reg [5:0] vid;reg [2:0] vfield;reg triangle_mode;
  reg [17:0] refs;reg cull;reg [31:0] building_desc;
  
- wire bounds_run=BOUNDS_CULL&&!triangle_mode&&pc[8];reg bounds_safe;
+ // Pages 256 through 383 cover the bounds prologue and the billboard bootstrap.
+ wire bounds_run=BOUNDS_CULL&&!triangle_mode&&pc[8]&&!pc[7];reg bounds_safe;
  localparam TRIANGLE_SLOTS=1<<TRIANGLE_SLOT_BITS;
  reg [TRIANGLE_SLOT_BITS:0] produced,consumed;
  wire[TRIANGLE_SLOT_BITS-1:0]write_slot=produced[TRIANGLE_SLOT_BITS-1:0];
@@ -83,6 +84,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
 `else
  wire compact_invalid=SP_COMPACT&&(uniform_base[5]||config_base[8]||vertex_base[9]||vertex_last_word>1024);
 `endif
+ wire [8:0] vertex_start=vertex_billboard?9'd320:(BOUNDS_CULL?9'd256:9'd0);
  wire launch_v=ce&&start_v&&!busy&&!reset;
  wire launch_t=ce&&start_t&&!busy&&!start_v&&!queue_full&&!reset;
  wire launch=launch_v||(launch_t&&refs_valid);
@@ -120,7 +122,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  endcase
  if(t32_active)next_pc=t32_next;
  end
- shared_control_rom #(.SP_COMPACT(SP_COMPACT)) rom(.clk(clk),.reset(reset),.en(launch||step),.addr(launch?(launch_v?(BOUNDS_CULL?9'd256:9'd0):9'd128):next_pc),.q(control));
+ shared_control_rom #(.SP_COMPACT(SP_COMPACT)) rom(.clk(clk),.reset(reset),.en(launch||step),.addr(launch?(launch_v?vertex_start:9'd128):next_pc),.q(control));
  wire [9:0] la=l_src==1?{ub,u_off[4:1]}:l_src==3?{cb,cfg_off[1]}:vp[10:1];
  wire [9:0] ra=(work_en||work_we)?{(SP_COMPACT?4'b0110:4'b1000),work_addr}:r_src==1?{ub,u_off[4:1]}:r_src==3?{cb,cfg_off[1]}:vp[10:1];
  
@@ -277,7 +279,7 @@ if(meshlet_reset)begin published_vertices<=0;
  if(compact_invalid)begin busy<=0;done_v<=1;`FRONTEND_WRITE_ERROR(4) end
  else if(`FRONTEND_CAPACITY_INVALID)begin busy<=0;done_v<=1;`FRONTEND_WRITE_ERROR(3) end
  else begin
- busy<=vertex_count!=0;done_v<=vertex_count==0;pc<=BOUNDS_CULL?9'd256:9'd0;bounds_safe<=1;remaining<=vertex_count;ub<=uniform_base;cb<=config_base;
+ busy<=vertex_count!=0;done_v<=vertex_count==0;pc<=vertex_start;bounds_safe<=!vertex_billboard;remaining<=vertex_count;ub<=uniform_base;cb<=config_base;
  vp<={vertex_base,1'b0};op<=0;vid<=published_vertices[5:0];vfield<=0;
 
  end

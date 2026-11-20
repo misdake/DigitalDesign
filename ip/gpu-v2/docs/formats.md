@@ -37,6 +37,12 @@ Top two bits of words 0/1 and RGB's high byte are producer-written zero. RGB and
 UV are mutually exclusive. Decode uses metadata origin/quant_shift and the
 normal transform described in [geometry](/ip/gpu-v2/docs/geometry.md#vertex-transform).
 
+Billboard meshlets use the same V96 stride, position word, attribute word and
+index encoding. Word 1 instead carries signed ten-bit offsets in bits9:0 and
+19:10, with bits31:20 written zero. An offset code multiplied by 128 is the
+signed F16 input to the billboard transform. The asset producer chooses a
+world-unit scale and incorporates it in the corresponding uniform column.
+
 One triangle is `i0 | (i1<<6) | (i2<<12)`. Three triangles occupy the low 54 bits
 of one u64. High padding and unused tail indices are zero; each live index must
 be below V count. Let `vwords=ceil(3*V/2)` and `twords=ceil(T/3)` in qwords.
@@ -49,15 +55,15 @@ the page. Tight length is `8*(vwords+twords)` bytes. The maximum is
 | Qword | Bit fields |
 | --- | --- |
 | 0 | V count 6:0; T count 14:8; uniform base21:16; T qword offset 30:24; cull-negative 31 |
-| 1 | reserved-zero3:0; RGB mode 4 (0=UV, 1=RGB); sequence start 11:5; generation 15:12 |
+| 1 | Billboard mode 0 (0=Mesh, 1=Billboard); reserved-zero3:1; RGB mode 4 (0=UV, 1=RGB); sequence start 11:5; generation 15:12 |
 | 2 | origin_x31:0; origin_y63:32 |
 | 3 | origin_z31:0; quant_shift36:32; normal18 bit 40 |
 
 All other metadata bits are producer-written zero. Nonempty T requires nonzero
-V. Bits3:0 of word1 are reserved zero and are not read by hardware.
+V. Bits3:1 of word1 are reserved zero.
 `quant_shift` controls local source position decode; T consumes V's F16 position
 without a meshlet-wide shift.
-`normal18` selects the Vertex normal quantization path.
+`normal18` selects the normal quantization path for ordinary Mesh.
 
 ## Matrix block
 
@@ -71,7 +77,8 @@ origins use signed 32-bit F16 values.
 | 21 | F16 homogeneous constant 1 (`65536`), read by the Vertex bootstrap |
 | 22 | Command profile: mesh uniform RGBA8888; R low8, A high8; white/opaque is `0xffffffff` |
 | 23 | Command profile: reserved zero |
-| 24..31 | Unused padding, written zero |
+| 24..29 | Billboard mode: direction pairs `(Ax, Bx, Ay, By, Az, Bz)` in projected coordinates. Written zero in a normal Mesh block |
+| 30..31 | Reserved zero. The Billboard bootstrap reads word30 for its zero normal |
 
 In the command profile, uniform RGB modulates the one selected vertex-color or
 texture source, with exact nearest UNORM8 multiplication in Final. Alpha is

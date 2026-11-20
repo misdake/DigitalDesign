@@ -2,6 +2,22 @@ use super::*;
 use crate::system::functional::{Effects, Memory};
 
 #[test]
+fn billboard_metadata_selects_two_projected_offsets() {
+    let header = [1, 2 << 8 | 20, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0];
+    let payload = [0, 0, 0x03f8u16, 0x0004, 0x3210, 0x7654, 0, 0];
+    let mesh = Meshlet::decode(&header, &payload).unwrap();
+    let mut uniform = [0u32; 32];
+    for i in [0, 5, 10, 21, 24, 27] {
+        uniform[i] = 65536;
+    }
+    uniform[28] = (-32768i32) as u32;
+    let vertex = mesh.transform(&uniform).unwrap()[0];
+    assert_eq!(vertex.position, [-1024, 32768, 131584]);
+    assert_eq!(vertex.normal, [0; 3]);
+    assert_eq!(vertex.attribute, 0x7654_3210);
+}
+
+#[test]
 fn full_depth_underflow_rejects_coplanar_coverage_but_keeps_d16_zero() {
     let vertices = |p: [[i128; 3]; 3]| {
         p.map(|position| Vertex {
@@ -312,6 +328,7 @@ fn parallel_retirement_preserves_memory_errors_and_partial_effects() {
             origin: [-65536, -32768, 4 * 65536],
             shift: 8,
             normal18: false,
+            billboard: false,
             uniform: 0,
             rgb,
             cull: false,

@@ -24,7 +24,7 @@ module tb;
    .mesh_color(32'hffffffff),
 `endif
    .clk(clk),.reset(reset),.ce(ce),.start_v(start_v),.start_t(start_t),.meshlet_reset(1'b0),
-   .vertex_count(vertex_count),.uniform_base(uniform_base),.config_base(9'd0),
+   .vertex_billboard(1'b0),.vertex_count(vertex_count),.uniform_base(uniform_base),.config_base(9'd0),
    .vertex_base(10'd0),.triangle_descriptor(32'd0),.cull_negative(1'b0),
    .dma_we(dma_we),.dma_addr(dma_addr),.dma_data(64'd0),.output_ready(1'b1),
    .packet_ready(1'b1),.word_ready(1'b1),.source_re(1'b0),.source_addr(10'd0),

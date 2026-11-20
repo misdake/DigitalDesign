@@ -1151,6 +1151,13 @@ fn gpu_api_set_camera(slot: u16, camera: CameraPtr) {
 fn gpu_api_set_state(slot: u16, state: RenderStatePtr) {
     gpu_api_checked(gpu_bind_desired(slot, false, state.data()), 4);
 }
+#[repr(u16)]
+#[derive(Copy, Clone)]
+pub enum BillboardFacing {
+    Vertical,
+    CameraPlane,
+}
+
 fn gpu_api_draw_textured(
     slot: u16,
     mesh: MeshPtr,
@@ -1164,7 +1171,7 @@ fn gpu_api_draw_textured(
         gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
         gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
         gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
-        true,
+        0,
     );
 }
 fn gpu_api_draw_colored(slot: u16, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
@@ -1174,7 +1181,7 @@ fn gpu_api_draw_colored(slot: u16, mesh: MeshPtr, model: ModelPtr, material: Mat
         gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
         gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
         0,
-        false,
+        0,
     );
 }
 
@@ -1227,6 +1234,24 @@ impl Pass {
     pub fn draw_colored(&mut self, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
         gpu_api_draw_colored(self.slot, mesh, model, material);
     }
+    /// Draw unlit native Billboard meshlets with offsets in units of 1/512.
+    pub fn draw_billboard(
+        &mut self,
+        mesh: MeshPtr,
+        model: ModelPtr,
+        material: MaterialPtr,
+        view: TextureViewPtr,
+        facing: BillboardFacing,
+    ) {
+        gpu_api_draw(
+            self.slot,
+            gpu_arena_resolve(mesh.handle, GPU_KIND_MESH),
+            gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
+            gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
+            gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
+            facing as u16 + 1,
+        );
+    }
     pub fn draw_ui(&mut self, grid: UiGridPtr, clip: CellRect) {
         gpu_api_checked(gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0, 15);
         if clip.width == 0 || clip.height == 0 {
@@ -1268,9 +1293,10 @@ fn gpu_api_draw(
     model_slot: u16,
     material_slot: u16,
     view_slot: u16,
-    textured: bool,
+    billboard: u16,
 ) {
     let mesh = gpu_arena_data(mesh_slot);
+    let textured = view_slot != 0;
     if mesh[GPU_MESH_COUNT] == 0 {
         return;
     }
@@ -1320,6 +1346,16 @@ fn gpu_api_draw(
         revision,
     );
     gpu_scene_draw_finish(material, native);
+    if billboard != 0 {
+        gpu_api_checked(material[GPU_MATERIAL_FLAGS] & 1 != 0, 5);
+        gpu_scene_billboard_directions(
+            desired,
+            native,
+            billboard == BillboardFacing::Vertical as u16 + 1,
+        );
+        // Camera patching owns only the ordinary matrix words.
+        gpu_patch_note(slot, GPU_RECORD_SCENE_MODEL, 65535);
+    }
     gpu_api_checked(gpu_mesh_draw(slot, mesh, native), 5);
 
     gpu_record_resource_commit(slot, facts.as_array(), count, fact_plan.as_array());

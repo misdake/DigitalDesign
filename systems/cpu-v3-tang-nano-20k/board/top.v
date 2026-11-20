@@ -408,11 +408,6 @@ __CACHE__ u_instruction_cache (
     .memory_address(icache_memory_address),
     .memory_response_ready(icache_memory_response_ready)
 );
-__DS2__ u_ds2(.clk(clk),.reset(reset),.frame_event(display_frame_event),
- .device_index(device_query_index),.device_channel(device_query_channel),
- .device_read_enable(device_query_read_enable),.device_write_enable(device_query_write_enable),
- .device_write_data(device_write_data),.device_read_data(ds2_read_data),
- .dat(ds2_dat),.ds2_clk(ds2_clk),.cmd(ds2_cmd),.att(ds2_att));
 __SYSTEM_CONTROL__ u_sysctl (
     .clk(clk),
     .reset(reset),
@@ -436,6 +431,11 @@ __SYSTEM_CONTROL__ u_sysctl (
     .leds(software_leds),
     .uart_tx(uart_tx)
 );
+__DS2__ u_ds2(.clk(clk),.reset(reset),.frame_event(display_frame_event),
+ .device_index(device_query_index),.device_channel(device_query_channel),
+ .device_read_enable(device_query_read_enable),.device_write_enable(device_query_write_enable),
+ .device_write_data(device_write_data),.device_read_data(ds2_read_data),
+ .dat(ds2_dat),.ds2_clk(ds2_clk),.cmd(ds2_cmd),.att(ds2_att));
 __SINGLE_BOOT_LOADER__ u_boot_loader (
     .clk(clk),.ready_to_start(cold_ready),
     .flash_ready(flash_ready),.flash_data_valid(flash_data_valid),.flash_data(flash_data),

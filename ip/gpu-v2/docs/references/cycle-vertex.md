@@ -69,6 +69,9 @@ behind/left/right rejection and eligibility checks. Ineligible bounds retain
 the meshlet. Epoch flips follow the original successful bounds path; a rejected
 meshlet produces no Vertex writes. V=0 completes through the production empty
 path. With T=0, all V writes precede actual meshlet completion and input release.
+The Billboard metadata bit starts at PC320. The bootstrap uses the same epoch
+handoff and jumps to the Billboard calendar at PC384 with bounds rejection
+disabled. It publishes the same five fields and uses identical stalls.
 
 A nonzero metadata T count returns `UnsupportedTriangles { count, slot }` at
 META0_Q, before meshlet reset or any new V result. Its committed DMA prefix

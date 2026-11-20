@@ -112,6 +112,7 @@ pub struct CoreInput {
     pub reset: bool,
     pub ce: bool,
     pub start_v: bool,
+    pub vertex_billboard: bool,
     pub start_t: bool,
     pub triangle_descriptor: u32,
     pub cull_negative: bool,
@@ -686,10 +687,11 @@ impl Core {
         if x.o.position_write || x.o.attribute_write {
             x.o.emit_data.get(36, "valid Vertex result")?;
         }
+        let vertex_start = if i.vertex_billboard { 320 } else { 256 };
         let mut n = r.clone();
         if x.launch || x.launch_t || x.step {
             n.control = Self::rom_word(if x.launch {
-                256
+                vertex_start
             } else if x.launch_t {
                 128
             } else {
@@ -723,8 +725,8 @@ impl Core {
                 n.triangle_mode = false;
                 n.busy = i.vertex_count & 127 != 0;
                 n.done_v = i.vertex_count & 127 == 0;
-                n.pc = 256;
-                n.bounds_safe = true;
+                n.pc = vertex_start;
+                n.bounds_safe = !i.vertex_billboard;
                 n.remaining = i.vertex_count & 127;
                 n.uniform_base = i.uniform_base & 63;
                 n.config_base = i.config_base & 511;
@@ -751,7 +753,7 @@ impl Core {
                 }
             } else if x.step {
                 n.pc = x.next_pc;
-                if r.pc & 256 != 0 {
+                if r.pc & 384 == 256 {
                     if c.bit(51) {
                         let value = r.unpacked.get(32, "bounds eligibility operand")?;
                         let over = |k: u32| {

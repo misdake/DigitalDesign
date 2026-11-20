@@ -45,7 +45,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  reg [1:0] group_position;
  reg [53:0] index_group;
  reg [3:0] generation;
- reg attr_mode,normal_mode,cull_negative;
+ reg attr_mode,normal_mode,cull_negative,vertex_billboard;
  reg [6:0] sequence_id;
  wire core_busy,done_v,done_t,triangle_ready,core_meshlet_ready,source_ready,core_dma_ready;
  wire [2:0] core_error;
@@ -90,7 +90,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
 .mesh_color(mesh_color),
 `endif
   .clk(clk),.reset(reset),.ce(ce),.start_v(state==VSTART),.start_t(state==TSTART),
-  .meshlet_reset(state==CHECK&&!invalid_header),.vertex_count(vertices),.uniform_base(uniform_base),
+  .meshlet_reset(state==CHECK&&!invalid_header),.vertex_billboard(vertex_billboard),.vertex_count(vertices),.uniform_base(uniform_base),
   .config_base(config_base),.vertex_base(vertex_base),.triangle_descriptor(triangle_descriptor),
   .cull_negative(cull_negative),.dma_we(dma_we&&write_safe),.dma_addr(dma_addr),.dma_data(dma_data),
   .output_ready(output_ready),.packet_ready(packet_ready),.word_ready(word_ready),
@@ -105,7 +105,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
   if(reset)begin
    state<=IDLE;ready<=0;done<=0;`MESHLET_CLEAR_ERROR active_slot<=0;vertices<=0;triangles<=0;
    uniform_base<=0;index_cursor<=0;group_position<=0;index_group<=0;
-   generation<=0;attr_mode<=0;normal_mode<=0;cull_negative<=0;sequence_id<=0;
+   generation<=0;attr_mode<=0;normal_mode<=0;cull_negative<=0;vertex_billboard<=0;sequence_id<=0;
   end else if(ce)begin
    done<=0;
    if(state==IDLE&&core_meshlet_ready)ready<=1;
@@ -118,7 +118,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
     end
     META1:if(source_ready)state<=META1_Q;
     META1_Q:begin
-     attr_mode<=source_data[4];sequence_id<=source_data[11:5];
+     attr_mode<=source_data[4];vertex_billboard<=source_data[0];sequence_id<=source_data[11:5];
      generation<=source_data[15:12];state<=META3;
     end
     META3:if(source_ready)state<=META3_Q;

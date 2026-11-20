@@ -10,12 +10,16 @@ def native_record(mesh):
     assert 128 <= payload_size <= 1024
     record = bytearray(128 + payload_size)
     origin = mesh["config"]
-    meta = [len(vertices) | (len(triangles) << 8) | (20 << 16) | (offset << 24) | (1 << 31),
-            mesh.get("color_mode", 0) << 4, (origin[0] & 0xFFFFFFFF) | ((origin[1] & 0xFFFFFFFF) << 32),
+    cull = int(mesh.get("cull_negative", True))
+    billboard = int(mesh.get("billboard", False))
+    meta = [len(vertices) | (len(triangles) << 8) | (20 << 16) | (offset << 24) | (cull << 31),
+            (mesh.get("color_mode", 0) << 4) | billboard,
+            (origin[0] & 0xFFFFFFFF) | ((origin[1] & 0xFFFFFFFF) << 32),
             (origin[2] & 0xFFFFFFFF) | (origin[3] << 32)]
     struct.pack_into("<4Q", record, 0, *meta)
     for i, vertex in enumerate(vertices):
         assert vertex[0] < 1 << 30 and vertex[1] < 1 << 30
+        assert not billboard or vertex[1] < 1 << 20
         struct.pack_into("<3I", record, 128 + i * 12, *vertex)
     for i, triangle in enumerate(triangles):
         assert len(triangle) == 3 and all(0 <= j < len(vertices) for j in triangle)

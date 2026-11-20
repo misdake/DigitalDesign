@@ -61,6 +61,16 @@ meshlet controller skips its index/T phase. It neither changes an old queued
 T's epoch nor waits for that T to retire. The [numerical contract](/ip/gpu-v2/docs/geometry.md#conservative-meshlet-rejection)
 defines the conservative predicates and fallback.
 
+## Billboard Vertex calendar
+
+Billboard meshlets use a separate Vertex entry at word320. Its ten-word
+bootstrap loads the original config and zero normal, then publishes the new
+attribute epoch through the existing keep decision. Words384..441 alternate
+the two V96 input alignments and execute 18 MAC issues per vertex. All five
+result writes use the ordinary Vertex ports and backpressure. The mode bit adds
+no executed slots to normal Mesh or T32. `billboard_program.py --check` verifies
+both the portable words and the native BSRAM INIT fields.
+
 ## Shared bounded-F16 triangle calendar
 
 T's62 ROM slots compose reads, arithmetic issue, previous-result capture and

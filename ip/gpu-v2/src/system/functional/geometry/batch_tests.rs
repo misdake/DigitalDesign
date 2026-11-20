@@ -151,6 +151,7 @@ fn empty_draw_events_and_later_pixel_free_state_are_both_preserved() {
         origin: [-65536, -32768, -4 * 65536],
         shift: 8,
         normal18: false,
+        billboard: false,
         uniform: 0,
         rgb: true,
         cull: false,

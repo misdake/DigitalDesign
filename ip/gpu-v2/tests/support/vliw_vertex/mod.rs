@@ -7,6 +7,7 @@ pub struct Case {
     pub vertices: usize,
     pub normal18: bool,
     pub rgb: bool,
+    pub billboard: bool,
     pub slot: bool,
     pub cull: u8,
     pub uniform: u8,
@@ -17,6 +18,7 @@ impl Default for Case {
             vertices: 3,
             normal18: false,
             rgb: false,
+            billboard: false,
             slot: false,
             cull: 0,
             uniform: 20,
@@ -61,6 +63,9 @@ pub fn data(case: Case) -> Data {
     uniform[20] = 65537;
     uniform[21] = 65536;
     uniform[22] = 0xffa1_b2c3;
+    if case.billboard {
+        uniform[24..30].copy_from_slice(&[65536, 32768, 0, 65536, 16384, (-8192i32) as u32]);
+    }
     let mut origin = if case.uniform == 23 {
         [-0x70000000i32, 0x60000000, 4 * 65536]
     } else {
@@ -74,12 +79,12 @@ pub fn data(case: Case) -> Data {
         4 => shift = 15,
         _ => {}
     }
-    let rejected = (1..=3).contains(&case.cull) && case.vertices != 0;
+    let rejected = !case.billboard && (1..=3).contains(&case.cull) && case.vertices != 0;
     let header = [
         case.vertices as u64
             | (u64::from(case.uniform) << 16)
             | ((case.vertices * 3).div_ceil(2) as u64) << 24,
-        (u64::from(case.rgb) << 4) | (3 << 5) | (2 << 12),
+        u64::from(case.billboard) | (u64::from(case.rgb) << 4) | (3 << 5) | (2 << 12),
         u64::from(origin[0] as u32) | (u64::from(origin[1] as u32) << 32),
         u64::from(origin[2] as u32)
             | (u64::from(shift as u8) << 32)
@@ -96,7 +101,11 @@ pub fn data(case: Case) -> Data {
         let normal = [
             if v % 3 == 0 { 511i32 } else { -511 },
             1,
-            256 - v as i32 * 3,
+            if case.billboard {
+                0
+            } else {
+                256 - v as i32 * 3
+            },
         ];
         let p = (xyz[0] | xyz[1] << 10 | xyz[2] << 20) as u32;
         let n = normal
@@ -111,14 +120,21 @@ pub fn data(case: Case) -> Data {
         payload.extend([p, n, attr]);
         if !rejected {
             for k in 0..3 {
+                let offset = if case.billboard {
+                    128 * (i64::from(normal[0]) * i64::from(uniform[24 + 2 * k] as i32)
+                        + i64::from(normal[1]) * i64::from(uniform[25 + 2 * k] as i32))
+                } else {
+                    0
+                };
                 expected.push(u64::from(
                     ((i64::from(origin[k].wrapping_add((xyz[k] as i32).wrapping_shl(shift)))
-                        * i64::from(uniform[k * 5] as i32))
+                        * i64::from(uniform[k * 5] as i32)
+                        + offset)
                         >> 16) as u32,
                 ));
             }
             let mut packed = 0u64;
-            for (k, &n) in normal.iter().enumerate() {
+            for (k, &n) in normal.iter().enumerate().filter(|_| !case.billboard) {
                 let raw = (i64::from(n) * 128 * i64::from(uniform[12 + k * 3 + k] as i32)) >> 16;
                 let q = if case.normal18 {
                     signed(raw as u64, 18)
