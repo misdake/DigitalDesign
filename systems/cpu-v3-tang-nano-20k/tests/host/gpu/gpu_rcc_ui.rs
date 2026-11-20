@@ -9,7 +9,7 @@ fn compile(source: &str) -> Vec<u16> {
             std::fs::read_to_string(root.join(format!("{name}.rs")))
                 .or_else(|_| {
                     std::fs::read_to_string(
-                        root.join(format!("../examples/gpu_demo/rcc/{name}.rs")),
+                        root.join(format!("../examples/demo_box_rabbit/rcc/{name}.rs")),
                     )
                 })
                 .map_err(|e| e.to_string())

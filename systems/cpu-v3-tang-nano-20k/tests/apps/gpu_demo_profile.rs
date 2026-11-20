@@ -58,7 +58,7 @@ fn classic_frame_timing_profile() {
     options.stack_init = cpu_v3_tang_nano_20k::boot::SINGLE_BOOT_STACK;
     // One measured render with a previous-interval fixture, so numeric UI is
     // exercised without rendering a warm-up frame. Only setup/stop differ.
-    let source = include_str!("../../examples/gpu_demo/rcc/main.rs").replace("\r\n", "\n");
+    let source = include_str!("../../examples/demo_box_rabbit/rcc/main.rs").replace("\r\n", "\n");
     let source = source.replace("let mut completed = false;", "let mut completed = true; STATS.as_array()[0u16] = time_milliseconds() - 17; STATS.as_array()[2u16] = 1;");
     let source = source.replace(
         "let mut rendered_us: u16 = 65535;",
@@ -127,7 +127,7 @@ fn classic_frame_timing_profile() {
     let parsed =
         rcc::frontend::compile_program_named("Classic profile", &source, &options, &mut |name| {
             resolver::load_module(
-                &root.join("examples/gpu_demo/rcc"),
+                &root.join("examples/demo_box_rabbit/rcc"),
                 &root.join("rcc"),
                 &constants,
                 name,
@@ -277,7 +277,7 @@ fn classic_frame_timing_profile() {
                 &options,
                 &mut |name| {
                     resolver::load_module(
-                        &root.join("examples/gpu_demo/rcc"),
+                        &root.join("examples/demo_box_rabbit/rcc"),
                         &root.join("rcc"),
                         &constants,
                         name,

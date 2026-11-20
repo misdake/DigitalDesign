@@ -33,8 +33,8 @@ ownership protocol. See the [resource lifetime contract](/systems/cpu-v3-tang-na
 
 ```powershell
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- list
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview hello-gpu --help
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview hello-gpu
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview sample-hello-gpu --help
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview sample-hello-gpu
 ```
 
 This builds a fresh snapshot, verifies it and writes a two-present headless
@@ -47,8 +47,8 @@ snapshot. `application.build.json` binds code, resources, sources and debug info
 ## Run with input, or reuse a snapshot
 
 ```powershell
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run hello-gpu
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview hello-gpu --snapshot target/hello-gpu
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run sample-hello-gpu
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview sample-hello-gpu --snapshot target/hello-gpu
 ```
 
 `run` builds and opens a window with Windows XInput slot 0. `--snapshot` instead
@@ -63,7 +63,7 @@ explains the different backends when measurements are needed.
 Use `--headless` for a run without a window, or `--xinput-slot 1` to select another
 controller. The [workflow guide](/systems/cpu-v3-tang-nano-20k/docs/application-workflow.md#preview-and-run)
 lists defaults and overrides. See the
-[core demo controls](/systems/cpu-v3-tang-nano-20k/examples/core_demo/README.md#controls).
+[core demo controls](/systems/cpu-v3-tang-nano-20k/examples/demo_showcase/README.md#controls).
 To start a specific page, use `preview core-demo --page 5`, for example.
 To export without running, use `build hello-gpu --out target/hello-gpu`;
 `build --out` requires a new or empty directory and never overwrites a snapshot.
@@ -72,7 +72,7 @@ runtime failures resolve source lines through the snapshot's debug metadata.
 
 ## Follow the source before creating a new application
 
-Open `examples/hello_gpu/rcc/main.rs`, then `rcc/scene.rs`,
+Open `examples/sample_hello_gpu/rcc/main.rs`, then `rcc/scene.rs`,
 `tools/assets.py` and `application.rs`. This standalone sample contains only a
 triangle and UI label, without the capability demo's menus. Main records Back,
 submits, recovers the CB from GPU wait and confirms the Display swap before reuse.
@@ -80,7 +80,7 @@ The scene owns its mesh/model/camera/material; static placement remains explicit
 
 A normal application addition has two pieces:
 
-1. Copy the [hello-gpu template](/systems/cpu-v3-tang-nano-20k/examples/hello_gpu/README.md)
+1. Copy the [hello-gpu template](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/README.md)
    and adjust the recipe's application name, selection and source/producer paths.
 2. Register its `application.rs` once in `application_catalog!` under
    `applications/build/mod.rs`. That entry loads and enumerates the recipe.
@@ -114,7 +114,7 @@ all loaded source origins for the artifact.
 
 An asset producer writes `assets.json`, native payloads and typed RCC
 constants into its build-owned `--output` directory. Follow
-`examples/hello_gpu/tools/assets.py`: its `Sources.geometry` call takes named
+`examples/sample_hello_gpu/tools/assets.py`: its `Sources.geometry` call takes named
 `Vertex` positions, normals and UV/RGB attributes, then builds bounded meshlets,
 headers, directories and sector relocations. Texture/mip encoders remain available
 for later examples. `native_asset_source.Sources`

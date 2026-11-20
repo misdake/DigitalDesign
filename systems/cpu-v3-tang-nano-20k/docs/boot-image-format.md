@@ -162,15 +162,10 @@ The existing-input packer does not modify CPU instruction bytes. Omitting
 --project packs code plus mandatory initialization only. Asset SHA-256
 identities can be recorded with the offline image bundle.
 
-The explicit `CPU_V3_BOOT_EXAMPLE=gpu_demo` build selects the independent demo
-without editing the default project. Its single producer generates immutable
-room/texture/atlas assets in OUT_DIR; generated roots extend boot_resources.
-The materializer also exports those resources, their identity manifest and a
-resource-only `demo-repack.conf` for independently packing the compiled code.
-The [demo build entry](/systems/cpu-v3-tang-nano-20k/examples/gpu_demo/README.md#build-and-flash-handoff)
-restores the caller's environment and requires matching generated/repacked CB06
-SHA-256. Generated resources are tracked by producer inputs rather than treated
-as new Cargo input files. The ordinary application selection is unchanged.
+The [handheld application](/systems/cpu-v3-tang-nano-20k/examples/demo_box_rabbit/README.md#build-and-run)
+is one example of the ordinary application build. The materializer exports its
+resources, manifest and a resource-only repack project. Generated resources are
+tracked by producer inputs.
 
 ## Transfers and completion
 

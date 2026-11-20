@@ -91,17 +91,9 @@ if renderer.submit() != RENDERER_PENDING { halt(0xbad); }
 if renderer.wait(WAIT_ALL) != RENDERER_COMPLETED { halt(0xbad); }
 ```
 
-The [member demo](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/rcc/members.rs)
-contains the complete caller, factories, two transform snapshots and explicit
-close. Its `renderer_member_three_frames` entry uses the same frame body with a
-bounded stop; `main` repeats continuously. Build it with
-`examples/gpu_renderer/build.ps1 -Members`. This selects
-`CPU_V3_BOOT_EXAMPLE=gpu_renderer_members`, checks the actual approved library
-bodies with rustc, and materializes the normal generated boot assets. This member
-demo uses explicit column16 assets/layout matching the current fitted system;
-the offline caller test also executes the row profile. The checked host entry
-takes the existing `RendererCaptureConfiguration` selection and materializes
-the selected trusted RCC root before using the shared loader.
+The [member test fixture](/systems/cpu-v3-tang-nano-20k/tests/fixtures/gpu_renderer/rcc/members.rs)
+records two transform snapshots per frame. The `graphics_member` test runs
+its bounded three-frame entry with the approved GPU library and column assets.
 The legacy free functions retain their original behavior: `frame_complete` seals and
 advances, while member `Frame.finish` seals without scheduling.
 
@@ -302,7 +294,7 @@ The build host may supply explicit ordinary module fallback directories, searche
 after local and shared files only on NotFound. Their actual canonical origins
 are retained; I/O/UTF-8 errors do not fall through. They gain no approved library
 identity, and shared Device ABI selection stays pinned. The Bloxorz-shaped
-[caller](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/README.md)
+[caller](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/README.md)
 uses this to read the existing pure rules without copying or modifying them.
 
 ## Verification boundary
@@ -312,15 +304,15 @@ ownership misuse, duplicate open, transfer failure, cancellation/drain/freeze,
 text visibility/tails, timestamp epochs/saturation/wrap, delayed observation,
 held input and Camera/Model cache dependencies. Independent float references and
 native byte oracles check prepared position/rotation/rays/light and commands.
-The [minimal application](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/README.md)
-uses the actual producer and only semantic public calls; its generated OUT_DIR
-boot image matches an independent repack. Controlled GPU/Display peers establish
-software ownership/bytes, not rasterization, scanout, real cache contention or
-physical board qualification.
+The [minimal test fixture](/systems/cpu-v3-tang-nano-20k/tests/fixtures/gpu_renderer/README.md)
+uses the shared native asset producer and the public GPU API. The host test
+checks that the compiled caller retires GPU and Display work in order.
+Controlled peers establish ownership and command bytes. Rasterization,
+scanout, cache contention and physical timing have separate tests.
 
 ## Actual changing caller and CPU cost fixture
 
-The `gpu_renderer` example's `changes.rs` records one Mesh through two persistent
+The `gpu_renderer` fixture's `changes.rs` records one Mesh through two persistent
 Models, opaque/translucent Materials and separate 3D/UI Passes. Its eleven-frame
 entry covers steady state, Camera translation/rotation/projection/world light,
 Model pose/scale, Material color/lighting/specular setters, and text hide/edit/show
@@ -359,13 +351,13 @@ fence, ordering and fault checks remain in this cost.
 
 ## Bloxorz application
 
-The [Bloxorz caller](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/README.md)
+The [Bloxorz caller](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/README.md)
 uses the existing integer rule core, immutable floor/bridge/block meshes and
 moves/connection HUD. Its presentation phases capture fresh fixed400x240 targets
 and replay them with opaque RGB multiplication; input locking and animation time
 remain application state. Presentation continues with disconnected input;
 unpublished capture preparation is canceled through the existing scheduler. Storage, phase ordering and verification
 boundaries are specified in its
-[owning document](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/transitions.md).
+[owning document](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/docs/transitions.md).
 The shared fixed-port CPU cost runner continues to guard the changing-frame
 caller's actual scalar/FPU stores and permitted Target relocation independently.

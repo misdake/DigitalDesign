@@ -154,7 +154,7 @@ def meshlet(output,native,pose,export,enabled=False,recorded=None):
  if pose:
   words=json.loads(Path(pose).read_text())['statuses'][-1]['matrix_words']
   uniform=[oracle.F.signed(words[i]|words[i+1]<<16,32) for i in range(0,42,2)]+[65536]+[0]*10
-  scene=json.loads((ROOT/'systems/cpu-v3-tang-nano-20k/examples/gpu_demo/assets/scene.json').read_text())
+  scene=json.loads((ROOT/'systems/cpu-v3-tang-nano-20k/examples/demo_box_rabbit/assets/scene.json').read_text())
   for source in scene['meshes']:
    if source['name'] not in ['bunny_full_0','bunny_full_16']:continue
    item=copy.deepcopy(source);item.update(uniform=uniform,cull_negative=1);cases.append(item)

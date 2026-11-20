@@ -27,7 +27,7 @@ fn crc16(bytes: &[u8]) -> u16 {
 #[test]
 fn native_rcc_packets_match_wire_crc_and_saturation_contract() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let local = root.join("examples/gpu_bench/rcc");
+    let local = root.join("examples/bench_gpu/rcc");
     let source = std::fs::read_to_string(local.join("main.rs")).unwrap();
     let constants = "use crate::dsl_rt::*;pub const BENCH_CASES:u16=1;pub const BENCH_TOKEN:u16=47794;pub const BENCH_WARMUP:u16=3;pub const BENCH_SAMPLES:u16=31;pub const BENCH_PREVIEW_SECTOR:u16=34304;pub static BENCH_TABLE:Buf<u16,4>=Buf::new([0;4]);";
     let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);

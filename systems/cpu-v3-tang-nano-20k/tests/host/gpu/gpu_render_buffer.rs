@@ -122,7 +122,7 @@ check(dev_recv(7,0)==3 && dev_recv(7,1)==1);
 #[test]
 fn actual_nearest_and_ordinary_bilinear_demo_inputs() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let example = root.join("examples/gpu_renderer_rtt");
+    let example = root.join("examples/demo_render_to_texture");
     for (label, entry) in [
         ("nearest", "renderer_rtt_nearest"),
         ("bilinear", "renderer_rtt_bilinear"),

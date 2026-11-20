@@ -1,4 +1,4 @@
-#[path = "../../examples/gpu_demo/support.rs"]
+#[path = "../../examples/demo_box_rabbit/support.rs"]
 mod support;
 #[test]
 fn compiled_camera_covers_one_complete_512_step_orbit() {

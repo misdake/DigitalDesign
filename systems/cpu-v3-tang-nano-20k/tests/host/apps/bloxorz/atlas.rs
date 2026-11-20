@@ -21,7 +21,7 @@ fn atlas_fixed_scenes_and_real_submission_inputs() {
     };
     if before {
         assert!(frozen
-            .join("examples/gpu_renderer_bloxorz/rcc/main.rs")
+            .join("examples/game_bloxorz/rcc/main.rs")
             .is_file());
     }
     let sizes = std::env::var("BLOXORZ_ATLAS_SIZES").unwrap_or_else(|_| "6x7".into());

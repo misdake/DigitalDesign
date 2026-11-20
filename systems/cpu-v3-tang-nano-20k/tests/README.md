@@ -44,10 +44,8 @@ run with the application-owned `bloxorz-profile-runner` binary target; the
 actual-System observation/input/timer/cache parity contract remains `system_runner`.
 `ram_collision/` is a self-contained Python/Verilog qualification bundle used
 by the Rust RTL target. It stays together with its local model and reference.
-Example-local qualifications remain with their example. In particular, the
-[legacy Bloxorz example](/systems/cpu-v3-tang-nano-20k/examples/bloxorz/README.md)
-has two failing static/batch recording checks; `--all-targets` includes them,
-while ordinary library/integration targets have a separate run boundary.
+The [Bloxorz reference target](/systems/cpu-v3-tang-nano-20k/tests/apps/bloxorz_reference/README.md)
+checks imported rules and records small, independently checked GPU scenes.
 
 `apps/gpu_bench_banks.rs` belongs to the existing `gpu_bench` target. Its two
 opt-in contracts consume explicit frozen inputs, run bounded complete workloads
@@ -58,7 +56,7 @@ Python producer.
 The `core_demo` target consumes a verified exported package through its explicit
 `CORE_DEMO_ARTIFACT` input. Its opt-in application test runs all CPU/input/time/Display
 pages with real controller snapshots and bounded functional GPU/Display; the
-[application README](/systems/cpu-v3-tang-nano-20k/examples/core_demo/README.md) owns the
+[application README](/systems/cpu-v3-tang-nano-20k/examples/demo_showcase/README.md) owns the
 command and evidence boundary. Public numeric text and per-swap format contracts
 remain in the ordinary `host` target.
 
@@ -464,7 +462,7 @@ The reusable [GPU profiler](/systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/REA
 has bounded format, viewer and production-GPU observer checks in its own tool
 directory. It does not require a full-frame run or change synthesized logic.
 
-The [GPU board throughput suite](/systems/cpu-v3-tang-nano-20k/examples/gpu_bench/README.md)
+The [GPU board throughput suite](/systems/cpu-v3-tang-nano-20k/examples/bench_gpu/README.md)
 has small asset/protocol checks and an opt-in board run. Its hardware timing comes
 from UART intervals, not the functional simulator or its optional memory peer.
 
@@ -520,7 +518,7 @@ root, without the former scope adapter. They check raw/constructor/consumed-owne
 misuse, early cancellation, transfer failure, duplicate open, explicit close and
 implicit freeze, plus owned text tail/visibility/cleanup semantics. The scene
 cases use an independent float oracle and exact native bytes; the minimal caller
-executes examples/gpu_renderer/rcc/main.rs with its actual packed assets. Timing
+executes `tests/fixtures/gpu_renderer/rcc/main.rs` with its actual packed assets. Timing
 cases use a clock advanced only by host events, covering observer delay, clear
 epochs, saturation and wrap. Frame queries cannot reread live input; held input
 integrates on subsequent ticks without new packets. GPU/Display completion peers
@@ -587,7 +585,7 @@ are selected explicitly, even when `-ExtendedSimulations` is enabled. This avoid
 implicitly running Bloxorz native scene replays. For example:
 
 ```powershell
-cargo test --release -p cpu-v3-tang-nano-20k --example bloxorz -- --ignored --test-threads=1
+cargo test --release -p cpu-v3-tang-nano-20k --test bloxorz_reference -- --ignored --test-threads=1
 ```
 
 For the production example, bounded signature/range rejection tests still run.

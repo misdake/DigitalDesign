@@ -58,7 +58,7 @@ fn main(){{{body} halt(0xbad);}}
                 return Ok("pub const DEMO_CAMERA_FIRST:u16=0x9c00;".into());
             }
             let local = root
-                .join("examples/gpu_demo/rcc")
+                .join("examples/demo_box_rabbit/rcc")
                 .join(format!("{name}.rs"));
             let path = if local.exists() {
                 local

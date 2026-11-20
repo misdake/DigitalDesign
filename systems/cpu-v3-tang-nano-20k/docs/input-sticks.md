@@ -178,6 +178,6 @@ addition to conversion. This is a reuse tradeoff, not a guarantee that every
 changing-input call costs less than direct conversion. Initialization and
 explicit reconfiguration also remain cold paths.
 
-The [circular DS2 diagnostic](/systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/README.md) demonstrates
-raw versus processed travel and explicit center/dead-zone adjustment. It does
-not assign game actions to this shared helper.
+The [Showcase controller page](/systems/cpu-v3-tang-nano-20k/examples/demo_showcase/README.md)
+plots calibrated stick travel. The host input tests exercise explicit center
+calibration and dead-zone adjustment.

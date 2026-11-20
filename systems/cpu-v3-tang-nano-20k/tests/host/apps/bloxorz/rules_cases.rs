@@ -153,7 +153,7 @@ check(SESSION[0u16]==FALL && SESSION[1u16]==150);block_pose(&mut model);world_pr
     assert!(halted);
     assert_eq!(matrices.len(), 4);
     let reference: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../examples/gpu_renderer_bloxorz/assets/web-shadow-reference.json"
+        "../../../../examples/game_bloxorz/assets/web-shadow-reference.json"
     ))
     .unwrap();
     let mut errors = vec![];

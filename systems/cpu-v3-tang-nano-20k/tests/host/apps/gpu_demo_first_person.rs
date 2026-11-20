@@ -9,7 +9,7 @@ fn compile(source: &str, constants: &str, entry: &'static str) -> rcc_backend::C
     let ir =
         rcc::frontend::compile_program_named("First-person demo", source, &options, &mut |name| {
             resolver::load_module(
-                &root.join("examples/gpu_demo/rcc"),
+                &root.join("examples/demo_box_rabbit/rcc"),
                 &root.join("rcc"),
                 constants,
                 name,
@@ -37,7 +37,7 @@ fn pair(cpu: &CpuV3Sim, at: u32, index: u32) -> i32 {
 }
 fn camera_source(body: &str) -> String {
     let scene: serde_json::Value =
-        serde_json::from_str(include_str!("../../../examples/gpu_demo/assets/scene.json")).unwrap();
+        serde_json::from_str(include_str!("../../../examples/demo_box_rabbit/assets/scene.json")).unwrap();
     let c = &scene["cameras"][0];
     let mut words = Vec::new();
     for v in c["matrix"].as_array().unwrap() {
@@ -357,7 +357,7 @@ fn timing_run(present_delay: u64, gpu_delay: u64, fail: bool) -> TimingState {
         let out = root.join("../../target/gpu-first-person-assets");
         let result = std::process::Command::new("python")
             .env("PYTHONDONTWRITEBYTECODE", "1")
-            .arg(root.join("examples/gpu_demo/tools/assets.py"))
+            .arg(root.join("examples/demo_box_rabbit/tools/assets.py"))
             .arg("--output")
             .arg(&out)
             .output()
@@ -374,7 +374,7 @@ fn timing_run(present_delay: u64, gpu_delay: u64, fail: bool) -> TimingState {
         .replace("DEMO_ROOM_COUNT: u16 = 6;", "DEMO_ROOM_COUNT: u16 = 1;")
         .replace("DEMO_BUNNY_COUNT: u16 = 17;", "DEMO_BUNNY_COUNT: u16 = 2;");
     let p = compile(
-        include_str!("../../../examples/gpu_demo/rcc/main.rs"),
+        include_str!("../../../examples/demo_box_rabbit/rcc/main.rs"),
         &constants,
         "demo_native_main",
     );

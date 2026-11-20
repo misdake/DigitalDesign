@@ -1,8 +1,8 @@
 # RCC GPU driver
 
-The native snapshot interface is owned by `rcc/gpu_legacy.rs`, used explicitly
-by `dualshock2_ui`; `rcc/gpu.rs` remains a thin compatibility import for native
-diagnostics and regression fixtures. It manages one command buffer and one Clear/Store Pass with
+The native snapshot interface is owned by `rcc/gpu_legacy.rs`. The low-level
+regressions, including the DS2 UI fixture, use this interface. `rcc/gpu.rs`
+is its compatibility import. It manages one command buffer and one Clear/Store Pass with
 ordered Mesh/Instance and UI draws and fixed A/B/Depth allocations. It retains
 actual native control, publication and Display consumers. The former
 [two-input resource scheduler](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md)

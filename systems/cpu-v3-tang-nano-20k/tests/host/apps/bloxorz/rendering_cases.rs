@@ -547,7 +547,7 @@ let mut level:u16=0;while level<33 {
 free(owner);
 "#;
     let (program, resources, out) = application("ground-batch-builder", Some(body));
-    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/gpu_renderer_bloxorz");
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/game_bloxorz");
     assert!(std::process::Command::new("python")
         .arg("-B")
         .arg(example.join("tools/check_ground_batches.py"))

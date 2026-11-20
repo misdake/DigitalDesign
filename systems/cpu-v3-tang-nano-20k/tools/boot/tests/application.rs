@@ -15,13 +15,13 @@ fn list_help_and_invalid_requests_work_without_a_cargo_or_python_process() {
     };
     assert!(run(&["--help"]).status.success());
     for action in ["preview", "run"] {
-        assert!(run(&[action, "core-demo", "--help"]).status.success());
+        assert!(run(&[action, "demo-showcase", "--help"]).status.success());
     }
-    assert!(run(&["build", "gpu-bench", "--help"]).status.success());
-    let help = run(&["build", "core-demo", "--help"]);
+    assert!(run(&["build", "bench-gpu", "--help"]).status.success());
+    let help = run(&["build", "demo-showcase", "--help"]);
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
-    assert!(help.contains("--page 0..5 (default 0)"));
+    assert!(help.contains("--page 0..6 (default 0)"));
     assert!(help.contains("--frames 0..65535 (default 0)"));
     let listed = run(&["list"]);
     assert!(listed.status.success());
@@ -36,28 +36,38 @@ fn list_help_and_invalid_requests_work_without_a_cargo_or_python_process() {
     );
     for args in [
         vec!["build", "unknown"],
-        vec!["preview", "core-demo", "--presents", "0"],
-        vec!["preview", "core-demo", "--max-steps", "0"],
-        vec!["preview", "core-demo", "--seconds", "7201"],
-        vec!["run", "core-demo", "--window", "--headless"],
+        vec!["build", "demo"],
+        vec!["build", "demo-column16"],
+        vec!["build", "renderer"],
+        vec!["build", "renderer-members"],
+        vec!["build", "renderer-changes"],
+        vec!["build", "bloxorz-capture"],
+        vec!["build", "bloxorz-capture-full"],
+        vec!["build", "dualshock2"],
+        vec!["build", "dualshock2-ui"],
+        vec!["build", "dualshock2_ui"],
+        vec!["preview", "demo-showcase", "--presents", "0"],
+        vec!["preview", "demo-showcase", "--max-steps", "0"],
+        vec!["preview", "demo-showcase", "--seconds", "7201"],
+        vec!["run", "demo-showcase", "--window", "--headless"],
         vec![
             "preview",
-            "core-demo",
+            "demo-showcase",
             "--snapshot",
             "missing",
             "--page",
             "5",
         ],
-        vec!["build", "bloxorz", "--scene", "full"],
-        vec!["build", "gpu-bench", "--scene", "invalid"],
+        vec!["build", "game-bloxorz", "--scene", "full"],
+        vec!["build", "bench-gpu", "--scene", "invalid"],
         vec!["build", "default"],
-        vec!["build", "core-demo", "--page", "6"],
-        vec!["build", "core-demo", "--frames", "65536"],
-        vec!["build", "bloxorz", "--start-level", "0"],
-        vec!["build", "bloxorz", "--start-level", "34"],
-        vec!["build", "bloxorz", "--start-level", "-1"],
-        vec!["build", "bloxorz", "--start-level", "invalid"],
-        vec!["build", "bloxorz", "--start-phase", "invalid"],
+        vec!["build", "demo-showcase", "--page", "7"],
+        vec!["build", "demo-showcase", "--frames", "65536"],
+        vec!["build", "game-bloxorz", "--start-level", "0"],
+        vec!["build", "game-bloxorz", "--start-level", "34"],
+        vec!["build", "game-bloxorz", "--start-level", "-1"],
+        vec!["build", "game-bloxorz", "--start-level", "invalid"],
+        vec!["build", "game-bloxorz", "--start-phase", "invalid"],
         vec!["build", "gpu-profiler", "--out", "target/not-created"],
     ] {
         let result = run(&args);

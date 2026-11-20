@@ -198,7 +198,7 @@ fn bloxorz_one_play_frame_has_identical_color_depth_and_lower_matrix_cost() {
     let assets = out.join("bloxorz-assets");
     assert!(std::process::Command::new("python")
         .arg("-B")
-        .arg(root.join("examples/gpu_renderer_bloxorz/tools/assets.py"))
+        .arg(root.join("examples/game_bloxorz/tools/assets.py"))
         .arg("--output")
         .arg(&assets)
         .status()
@@ -222,7 +222,7 @@ fn bloxorz_one_play_frame_has_identical_color_depth_and_lower_matrix_cost() {
     }
     let constants = boot::parse_boot_project(&config).unwrap().constants()
         + &fs::read_to_string(assets.join("renderer_assets.rs")).unwrap();
-    let app = root.join("examples/gpu_renderer_bloxorz/rcc");
+    let app = root.join("examples/game_bloxorz/rcc");
     let original = fs::read_to_string(app.join("main.rs")).unwrap();
     assert_eq!(original.matches("run(0, false, 128);").count(), 1);
     let source = original

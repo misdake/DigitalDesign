@@ -26,7 +26,7 @@ fn direct_source_matches_timed_binary() {
     let ir =
         rcc::frontend::compile_program_named("Classic profile", &source, &options, &mut |name| {
             resolver::load_module(
-                &root.join("examples/gpu_demo/rcc"),
+                &root.join("examples/demo_box_rabbit/rcc"),
                 &root.join("rcc"),
                 &constants,
                 name,

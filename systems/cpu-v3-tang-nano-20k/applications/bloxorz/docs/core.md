@@ -43,7 +43,7 @@ transforms retain their full12-bit semantics. Splitter coordinates are five bits
 The shared CPU implementation decodes fields at their point of use. The asset
 producer's `--compact-reference` path converts the retained original input while
 leaving all independently captured expected steps intact; the example's
-`--compact` replay and test run those same transitions on the compiled CPU.
+`bloxorz_reference` tests replay those same transitions on the compiled CPU.
 
 ## Rules and storage
 

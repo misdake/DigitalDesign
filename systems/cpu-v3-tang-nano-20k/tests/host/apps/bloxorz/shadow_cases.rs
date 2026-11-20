@@ -5,7 +5,7 @@ use super::*;
 fn native_triangle_instances_match_independent_web_shadow_clipping_samples() {
     use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../examples/gpu_renderer_bloxorz/assets/web-shadow-reference.json"
+        "../../../../examples/game_bloxorz/assets/web-shadow-reference.json"
     ))
     .unwrap();
     let mut results = vec![];

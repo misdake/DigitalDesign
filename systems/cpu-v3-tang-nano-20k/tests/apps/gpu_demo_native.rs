@@ -11,7 +11,7 @@ use std::{
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
-#[path = "../../examples/gpu_demo/support.rs"]
+#[path = "../../examples/demo_box_rabbit/support.rs"]
 mod support;
 #[test]
 #[ignore = "requires completed one-frame demo and cache-fault native runs"]
@@ -95,7 +95,7 @@ fn run_demo(entry: &'static str, folder: &str, mode: u8) {
         support::write_matrices(&reference.join("matrices.json"));
         let mut gold = Command::new("python");
         gold.env("PYTHONDONTWRITEBYTECODE", "1")
-            .arg(root.join("examples/gpu_demo/tools/gold.py"))
+            .arg(root.join("examples/demo_box_rabbit/tools/gold.py"))
             .arg("--output")
             .arg(&reference)
             .arg("--matrices")

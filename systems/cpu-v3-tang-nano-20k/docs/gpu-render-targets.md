@@ -102,7 +102,7 @@ sources come from pinned registrations, include full declared capacity and epoch
 and use READ|PREIMAGE without IMMUTABLE. Target physical spans have FULL_CLEAR;
 untouched allocation tails have separate preimages without that flag.
 
-The [two demos](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_rtt/README.md)
+The [two demos](/systems/cpu-v3-tang-nano-20k/examples/demo_render_to_texture/README.md)
 use ordinary rendering. CPU peers prove ownership/emitted bytes; RTL replays
 check rendering separately. Backend, memory peer and physical qualification
 boundaries are explicit in each receipt.

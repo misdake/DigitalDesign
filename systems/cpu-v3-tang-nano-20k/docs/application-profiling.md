@@ -39,7 +39,7 @@ The default scene has disconnected input and selects the requested presentation
 state machine under `applications/bloxorz/tools`:
 
 ```powershell
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bloxorz --start-level 29 --start-phase play --out target/bloxorz29
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build game-bloxorz --start-level 29 --start-phase play --out target/bloxorz29
 python -B systems/cpu-v3-tang-nano-20k/tools/profile.py run target/bloxorz29 --scene bloxorz29-shadow --backend system --budget 18000000 --seconds 1800 --events 32000000 --out target/shadow
 ```
 

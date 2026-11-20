@@ -21,7 +21,7 @@ impl Device for Idle {
 fn all_cube_orientations_preserve_world_and_normal_columns() {
     let module = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("examples/gpu_renderer_bloxorz/rcc/orientation.rs"),
+            .join("examples/game_bloxorz/rcc/orientation.rs"),
     )
     .unwrap();
     let body = &module[module.find("pub const ROTATION_IDENTITY").unwrap()..];

@@ -14,16 +14,13 @@ macro_rules! application_catalog {
     };
 }
 application_catalog! {
-    bench => "../../examples/gpu_bench/application.rs",
-    core_demo => "../../examples/core_demo/application.rs",
-    hello_gpu => "../../examples/hello_gpu/application.rs",
-    demo => "../../examples/gpu_demo/application.rs",
-    tree_explosion => "../../examples/tree_explosion/application.rs",
-    ds2 => "../../examples/dualshock2/application.rs",
-    ds2_ui => "../../examples/dualshock2_ui/application.rs",
-    renderer => "../../examples/gpu_renderer/application.rs",
-    bloxorz => "../../examples/gpu_renderer_bloxorz/application.rs",
-    rtt => "../../examples/gpu_renderer_rtt/application.rs",
+    bench_gpu => "../../examples/bench_gpu/application.rs",
+    demo_showcase => "../../examples/demo_showcase/application.rs",
+    sample_hello_gpu => "../../examples/sample_hello_gpu/application.rs",
+    demo_box_rabbit => "../../examples/demo_box_rabbit/application.rs",
+    demo_billboard => "../../examples/demo_billboard/application.rs",
+    game_bloxorz => "../../examples/game_bloxorz/application.rs",
+    demo_render_to_texture => "../../examples/demo_render_to_texture/application.rs",
 }
 
 pub struct ApplicationSource {
@@ -58,6 +55,8 @@ pub struct Definition {
     pub name: &'static str,
     pub selection: Option<&'static str>,
     pub source: Option<&'static str>,
+    /// Source identity recorded in snapshots exported before an application move.
+    pub previous_source: Option<&'static str>,
     pub gpu_api: bool,
     pub entry: &'static str,
     pub ordinary_sources: &'static [&'static str],
@@ -71,6 +70,7 @@ pub const DEFAULT: Definition = Definition {
     name: "default",
     selection: None,
     source: None,
+    previous_source: None,
     gpu_api: false,
     entry: "main",
     ordinary_sources: &[],
@@ -83,7 +83,7 @@ pub const DEFAULT: Definition = Definition {
 mod options;
 pub use options::{BuildOption, OptionValues, COMMON_OPTIONS};
 pub const RENDERER_ASSETS: Assets = Assets {
-    script: "examples/gpu_renderer/tools/assets.py",
+    script: "applications/rendering/tools/minimal_assets.py",
     directory: "gpu-renderer-assets",
     constants: "renderer_assets.rs",
     repack: "renderer-repack.conf",
@@ -114,11 +114,6 @@ impl Context<'_> {
     pub fn production_surface(&self, manifest: &Value) {
         assert_eq!(manifest["profile"], "production");
         assert_eq!(manifest["surface"], "column-major-16x16-pad16");
-    }
-    pub fn copy_asset(&mut self, application: &mut Prepared, source: &str, destination: &str) {
-        self.inputs(&[source]);
-        std::fs::copy(self.root.join(source), self.output.join(destination)).unwrap();
-        application.extra_assets.push(destination.into());
     }
 }
 

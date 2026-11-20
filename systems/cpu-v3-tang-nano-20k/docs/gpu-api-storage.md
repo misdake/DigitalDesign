@@ -789,12 +789,12 @@ A/B inputs for further C parser work.
 
 ## Concrete application
 
-`examples/gpu_renderer/rcc/main.rs` is an actual explicit-API caller. It manages
+`tests/fixtures/gpu_renderer/rcc/main.rs` exercises the explicit GPU API. It manages
 one reusable CB, two Back/Front color allocations, shared depth, immutable native
 assets, prepared scene objects and two external UI grids. Input/time/OBS are
 application responsibilities. It waits for old-Front retirement before reuse,
 records and submits, takes the CB back exactly once, and explicitly requests the
 next swap. Texture invalidation after initial asset upload is explicit. Finite
 host execution enters through main so RCC static byte initialization remains
-active; only the stop policy is redirected. The implementation and build contract
-are described in the [example](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/README.md).
+active; only the stop policy is redirected. The implementation and test contract
+are described with the [test fixtures](/systems/cpu-v3-tang-nano-20k/tests/fixtures/gpu_renderer/README.md).

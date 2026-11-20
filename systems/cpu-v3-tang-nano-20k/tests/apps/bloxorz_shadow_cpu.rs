@@ -19,7 +19,7 @@ fn shadow_blob_identity() -> String {
         .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .args([
             "hash-object",
-            "systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/rcc/shadow.rs",
+            "systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/rcc/shadow.rs",
         ])
         .output()
         .unwrap();
@@ -51,7 +51,7 @@ fn application_from_sources(
     baseline: Option<&Path>,
 ) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>, PathBuf) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let example = root.join("examples/gpu_renderer_bloxorz");
+    let example = root.join("examples/game_bloxorz");
     let out =
         PathBuf::from(std::env::var_os("BLOXORZ_SIM_OUTPUT_ROOT").expect("explicit task output"))
             .join(name);
@@ -116,7 +116,7 @@ fn application_from_sources(
     }
     let path = local.join("shadow.rs");
     let mut shadow = if baseline.is_some() {
-        let output=std::process::Command::new("git").current_dir(root).args(["show",&format!("{BASE}:systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/rcc/shadow.rs")]).output().unwrap();
+        let output=std::process::Command::new("git").current_dir(root).args(["show",&format!("{BASE}:systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/rcc/shadow.rs")]).output().unwrap();
         assert!(output.status.success());
         String::from_utf8(output.stdout).unwrap()
     } else {

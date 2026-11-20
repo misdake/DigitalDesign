@@ -15,7 +15,7 @@ fn compile(source: &str) -> Vec<u16> {
     let parsed =
         rcc::frontend::compile_program_named("GPU driver fixture", source, &options, &mut |name| {
             let path = if name == "overlay_gpu" {
-                root.join("../examples/gpu_demo/rcc/overlay_gpu.rs")
+                root.join("../examples/demo_box_rabbit/rcc/overlay_gpu.rs")
             } else {
                 root.join(format!("{name}.rs"))
             };

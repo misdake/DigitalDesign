@@ -98,7 +98,7 @@ fn assets(name: &str) -> PathBuf {
     let out = root.join("../../target/ds2-ui-validation").join(name);
     let r = Command::new("python")
         .env("PYTHONDONTWRITEBYTECODE", "1")
-        .arg(root.join("examples/dualshock2_ui/tools/assets.py"))
+        .arg(root.join("tests/fixtures/dualshock2_ui/tools/assets.py"))
         .arg("--output")
         .arg(&out)
         .output()
@@ -122,7 +122,7 @@ fn run_wire(
         if name == "boot_resources" {
             return Ok(generated.clone());
         }
-        std::fs::read_to_string(root.join(format!("examples/dualshock2_ui/rcc/{name}.rs")))
+        std::fs::read_to_string(root.join(format!("tests/fixtures/dualshock2_ui/rcc/{name}.rs")))
             .or_else(|_| std::fs::read_to_string(root.join(format!("rcc/{name}.rs"))))
             .map_err(|e| e.to_string())
     })
@@ -331,7 +331,7 @@ halt(0x600d);}"#,
 fn complete_one_frame_services_ds2_during_render_and_present_waits() {
     let out = assets("loop");
     let (_, s) = run(
-        include_str!("../../../examples/dualshock2_ui/rcc/main.rs"),
+        include_str!("../../../tests/fixtures/dualshock2_ui/rcc/main.rs"),
         "dui_one_frame_main",
         &out,
     );

@@ -275,7 +275,7 @@ use normal imports, without discovering the repository through parent counts or
 editing `sys.path`. For a standalone producer run from the repository root:
 
 ```powershell
-python -B systems/cpu-v3-tang-nano-20k/tools/asset_producer.py systems/cpu-v3-tang-nano-20k/examples/hello_gpu/tools/assets.py --output target/hello-assets
+python -B systems/cpu-v3-tang-nano-20k/tools/asset_producer.py systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/tools/assets.py --output target/hello-assets
 ```
 
 `native_asset_source.Sources.geometry` accepts `Vertex` values and triangle indices.

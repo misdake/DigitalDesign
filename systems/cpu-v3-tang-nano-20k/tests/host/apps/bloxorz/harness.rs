@@ -88,11 +88,16 @@ pub(super) fn application_case(
 ) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>, PathBuf) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let sources = frozen_sources.unwrap_or(root);
-    let source_example = sources.join("examples/gpu_renderer_bloxorz");
+    // Frozen revisions contain the application's original directory name.
+    let source_example = if frozen_sources.is_some() {
+        sources.join("examples/gpu_renderer_bloxorz")
+    } else {
+        sources.join("examples/game_bloxorz")
+    };
     let example = if case.assets_from_sources {
         source_example.clone()
     } else {
-        root.join("examples/gpu_renderer_bloxorz")
+        root.join("examples/game_bloxorz")
     };
     let out = std::env::var_os("BLOXORZ_SIM_OUTPUT_ROOT")
         .map_or_else(|| root.join("../../target/bloxorz-rtt"), PathBuf::from)

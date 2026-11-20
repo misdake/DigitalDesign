@@ -246,32 +246,6 @@ pub fn receiver_shadow(
     Ok(triangles)
 }
 
-pub fn report() {
-    let (distance, camera) = camera(15.0, 10.0);
-    let model = roll(0, 0, 0.5, 0.0);
-    let projected = compose(camera, shadow_matrix(model));
-    let triangles = receiver_shadow(model, &[[0, 0], [1, 0]], 64).unwrap();
-    println!("Bloxorz host geometry: 400x240, distance {distance:.6}, {} clipped shadow triangles, projected center {:?}, shadow area {:.6}", triangles.len(), transform(projected, [0.0; 3]), area(&floor_shadow(model)));
-    let receivers: Vec<_> = (-3..=4)
-        .flat_map(|x| (-3..=4).map(move |z| [x, z]))
-        .collect();
-    let mut peak = 0;
-    for orient in 0..3 {
-        for dir in 0..4 {
-            for fraction in [0.0, 0.125, 0.5, 0.875, 1.0] {
-                for drop in [0.0, -0.7, -3.0] {
-                    peak = peak.max(
-                        receiver_shadow(roll(orient, dir, fraction, drop), &receivers, 256)
-                            .unwrap()
-                            .len(),
-                    );
-                }
-            }
-        }
-    }
-    println!("180 sampled poses on an 8x8 receiver grid: peak {peak} shadow triangles per caster (sample bound only)");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

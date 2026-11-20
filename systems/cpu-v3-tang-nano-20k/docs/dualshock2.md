@@ -6,6 +6,24 @@ latest complete input through `rcc/dualshock2.rs`; it never starts, consumes or
 aborts a serial transaction. This snapshot ABI is incompatible with the earlier
 packet/byte engines and requires matching gateware and application software.
 
+## Board wiring
+
+View the board component side with USB-C above and HDMI below. Count left-header
+positions from the top. Verify adapter labels and continuity. Plug and socket
+front views are mirrored.
+
+| Signal | Left header position | FPGA package pin | DS2 contact |
+| --- | ---: | ---: | ---: |
+| CLK output, idle high | 15 | 17 | 7 |
+| CMD output | 16 | 20 | 2 |
+| DAT input | 17 | 19 | 1 |
+| ATT output, active low | 18 | 18 | 6 |
+| Logic VCC | 19 | Board 3.3 V supply | 5 |
+| Common GND | 20 | Ground | 4 |
+
+Leave vibration supply (3), unused contact (8) and ACK (9) open. Use 3.3 V
+logic and a DAT pull-up. Check for an existing pull-up before adding one.
+
 ## Device5 and final storage
 
 The [functional host adapter](/systems/cpu-v3-tang-nano-20k/docs/host-simulation.md)
@@ -87,11 +105,6 @@ Channel12 directly selects existing wire state, adding no monitor registers:
 The monitor changes with wire progress. It is not a latched failure record;
 operation may already describe the next command when ATT is high. Diagnostic
 reads do not acknowledge `read_changed`, stall sampling or alter serial pins.
-
-The UART-only `dualshock2` application reports connection, ID, buttons and all
-four raw axes on changes or every250ms. `W=prefix/ID/marker` is its last
-best-effort invalid-packet observation; `CT` is the current channel12 monitor
-and `V` the current valid/changed status. W does not describe connected input.
 
 ## Fixed main-clock schedule
 
@@ -251,6 +264,5 @@ header, can look like legitimate data. Detection then depends on a later bad
 header. Only the most recent complete input is retained. Physical routing and
 controller compatibility require separate full-board qualification.
 
-Examples: [UART diagnostic](/systems/cpu-v3-tang-nano-20k/examples/dualshock2/README.md),
-[GPU UI](/systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/README.md),
-[stick processing](/systems/cpu-v3-tang-nano-20k/docs/input-sticks.md).
+For interactive input, use the [Showcase controller page](/systems/cpu-v3-tang-nano-20k/examples/demo_showcase/README.md).
+See [stick processing](/systems/cpu-v3-tang-nano-20k/docs/input-sticks.md) for calibration.

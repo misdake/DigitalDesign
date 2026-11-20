@@ -55,6 +55,10 @@ path = "applications/bloxorz/tools/profile_runner.rs"
 # apps test contracts; target names remain stable.
 
 [[test]]
+name = "bloxorz_reference"
+path = "tests/apps/bloxorz_reference/main.rs"
+
+[[test]]
 name = "bloxorz_shadow_batch"
 path = "tests/apps/bloxorz_shadow_batch.rs"
 
@@ -242,4 +246,4 @@ path = "tests/system/vblank_fast_forward.rs"
 
 [[test]]
 name = "core_demo"
-path = "examples/core_demo/tests/pages.rs"
+path = "examples/demo_showcase/tests/pages.rs"

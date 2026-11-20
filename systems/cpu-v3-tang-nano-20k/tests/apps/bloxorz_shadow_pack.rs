@@ -4,7 +4,7 @@ use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
 
 #[test]
 fn shadow_fan_indices_follow_native_six_bit_wire_layout() {
-    let module = include_str!("../../examples/gpu_renderer_bloxorz/rcc/shadow.rs");
+    let module = include_str!("../../examples/game_bloxorz/rcc/shadow.rs");
     let start = module.find("fn shadow_batch_index(").unwrap();
     let end = start + module[start..].find("fn shadow_batch_cell(").unwrap();
     let mut source = String::from(

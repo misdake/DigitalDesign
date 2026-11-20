@@ -15,7 +15,7 @@ fn assets(test_name: &str) -> PathBuf {
         .join(test_name);
     let result = std::process::Command::new("python")
         .env("PYTHONDONTWRITEBYTECODE", "1")
-        .arg(root.join("examples/gpu_demo/tools/public_assets.py"))
+        .arg(root.join("examples/demo_box_rabbit/tools/public_assets.py"))
         .arg("--output")
         .arg(&out)
         .output()
@@ -50,7 +50,7 @@ fn compile(source: &str, out: &Path, debug: bool) -> rcc_backend::CpuV3Program {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     let mut project =
-        String::from("format 2\ngpu-api\napplication examples/gpu_demo/rcc/public_main.rs\n");
+        String::from("format 2\ngpu-api\napplication examples/demo_box_rabbit/rcc/public_main.rs\n");
     for resource in manifest["resources"].as_array().unwrap() {
         let file = resource["file"].as_str().unwrap();
         project.push_str(&format!(
@@ -70,7 +70,7 @@ fn compile(source: &str, out: &Path, debug: bool) -> rcc_backend::CpuV3Program {
         "Public classic controller",
         source,
         &options,
-        &root.join("examples/gpu_demo/rcc"),
+        &root.join("examples/demo_box_rabbit/rcc"),
         &root.join("rcc"),
         &constants,
         &rcc::frontend::rustc_check::RustcCheck::new(out.join(format!("check-{debug}"))),
@@ -570,7 +570,7 @@ fn actual_public_classic_input_recording_retirement_and_deadlines_both_profiles(
         .unwrap();
         assert_eq!(result.output, LightingOutput { g: 256, h: 0 });
     }
-    let source = include_str!("../../../examples/gpu_demo/rcc/public_main.rs")
+    let source = include_str!("../../../examples/demo_box_rabbit/rcc/public_main.rs")
         .replace("demo_run(0, 2000);", "demo_run(3, 2000);");
     assert!(source.contains("demo_run(3, 2000);"));
     let source = source.replace(
@@ -761,7 +761,7 @@ fn stage2_frame2_matches_frozen_unsplit_inputs_and_rotates_only_rabbit() {
         "accepted89b caller blob"
     );
     let reference = std::fs::read_to_string(frozen).unwrap();
-    let candidate = include_str!("../../../examples/gpu_demo/rcc/public_main.rs");
+    let candidate = include_str!("../../../examples/demo_box_rabbit/rcc/public_main.rs");
     let helpers = r#"
 fn stage2_camera(camera:&mut Camera){camera.set_pose(
  demo_point(fix32::from_words(16384,0),fix32::from_words(14418,0),fix32::from_words(52429,2)),

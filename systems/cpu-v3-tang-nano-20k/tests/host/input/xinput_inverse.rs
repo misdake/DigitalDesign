@@ -140,7 +140,7 @@ fn circular_grid_roundtrips_through_real_rcc_and_application_consumers() {
     }));
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let scene: serde_json::Value =
-        serde_json::from_str(include_str!("../../../examples/gpu_demo/assets/scene.json")).unwrap();
+        serde_json::from_str(include_str!("../../../examples/demo_box_rabbit/assets/scene.json")).unwrap();
     let mut matrix = Vec::new();
     for v in scene["cameras"][0]["matrix"].as_array().unwrap() {
         let n = v.as_i64().unwrap() as u32;
@@ -192,11 +192,11 @@ fn main(){{
         &options,
         &mut |name| {
             if name == "camera" {
-                std::fs::read_to_string(root.join("examples/gpu_demo/rcc/camera.rs"))
+                std::fs::read_to_string(root.join("examples/demo_box_rabbit/rcc/camera.rs"))
                     .map_err(|e| e.to_string())
             } else {
                 resolver::load_module(
-                    &root.join("examples/dualshock2_ui/rcc"),
+                    &root.join("tests/fixtures/dualshock2_ui/rcc"),
                     &root.join("rcc"),
                     "pub const DEMO_CAMERA_FIRST:u16=0;",
                     name,

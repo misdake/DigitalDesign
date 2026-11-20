@@ -39,7 +39,7 @@ interface/rendering check, not a finished material or seam-quality baseline.
 ## Recording and validation boundary
 
 ```powershell
-& scripts/run-cargo.ps1 -Subcommand test -Label bloxorz-static-native -CargoArgs @('-p','cpu-v3-tang-nano-20k','--example','bloxorz','static_scene_cpu_recorded_native_gpu','--','--ignored','--nocapture','--test-threads=1')
+& scripts/run-cargo.ps1 -Subcommand test -Label bloxorz-static-native -CargoArgs @('-p','cpu-v3-tang-nano-20k','--test','bloxorz_reference','static_scene_cpu_recorded_native_gpu','--','--ignored','--nocapture','--test-threads=1')
 ```
 
 This test needs Python, Icarus, `GOWIN_HOME`, and Pillow for the preview. It has

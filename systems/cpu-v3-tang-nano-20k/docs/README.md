@@ -29,12 +29,11 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 - [Prepared scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md): source-world transforms, six-argument native conversion, material/state, independent texture views and persistent external UI updates.
 
 - [Explicit GPU application callers](/systems/cpu-v3-tang-nano-20k/docs/gpu-explicit-examples.md): migrated examples, application-owned completion, RTT, input and bounded caller qualification.
-- [Column scene firmware](/systems/cpu-v3-tang-nano-20k/docs/gpu-column-scene.md): explicit non-RTT serial scene profile, offline assets, physical spans and firmware receipt.
-- [GPU board throughput suite](/systems/cpu-v3-tang-nano-20k/examples/gpu_bench/README.md): static native workloads, headless timing, UART sample statistics and HDMI validation.
+- [GPU board throughput suite](/systems/cpu-v3-tang-nano-20k/examples/bench_gpu/README.md): static native workloads, headless timing, UART sample statistics and HDMI validation.
 - [`architecture.md`](architecture.md): current complete-system composition, clock and memory paths,
   boot chain, device ownership, display integration, and validation boundary.
 - [Wall clock](/systems/cpu-v3-tang-nano-20k/docs/wall-clock.md): SystemControl millisecond timestamps, RCC access, wrap limits and functional-model time.
-- [DualShock 2](/systems/cpu-v3-tang-nano-20k/docs/dualshock2.md): autonomous Device5 receiver, latest-only CPU snapshot protocol, pin ownership and standalone cold-boot test.
+- [DualShock 2](/systems/cpu-v3-tang-nano-20k/docs/dualshock2.md): autonomous Device5 receiver, latest-only CPU snapshot protocol, pin ownership and controller diagnostics.
 - [Calibrated sticks](input-sticks.md): eight-bit calibration, native Q16.16 motion/direction/strength, cached gamepad frames and optional four-way activation hysteresis.
 - [`cpu-v3-optimization.md`](cpu-v3-optimization.md): concise one-sentence optimization index.
 - [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md): historical implementation,
@@ -43,7 +42,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 - [Resource renderer](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md): retained test-only Renderer/Frame contract; current callers use the explicit API.
 - [Borrowed render targets](/systems/cpu-v3-tang-nano-20k/docs/gpu-render-targets.md): retained legacy target-registry regression contract.
 - [GPU input pipeline](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md): retained test-only double-slot scheduler and UI mirror contract.
-- [`gpu-driver.md`](gpu-driver.md): native single-CB diagnostic library used by gpu_demo and dualshock2_ui, encoding, DSEG3 and submission/fault semantics.
+- [`gpu-driver.md`](gpu-driver.md): native single-CB diagnostic interface, encoding, DSEG3 and submission/fault semantics.
 - [GPU profiler](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md): sim/emu collection, cold GPU/MC replay, passive trace identities and offline viewing.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   cold-loader LED and application reporting.

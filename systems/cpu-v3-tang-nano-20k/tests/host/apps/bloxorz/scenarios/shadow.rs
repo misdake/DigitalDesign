@@ -175,7 +175,7 @@ pub(in super::super) fn web_shadow(case_name: &str) -> ApplicationCase {
             .required_replace("    shadow_batch_end(shadow_owner);\n", "");
 
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../../examples/gpu_renderer_bloxorz/assets/web-shadow-reference.json"
+            "../../../../../examples/game_bloxorz/assets/web-shadow-reference.json"
         ))
         .unwrap();
         let case = fixture["cases"]

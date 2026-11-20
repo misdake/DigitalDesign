@@ -64,7 +64,7 @@ fn cli_displays_typed_source_failure_without_reprinting_cargo_panic_noise() {
     };
     let run = root.join("run");
     let result = Command::new(env!("CARGO_BIN_EXE_cpu-v3-app"))
-        .args(["preview", "core-demo", "--out"])
+        .args(["preview", "demo-showcase", "--out"])
         .arg(&run)
         .env("CARGO", cargo)
         .env("DIAGNOSTIC_TEMPLATE", template)

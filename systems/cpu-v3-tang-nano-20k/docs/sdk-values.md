@@ -193,7 +193,7 @@ and sector endpoint checks. A retained failed assertion halts with signal 0xffff
 For a debug target, build into a new directory:
 
 ```powershell
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build core-demo --gpu-debug 1 --out target/core-demo/debug
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build demo-showcase --gpu-debug 1 --out target/core-demo/debug
 ```
 
 Use `--gpu-debug 0` for a release target. Cargo `--release` selects the host tool

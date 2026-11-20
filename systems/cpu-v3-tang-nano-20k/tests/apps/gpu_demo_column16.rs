@@ -186,7 +186,7 @@ fn actual_classic_serial_caller_uses_column_assets_and_targets() {
     std::fs::create_dir_all(&out).unwrap();
     let p = std::process::Command::new("python")
         .args(["-B"])
-        .arg(root.join("examples/gpu_demo/tools/assets.py"))
+        .arg(root.join("examples/demo_box_rabbit/tools/assets.py"))
         .args(["--output"])
         .arg(&assets)
         .output()
@@ -195,7 +195,7 @@ fn actual_classic_serial_caller_uses_column_assets_and_targets() {
     let m: serde_json::Value =
         serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap()).unwrap();
     let constants = std::fs::read_to_string(assets.join("demo_assets.rs")).unwrap();
-    let source = include_str!("../../examples/gpu_demo/rcc/main.rs");
+    let source = include_str!("../../examples/demo_box_rabbit/rcc/main.rs");
     let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     options.stack_init = cpu_v3_tang_nano_20k::boot::SINGLE_BOOT_STACK;
     let ir = rcc::frontend::compile_program_named(
@@ -204,7 +204,7 @@ fn actual_classic_serial_caller_uses_column_assets_and_targets() {
         &options,
         &mut |n| {
             resolver::load_module(
-                &root.join("examples/gpu_demo/rcc"),
+                &root.join("examples/demo_box_rabbit/rcc"),
                 &root.join("rcc"),
                 &constants,
                 n,

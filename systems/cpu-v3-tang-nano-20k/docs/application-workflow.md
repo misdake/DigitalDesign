@@ -8,20 +8,20 @@ Cargo `OUT_DIR` remains the sole authority for executable and CB06 bytes.
 
 ```powershell
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- list
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bloxorz --help
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bloxorz --out target/bloxorz-build
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build game-bloxorz --help
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build game-bloxorz --out target/bloxorz-build
 ```
 
 The PowerShell front door runs the same command with a Cargo summary:
 
 ```powershell
-& systems/cpu-v3-tang-nano-20k/tools/build-application.ps1 bloxorz target/bloxorz-build
+& systems/cpu-v3-tang-nano-20k/tools/build-application.ps1 game-bloxorz target/bloxorz-build
 ```
 
 Choose one build entry and a fresh output directory. `--out` is required by the
 Rust command. `--gpu-debug 0|1` selects the compiler option. Application options come from the same
-description as the build, for example `gpu-bench --scene micro|full`.
-`bloxorz --start-level 1..33` selects the initial level; the default is level 1.
+description as the build, for example `bench-gpu --scene micro|full`.
+`game-bloxorz --start-level 1..33` selects the initial level; the default is level 1.
 `--start-phase entry|play` selects animated entry or a resting start; default
 `entry` preserves normal gameplay, while `play` supports bounded warm-scene qualification.
 Help, list, invalid requests and nonempty-output rejection run before starting
@@ -29,13 +29,16 @@ Cargo or Python. Child-process environment selects the application; the caller's
 environment is not changed. Legacy `CPU_V3_BOOT_EXAMPLE` names remain valid aliases.
 The `default` entry reads `boot-applications.conf`; other entries explicitly own
 their source, frontend, entry point, ordinary modules and asset recipe.
+Application names use `demo-` for showcases, `sample-` for starter code,
+`game-` for complete games and `bench-` for benchmarks. Source directories
+use the same prefixes with underscores.
 
 ## Preview and run
 
 ```powershell
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo --page 5
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run core-demo
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo --snapshot target/core-demo/app
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview demo-showcase --page 5
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run demo-showcase
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview demo-showcase --snapshot target/core-demo/app
 ```
 
 Both commands use the same application build and canonical artifact checker as
@@ -169,11 +172,10 @@ build uses another fresh directory. The [artifact specification](/systems/cpu-v3
 owns file/SHA identities, debug and source/resource snapshots.
 
 The normal build validates its exported snapshot and does not produce a second
-`independent.bin` or export gateware. DS2/DS2UI adapters expose `-ExportHardware`
-as an explicit separate action. RTT/Bloxorz adapters retain their own software
-receipt and explicit hardware-binding options. `rtt400_board/build.ps1` remains
-the separate hardware export/build/audit entry; it is not an application build.
-The normal hardware binary is `cpu-v3-system`; existing-artifact consumers use
+`independent.bin` or export gateware. The render-to-texture and Bloxorz adapters
+retain their software receipts and explicit hardware-binding options. The hardware binary
+`cpu-v3-system` exports or builds the production board project independently
+of the selected application. Existing-artifact consumers use
 `hardware.py` and the standalone vendor tool. [Profiling](/systems/cpu-v3-tang-nano-20k/docs/application-profiling.md)
 consumes this verified application snapshot directly.
 

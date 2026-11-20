@@ -80,7 +80,7 @@ fn public_camera_matches_canonical_native_projection_culling_and_light() {
     // Euler/prepared-view formula used by the ordinary cache dependency tests.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let scene: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(root.join("examples/gpu_demo/assets/scene.json")).unwrap(),
+        &std::fs::read_to_string(root.join("examples/demo_box_rabbit/assets/scene.json")).unwrap(),
     )
     .unwrap();
     let expected: Vec<i64> = scene["cameras"][0]["matrix"]
@@ -474,11 +474,11 @@ renderer_close(renderer);halt(0x600d);}"#;
 #[test]
 fn minimal_application_uses_actual_packed_assets_and_public_renderer_calls() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let example = root.join("examples/gpu_renderer");
+    let fixture = root.join("tests/fixtures/gpu_renderer");
     let out = root.join("../../target/gpu-renderer-usage/minimal-assets");
     assert!(std::process::Command::new("python")
         .env("PYTHONDONTWRITEBYTECODE", "1")
-        .arg(example.join("tools/assets.py"))
+        .arg(root.join("applications/rendering/tools/minimal_assets.py"))
         .arg("--output")
         .arg(&out)
         .status()
@@ -487,7 +487,7 @@ fn minimal_application_uses_actual_packed_assets_and_public_renderer_calls() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     let mut config =
-        String::from("format 2\ngpu-api\napplication examples/gpu_renderer/rcc/main.rs\n");
+        String::from("format 2\ngpu-api\napplication tests/fixtures/gpu_renderer/rcc/main.rs\n");
     for r in manifest["resources"].as_array().unwrap() {
         let name = r["file"].as_str().unwrap();
         config.push_str(&format!(
@@ -505,7 +505,7 @@ fn minimal_application_uses_actual_packed_assets_and_public_renderer_calls() {
     for debug in [false, true] {
         let mut opts = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         opts.gpu_debug = debug;
-        let original_source = std::fs::read_to_string(example.join("rcc/main.rs"))
+        let original_source = std::fs::read_to_string(fixture.join("rcc/main.rs"))
             .unwrap()
             .replace("\r\n", "\n");
         // RCC initializes byte literals at main. Keep that real initialization path;
@@ -520,7 +520,7 @@ fn minimal_application_uses_actual_packed_assets_and_public_renderer_calls() {
             "minimal renderer app",
             &source,
             &opts,
-            &example.join("rcc"),
+            &fixture.join("rcc"),
             &root.join("rcc"),
             &constants,
             &rcc::frontend::rustc_check::RustcCheck::new(out.join("public-ownership")),

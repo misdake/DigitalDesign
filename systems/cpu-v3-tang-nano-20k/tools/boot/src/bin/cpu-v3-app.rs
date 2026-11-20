@@ -206,7 +206,12 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                         .map_err(|e| e.to_string())?;
                         if !manifest["application"]["source"]["path"]
                             .as_str()
-                            .is_some_and(|path| path.ends_with(source))
+                            .is_some_and(|path| {
+                                path.ends_with(source)
+                                    || definition
+                                        .previous_source
+                                        .is_some_and(|old| path.ends_with(old))
+                            })
                         {
                             return Err("snapshot belongs to a different application".into());
                         }

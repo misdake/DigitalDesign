@@ -18,13 +18,13 @@ a plane still being scanned or mutates a UI grid still used by its GPU work.
 
 | Caller | Recording and ownership behavior |
 | --- | --- |
-| `gpu_renderer/rcc/members.rs` | Two draws snapshot one mutable Model; three-frame entry confirms B/A/B. |
-| `gpu_renderer/rcc/changes.rs` | Eleven phases edit Camera, Model, Material and lighting; a live Pass retains its installed Camera, then a successor installs the edit. Alpha drawing uses explicit SrcOver state. |
-| `gpu_renderer_rtt/rcc/scene.rs` | A producer completes into caller-owned RTT planes before a consumer records their TextureView. The view may be dropped after recording. Texture invalidation is explicit between stages. |
+| `tests/fixtures/gpu_renderer/rcc/members.rs` | Two draws snapshot one mutable Model; three-frame entry confirms B/A/B. |
+| `tests/fixtures/gpu_renderer/rcc/changes.rs` | Eleven phases edit Camera, Model, Material and lighting; a live Pass retains its installed Camera, then a successor installs the edit. Alpha drawing uses explicit SrcOver state. |
+| `demo_render_to_texture/rcc/scene.rs` | A producer completes into caller-owned RTT planes before a consumer records their TextureView. The view may be dropped after recording. Texture invalidation is explicit between stages. |
 | `gpu_profiler_board/rcc/main.rs` | Static minimal diagnostic, bounded UART progress markers and explicit UI grid. |
 | `gpu_profiler_board/rcc/full_scene.rs` | Six box meshlets, one RGB meshlet and seventeen rabbit meshlets; the RGB draw uses `draw_colored`. |
-| `gpu_demo/rcc/public_main.rs` | The complete classic scene with continuous unified gamepad input, first-person camera, timing UI and explicit GPU/swap polling. |
-| `gpu_renderer_bloxorz/rcc/main.rs` | Explicit input/time sampling, offscreen transition snapshots, ordinary/fade consumers and confirmed presentation before session advancement. |
+| `demo_box_rabbit/rcc/public_main.rs` | The complete classic scene with continuous unified gamepad input, first-person camera, timing UI and explicit GPU/swap polling. |
+| `game_bloxorz/rcc/main.rs` | Explicit input/time sampling, offscreen transition snapshots, ordinary/fade consumers and confirmed presentation before session advancement. |
 
 The full box/RGB/rabbit scene explicitly preserves the original controller
 `gpu_demo` scene contract: trilinear filtering (native code2), LESS with depth
@@ -39,9 +39,9 @@ with g=256/h=0, so the shininess field contributes no specular term there.
 `Shininess::S12` means exponent12/code6, so the lit rabbit uses
 `Shininess::S32`. Other demo factories retain their own defaults. The full
 profiler entry has a fixed camera. `CPU_V3_BOOT_EXAMPLE=gpu_demo_api_column16`
-selects `examples/gpu_demo/rcc/public_main.rs` for the complete public-API
-controller scene. The earlier `gpu_demo_column16` entry at
-`examples/gpu_demo/rcc/main.rs` remains a separate native caller.
+selects `examples/demo_box_rabbit/rcc/public_main.rs` for the complete public-API
+controller scene. The native caller in `examples/demo_box_rabbit/rcc/main.rs`
+is exercised by the low-level regression suite.
 
 The public controller caller consumes one `gamepad` frame before preparing any
 previous-frame UART report. It retains both-stick movement/look, L1/R1 vertical

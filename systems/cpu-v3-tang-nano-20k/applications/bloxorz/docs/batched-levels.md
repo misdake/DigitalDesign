@@ -71,8 +71,8 @@ mesh. The output target is fixed Back B plus Depth; Front and Display are unused
 ## Validation boundary
 
 ```powershell
-& scripts/run-cargo.ps1 -Subcommand test -Label bloxorz-batch-cpu -CargoArgs @('-p','cpu-v3-tang-nano-20k','--example','bloxorz','batch_scene','--','--nocapture','--test-threads=1')
-& scripts/run-cargo.ps1 -Subcommand test -Label bloxorz-batch-native -CargoArgs @('-p','cpu-v3-tang-nano-20k','--example','bloxorz','batched_levels_native_gpu','--','--ignored','--nocapture','--test-threads=1')
+& scripts/run-cargo.ps1 -Subcommand test -Label bloxorz-batch-cpu -CargoArgs @('-p','cpu-v3-tang-nano-20k','--test','bloxorz_reference','batch_scene','--','--nocapture','--test-threads=1')
+& scripts/run-cargo.ps1 -Subcommand test -Label bloxorz-batch-native -CargoArgs @('-p','cpu-v3-tang-nano-20k','--test','bloxorz_reference','batched_levels_native_gpu','--','--ignored','--nocapture','--test-threads=1')
 ```
 
 All 35 cameras run as compiled RCC and pass shared instance bounds checks. The

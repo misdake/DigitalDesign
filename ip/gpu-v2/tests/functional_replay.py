@@ -30,7 +30,7 @@ def classic_case():
     This deliberately bounded representative is not a captured CPU frame or the
     historical full-scene visual gate. Matrices and V96 come from scene.json.
     """
-    example = ROOT / 'systems/cpu-v3-tang-nano-20k/examples/gpu_demo'
+    example = ROOT / 'systems/cpu-v3-tang-nano-20k/examples/demo_box_rabbit'
     spec = importlib.util.spec_from_file_location('native_demo_assets', example/'tools/assets.py')
     assets = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(assets)

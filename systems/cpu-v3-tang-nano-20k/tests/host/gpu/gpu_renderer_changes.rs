@@ -4,14 +4,14 @@ use cpu_v3::{Device, StepOutcome};
 
 fn application(name: &str) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let example = root.join("examples/gpu_renderer");
+    let fixture = root.join("tests/fixtures/gpu_renderer");
     let out = root
         .join("../../target/gpu-renderer-changes-validation")
         .join(name)
         .join("assets");
     assert!(std::process::Command::new("python")
         .env("PYTHONDONTWRITEBYTECODE", "1")
-        .arg(example.join("tools/assets.py"))
+        .arg(root.join("applications/rendering/tools/minimal_assets.py"))
         .arg("--output")
         .arg(&out)
         .status()
@@ -20,7 +20,7 @@ fn application(name: &str) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>)
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     let mut config =
-        String::from("format 2\ngpu-api\napplication examples/gpu_renderer/rcc/changes.rs\n");
+        String::from("format 2\ngpu-api\napplication tests/fixtures/gpu_renderer/rcc/changes.rs\n");
     let mut resources = Vec::new();
     for r in manifest["resources"].as_array().unwrap() {
         let name = r["file"].as_str().unwrap();
@@ -35,14 +35,14 @@ fn application(name: &str) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>)
     let constants =
         project.constants() + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let source = std::fs::read_to_string(example.join("rcc/changes.rs")).unwrap();
+    let source = std::fs::read_to_string(fixture.join("rcc/changes.rs")).unwrap();
     let source =
         crate::shared_application_entry::select(&source, "renderer_changed_frames").unwrap();
     let ir = resolver::compile_explicit_gpu_program_checked(
         "actual renderer changes",
         &source,
         &options,
-        &example.join("rcc"),
+        &fixture.join("rcc"),
         &root.join("rcc"),
         &constants,
         &rcc::frontend::rustc_check::RustcCheck::new(out.join("checked")),

@@ -101,7 +101,7 @@ fn real_resource_frames_overlap_and_retire_independently() {
     let mut producer = Command::new("python");
     producer
         .env("PYTHONDONTWRITEBYTECODE", "1")
-        .arg(root.join("examples/gpu_renderer/tools/assets.py"))
+        .arg(root.join("applications/rendering/tools/minimal_assets.py"))
         .arg("--output")
         .arg(&assets);
     bounded(&mut producer, &out.join("producer"), 60);

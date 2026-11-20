@@ -14,7 +14,7 @@ verification evidence live at the same commit.
 ## Write an application
 
 Start with the [CPU V3 application guide](/systems/cpu-v3-tang-nano-20k/README.md)
-and its [core capability demo](/systems/cpu-v3-tang-nano-20k/examples/core_demo/README.md).
+and its [system showcase](/systems/cpu-v3-tang-nano-20k/examples/demo_showcase/README.md).
 The quickstart builds an ordinary application and displays its first frame in
 simulation before introducing hardware implementation and detailed references.
 
@@ -143,7 +143,7 @@ link resolving.
 cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v3 --code-base 0x200
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-dbg -- input.rs
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- list
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bloxorz --out target/bloxorz-build
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build game-bloxorz --out target/bloxorz-build
 cargo run --release -p cpu-v3-boot-format --bin cpu-v3-pack -- application.v3bin
 ```
 

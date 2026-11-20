@@ -39,7 +39,7 @@ impl Fixture {
         let assets = out.join("assets");
         let packed = std::process::Command::new("python")
             .arg("-B")
-            .arg(root.join("examples/gpu_renderer/tools/assets.py"))
+            .arg(root.join("applications/rendering/tools/minimal_assets.py"))
             .arg("--output")
             .arg(&assets)
             .output()
@@ -522,7 +522,7 @@ fn actual_minimal_member_demo_runs_three_frames() {
     for (label, debug) in [("demo", false), ("demo-debug", true)] {
         let f = Fixture::new(label);
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let source = include_str!("../../../examples/gpu_renderer/rcc/members.rs")
+        let source = include_str!("../../../tests/fixtures/gpu_renderer/rcc/members.rs")
             .replace("fn main()", "fn interactive_main()")
             + "\nfn main(){renderer_member_three_frames();}\n";
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
@@ -531,7 +531,7 @@ fn actual_minimal_member_demo_runs_three_frames() {
             "actual public member demo",
             &source,
             &options,
-            &root.join("examples/gpu_renderer/rcc"),
+            &root.join("tests/fixtures/gpu_renderer/rcc"),
             &root.join("rcc"),
             &f.constants,
             &RustcCheck::new(f.out.join("public-rustc")),
