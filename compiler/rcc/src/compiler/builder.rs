@@ -396,9 +396,14 @@ impl FuncBuilder {
     fn fresh_fpu(&mut self) -> VReg {
         self.func.fresh_vreg(RegClass::Fpu)
     }
-    pub fn fpu_bin(&mut self, op: FpuBinOp, lhs: VReg, rhs: VReg) -> VReg {
+    pub fn fpu_bin(&mut self, op: impl Into<FpuScalarBinOp>, lhs: VReg, rhs: VReg) -> VReg {
         let dst = self.fresh_fpu();
-        self.push(Instr::FpuBin { dst, op, lhs, rhs });
+        self.push(Instr::FpuBin {
+            dst,
+            op: op.into(),
+            lhs,
+            rhs,
+        });
         dst
     }
     pub fn fpu_un(&mut self, op: FpuUnOp, src: VReg) -> VReg {

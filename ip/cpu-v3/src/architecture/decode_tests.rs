@@ -215,6 +215,27 @@ fn fpu_pairs_do_not_consume_a_prefix_and_merge_streaming() {
 }
 
 #[test]
+fn fpu_scalar_multiply_modes_encode_and_disassemble() {
+    for (mode, name) in [
+        (0, "mul"),
+        (1, "mul.lo32"),
+        (2, "mul.shr8"),
+        (3, "mul.shr24"),
+    ] {
+        let words = fpu_scalar(3, 4, 5, FpuScalarSubop::Mul, mode);
+        assert_eq!(words, [0xd0c4, 0x1420 | u16::from(mode)]);
+        let instruction = decode_fpu_pair(words[0], words[1]);
+        assert_eq!(instruction.text(None), format!("{name} f5, f3, f4"));
+    }
+    for mode in 4..16 {
+        assert!(matches!(
+            decode_fpu_pair(0xd0c4, 0x1420 | mode),
+            Instruction::FpuReserved { .. }
+        ));
+    }
+}
+
+#[test]
 fn vector_rounding_slots_are_reserved_for_every_length_and_mode() {
     for subop in 0x08..=0x0b {
         assert!(FpuVectorSubop::from_field(subop).is_none());

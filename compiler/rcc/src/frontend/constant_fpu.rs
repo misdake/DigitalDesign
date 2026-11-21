@@ -1,6 +1,7 @@
 //! Const scalar arithmetic and special functions through the real host shim.
 use super::{err, Evaluator, Integer, Value};
 use crate::dsl_rt::{self, fix32};
+use crate::FpuMulWindow;
 use proc_macro2::Span;
 use std::collections::HashMap;
 use syn::{parse_quote, spanned::Spanned, Expr};
@@ -128,6 +129,18 @@ pub(super) fn call(
     };
     if let Some(name) = path.path.get_ident() {
         let name = name.to_string();
+        if let Some(window) = FpuMulWindow::from_intrinsic(&name) {
+            if call.args.len() != 2 {
+                return Err(err(call, format!("{name}(a, b) takes 2 arguments")));
+            }
+            let a = require(evaluator.eval(&call.args[0], locals, None)?, &call.args[0])?;
+            let b = require(evaluator.eval(&call.args[1], locals, None)?, &call.args[1])?;
+            return Ok(Some(fixed(dsl_rt::fix32_mul_shift(
+                a.0,
+                b.0,
+                window.shift(),
+            ))));
+        }
         if !matches!(
             name.as_str(),
             "frcp" | "frsqrt" | "fsin" | "fcos" | "fsincos"

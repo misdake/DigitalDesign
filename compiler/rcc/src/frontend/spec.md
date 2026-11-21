@@ -222,6 +222,9 @@ they are not part of this surface.
 | vector construction | `vec2::new(x, y)`, `vec3::new(x, y, z)`, `vec4::new(x, y, z, w)` | build a consecutive F-register range from `fix32` lanes |
 | lane extraction | `.x()`, `.y()`, `.z()`, `.w()` as applicable to the type | return one `fix32` lane; no memory access |
 | scalar arithmetic | `fix32 + fix32`, `-`, `*`, unary `-`; `+=`, `-=`, `*=` | wrapping scalar ALU/multiply operations |
+| raw product low word pair | `fmul_lo32(a: fix32, b: fix32) -> fix32` | `MUL.LO32`, signed product bits `[31:0]` |
+| raw product shifted by 8 | `fmul_shr8(a: fix32, b: fix32) -> fix32` | `MUL.SHR8`, signed product bits `[39:8]`, suitable for Q24.8 × Q24.8 |
+| raw product shifted by 24 | `fmul_shr24(a: fix32, b: fix32) -> fix32` | `MUL.SHR24`, signed product bits `[55:24]`, suitable for Q8.24 × Q8.24 |
 | vector arithmetic | same-width `vecN + vecN`, `-`, `*`, unary `-` | component-wise `VADD`, `VSUB`, `VMUL`, `VNEG` |
 | scalar-vector multiply | `vecN * fix32`, `fix32 * vecN` | broadcast scalar multiply (`VMULS`) |
 | comparison | `fix32 == != < <= > >= fix32` | signed scalar `CMP`; vectors have no compare/mask operation |
@@ -243,6 +246,12 @@ they are not part of this surface.
 | checked squared length | `v3_length2_checked(v: vec3) -> fix32` | require every component in inclusive `[-104,+104]`; otherwise halt signal 1 |
 | checked normalization | `v3_normalize_checked(v: vec3) -> vec3` | same component range; otherwise halt signal 2 |
 | checked distance | `v3_distance_gt_checked(a: vec3, b: vec3, threshold: fix32) -> bool` | require inputs in `[-16384,+16383]` then differences in `[-104,+104]`; otherwise halt signal 3 or 4 |
+
+The three raw product intrinsics require CPU V3 ISA revision 0.12 and are
+available in constant expressions. They multiply the signed bit patterns
+and copy the selected 32 bits to the result. Use `fix32::from_words` to
+construct raw inputs and `.lo_bits()` / `.hi_bits()` to extract the result.
+The caller tracks the binary point. Ordinary `fix32 * fix32` uses bits `[47:16]`.
 
 ## 6. Design decisions
 

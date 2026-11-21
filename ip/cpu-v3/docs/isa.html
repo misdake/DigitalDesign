@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CPU V3 ISA v0.11 — Encoding, ABI, and Addressing</title>
+<title>CPU V3 ISA v0.12 — Encoding, ABI, and Addressing</title>
 <style>
   :root {
     --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
@@ -63,6 +63,13 @@
   .bit { border: 1px solid var(--line); border-right: 0; padding: 7px 2px; text-align: center; font: 12px "Cascadia Code", Consolas, monospace; }
   .bit:last-child { border-right: 1px solid var(--line); }
   .bit-label { font-size: 10px; color: var(--dim); }
+  .fpu-encoding-scroll { overflow-x: auto; }
+  .fpu-encoding { table-layout: fixed; min-width: 720px; }
+  .fpu-encoding .fpu-word { width: 82px; }
+  .fpu-encoding th, .fpu-encoding td { padding: 6px 4px; text-align: center; vertical-align: middle; }
+  .fpu-encoding thead th { font-size: 11px; font-weight: 500; color: var(--dim); }
+  .fpu-encoding .bit-label { font-size: 11px; color: inherit; }
+  .fpu-mode { background: var(--amber-bg); color: #784300; box-shadow: inset 0 -2px var(--amber); }
   svg { width: 100%; min-width: 780px; height: auto; }
   .box { fill: #fff; stroke: #aeb9c8; stroke-width: 1.5; }
   .box-blue { fill: #eaf2ff; stroke: #5a8dee; stroke-width: 1.5; }
@@ -82,7 +89,7 @@
 <body><main>
 
 <section class="hero">
-  <h1>CPU V3 ISA v0.11</h1>
+  <h1>CPU V3 ISA v0.12</h1>
   <p class="subtitle">Instruction encoding, architectural behavior, segmented addressing, faults, and compiler ABI.</p>
   <div class="badges">
     <span class="badge">16-bit fixed instruction words</span>
@@ -90,7 +97,7 @@
     <span class="badge">16-bit word offsets</span>
     <span class="badge">Segmented physical word addresses</span>
     <span class="badge">Transient pending test, no persistent flags</span>
-    <span class="badge">Revision 0.10</span>
+    <span class="badge">Revision 0.12</span>
   </div>
   <ol class="toc">
     <li><a href="#overview">Architectural overview</a></li>
@@ -138,7 +145,7 @@
 </div>
 
 <h2 id="encoding">2. Encoding rules</h2>
-<p>Every physical instruction is one 16-bit word shown as four hexadecimal nibbles <code>[n3 n2 n1 n0]</code>. Bit 15 is the most significant bit.</p>
+<p>Each instruction word is 16 bits, shown as four hexadecimal nibbles <code>[n3 n2 n1 n0]</code>. Bit 15 is the most significant bit. See the <a href="#fpu">FPU two-word encodings</a> for opcodes C, D, and E.</p>
 <div class="panel">
   <div class="bitrow">
     <div class="bit op">15<br><span class="bit-label">n3[3]</span></div><div class="bit op">14<br><span class="bit-label">n3[2]</span></div><div class="bit op">13<br><span class="bit-label">n3[1]</span></div><div class="bit op">12<br><span class="bit-label">n3[0]</span></div>
@@ -172,9 +179,9 @@
   <tr><td class="center memory mono">9</td><td class="memory">STORE</td><td class="mono">9 rs base imm4</td><td>Write one 16-bit word.</td></tr>
   <tr><td class="center imm mono">A</td><td class="imm">Immediate</td><td class="mono">A fn rd imm4</td><td>Arithmetic, logic, constant construction (including the shared LDC/ADDC constant table), and immediate comparisons.</td></tr>
   <tr><td class="center control mono">B</td><td class="control">Branch / move / jump</td><td class="mono">B fn ...</td><td>Six conditional branches, JREL/JALREL, six conditional moves, JREG/JALR.</td></tr>
-  <tr><td class="center extended mono">C</td><td class="extended">FPU VECTOR</td><td class="mono">C Fa Fb + word1</td><td>Two-word vector ALU, multiply, and dot operations.</td></tr>
-  <tr><td class="center extended mono">D</td><td class="extended">FPU SCALAR</td><td class="mono">D Fa Fb + word1</td><td>Two-word scalar ALU, compare, and special functions.</td></tr>
-  <tr><td class="center extended mono">E</td><td class="extended">FPU AUX</td><td class="mono">E X Fa kind + word1</td><td>Two-word integer bridges and FLD/FST/FLDV/FSTV.</td></tr>
+  <tr><td class="center extended mono">C</td><td class="extended"><a href="#fpu-vector-opcode-c">FPU VECTOR</a></td><td class="mono">C Fa Fb + word1</td><td>Two-word vector ALU, multiply, and dot operations.</td></tr>
+  <tr><td class="center extended mono">D</td><td class="extended"><a href="#fpu-scalar-opcode-d">FPU SCALAR</a></td><td class="mono">D Fa Fb + word1</td><td>Two-word scalar ALU, compare, and special functions.</td></tr>
+  <tr><td class="center extended mono">E</td><td class="extended"><a href="#fpu-aux-opcode-e">FPU AUX</a></td><td class="mono">E X Fa kind + word1</td><td>Two-word integer bridges and FLD/FST/FLDV/FSTV.</td></tr>
   <tr><td class="center imm mono">F</td><td class="imm">PFX12</td><td class="mono">F payload12</td><td>Creates a pending 12-bit prefix payload.</td></tr>
 </table>
 
@@ -293,43 +300,231 @@
 <p class="caption">The relative offset is signed i8 relative to the already-incremented PC (±128 words). With <code>PFX12</code> the offset widens to <code>off16 = {payload12[7:0], imm8}</code>: the prefix's low byte supplies the high byte and <code>payload12[11:8]</code> is ignored. Conditional branches and conditional moves consume the pending test whether or not the branch is taken or the move writes, and fault <code>InvalidInstruction</code> without one — reported at the prefix address when prefixed. Register forms (functions 8..F) never consume a prefix. Reset leaves no pending result.</p>
 <p>The pending test result is a transient three-way ordering (Less/Equal/Greater) set only by the CMP-class instructions <code>CMPS</code>, <code>CMPU</code>, <code>CMPSI</code>, and <code>CMPUI</code>. Any other retired non-prefix instruction expires it, and <code>PFX12</code> is transparent to it. <code>JALREL</code>/<code>JALR</code> link to the architecturally fixed <code>r14</code>; compiler-generated wide control flow uses the canonical prefix with a 16-bit wrapping relative offset.</p>
 
-<h3>4.8 FPU v2 &mdash; opcodes C, D, E</h3>
-<p>Every FPU v2 instruction is 32 bits fetched as two consecutive 16-bit words
-and never consumes <code>PFX12</code>. All F registers are signed Q16.16
-(16 fractional bits, range about [-32768, +32767.99998]) and every operation
-wraps: no saturation and no exception output. A vector is a consecutive
-register-range view, not an architectural type. The wide accumulator is signed
-64-bit Q32.32: each product is exact, accumulation keeps the low 64 bits, and
-<code>DOTSTORE</code> takes <code>ACC[47:16]</code> from that wrapped sum.</p>
-<table>
-  <tr><th>opcode</th><th>Layout</th><th>Summary</th></tr>
-  <tr><td class="mono">C</td><td class="mono">word0: 0xC Fa Fb &middot; word1: Fd len subop mode</td><td>VADD, VSUB, VMUL, VMULS, VMIN, VMAX, VABS, VNEG, VMOV, DOT, DOTADD, DOTSTORE; subops 08..0B are reserved (rounding is scalar-only); len 00/01/10 = vec2/3/4; DOT mode[1:0] selects stride 1/3/4.</td></tr>
-  <tr><td class="mono">D</td><td class="mono">word0: 0xD Fa Fb &middot; word1: Fd subop mode</td><td>ADD, SUB, MUL, MIN, MAX, ABS, NEG, FLOOR, CEIL, ROUND, TRUNC, CMP, RCP, RSQRT, SINCOS, MOV; CMP writes the pending test; SINCOS mode[1:0] selects sin+cos / sin / cos.</td></tr>
-  <tr><td class="mono">E</td><td class="mono">word0: 0xE X Fa kind &middot; word1: Fd subop mode</td><td>kind 00: FLD, FST, ILO2F, IHI2F, FLO2I, FHI2I, I16TOF, FTOI16. FLD/FST move two words per register, <em>low half first</em>; mode[1:0] + 1 gives the vector length.</td></tr>
+<h3 id="fpu">4.8 FPU v2 &mdash; opcodes C, D, E</h3>
+<p>Word 0 is fetched first. FPU pairs never consume <code>PFX12</code>.
+<code>Fa</code>, <code>Fb</code>, and <code>Fd</code> index <code>F0..F63</code>. Subop values are hexadecimal.</p>
+<p>Emit only defined encodings. Reserved FPU encodings raise <code>InvalidInstruction</code>
+in the instruction simulator and have undefined behavior on hardware.</p>
+<p>F registers hold signed Q16.16 values for arithmetic. Integer bridges and
+memory transfers also expose the raw bits. Ordinary arithmetic wraps without
+saturation or exception flags. <code>q16(P)</code> means bits <code>P[47:16]</code> of a signed
+64-bit product or accumulator, with no rounding.</p>
+<h4 id="fpu-vector-opcode-c">FPU VECTOR (opcode C)</h4>
+<div class="fpu-encoding-scroll">
+<table class="fpu-encoding mono">
+  <colgroup><col class="fpu-word"><col span="16"></colgroup>
+  <thead>
+    <tr>
+      <th scope="col">Bit</th>
+      <th scope="col">15</th><th scope="col">14</th><th scope="col">13</th><th scope="col">12</th>
+      <th scope="col">11</th><th scope="col">10</th><th scope="col">9</th><th scope="col">8</th>
+      <th scope="col">7</th><th scope="col">6</th><th scope="col">5</th><th scope="col">4</th>
+      <th scope="col">3</th><th scope="col">2</th><th scope="col">1</th><th scope="col">0</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row">Word 0</th>
+      <td colspan="4" class="op"><strong>0xC</strong><br><span class="bit-label">[15:12]</span></td>
+      <td colspan="6" class="reg"><strong>Fa</strong><br><span class="bit-label">[11:6]</span></td>
+      <td colspan="6" class="reg"><strong>Fb</strong><br><span class="bit-label">[5:0]</span></td>
+    </tr>
+    <tr>
+      <th scope="row">Word 1</th>
+      <td colspan="6" class="reg"><strong>Fd</strong><br><span class="bit-label">[15:10]</span></td>
+      <td colspan="2" class="imm"><strong>len</strong><br><span class="bit-label">[9:8]</span></td>
+      <td colspan="5" class="extended"><strong>subop</strong><br><span class="bit-label">[7:3]</span></td>
+      <td colspan="3" class="fpu-mode"><strong>mode</strong><br><span class="bit-label">[2:0]</span></td>
+    </tr>
+  </tbody>
 </table>
-<p>Rounding is frozen as round-half-up (<code>floor(x + 0x8000)</code>, ties
-toward +infinity); FLOOR clears the fraction, CEIL adds a unit when a fraction
-remains, and TRUNC is toward zero. RCP(0) returns <code>0x7FFFFFFF</code> and
-RSQRT(x) is zero for x &le; 0. All F registers are caller-saved and ACC is
-caller-clobbered; the compiler ABI reserves F0..F3 for returns, F4..F27 for
-arguments, F28..F62 for allocation, and F63 for parallel-move cycles. The v3 geometry library (<code>v3_length2</code>, <code>v3_normalize</code>,
-<code>v3_distance_gt</code> and their <code>_checked</code> debug variants) is a
-compiler library, not opcodes, lowered to existing FPU v2 instructions:
-<code>v3_length2</code> is one <code>DOTSTORE</code>, <code>v3_normalize</code>
-adds <code>RSQRT</code> plus a scalar-vector <code>VMULS</code> (a zero vector
-stays zero), and <code>v3_distance_gt</code> is <code>VSUB</code>, one
-<code>DOTSTORE</code>, the ordinary distance approximated as
-<code>s * RSQRT(s)</code>, then the scalar <code>CMP</code> against the ordinary
-Q16.16 threshold. The release helpers emit no checks and assume a small-range
-Q16.16 contract; the <code>_checked</code> variants validate it and
-<code>halt</code> with a fixed nonzero signal (1 length2, 2 normalize, 3
-distance input, 4 distance difference) instead of clamping. Length/normalize
-require every component within <code>[-104, +104]</code> Q16.16; distance
-requires every input component within <code>[-16384, +16383]</code> so the
-32-bit subtraction cannot overflow, then every difference component within
-<code>[-104, +104]</code> before <code>DOTSTORE</code>. The single
-<code>DOTSTORE</code> narrowing and the <code>RSQRT</code>/<code>MUL</code>
-approximation make the ordinary-distance boundary approximate.</p>
+</div>
+<p><code>len = 00/01/10</code> selects <code>N = 2/3/4</code> lanes. <code>11</code> is reserved. For lane <code>i</code>
+from 0 to <code>N-1</code>, <code>A[i] = F[Fa+i]</code>, <code>B[i] = F[Fb+i]</code>, and <code>D[i] = F[Fd+i]</code>.
+For example, <code>VADD.3 F20, F4, F8</code> writes F20 through F22 from the three
+corresponding pairs. Register ranges must fit within F0 through F63.
+Vector-valued destinations may alias a source at the same base or be fully
+disjoint. Software must avoid partial overlap.</p>
+<table>
+  <tr><th scope="col">Subop</th><th scope="col">Mnemonic</th><th scope="col">Semantics</th></tr>
+  <tr><td><code>00</code></td><td><code>VADD.N Fd, Fa, Fb</code></td><td><code>D[i] = A[i] + B[i]</code></td></tr>
+  <tr><td><code>01</code></td><td><code>VSUB.N Fd, Fa, Fb</code></td><td><code>D[i] = A[i] - B[i]</code></td></tr>
+  <tr><td><code>02</code></td><td><code>VMUL.N Fd, Fa, Fb</code></td><td><code>D[i] = q16(A[i] * B[i])</code></td></tr>
+  <tr><td><code>03</code></td><td><code>VMULS.N Fd, Fa, Fb</code></td><td><code>D[i] = q16(A[i] * F[Fb])</code> using one scalar second source</td></tr>
+  <tr><td><code>04</code></td><td><code>VMIN.N Fd, Fa, Fb</code></td><td><code>D[i] = min(A[i], B[i])</code></td></tr>
+  <tr><td><code>05</code></td><td><code>VMAX.N Fd, Fa, Fb</code></td><td><code>D[i] = max(A[i], B[i])</code></td></tr>
+  <tr><td><code>06</code></td><td><code>VABS.N Fd, Fa</code></td><td><code>D[i] = abs(A[i])</code></td></tr>
+  <tr><td><code>07</code></td><td><code>VNEG.N Fd, Fa</code></td><td><code>D[i] = -A[i]</code></td></tr>
+  <tr><td><code>08..0B</code></td><td>Reserved</td><td>Invalid encoding</td></tr>
+  <tr><td><code>0C</code></td><td><code>VMOV.N Fd, Fa</code></td><td><code>D[i] = A[i]</code></td></tr>
+  <tr><td><code>0D</code></td><td><code>DOT.N Fa, Fb</code></td><td><code>ACC = sum</code></td></tr>
+  <tr><td><code>0E</code></td><td><code>DOTADD.N Fa, Fb</code></td><td><code>ACC = ACC + sum</code></td></tr>
+  <tr><td><code>0F</code></td><td><code>DOTSTORE.N Fd, Fa, Fb</code></td><td><code>F[Fd] = q16(sum)</code>, then clear <code>ACC</code></td></tr>
+  <tr><td><code>10..1F</code></td><td>Reserved</td><td>Invalid encoding</td></tr>
+</table>
+<p>For DOT, DOTADD, and DOTSTORE, <code>sum</code> is the sum of <code>F[Fa+i] * F[Fb+i*stride]</code>
+for all lanes. The products are exact signed 64-bit Q32.32 values. The sum
+and ACC addition wrap modulo 2^64. DOTSTORE takes the result from this
+instruction&#x27;s sum and writes one F register. DOT and DOTADD write only ACC.</p>
+<table>
+  <tr><th scope="col">DOT-family <code>mode[1:0]</code></th><th scope="col">Second-source stride</th></tr>
+  <tr><td><code>00</code></td><td>1</td></tr>
+  <tr><td><code>01</code></td><td>3</td></tr>
+  <tr><td><code>10</code></td><td>4</td></tr>
+  <tr><td><code>11</code></td><td>Reserved</td></tr>
+</table>
+<p>VECTOR <code>mode[2]</code> must be zero. All three mode bits must be zero outside the
+DOT family. Encode unused operands as zero, including <code>Fb</code> for unary
+operations and <code>Fd</code> for DOT and DOTADD.</p>
+<h4 id="fpu-scalar-opcode-d">FPU SCALAR (opcode D)</h4>
+<div class="fpu-encoding-scroll">
+<table class="fpu-encoding mono">
+  <colgroup><col class="fpu-word"><col span="16"></colgroup>
+  <thead>
+    <tr>
+      <th scope="col">Bit</th>
+      <th scope="col">15</th><th scope="col">14</th><th scope="col">13</th><th scope="col">12</th>
+      <th scope="col">11</th><th scope="col">10</th><th scope="col">9</th><th scope="col">8</th>
+      <th scope="col">7</th><th scope="col">6</th><th scope="col">5</th><th scope="col">4</th>
+      <th scope="col">3</th><th scope="col">2</th><th scope="col">1</th><th scope="col">0</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row">Word 0</th>
+      <td colspan="4" class="op"><strong>0xD</strong><br><span class="bit-label">[15:12]</span></td>
+      <td colspan="6" class="reg"><strong>Fa</strong><br><span class="bit-label">[11:6]</span></td>
+      <td colspan="6" class="reg"><strong>Fb</strong><br><span class="bit-label">[5:0]</span></td>
+    </tr>
+    <tr>
+      <th scope="row">Word 1</th>
+      <td colspan="6" class="reg"><strong>Fd</strong><br><span class="bit-label">[15:10]</span></td>
+      <td colspan="6" class="extended"><strong>subop</strong><br><span class="bit-label">[9:4]</span></td>
+      <td colspan="4" class="fpu-mode"><strong>mode</strong><br><span class="bit-label">[3:0]</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+<p><code>mode[1:0]</code> selects the product window for MUL or the output for SINCOS.
+<code>mode[3:2]</code> must be zero. Every other scalar subop requires <code>mode = 0000</code>.</p>
+<table>
+  <tr><th scope="col">Subop</th><th scope="col">Mnemonic</th><th scope="col">Semantics</th></tr>
+  <tr><td><code>00</code></td><td><code>ADD Fd, Fa, Fb</code></td><td><code>Fd = Fa + Fb</code></td></tr>
+  <tr><td><code>01</code></td><td><code>SUB Fd, Fa, Fb</code></td><td><code>Fd = Fa - Fb</code></td></tr>
+  <tr><td><code>02</code></td><td><code>MUL Fd, Fa, Fb</code></td><td>Select a 32-bit window from the signed 64-bit product <code>P = Fa * Fb</code> using the mode table below</td></tr>
+  <tr><td><code>03</code></td><td><code>MIN Fd, Fa, Fb</code></td><td>Signed minimum</td></tr>
+  <tr><td><code>04</code></td><td><code>MAX Fd, Fa, Fb</code></td><td>Signed maximum</td></tr>
+  <tr><td><code>05</code></td><td><code>ABS Fd, Fa</code></td><td>Wrapping absolute value</td></tr>
+  <tr><td><code>06</code></td><td><code>NEG Fd, Fa</code></td><td>Wrapping negation</td></tr>
+  <tr><td><code>07</code></td><td><code>FLOOR Fd, Fa</code></td><td>Round toward negative infinity by clearing the low 16 bits</td></tr>
+  <tr><td><code>08</code></td><td><code>CEIL Fd, Fa</code></td><td>Round toward positive infinity by adding raw <code>0x10000</code> to the floor if any fractional bits are set</td></tr>
+  <tr><td><code>09</code></td><td><code>ROUND Fd, Fa</code></td><td>Round to nearest integer, ties toward positive infinity. Add raw <code>0x8000</code>, wrap, then clear the low 16 bits</td></tr>
+  <tr><td><code>0A</code></td><td><code>TRUNC Fd, Fa</code></td><td>Round toward zero, retaining the Q16.16 representation</td></tr>
+  <tr><td><code>0B</code></td><td><code>CMP Fa, Fb</code></td><td>Set the pending test to the signed ordering of <code>Fa</code> and <code>Fb</code></td></tr>
+  <tr><td><code>0C</code></td><td><code>RCP Fd, Fa</code></td><td>Approximate reciprocal. Clamp overflow to magnitude <code>0x7FFF_FFFF</code>. Input zero returns <code>0x7FFF_FFFF</code></td></tr>
+  <tr><td><code>0D</code></td><td><code>RSQRT Fd, Fa</code></td><td>Approximate reciprocal square root. Input <code>Fa &lt;= 0</code> returns zero</td></tr>
+  <tr><td><code>0E</code></td><td><code>SINCOS Fd, Fa</code></td><td>Approximate sine and/or cosine of angle <code>Fa</code> in radians. See the mode table below</td></tr>
+  <tr><td><code>0F</code></td><td><code>MOV Fd, Fa</code></td><td>Copy all 32 bits</td></tr>
+  <tr><td><code>10..3F</code></td><td>Reserved</td><td>Invalid encoding</td></tr>
+</table>
+<p>CMP writes no F register. Its pending test is consumed by conditional
+branches and moves just as for <code>CMPS</code> and <code>CMPU</code>.</p>
+<table>
+  <tr><th scope="col">MUL <code>mode[1:0]</code></th><th scope="col">Mnemonic</th><th scope="col">Bits written to <code>Fd</code></th></tr>
+  <tr><td><code>00</code></td><td><code>MUL</code></td><td><code>P[47:16]</code> (Q16.16 × Q16.16)</td></tr>
+  <tr><td><code>01</code></td><td><code>MUL.LO32</code></td><td><code>P[31:0]</code> (integer low half)</td></tr>
+  <tr><td><code>10</code></td><td><code>MUL.SHR8</code></td><td><code>P[39:8]</code> (Q24.8 × Q24.8)</td></tr>
+  <tr><td><code>11</code></td><td><code>MUL.SHR24</code></td><td><code>P[55:24]</code> (Q8.24 × Q8.24)</td></tr>
+</table>
+<p>MUL multiplies the raw signed 32-bit operands. A result window with a
+right shift of <code>s</code> has <code>fa + fb - s</code> fractional bits when the inputs have
+<code>fa</code> and <code>fb</code> fractional bits. All modes discard the other product bits.
+For example, <code>MUL.LO32 F5, F3, F4</code> is <code>D0C4 1421</code>.</p>
+<table>
+  <tr><th scope="col">SINCOS <code>mode[1:0]</code></th><th scope="col">Result</th></tr>
+  <tr><td><code>00</code></td><td><code>Fd = sin(Fa)</code>, <code>Fd+1 = cos(Fa)</code>. Requires <code>Fd &lt;= 62</code></td></tr>
+  <tr><td><code>01</code></td><td><code>Fd = sin(Fa)</code></td></tr>
+  <tr><td><code>10</code></td><td><code>Fd = cos(Fa)</code></td></tr>
+  <tr><td><code>11</code></td><td>Reserved</td></tr>
+</table>
+<p>RCP, RSQRT, and SINCOS use lookup tables in the hidden register-file BSRAM
+region and have no IEEE special values.</p>
+<h4 id="fpu-aux-opcode-e">FPU AUX (opcode E)</h4>
+<div class="fpu-encoding-scroll">
+<table class="fpu-encoding mono">
+  <colgroup><col class="fpu-word"><col span="16"></colgroup>
+  <thead>
+    <tr>
+      <th scope="col">Bit</th>
+      <th scope="col">15</th><th scope="col">14</th><th scope="col">13</th><th scope="col">12</th>
+      <th scope="col">11</th><th scope="col">10</th><th scope="col">9</th><th scope="col">8</th>
+      <th scope="col">7</th><th scope="col">6</th><th scope="col">5</th><th scope="col">4</th>
+      <th scope="col">3</th><th scope="col">2</th><th scope="col">1</th><th scope="col">0</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row">Word 0</th>
+      <td colspan="4" class="op"><strong>0xE</strong><br><span class="bit-label">[15:12]</span></td>
+      <td colspan="4" class="reg"><strong>X</strong><br><span class="bit-label">[11:8]</span></td>
+      <td colspan="6" class="reg"><strong>Fa</strong><br><span class="bit-label">[7:2]</span></td>
+      <td colspan="2" class="imm"><strong>kind</strong><br><span class="bit-label">[1:0]</span></td>
+    </tr>
+    <tr>
+      <th scope="row">Word 1</th>
+      <td colspan="6" class="reg"><strong>Fd</strong><br><span class="bit-label">[15:10]</span></td>
+      <td colspan="6" class="extended"><strong>subop</strong><br><span class="bit-label">[9:4]</span></td>
+      <td colspan="4" class="fpu-mode"><strong>mode</strong><br><span class="bit-label">[3:0]</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+<p><code>X</code> is a four-bit GPR index and <code>rX = GPR[X]</code>.
+<code>kind = 00</code> selects this operand class. The other kind values are unassigned.
+FLD and FST use <code>mode[1:0]</code> to select the transfer length, with
+<code>mode[3:2] = 00</code>. Every integer bridge requires <code>mode = 0000</code>.</p>
+<table>
+  <tr><th scope="col">Subop</th><th scope="col">Mnemonic</th><th scope="col">Semantics</th></tr>
+  <tr><td><code>00</code></td><td><code>FLD Fd, [rX]</code> / <code>FLDV.N Fd, [rX]</code></td><td>Load <code>N</code> consecutive F registers starting at <code>Fd</code></td></tr>
+  <tr><td><code>01</code></td><td><code>FST [rX], Fa</code> / <code>FSTV.N [rX], Fa</code></td><td>Store <code>N</code> consecutive F registers starting at <code>Fa</code></td></tr>
+  <tr><td><code>02</code></td><td><code>ILO2F Fd, rX</code></td><td>Copy <code>rX</code> to <code>Fd[15:0]</code>, preserving the high half</td></tr>
+  <tr><td><code>03</code></td><td><code>IHI2F Fd, rX</code></td><td>Copy <code>rX</code> to <code>Fd[31:16]</code>, preserving the low half</td></tr>
+  <tr><td><code>04</code></td><td><code>FLO2I rX, Fa</code></td><td>Copy <code>Fa[15:0]</code> to <code>rX</code></td></tr>
+  <tr><td><code>05</code></td><td><code>FHI2I rX, Fa</code></td><td>Copy <code>Fa[31:16]</code> to <code>rX</code></td></tr>
+  <tr><td><code>06</code></td><td><code>I16TOF Fd, rX</code></td><td>Convert signed 16-bit <code>rX</code> exactly to Q16.16</td></tr>
+  <tr><td><code>07</code></td><td><code>FTOI16 rX, Fa</code></td><td>Truncate Q16.16 <code>Fa</code> toward zero and write the signed 16-bit integer</td></tr>
+  <tr><td><code>08..3F</code></td><td>Reserved</td><td>Invalid encoding</td></tr>
+</table>
+<table>
+  <tr><th scope="col">FLD/FST <code>mode[1:0]</code></th><th scope="col">Lanes</th><th scope="col">Words transferred</th></tr>
+  <tr><td><code>00</code></td><td>1</td><td>2</td></tr>
+  <tr><td><code>01</code></td><td>2</td><td>4</td></tr>
+  <tr><td><code>10</code></td><td>3</td><td>6</td></tr>
+  <tr><td><code>11</code></td><td>4</td><td>8</td></tr>
+</table>
+<p>The memory base <code>a</code> uses the <code>DSEG0..3</code> mapping selected by <code>GPR[X][15:14]</code>.
+Each lane transfers the low half at word <code>a + 2i</code>, then the high half at
+<code>a + 2i + 1</code>. The F-register range must fit within F0 through F63.</p>
+<h4 id="fpu-geometry-helpers">FPU geometry helpers</h4>
+<p>The v3 geometry library (<code>v3_length2</code> -&gt; <code>fix32</code>, <code>v3_normalize</code> -&gt; <code>vec3</code>,
+<code>v3_distance_gt</code> -&gt; <code>bool</code>, and the <code>_checked</code> debug variants) is a compiler
+library, not a new opcode; its reference model lives in the CPU V3 architecture
+crate, and the compiler lowers it to existing FPU v2 instructions.
+<code>v3_length2(v)</code> is one <code>DOTSTORE</code> of <code>v</code> with itself. <code>v3_normalize(v)</code> is that
+<code>DOTSTORE</code>, then <code>RSQRT</code>, then a scalar-vector <code>VMULS</code>; <code>RSQRT(0) == 0</code>, so a
+zero vector stays zero. <code>v3_distance_gt(a, b, threshold)</code> is <code>VSUB</code>, one
+<code>DOTSTORE</code> of the difference, the ordinary distance approximated as
+<code>s * RSQRT(s)</code>, and the scalar <code>CMP</code> against the ordinary Q16.16 <code>threshold</code>.
+The release helpers emit no checks and assume the small-range Q16.16 contract;
+the <code>_checked</code> variants validate it and <code>halt</code> with a fixed nonzero signal
+(1 length2 range, 2 normalize range, 3 distance input range, 4 distance
+difference range) instead of clamping or returning zero. Length/normalize
+require every component inclusively within <code>[-104, +104]</code> Q16.16 (so a
+three-component squared sum is at most <code>32448</code>); distance first requires every
+input component within <code>[-16384, +16383]</code> so the 32-bit subtraction cannot
+overflow, then every difference component within <code>[-104, +104]</code> before
+<code>DOTSTORE</code>. The single <code>DOTSTORE</code> narrowing and the <code>RSQRT</code>/<code>MUL</code> approximation
+make the ordinary-distance boundary approximate.</p>
 
 <h2 id="prefix">5. PFX12 and wide operations</h2>
 <div class="grid">
@@ -402,7 +597,7 @@ approximation make the ordinary-distance boundary approximate.</p>
   <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; the fitted application layout starts at exclusive top <code>0xc000</code>.</td></tr>
   <tr><td class="mono">r14</td><td>link register</td><td>saved by non-leaf functions</td><td>Direct and indirect calls write the return PC here; the architecture fixes the link register to r14 (<code>JALREL</code> has no link field, <code>JALR</code> requires link = 14).</td></tr>
   <tr><td class="mono">r15</td><td>general allocation</td><td>caller-saved</td><td>Ordinary allocatable register since v0.5; device instructions replaced the former reserved device-base convention.</td></tr>
-  <tr><td class="mono">F0..F3</td><td>FPU return values</td><td>caller-saved</td><td rowspan="4">FPU v2 ABI over the flat <code>F0..F63</code> Q16.16 file; a vector occupies a consecutive range. All F registers are caller-saved and ACC is caller-clobbered. FPU lowering is not implemented yet (C0).</td></tr>
+  <tr><td class="mono">F0..F3</td><td>FPU return values</td><td>caller-saved</td><td rowspan="4">FPU v2 ABI over the flat <code>F0..F63</code> Q16.16 file; a vector occupies a consecutive range. All F registers are caller-saved and ACC is caller-clobbered.</td></tr>
   <tr><td class="mono">F4..F27</td><td>FPU arguments (compact)</td><td>caller-saved</td></tr>
   <tr><td class="mono">F28..F62</td><td>FPU allocatable</td><td>caller-saved</td></tr>
   <tr><td class="mono">F63</td><td>parallel-move scratch</td><td>reserved, not allocated</td></tr>
@@ -440,7 +635,7 @@ approximation make the ordinary-distance boundary approximate.</p>
 <h2 id="faults">8. Fault and retirement behavior</h2>
 <table>
   <tr><th>Condition</th><th>Result</th><th>Fault PC</th><th>Retirement</th></tr>
-  <tr><td>Reserved or malformed encoding (reserved FPU subop/length/mode, non-canonical fields, a truncated FPU pair)</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
+  <tr><td>Reserved or malformed encoding with a defined fault (including a truncated FPU pair)</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
   <tr><td>Conditional branch (B functions 0..5) or conditional move (B functions 8..D) with no pending test result</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address when prefixed</td><td>faulting operation does not retire</td></tr>
   <tr><td>Fetch or data address outside fitted physical memory (including FLD/FST/FLDV/FSTV)</td><td><code>PhysicalAddressOutOfRange</code></td><td>faulting instruction offset</td><td>does not retire</td></tr>
   <tr><td>Unaligned <code>LCOPY</code> operand</td><td>data-memory fault</td><td>faulting instruction offset</td><td>does not retire</td></tr>
@@ -454,7 +649,8 @@ approximation make the ordinary-distance boundary approximate.</p>
 <h2 id="revision">9. Revision history</h2>
 <table>
   <tr><th>Revision</th><th>Change</th></tr>
-  <tr><td class="mono">0.11</td><td><b>Current.</b> Unprefixed LOAD/STORE offsets are unsigned 0..15. PFX12 retains full 16-bit displacements; negative offsets require a prefix. Other immediate forms are unchanged. Recompile old negative-short-offset binaries and use matching hardware for new offsets 8..15.</td></tr>
+  <tr><td class="mono">0.12</td><td><b>Current.</b> Scalar MUL uses its two low mode bits to select a product window. Existing instruction encodings remain valid. The new modes require revision 0.12 hardware.</td></tr>
+  <tr><td class="mono">0.11</td><td>Unprefixed LOAD/STORE offsets are unsigned 0..15. PFX12 retains full 16-bit displacements; negative offsets require a prefix. Other immediate forms are unchanged. Recompile old negative-short-offset binaries and use matching hardware for new offsets 8..15.</td></tr>
   <tr><td class="mono">0.10</td><td> LCOPY uses two mapped word pointers, supports independent offsets/sets and always writes DRAM, including same-row aliases. Old page-operand binaries require recompilation (128 now means pointer0x0080). Opcode2/function7 is invalid; DCOPYL has no compatibility alias.</td></tr>
   <tr><td class="mono">0.9</td><td>Adds asynchronous 32-byte <code>LCOPY</code>, four independently mapped 32-KiB data pages with legacy bulk DSEG setup, and <code>DCLEANL</code>/<code>DWAIT</code>; function-E selector 7 remains reserved.</td></tr>
   <tr><td class="mono">0.8</td><td>Breaking integer rearrangement with no binary compatibility. Majors 0/1/3/4/5 keep <code>ADD</code>/<code>SUB</code>/<code>AND</code>/<code>OR</code>/<code>XOR</code>; the old three-register <code>MUL</code> (major 2) and register-count <code>SHL</code>/<code>ASR</code> (majors 6/7) move into the destructive shift/multiply family at major 2, joined by <code>SHR</code>, the immediate shifts <code>SHLI</code>/<code>SHRI</code>/<code>ASRI</code> and <code>MULI</code> (both moved from major A), and the unsigned product windows <code>MUL8</code>/<code>MUL16</code>. Major 6 becomes the extended/system family (unary, bit queries, <code>SEQ</code>, destructive <code>SLT</code>/<code>SLTU</code>, pending-test <code>CMPS</code>/<code>CMPU</code>, <code>SIGNAL</code>, special registers, <code>JSEG</code>); <code>NOP</code> is now <code>6000</code>. <code>SIGNAL rs, type4</code> replaces <code>HALT</code> (<code>SIGNAL r0, 0</code> = <code>6C00</code>). Device access moves from major C to major 7 with an unchanged field layout. Major A keeps arithmetic/logic, constant construction at functions 2/3, and comparisons, with <code>CMPEQI</code> renamed <code>SEQI</code>; functions 7/B are <code>LDC</code>/<code>ADDC</code>, indexing a shared symmetric 16-entry constant table (<code>MAG = [8, 16, 24, 32, 64, 128, 256, 512]</code>; indices 0..7 hold <code>MAG[k]</code>, indices 8..15 hold <code>-MAG[k - 8]</code>) that starts just past the <code>0..=15</code> range <code>ADDI</code>/<code>LDI</code>/<code>LDUI</code> already cover, and they never consume <code>PFX12</code>. Amendment (still revision 0.8): <code>ADDI</code>/<code>SUBI</code> read the unprefixed immediate as an unsigned u4 (<code>0..=15</code>) instead of a signed i4 — negative adjustments are <code>SUBI</code>'s job, so the signed range wasted half the encodings; the <code>PFX12</code>-widened forms still add/subtract the full 16-bit immediate pattern. Major B becomes the symmetric control family: six conditional branches (0..5), <code>JREL</code> (6), <code>JALREL</code> (7), six conditional moves (8..D), <code>JREG</code> (<code>B E 0 target</code>), and <code>JALR</code> (<code>B F E target</code>), with <code>JALREL</code>/<code>JALR</code> linking to the fixed <code>r14</code>. <code>IMMHI12</code> is renamed <code>PFX12</code> and carries a neutral 12-bit payload with the closed consumer set above. The FPU was subsequently replaced wholesale by the two-word Q16.16 FPU v2: majors C/D/E now start a 32-bit pair and the old single-word Q8.8 <code>Dxxx</code> encoding is invalid.</td></tr>

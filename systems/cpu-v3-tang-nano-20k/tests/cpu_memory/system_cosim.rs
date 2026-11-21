@@ -11,9 +11,10 @@
 mod system_emu;
 
 use cpu_v3::{
-    alu, branch, clean_data_line, halt, immediate_unsigned, line_copy, load, load_immediate16, nop,
-    store, wait_data_cache, write_data_segment_page, AluOp, CpuV3Core, CpuV3DataCache,
-    CpuV3InstructionFetchQueue, CpuV3TwoWayCache, ImmediateOp, TestCondition,
+    alu, branch, clean_data_line, fpu_aux, fpu_scalar, fpu_vector, halt, immediate_unsigned,
+    line_copy, load, load_immediate16, nop, store, wait_data_cache, write_data_segment_page, AluOp,
+    CpuV3Core, CpuV3DataCache, CpuV3InstructionFetchQueue, CpuV3TwoWayCache, FpuAuxKind,
+    FpuAuxSubop, FpuScalarSubop, FpuVectorLength, FpuVectorSubop, ImmediateOp, TestCondition,
 };
 use cpu_v3_tang_nano_20k::CpuV3MemoryArbiter;
 use digital_design_hardware::{HardwareIdentity, VerilogProject};
@@ -282,36 +283,82 @@ fn program_fpu_vector_add() -> Vec<u16> {
     p
 }
 
-/// FPU v2 multiply path at system level: two FLDs, one scalar MUL
-/// (2.0 * 3.0 = 6.0) and one VMULS.2 (f2..f3 = f0..f1 * f1 = 6.0, 9.0).
-/// Three FSTs write the results back; the halt signal is the high half of
-/// the first stored lane (6).
+/// Exercise all scalar product windows and both vector multiply forms through
+/// the shared write port. A zero halt signal requires every 16-bit half to
+/// match the independently computed product bits.
 fn program_fpu_multiply() -> Vec<u16> {
     let mut p = Vec::new();
-    p.extend(load_immediate16(1, 0x4000)); // f0 source
-    p.extend(load_immediate16(2, 0x4002)); // f1 source
-    p.extend(load_immediate16(7, 0x4020)); // store f4
-    p.extend(load_immediate16(8, 0x4022)); // store f2
-    p.extend(load_immediate16(9, 0x4024)); // store f3
-    p.extend(load_immediate16(0, 2));
-    p.push(store(0, 1, 1)); // f0 = 2.0
-    p.extend(load_immediate16(0, 3));
-    p.push(store(0, 2, 1)); // f1 = 3.0
-    let fld = |x: u16, fd: u16| [0xe000 | (x << 8), fd << 10];
-    let fst = |x: u16, fa: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010u16];
-    p.extend(fld(1, 0)); // f0 = 2.0
-    p.extend(fld(2, 1)); // f1 = 3.0
-                         // MUL f4 = f0 * f1: word0 {D, Fa=0, Fb=1}, word1 {Fd=4, subop=MUL(2), 0}
-    p.push(0xd001);
-    p.push(0x1020);
-    // VMULS.2 f2..f3 = f0..f1 * f1: word0 {C, Fa=0, Fb=1},
-    // word1 {Fd=2, len=00, subop=VMULS(3), mode=0}.
-    p.push(0xc001);
-    p.push(0x0818);
-    for (x, fa) in [(7u16, 4u16), (8, 2), (9, 3)] {
-        p.extend(fst(x, fa));
+    p.extend(load_immediate16(1, 0x4000)); // source for FLDV.2
+    p.extend(load_immediate16(2, 0x4020)); // destination for first FSTV.4
+    p.extend(load_immediate16(5, 0x4028)); // destination for second FSTV.4
+    let a = 0x1234_5678_i32;
+    let b = -0x0123_4567_i32;
+    for (index, input) in [a, b].into_iter().enumerate() {
+        let offset = 2 * index as i16;
+        p.extend(load_immediate16(3, input as u16));
+        p.push(store(3, 1, offset));
+        p.extend(load_immediate16(3, (input >> 16) as u16));
+        p.push(store(3, 1, offset + 1));
     }
-    p.push(load(0, 7, 1)); // r0 = high half of f4 = 6
+    p.extend(fpu_aux(
+        FpuAuxKind::IntegerRegister,
+        1,
+        0,
+        0,
+        FpuAuxSubop::Fld,
+        1,
+    ));
+    for mode in 0..4 {
+        p.extend(fpu_scalar(0, 1, 4 + mode, FpuScalarSubop::Mul, mode));
+    }
+    p.extend(fpu_vector(
+        0,
+        0,
+        8,
+        FpuVectorLength::Vec2,
+        FpuVectorSubop::VMul,
+        0,
+    ));
+    p.extend(fpu_vector(
+        0,
+        1,
+        10,
+        FpuVectorLength::Vec2,
+        FpuVectorSubop::VMulS,
+        0,
+    ));
+    for (base, source) in [(2, 4), (5, 8)] {
+        p.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            base,
+            source,
+            0,
+            FpuAuxSubop::Fst,
+            3,
+        ));
+    }
+
+    let (a, b) = (i64::from(a), i64::from(b));
+    let product = a * b;
+    let expected = [
+        product >> 16,
+        product,
+        product >> 8,
+        product >> 24,
+        (a * a) >> 16,
+        (b * b) >> 16,
+        product >> 16,
+        (b * b) >> 16,
+    ];
+    for (index, bits) in expected.into_iter().enumerate() {
+        let offset = 2 * index as i16;
+        for (half, word) in [bits as u16, (bits >> 16) as u16].into_iter().enumerate() {
+            p.push(load(3, 2, offset + half as i16));
+            p.extend(load_immediate16(4, word));
+            p.push(alu(AluOp::Xor, 3, 3, 4));
+            p.push(alu(AluOp::Or, 0, 0, 3));
+        }
+    }
     p.push(halt());
     p
 }
@@ -745,8 +792,8 @@ fn programs() -> Vec<CosimProgram> {
             words: program_fpu_multiply(),
             max_cycles: 20_000,
             check_base: 0x4020,
-            check_len: 8,
-            expected_halt: Some(6),
+            check_len: 16,
+            expected_halt: Some(0),
         },
         CosimProgram {
             name: "fpu_dot",

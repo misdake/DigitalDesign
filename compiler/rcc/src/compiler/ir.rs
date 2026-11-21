@@ -96,13 +96,59 @@ pub enum ShiftOp {
     Asr,
 }
 
-/// FPU v2 scalar two-operand subops (design section 7.3). All operands are
-/// single Q16.16 F registers.
+/// Component-wise Q16.16 binary operations.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum FpuBinOp {
     Add,
     Sub,
     Mul,
+}
+
+/// Scalar F-register operations, including the selectable product window.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FpuScalarBinOp {
+    Add,
+    Sub,
+    Mul(FpuMulWindow),
+}
+
+impl From<FpuBinOp> for FpuScalarBinOp {
+    fn from(op: FpuBinOp) -> Self {
+        match op {
+            FpuBinOp::Add => Self::Add,
+            FpuBinOp::Sub => Self::Sub,
+            FpuBinOp::Mul => Self::Mul(FpuMulWindow::Shift16),
+        }
+    }
+}
+
+/// Low 32 bits remaining after shifting the signed product.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FpuMulWindow {
+    Shift16,
+    Low32,
+    Shift8,
+    Shift24,
+}
+
+impl FpuMulWindow {
+    pub(crate) fn from_intrinsic(name: &str) -> Option<Self> {
+        match name {
+            "fmul_lo32" => Some(Self::Low32),
+            "fmul_shr8" => Some(Self::Shift8),
+            "fmul_shr24" => Some(Self::Shift24),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn shift(self) -> u32 {
+        match self {
+            Self::Shift16 => 16,
+            Self::Low32 => 0,
+            Self::Shift8 => 8,
+            Self::Shift24 => 24,
+        }
+    }
 }
 
 /// FPU v2 scalar unary subops (design section 7.3). The second source is
@@ -337,7 +383,7 @@ pub enum Instr {
     /// `Fd = Fa op Fb` (scalar ADD/SUB/MUL)
     FpuBin {
         dst: VReg,
-        op: FpuBinOp,
+        op: FpuScalarBinOp,
         lhs: VReg,
         rhs: VReg,
     },
@@ -1073,9 +1119,12 @@ impl fmt::Display for Instr {
             Instr::AddrOfLocal { dst, slot } => write!(f, "v{dst} = &local #{slot}"),
             Instr::FpuBin { dst, op, lhs, rhs } => {
                 let op = match op {
-                    FpuBinOp::Add => "fadd",
-                    FpuBinOp::Sub => "fsub",
-                    FpuBinOp::Mul => "fmul",
+                    FpuScalarBinOp::Add => "fadd",
+                    FpuScalarBinOp::Sub => "fsub",
+                    FpuScalarBinOp::Mul(FpuMulWindow::Shift16) => "fmul",
+                    FpuScalarBinOp::Mul(FpuMulWindow::Low32) => "fmul.lo32",
+                    FpuScalarBinOp::Mul(FpuMulWindow::Shift8) => "fmul.shr8",
+                    FpuScalarBinOp::Mul(FpuMulWindow::Shift24) => "fmul.shr24",
                 };
                 write!(f, "v{dst} = {op} v{lhs}, v{rhs}")
             }

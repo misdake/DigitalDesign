@@ -1,10 +1,10 @@
 //! Architectural Q16.16 arithmetic for the CpuV3 FPU v2.
 //!
-//! Every architectural F register is a signed Q16.16 value: bit 31 is the sign
+//! Ordinary arithmetic in F registers uses signed Q16.16. Bit 31 is the sign
 //! bit, bits 30:16 the integer part, and bits 15:0 the fraction. The numeric
-//! range is `[-32768, +32767.9999847]`. All arithmetic wraps (two's-complement
-//! modulo `2^32`): there is no saturation, no rounding flag, and no exception
-//! output (design `fpu-design-v2` sections 2, 8 and 25).
+//! range is `[-32768, +32767.9999847]`. Ordinary arithmetic wraps modulo
+//! `2^32` with no rounding flag or exception output. Integer bridges and
+//! scalar MUL windows also operate on the raw register bits.
 //!
 //! The FPU's wide accumulator is a signed 64-bit Q32.32 value. Every Q16.16
 //! product is exact, while accumulation keeps the low 64 bits. Extreme legal

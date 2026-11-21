@@ -530,7 +530,26 @@ mod tests {
 pub const FIX32_FRACTION_BITS: u32 = 16;
 
 const fn fix32_mul(a: i32, b: i32) -> i32 {
-    (((a as i64) * (b as i64)) >> FIX32_FRACTION_BITS) as i32
+    fix32_mul_shift(a, b, FIX32_FRACTION_BITS)
+}
+
+pub(crate) const fn fix32_mul_shift(a: i32, b: i32, shift: u32) -> i32 {
+    (((a as i64) * (b as i64)) >> shift) as i32
+}
+
+/// Return the low 32 bits of the product of the raw register values.
+pub const fn fmul_lo32(a: fix32, b: fix32) -> fix32 {
+    fix32(fix32_mul_shift(a.0, b.0, 0))
+}
+
+/// Return bits [39:8] of the signed product of the raw register values.
+pub const fn fmul_shr8(a: fix32, b: fix32) -> fix32 {
+    fix32(fix32_mul_shift(a.0, b.0, 8))
+}
+
+/// Return bits [55:24] of the signed product of the raw register values.
+pub const fn fmul_shr24(a: fix32, b: fix32) -> fix32 {
+    fix32(fix32_mul_shift(a.0, b.0, 24))
 }
 
 const fn fix32_floor(v: i32) -> i32 {

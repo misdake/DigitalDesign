@@ -10,7 +10,7 @@ display, device allocation, and fitted timing belong to the Tang Nano 20K system
 - [`testing.md`](testing.md): private unit-suite ownership, grouped core/backend
   cases and the boundary to system qualification.
 - [`isa.md`](isa.md): normative ISA, architectural addressing, fault, and ABI specification for
-  revision 0.11. [`isa.html`](isa.html) is the self-contained visual encoding reference. Neither
+  revision 0.12. [`isa.html`](isa.html) is the self-contained visual encoding reference. Neither
   document defines Cache or fitted-system policy.
 - [`hardware-architecture.md`](hardware-architecture.md): current Stage 12 core, FPU, fetch, and
   cache microarchitecture, including instruction latency and implementation timing context.
@@ -22,7 +22,7 @@ The complete Tang Nano 20K composition is documented in
 
 ## Version boundary
 
-ISA revision and implementation Stage are independent. Revision 0.11 defines the architectural
+ISA revision and implementation Stage are independent. Revision 0.12 defines the architectural
 instruction and ABI contract. Stage 12 names the current microarchitecture optimization level and
 does not change the ISA encoding.
 

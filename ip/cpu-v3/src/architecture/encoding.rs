@@ -337,6 +337,40 @@ impl FpuDotStride {
     }
 }
 
+/// Scalar `MUL` result selection in word1 `mode[1:0]`. The upper mode bits
+/// must be zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FpuMulMode {
+    Shift16 = 0b00,
+    Low32 = 0b01,
+    Shift8 = 0b10,
+    Shift24 = 0b11,
+}
+
+impl FpuMulMode {
+    pub const fn from_mode(mode: u8) -> Option<Self> {
+        match mode {
+            0b00 => Some(Self::Shift16),
+            0b01 => Some(Self::Low32),
+            0b10 => Some(Self::Shift8),
+            0b11 => Some(Self::Shift24),
+            _ => None,
+        }
+    }
+
+    /// Selects a 32-bit window from the full signed product.
+    pub const fn narrow_product(self, product: i64) -> i32 {
+        let shift = match self {
+            Self::Shift16 => 16,
+            Self::Low32 => 0,
+            Self::Shift8 => 8,
+            Self::Shift24 => 24,
+        };
+        (product >> shift) as i32
+    }
+}
+
 /// `SINCOS` result selection, scalar `mode[1:0]` (design section 9.3). `11` is
 /// reserved; `mode[3:2]` must be zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -525,8 +559,7 @@ pub fn fpu_scalar(fa: u8, fb: u8, fd: u8, subop: FpuScalarSubop, mode: u8) -> [W
     fpu_scalar_raw(fa, fb, fd, subop as u8, mode)
 }
 
-/// Single source of truth for the scalar encoding contract: the `SINCOS` mode
-/// bits and its dual-output destination range. See [`fpu_vector_field_error`].
+/// Checks the scalar mode bits and the dual-output SINCOS destination range.
 pub fn fpu_scalar_field_error(
     _fa: u8,
     _fb: u8,
@@ -544,8 +577,12 @@ pub fn fpu_scalar_field_error(
         if mode == FpuSinCosMode::SinCos as u8 && usize::from(fd) + 1 >= 64 {
             return Some("FPU SINCOS dual output needs Fd <= 62");
         }
+    } else if subop == FpuScalarSubop::Mul {
+        if FpuMulMode::from_mode(mode).is_none() {
+            return Some("FPU MUL mode[3:2] must be zero");
+        }
     } else if mode != 0 {
-        return Some("FPU scalar mode must be zero for a non-SINCOS subop");
+        return Some("FPU scalar mode must be zero outside MUL and SINCOS");
     }
     None
 }

@@ -9,8 +9,8 @@ use super::encoding::{
 use super::{
     fix32_abs, fix32_accumulate_product, fix32_add, fix32_ceil, fix32_compare, fix32_floor,
     fix32_from_acc, fix32_from_i16, fix32_mul, fix32_neg, fix32_round, fix32_sub, fix32_to_i16,
-    fix32_trunc, rcp_q16, rsqrt_q16, sincos_q16, FpuAuxKind, FpuAuxSubop, FpuDotStride, FpuOpcode,
-    FpuScalarSubop, FpuSinCosMode, FpuVectorLength, FpuVectorSubop, PhysicalWordAddress,
+    fix32_trunc, rcp_q16, rsqrt_q16, sincos_q16, FpuAuxKind, FpuAuxSubop, FpuDotStride, FpuMulMode,
+    FpuOpcode, FpuScalarSubop, FpuSinCosMode, FpuVectorLength, FpuVectorSubop, PhysicalWordAddress,
     FPU_REGISTER_COUNT,
 };
 use std::cmp::Ordering;
@@ -796,7 +796,10 @@ impl CpuV3Sim {
         match subop {
             FpuScalarSubop::Add => self.fpu_write(fd, fix32_add(a, b)),
             FpuScalarSubop::Sub => self.fpu_write(fd, fix32_sub(a, b)),
-            FpuScalarSubop::Mul => self.fpu_write(fd, fix32_mul(a, b)),
+            FpuScalarSubop::Mul => {
+                let window = FpuMulMode::from_mode(mode).expect("validated MUL mode");
+                self.fpu_write(fd, window.narrow_product(i64::from(a) * i64::from(b)));
+            }
             FpuScalarSubop::Min => self.fpu_write(fd, a.min(b)),
             FpuScalarSubop::Max => self.fpu_write(fd, a.max(b)),
             FpuScalarSubop::Abs => self.fpu_write(fd, fix32_abs(a)),

@@ -1,4 +1,4 @@
-//! Disassembler for CpuV3 revision 0.11: word -> typed instruction + mnemonic text.
+//! Disassembler for CpuV3 revision 0.12: word -> typed instruction + mnemonic text.
 //!
 //! `decode` maps one physical word to an `Instruction`; `disassemble_words` walks
 //! a stream and merges a `PFX12` prefix with its consumer into one wide
@@ -8,8 +8,8 @@ use crate::{
     fpu_aux_fa, fpu_aux_field_error, fpu_aux_x, fpu_fa, fpu_fb, fpu_fd, fpu_mode,
     fpu_scalar_field_error, fpu_scalar_subop_field, fpu_vector_field_error, fpu_vector_len_field,
     fpu_vector_mode, fpu_vector_subop_field, is_prefix_consumer, AluOp, FpuAuxKind, FpuAuxSubop,
-    FpuDotStride, FpuOpcode, FpuScalarSubop, FpuSinCosMode, FpuVectorLength, FpuVectorSubop,
-    ImmediateOp, MultiplyWindow, ShiftOp, SpecialRegister, TestCondition, Word,
+    FpuDotStride, FpuMulMode, FpuOpcode, FpuScalarSubop, FpuSinCosMode, FpuVectorLength,
+    FpuVectorSubop, ImmediateOp, MultiplyWindow, ShiftOp, SpecialRegister, TestCondition, Word,
 };
 
 /// One decoded CpuV3 instruction word (or the whole two-word wide operation).
@@ -470,8 +470,7 @@ pub fn decode_fpu_pair(word0: Word, word1: Word) -> Instruction {
             let Some(subop) = FpuScalarSubop::from_field(fpu_scalar_subop_field(word1)) else {
                 return Instruction::FpuReserved { word0, word1 };
             };
-            // Only SINCOS uses the scalar mode field; the shared contract also
-            // rejects its `Fd = 63` dual-output overflow.
+            // Check scalar mode bits and the SINCOS dual-output destination range.
             if fpu_scalar_field_error(fpu_fa(word0), fpu_fb(word0), fd, subop, mode).is_some() {
                 return Instruction::FpuReserved { word0, word1 };
             }
@@ -672,6 +671,15 @@ impl Instruction {
             } => match subop {
                 FpuScalarSubop::Mov => format!("mov f{fd}, f{fa}"),
                 FpuScalarSubop::Cmp => format!("cmp f{fa}, f{fb}"),
+                FpuScalarSubop::Mul => {
+                    let name = match FpuMulMode::from_mode(mode).unwrap_or(FpuMulMode::Shift16) {
+                        FpuMulMode::Shift16 => "mul",
+                        FpuMulMode::Low32 => "mul.lo32",
+                        FpuMulMode::Shift8 => "mul.shr8",
+                        FpuMulMode::Shift24 => "mul.shr24",
+                    };
+                    format!("{name} f{fd}, f{fa}, f{fb}")
+                }
                 FpuScalarSubop::SinCos => {
                     let name = match FpuSinCosMode::from_mode(mode).unwrap_or(FpuSinCosMode::SinCos)
                     {
@@ -683,7 +691,6 @@ impl Instruction {
                 }
                 FpuScalarSubop::Add
                 | FpuScalarSubop::Sub
-                | FpuScalarSubop::Mul
                 | FpuScalarSubop::Min
                 | FpuScalarSubop::Max => {
                     format!("{} f{fd}, f{fa}, f{fb}", scalar_subop_name(subop))

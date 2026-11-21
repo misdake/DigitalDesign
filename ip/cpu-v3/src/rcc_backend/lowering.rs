@@ -2,8 +2,8 @@
 use super::abi::*;
 use crate as cpu_v3;
 use crate::{
-    AluOp, FpuAuxKind, FpuAuxSubop, FpuScalarSubop, FpuSinCosMode, FpuVectorLength, FpuVectorSubop,
-    ImmediateOp, SpecialRegister, TestCondition, Word,
+    AluOp, FpuAuxKind, FpuAuxSubop, FpuMulMode, FpuScalarSubop, FpuSinCosMode, FpuVectorLength,
+    FpuVectorSubop, ImmediateOp, SpecialRegister, TestCondition, Word,
 };
 use crate::{CACHE_MAINTENANCE_DEVICE, D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED};
 use rcc::*;
@@ -675,10 +675,18 @@ fn lower_instruction(
             emit_immediate(lines, ImmediateOp::Add, dst, frame.local_base + *slot, true);
         }
         Instr::FpuBin { dst, op, lhs, rhs } => {
-            let subop = match op {
-                FpuBinOp::Add => FpuScalarSubop::Add,
-                FpuBinOp::Sub => FpuScalarSubop::Sub,
-                FpuBinOp::Mul => FpuScalarSubop::Mul,
+            let (subop, mode) = match op {
+                FpuScalarBinOp::Add => (FpuScalarSubop::Add, 0),
+                FpuScalarBinOp::Sub => (FpuScalarSubop::Sub, 0),
+                FpuScalarBinOp::Mul(window) => {
+                    let mode = match window {
+                        FpuMulWindow::Shift16 => FpuMulMode::Shift16,
+                        FpuMulWindow::Low32 => FpuMulMode::Low32,
+                        FpuMulWindow::Shift8 => FpuMulMode::Shift8,
+                        FpuMulWindow::Shift24 => FpuMulMode::Shift24,
+                    };
+                    (FpuScalarSubop::Mul, mode as u8)
+                }
             };
             emit_fpu_scalar(
                 lines,
@@ -686,7 +694,7 @@ fn lower_instruction(
                 register(*rhs),
                 register(*dst),
                 subop,
-                0,
+                mode,
             );
         }
         Instr::FpuUn { dst, op, src } => {

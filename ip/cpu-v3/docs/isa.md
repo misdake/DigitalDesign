@@ -100,7 +100,7 @@ and simulators that do not establish distinct CSEG and DSEG mappings.
 
 ## Instruction encoding reference
 
-Every physical instruction is one 16-bit word, shown as four hexadecimal nibbles
+Each instruction word is 16 bits, shown as four hexadecimal nibbles
 `[n3 n2 n1 n0]` with bit 15 the most significant. The major opcode is `n3`; later fields are
 registers, sub-operations, or immediate bits depending on the family. Every field
 not used by an instruction is canonically `0`; a non-canonical field value makes
@@ -117,6 +117,8 @@ the word an invalid encoding.
 | BR | `B · fn · ...` | Conditional branch, relative jump, conditional move, register jump |
 | PFX12 | `F · payload12` | Neutral prefix for the immediately following eligible consumer |
 
+See the [FPU two-word encodings](#fpu-v2-opcodes-c-d-e) for opcodes C, D, and E.
+
 ### Major opcode map
 
 | n3 | Family | Form | Summary |
@@ -129,9 +131,9 @@ the word an invalid encoding.
 | 9 | `STORE` | `9 rs base imm4` | Write one 16-bit word |
 | A | Immediate | `A fn rd imm4` | Arithmetic, logic, constant construction, and immediate comparisons |
 | B | Branch / move / jump | `B fn ...` | Six conditional branches, JREL/JALREL, six conditional moves, JREG/JALR |
-| C | FPU VECTOR | `C Fa Fb` + word1 | Two-word vector ALU, multiply, and dot operations |
-| D | FPU SCALAR | `D Fa Fb` + word1 | Two-word scalar ALU, compare, and special functions |
-| E | FPU AUX | `E X Fa kind` + word1 | Two-word integer bridges and FLD/FST/FLDV/FSTV |
+| C | [FPU VECTOR](#fpu-vector-opcode-c) | `C Fa Fb` + word1 | Two-word vector ALU, multiply, and dot operations |
+| D | [FPU SCALAR](#fpu-scalar-opcode-d) | `D Fa Fb` + word1 | Two-word scalar ALU, compare, and special functions |
+| E | [FPU AUX](#fpu-aux-opcode-e) | `E X Fa kind` + word1 | Two-word integer bridges and FLD/FST/FLDV/FSTV |
 | F | `PFX12` | `F payload12` | Creates a pending 12-bit prefix payload |
 
 ### Register ALU (opcodes 0, 1, 3, 4, 5)
@@ -306,67 +308,220 @@ value is invalid. Register forms never consume a prefix.
 
 ### FPU v2 (opcodes C, D, E)
 
-Every FPU v2 instruction is **32 bits wide, fetched as two consecutive 16-bit
-words**, and never consumes a `PFX12` prefix. Word0 exposes the source bases so
-the register-file reads can start before word1 is decoded; word1 carries the
-destination and the operation. The architecture encoding lives in
-`architecture/encoding.rs` and is the single source of truth; the RTL extractor
-is locked to it by an exhaustive test.
+Word 0 is fetched first. FPU pairs never consume `PFX12`.
+`Fa`, `Fb`, and `Fd` index `F0..F63`. Subop values are hexadecimal.
+Emit only defined encodings. Reserved FPU encodings raise
+`InvalidInstruction` in the instruction simulator and have undefined behavior
+on hardware.
 
-```text
-VECTOR/SCALAR word0:  [15:12]=opcode  [11:6]=Fa  [5:0]=Fb
-VECTOR word1:         [15:10]=Fd  [9:8]=len  [7:3]=subop  [2:0]=mode
-SCALAR/AUX word1:     [15:10]=Fd  [9:4]=subop  [3:0]=mode
-AUX word0:            [15:12]=0xE  [11:8]=X  [7:2]=Fa  [1:0]=kind
-```
+F registers hold signed Q16.16 values for arithmetic. Integer bridges and
+memory transfers also expose the raw bits. Ordinary arithmetic wraps without
+saturation or exception flags. `q16(P)` means bits `P[47:16]` of a signed
+64-bit product or accumulator, with no rounding.
 
-A vector is a consecutive register-range view, not an architectural type:
-`VADD.3 F20, F4, F8` computes `F20=F4+F8`, `F21=F5+F9`, `F22=F6+F10`. Length
-`00/01/10` selects vec2/vec3/vec4 and `11` is reserved. Destination/source
-ranges must be exactly base-equal or fully disjoint; partial overlap is a
-software contract violation and is not checked by hardware. This overlap rule
-applies to vector-valued destinations: DOT/DOTADD update ACC, and DOTSTORE writes
-the single scalar register Fd rather than a destination vector.
+#### FPU VECTOR (opcode C)
 
-`0xC` VECTOR subops: `00` VADD, `01` VSUB, `02` VMUL (`q16(A*B)`), `03` VMULS
-(`q16(A*B0)`), `04` VMIN, `05` VMAX, `06` VABS, `07` VNEG, `08..0B` reserved,
-`0C` VMOV, `0D` DOT, `0E` DOTADD, `0F` DOTSTORE. Rounding is scalar-only.
-`10..1F` are reserved. `mode[1:0]` is the second-source stride for the DOT family (`00` +1, `01` +3, `10` +4; `11` reserved) and is reserved for the
-other vector subops. `DOT` sets `ACC = sum(A[i]*B[i])`, `DOTADD` accumulates,
-and `DOTSTORE` narrows the completed sum to `Fd` and clears ACC.
+<table>
+  <thead>
+    <tr>
+      <th scope="col">Bit</th>
+      <th scope="col">15</th><th scope="col">14</th><th scope="col">13</th><th scope="col">12</th>
+      <th scope="col">11</th><th scope="col">10</th><th scope="col">9</th><th scope="col">8</th>
+      <th scope="col">7</th><th scope="col">6</th><th scope="col">5</th><th scope="col">4</th>
+      <th scope="col">3</th><th scope="col">2</th><th scope="col">1</th><th scope="col">0</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row">Word 0</th>
+      <td colspan="4"><code>0xC</code><br><span>[15:12]</span></td>
+      <td colspan="6"><code>Fa</code><br><span>[11:6]</span></td>
+      <td colspan="6"><code>Fb</code><br><span>[5:0]</span></td>
+    </tr>
+    <tr>
+      <th scope="row">Word 1</th>
+      <td colspan="6"><code>Fd</code><br><span>[15:10]</span></td>
+      <td colspan="2"><code>len</code><br><span>[9:8]</span></td>
+      <td colspan="5"><code>subop</code><br><span>[7:3]</span></td>
+      <td colspan="3"><strong>mode</strong><br><span>[2:0]</span></td>
+    </tr>
+  </tbody>
+</table>
 
-`0xD` SCALAR subops: `00` ADD, `01` SUB, `02` MUL, `03` MIN, `04` MAX, `05`
-ABS, `06` NEG, `07` FLOOR, `08` CEIL, `09` ROUND, `0A` TRUNC, `0B` CMP, `0C`
-RCP, `0D` RSQRT, `0E` SINCOS, `0F` MOV. `10..3F` are reserved. `CMP` writes the
-transient pending test (signed ordering of `Fa` and `Fb`), so conditional
-branches and conditional moves consume it exactly as they consume
-`CMPS`/`CMPU`. `SINCOS` selects its result with `mode[1:0]`: `00` writes
-`Fd=sin`, `Fd+1=cos` (requires `Fd<=62`), `01` writes `sin`, `10` writes `cos`,
-`11` is reserved; `mode[3:2]` is reserved and must be zero. Every other scalar
-subop has a reserved mode field that must be zero.
+`len = 00/01/10` selects `N = 2/3/4` lanes. `11` is reserved. For lane `i`
+from 0 to `N-1`, `A[i] = F[Fa+i]`, `B[i] = F[Fb+i]`, and `D[i] = F[Fd+i]`.
+For example, `VADD.3 F20, F4, F8` writes F20 through F22 from the three
+corresponding pairs. Register ranges must fit within F0 through F63.
+Vector-valued destinations may alias a source at the same base or be fully
+disjoint. Software must avoid partial overlap.
 
-`0xE` AUX word0 `kind` is `00` integer-register index, `01` constant-table
-index, `10` selector, `11` reserved. Only kind `00` is defined today; word1
-subops are `00` FLD, `01` FST, `02` ILO2F, `03` IHI2F, `04` FLO2I, `05` FHI2I,
-`06` I16TOF, `07` FTOI16, and `08..3F` are reserved. FLD/FST use `mode[1:0] + 1`
-lanes (`00` scalar through `11` vec4) with `mode[3:2]` reserved. `FLD` loads
-`Fd+i = {mem[a+2i+1], mem[a+2i]}` and `FST` stores the same two halves, **low
-half first**, using the `DSEG0..3` translation selected by `GPR[X][15:14]`.
-`ILO2F`/`IHI2F` copy `GPR[X]` into the
-low/high half of `Fd`; `FLO2I`/`FHI2I` copy a half back; `I16TOF` sign-extends
-`GPR[X]` into a Q16.16 value; `FTOI16` truncates `Fa` toward zero into `GPR[X]`.
+| Subop | Mnemonic | Semantics |
+| --- | --- | --- |
+| `00` | `VADD.N Fd, Fa, Fb` | `D[i] = A[i] + B[i]` |
+| `01` | `VSUB.N Fd, Fa, Fb` | `D[i] = A[i] - B[i]` |
+| `02` | `VMUL.N Fd, Fa, Fb` | `D[i] = q16(A[i] * B[i])` |
+| `03` | `VMULS.N Fd, Fa, Fb` | `D[i] = q16(A[i] * F[Fb])` using one scalar second source |
+| `04` | `VMIN.N Fd, Fa, Fb` | `D[i] = min(A[i], B[i])` |
+| `05` | `VMAX.N Fd, Fa, Fb` | `D[i] = max(A[i], B[i])` |
+| `06` | `VABS.N Fd, Fa` | `D[i] = abs(A[i])` |
+| `07` | `VNEG.N Fd, Fa` | `D[i] = -A[i]` |
+| `08..0B` | Reserved | Invalid encoding |
+| `0C` | `VMOV.N Fd, Fa` | `D[i] = A[i]` |
+| `0D` | `DOT.N Fa, Fb` | `ACC = sum` |
+| `0E` | `DOTADD.N Fa, Fb` | `ACC = ACC + sum` |
+| `0F` | `DOTSTORE.N Fd, Fa, Fb` | `F[Fd] = q16(sum)`, then clear `ACC` |
+| `10..1F` | Reserved | Invalid encoding |
 
-All F registers are signed Q16.16 and every operation **wraps**: there is no
-saturation and no exception output. `FLOOR` clears the 16 fraction bits;
-`CEIL` adds one unit when a fraction remains; `ROUND` is round-half-up
-(`floor(x + 0x8000)`, ties toward `+infinity`); `TRUNC` is toward zero. The
-wide accumulator is signed 64-bit Q32.32. Every Q16.16 product fits exactly,
-but accumulation keeps only the low 64 bits: extreme legal DOT operands can
-wrap the ACC, and `DOTSTORE` takes `ACC[47:16]` from that wrapped sum. `RCP(0)`
-returns `0x7FFF_FFFF` (sign applied for negative magnitudes) and `RSQRT(x)` is
-zero for `x <= 0`; both are approximate special functions with no IEEE special
-values. The hidden register-file BSRAM region holds the RCP/RSQRT/SINCOS
-lookup tables.
+For DOT, DOTADD, and DOTSTORE, `sum` is the sum of `F[Fa+i] * F[Fb+i*stride]`
+for all lanes. The products are exact signed 64-bit Q32.32 values. The sum
+and ACC addition wrap modulo 2^64. DOTSTORE takes the result from this
+instruction's sum and writes one F register. DOT and DOTADD write only ACC.
+
+| DOT-family `mode[1:0]` | Second-source stride |
+| --- | --- |
+| `00` | 1 |
+| `01` | 3 |
+| `10` | 4 |
+| `11` | Reserved |
+
+VECTOR `mode[2]` must be zero. All three mode bits must be zero outside the
+DOT family. Encode unused operands as zero, including `Fb` for unary
+operations and `Fd` for DOT and DOTADD.
+
+#### FPU SCALAR (opcode D)
+
+<table>
+  <thead>
+    <tr>
+      <th scope="col">Bit</th>
+      <th scope="col">15</th><th scope="col">14</th><th scope="col">13</th><th scope="col">12</th>
+      <th scope="col">11</th><th scope="col">10</th><th scope="col">9</th><th scope="col">8</th>
+      <th scope="col">7</th><th scope="col">6</th><th scope="col">5</th><th scope="col">4</th>
+      <th scope="col">3</th><th scope="col">2</th><th scope="col">1</th><th scope="col">0</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row">Word 0</th>
+      <td colspan="4"><code>0xD</code><br><span>[15:12]</span></td>
+      <td colspan="6"><code>Fa</code><br><span>[11:6]</span></td>
+      <td colspan="6"><code>Fb</code><br><span>[5:0]</span></td>
+    </tr>
+    <tr>
+      <th scope="row">Word 1</th>
+      <td colspan="6"><code>Fd</code><br><span>[15:10]</span></td>
+      <td colspan="6"><code>subop</code><br><span>[9:4]</span></td>
+      <td colspan="4"><strong>mode</strong><br><span>[3:0]</span></td>
+    </tr>
+  </tbody>
+</table>
+
+`mode[1:0]` selects the product window for MUL or the output for SINCOS.
+`mode[3:2]` must be zero. Every other scalar subop requires `mode = 0000`.
+
+| Subop | Mnemonic | Semantics |
+| --- | --- | --- |
+| `00` | `ADD Fd, Fa, Fb` | `Fd = Fa + Fb` |
+| `01` | `SUB Fd, Fa, Fb` | `Fd = Fa - Fb` |
+| `02` | `MUL Fd, Fa, Fb` | Select a 32-bit window from the signed 64-bit product `P = Fa * Fb` using the mode table below |
+| `03` | `MIN Fd, Fa, Fb` | Signed minimum |
+| `04` | `MAX Fd, Fa, Fb` | Signed maximum |
+| `05` | `ABS Fd, Fa` | Wrapping absolute value |
+| `06` | `NEG Fd, Fa` | Wrapping negation |
+| `07` | `FLOOR Fd, Fa` | Round toward negative infinity by clearing the low 16 bits |
+| `08` | `CEIL Fd, Fa` | Round toward positive infinity by adding raw `0x10000` to the floor if any fractional bits are set |
+| `09` | `ROUND Fd, Fa` | Round to nearest integer, ties toward positive infinity. Add raw `0x8000`, wrap, then clear the low 16 bits |
+| `0A` | `TRUNC Fd, Fa` | Round toward zero, retaining the Q16.16 representation |
+| `0B` | `CMP Fa, Fb` | Set the pending test to the signed ordering of `Fa` and `Fb` |
+| `0C` | `RCP Fd, Fa` | Approximate reciprocal. Clamp overflow to magnitude `0x7FFF_FFFF`. Input zero returns `0x7FFF_FFFF` |
+| `0D` | `RSQRT Fd, Fa` | Approximate reciprocal square root. Input `Fa <= 0` returns zero |
+| `0E` | `SINCOS Fd, Fa` | Approximate sine and/or cosine of angle `Fa` in radians. See the mode table below |
+| `0F` | `MOV Fd, Fa` | Copy all 32 bits |
+| `10..3F` | Reserved | Invalid encoding |
+
+CMP writes no F register. Its pending test is consumed by conditional
+branches and moves just as for `CMPS` and `CMPU`.
+
+| MUL `mode[1:0]` | Mnemonic | Bits written to `Fd` |
+| --- | --- | --- |
+| `00` | `MUL` | `P[47:16]` (Q16.16 × Q16.16) |
+| `01` | `MUL.LO32` | `P[31:0]` (integer low half) |
+| `10` | `MUL.SHR8` | `P[39:8]` (Q24.8 × Q24.8) |
+| `11` | `MUL.SHR24` | `P[55:24]` (Q8.24 × Q8.24) |
+
+MUL multiplies the raw signed 32-bit operands. A result window with a
+right shift of `s` has `fa + fb - s` fractional bits when the inputs have
+`fa` and `fb` fractional bits. All modes discard the other product bits.
+For example, `MUL.LO32 F5, F3, F4` is `D0C4 1421`.
+
+| SINCOS `mode[1:0]` | Result |
+| --- | --- |
+| `00` | `Fd = sin(Fa)`, `Fd+1 = cos(Fa)`. Requires `Fd <= 62` |
+| `01` | `Fd = sin(Fa)` |
+| `10` | `Fd = cos(Fa)` |
+| `11` | Reserved |
+
+RCP, RSQRT, and SINCOS use lookup tables in the hidden register-file BSRAM
+region and have no IEEE special values.
+
+#### FPU AUX (opcode E)
+
+<table>
+  <thead>
+    <tr>
+      <th scope="col">Bit</th>
+      <th scope="col">15</th><th scope="col">14</th><th scope="col">13</th><th scope="col">12</th>
+      <th scope="col">11</th><th scope="col">10</th><th scope="col">9</th><th scope="col">8</th>
+      <th scope="col">7</th><th scope="col">6</th><th scope="col">5</th><th scope="col">4</th>
+      <th scope="col">3</th><th scope="col">2</th><th scope="col">1</th><th scope="col">0</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row">Word 0</th>
+      <td colspan="4"><code>0xE</code><br><span>[15:12]</span></td>
+      <td colspan="4"><code>X</code><br><span>[11:8]</span></td>
+      <td colspan="6"><code>Fa</code><br><span>[7:2]</span></td>
+      <td colspan="2"><code>kind</code><br><span>[1:0]</span></td>
+    </tr>
+    <tr>
+      <th scope="row">Word 1</th>
+      <td colspan="6"><code>Fd</code><br><span>[15:10]</span></td>
+      <td colspan="6"><code>subop</code><br><span>[9:4]</span></td>
+      <td colspan="4"><strong>mode</strong><br><span>[3:0]</span></td>
+    </tr>
+  </tbody>
+</table>
+
+`X` is a four-bit GPR index and `rX = GPR[X]`. `kind = 00` selects this
+operand class. The other kind values are unassigned. FLD and FST use
+`mode[1:0]` to select the transfer length, with `mode[3:2] = 00`. Every integer
+bridge requires `mode = 0000`.
+
+| Subop | Mnemonic | Semantics |
+| --- | --- | --- |
+| `00` | `FLD Fd, [rX]` / `FLDV.N Fd, [rX]` | Load `N` consecutive F registers starting at `Fd` |
+| `01` | `FST [rX], Fa` / `FSTV.N [rX], Fa` | Store `N` consecutive F registers starting at `Fa` |
+| `02` | `ILO2F Fd, rX` | Copy `rX` to `Fd[15:0]`, preserving the high half |
+| `03` | `IHI2F Fd, rX` | Copy `rX` to `Fd[31:16]`, preserving the low half |
+| `04` | `FLO2I rX, Fa` | Copy `Fa[15:0]` to `rX` |
+| `05` | `FHI2I rX, Fa` | Copy `Fa[31:16]` to `rX` |
+| `06` | `I16TOF Fd, rX` | Convert signed 16-bit `rX` exactly to Q16.16 |
+| `07` | `FTOI16 rX, Fa` | Truncate Q16.16 `Fa` toward zero and write the signed 16-bit integer |
+| `08..3F` | Reserved | Invalid encoding |
+
+| FLD/FST `mode[1:0]` | Lanes | Words transferred |
+| --- | --- | --- |
+| `00` | 1 | 2 |
+| `01` | 2 | 4 |
+| `10` | 3 | 6 |
+| `11` | 4 | 8 |
+
+The memory base `a` uses the `DSEG0..3` mapping selected by `GPR[X][15:14]`.
+Each lane transfers the low half at word `a + 2i`, then the high half at
+`a + 2i + 1`. The F-register range must fit within F0 through F63.
+
+#### FPU geometry helpers
 
 The v3 geometry library (`v3_length2` -> `fix32`, `v3_normalize` -> `vec3`,
 `v3_distance_gt` -> `bool`, and the `_checked` debug variants) is a compiler
@@ -417,7 +572,7 @@ is the prefix address and neither word retires.
 
 | Condition | Result |
 | --- | --- |
-| Reserved or malformed encoding (reserved subop/length/mode, non-canonical fields, a truncated FPU pair) | `InvalidInstruction` (code 1); the instruction does not retire |
+| Reserved or malformed encoding with a defined fault (including a truncated FPU pair) | `InvalidInstruction` (code 1); the instruction does not retire |
 | Conditional branch or conditional move without a pending test | `InvalidInstruction`; does not retire |
 | Address outside fitted physical memory (including FLD/FST/FLDV/FSTV) | physical-address fault at the faulting offset; does not retire |
 | Unaligned `LCOPY` operand | data-memory fault at the instruction offset; does not retire |
@@ -624,3 +779,9 @@ and addressing semantics are unchanged. Recompile old binaries containing
 unprefixed negative memory offsets; new short offsets 8..15 require matching
 revision 0.11 hardware. The core uses the existing unsigned immediate path,
 with no additional instruction cycle, register or architectural state.
+
+## Revision 0.12
+
+Scalar MUL assigns its two low mode bits to the product window. Mode `00`
+keeps the Q16.16 result, and all previously defined instruction encodings
+remain valid. The new scalar MUL modes require revision 0.12 hardware.

@@ -159,7 +159,14 @@ wire [5:0] special_destination = fd + sf_write_address[0];
 wire rf_write_enable = write_alu || write_normal || write_dot || write_special || write_external;
 wire [8:0] rf_write_address = ({9{write_alu}} & {3'd0,issue_destination[5:0]}) | ({9{write_normal}} & normal_destination) | ({9{write_dot}} & {3'd0,fd}) |
  ({9{write_special}} & {3'd0,special_destination}) | ({9{write_external}} & ext_write_address);
-wire [31:0] normal_data = mul_out_product[47:16];
+// Select the 16-bit shift first. The 40-bit intermediate shares one byte
+// between adjacent windows before the optional 8-bit shift at the write port.
+wire mul_shift16 = !scalar_op || (word1_raw[1] == word1_raw[0]);
+wire mul_shift8 = scalar_op && word1_raw[1];
+wire [39:0] mul_window = mul_shift16 ? mul_out_product[55:16] : mul_out_product[39:0];
+// Keep the product window local so shared RF writeback sources retain
+// their own small enables and a shallow OR.
+(* syn_keep = 1 *) wire [31:0] normal_data = mul_shift8 ? mul_window[39:8] : mul_window[31:0];
 wire [31:0] rf_write_data = ({32{write_alu}} & shared_alu_result) | ({32{write_normal}} & normal_data) | ({32{write_dot}} & acc_plus[47:16]) |
  ({32{write_special}} & sf_write_data) | ({32{write_external}} & ext_write_data);
 CpuV3FpuExecRf rf (

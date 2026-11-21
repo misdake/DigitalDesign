@@ -1,6 +1,7 @@
 //! Selected single-product calendar. Legacy standalone path models remain
 //! independent references; this state follows the physical RF/compute owners.
 use super::*;
+use crate::FpuMulMode;
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuExecRfInput {
@@ -119,6 +120,7 @@ struct Decoded {
     stride: u8,
     broadcast: bool,
     multiply: bool,
+    mul_mode: FpuMulMode,
     dot: bool,
     product: bool,
     cmp: bool,
@@ -220,6 +222,11 @@ impl CpuV3FpuState {
             },
             broadcast: vector && subop == 3,
             multiply,
+            mul_mode: if scalar && multiply {
+                FpuMulMode::from_mode((word1 & 3) as u8).expect("two-bit MUL mode")
+            } else {
+                FpuMulMode::Shift16
+            },
             dot,
             product: multiply || dot,
             cmp: scalar && subop == 11,
@@ -433,7 +440,7 @@ impl CpuV3FpuState {
         } else if own_return && d.multiply {
             Some((
                 self.returned_destination as usize,
-                (self.product >> 16) as u32,
+                d.mul_mode.narrow_product(self.product) as u32,
             ))
         } else if own_return && d.dot && self.returned_last && d.subop == 15 {
             Some((d.fd as usize, (acc_plus >> 16) as u32))

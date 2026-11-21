@@ -1,6 +1,6 @@
 # CPU V3 hardware structure and timing
 
-This document describes the revision 0.11 ISA running on the current Stage 12
+This document describes the revision 0.12 ISA running on the current Stage 12
 microarchitecture, not an intended future pipeline. The maintainable PlantUML source is in
 [`cpu_v3_structure.puml`](cpu_v3_structure.puml).
 
@@ -122,7 +122,7 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | Control state | 16-bit PC, CSEG, four 8-bit DSEG page mappings, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
 | Integer ALU | One common operand pair for register/immediate add/sub/logic/compare; the add/subtract lane also forms effective addresses and relative targets; separate shift, CLZ and popcount paths | One non-multiply integer result; sequential PC increment remains independent for overlapped instruction acceptance |
 | Integer multiplier | Unsigned 16-bit operands zero-extended into the shared signed 36 x 36 CPU/FPU pipe, with integer-owner tag `0x100` | The blocking core retains `Execute -> MultiplyWait -> MultiplyCommit`; the returned low 32 bits supply the selected 16-bit product window |
-| FPU front-end | Two-word instruction latch: word0 exposes `Fa`/`Fb` (or AUX `X`/`Fa`) and drives the RF read addresses immediately; word1 carries `Fd`/subop/len/mode | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
+| FPU front-end | Two-word instruction latch. Word 0 supplies `Fa`/`Fb` for arithmetic and `X`/`Fa` for AUX. Word 1 supplies `Fd`, subop, and mode, plus length for VECTOR | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
 | FPR file | Two 512 x 32 SDPB banks giving 2R1W, with broadcast writes and distinct initialized hidden tables; architectural `F0..F63` are addresses `0..63`, hidden tables occupy `64..511` (A: RCP and SINCOS; B: RSQRT even/odd) | One synchronous read per bank and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
 | FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), using the common FPU lane issuer and commit slot | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
 | CPU/FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), two stages, II = 1, with a 9-bit owner/destination tag | Integer multiply, FPU multiply/dot, SINCOS range reduction and all LUT interpolation products time-share it; the core serializes owners |
@@ -369,7 +369,8 @@ flowchart LR
     ALU --> W["Single synchronous RF write port"]
     Q --> M["36 x 36 multiply"]
     M --> P["One held product register"]
-    P -->|"MUL: bits 47:16"| W
+    P -->|"Scalar MUL: mode selects window"| W
+    P -->|"VMUL / VMULS: bits 47:16"| W
     P --> A["64-bit ACC adder"]
     A --> R["64-bit ACC register"]
     R --> A
@@ -387,7 +388,7 @@ retirement and memory stalls. `n` is 2, 3 or 4.
 |---|---:|---|
 | Scalar ADD/SUB/MIN/MAX/ABS/NEG/FLOOR/CEIL/ROUND/TRUNC/MOV | 1 edge | RF write at T0 |
 | Scalar CMP | 1 edge | Flags captured at T0; no RF write |
-| Scalar MUL | 2 edges | RF write at T1 |
+| Scalar MUL | 2 edges | Selected 32-bit product window writes RF at T1 |
 | Vector ADD/SUB/MIN/MAX/ABS/NEG/MOV | n edges | RF writes at T0 through T(n-1) |
 | VMUL/VMULS | n + 1 edges | RF writes at T1 through Tn |
 | DOT/DOTADD | n + 1 edges | ACC updates at T1 through Tn |
@@ -399,6 +400,10 @@ retirement and memory stalls. `n` is 2, 3 or 4.
 Vector subops 08 through 0B are reserved. FLOOR/CEIL/ROUND/TRUNC are
 scalar-only; vector callers apply the scalar operations to individual lanes.
 AUX bridges and FLD/FST belong to the core rather than this arithmetic calendar.
+For scalar MUL the latched word1 selects an optional 16-bit shift into a
+40-bit window, followed by an optional 8-bit shift. Synthesis retains the
+result window as a separate net. The multiply write enable gates that window
+at the shared write port.
 
 - The special-function launch edge retains two family bits (reciprocal and
   sine/cosine). Normalize and range issue use the incoming descriptor; later

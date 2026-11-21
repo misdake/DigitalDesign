@@ -5,8 +5,8 @@
 
 use crate::CompareOp;
 use crate::{
-    BinOp, BlockId, Cmp, CmpRhs, FpuBinOp, FpuSpecialOp, FpuUnOp, FpuVecUnOp, Instr, IrFunc,
-    ShiftOp, UnOp, VReg,
+    BinOp, BlockId, Cmp, CmpRhs, FpuBinOp, FpuMulWindow, FpuScalarBinOp, FpuSpecialOp, FpuUnOp,
+    FpuVecUnOp, Instr, IrFunc, ShiftOp, UnOp, VReg,
 };
 use crate::{BoolExpr, FuncBuilder, RccConfig, VarId};
 use crate::{DebugVar, VarLoc};
@@ -5926,6 +5926,19 @@ fn call_expr_inner(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Er
         }
         return Ok(Val::V(l.b.fpu_dot_store(*a, *b), Ty::Fix32));
     }
+    if let Some(window) = FpuMulWindow::from_intrinsic(name) {
+        if args.len() != 2 {
+            return Err(err(call, format!("{name}(a, b) takes 2 arguments")));
+        }
+        let (a, at) = &args[0];
+        let (b, bt) = &args[1];
+        let (a, _) = coerce(l, *a, at, &Ty::Fix32, &call.args[0])?;
+        let (b, _) = coerce(l, *b, bt, &Ty::Fix32, &call.args[1])?;
+        return Ok(Val::V(
+            l.b.fpu_bin(FpuScalarBinOp::Mul(window), a, b),
+            Ty::Fix32,
+        ));
+    }
     if matches!(
         name.as_str(),
         "frcp" | "frsqrt" | "fsin" | "fcos" | "fsincos"
@@ -7326,7 +7339,7 @@ mod tests {
     /// Counts the geometry-relevant IR in every function: comparison branches
     /// (the check/control overhead) plus the FPU operations the contract allows.
     fn geometry_ir_counts(src: &str) -> (usize, usize, usize, usize, usize, usize) {
-        use crate::{FpuBinOp, FpuSpecialOp, Instr, Terminator};
+        use crate::{FpuBinOp, FpuScalarBinOp, FpuSpecialOp, Instr, Terminator};
         let program = parse_source_with(src, 0).expect("geometry helper must lower");
         let mut branches = 0;
         let mut bools = 0;
@@ -7349,7 +7362,8 @@ mod tests {
                             op: FpuBinOp::Sub, ..
                         } => sub_or_mul += 1,
                         Instr::FpuBin {
-                            op: FpuBinOp::Mul, ..
+                            op: FpuScalarBinOp::Mul(_),
+                            ..
                         } => sub_or_mul += 1,
                         _ => {}
                     }

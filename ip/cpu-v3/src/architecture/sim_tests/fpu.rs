@@ -51,6 +51,55 @@ fn fpu_scalar_two_word_instructions_retire_as_pairs() {
 }
 
 #[test]
+fn fpu_scalar_multiply_returns_the_selected_product_window() {
+    let cases = [
+        (0x1234_5678, -0x0123_4567),
+        (i32::MIN, i32::MIN),
+        (i32::MAX, i32::MAX),
+        (i32::MIN, 1),
+        (-1, 1),
+        (i32::MAX, 0),
+    ];
+    let mut program = load_immediate16(1, 0x100).to_vec();
+    program.extend(fpu_aux(
+        FpuAuxKind::IntegerRegister,
+        1,
+        0,
+        0,
+        FpuAuxSubop::Fld,
+        1,
+    ));
+    for mode in 0..4 {
+        program.extend(fpu_scalar(0, 1, 2 + mode, FpuScalarSubop::Mul, mode));
+    }
+    program.push(halt());
+
+    for (a, b) in cases {
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine
+            .load_program(
+                0x100,
+                &[a as u16, (a >> 16) as u16, b as u16, (b >> 16) as u16],
+            )
+            .unwrap();
+        assert!(matches!(
+            machine.run(16).unwrap(),
+            RunOutcome::Halted { .. }
+        ));
+        let product = i128::from(a) * i128::from(b);
+        for (index, shift) in [16, 0, 8, 24].into_iter().enumerate() {
+            assert_eq!(
+                machine.fpu_registers()[2 + index],
+                (product >> shift) as i32,
+                "{a:#010x} * {b:#010x}, shift {shift}"
+            );
+        }
+        assert_eq!(machine.retired_words(), program.len() as u64);
+    }
+}
+
+#[test]
 fn fpu_vector_lanes_dot_and_stride_follow_the_range_model() {
     let mut program = vec![];
     program.extend(load_immediate16(1, 0x0100));

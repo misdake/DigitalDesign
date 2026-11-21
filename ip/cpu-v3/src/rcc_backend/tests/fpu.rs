@@ -36,6 +36,75 @@ fn scalar_fix32_raw_half_bridge_round_trips_words() {
     assert_eq!(run(source), 0x1234u16 ^ 0xabcdu16);
 }
 
+#[test]
+fn scalar_multiply_intrinsics_select_exact_product_windows() {
+    use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+
+    const A: i32 = 0x1234_5678;
+    const B: i32 = -0x0123_4567;
+    const HOST_WINDOWS: [rcc::dsl_rt::fix32; 3] = {
+        use rcc::dsl_rt::*;
+        let a = fix32::from_words(A as u16, (A >> 16) as u16);
+        let b = fix32::from_words(B as u16, (B >> 16) as u16);
+        [fmul_lo32(a, b), fmul_shr8(a, b), fmul_shr24(a, b)]
+    };
+    for (index, (name, shift)) in [("fmul_lo32", 0), ("fmul_shr8", 8), ("fmul_shr24", 24)]
+        .into_iter()
+        .enumerate()
+    {
+        let expected = ((i64::from(A) * i64::from(B)) >> shift) as i32;
+        assert_eq!(HOST_WINDOWS[index].0, expected);
+        let source = format!(
+            "\
+            const A: fix32 = fix32::from_words({}, {});
+            const B: fix32 = fix32::from_words({}, {});
+            const PRODUCT: fix32 = {name}(A, B);
+            #[inline(never)]
+            fn product(a: fix32, b: fix32) -> fix32 {{ {name}(a, b) }}
+            fn main() {{
+                let result = product(A, B);
+                if result != PRODUCT {{ halt(1); }}
+                if result.lo_bits() != {} || result.hi_bits() != {} {{ halt(2); }}
+                halt(0x600d);
+            }}",
+            A as u16,
+            (A >> 16) as u16,
+            B as u16,
+            (B >> 16) as u16,
+            expected as u16,
+            (expected >> 16) as u16,
+        );
+        let options = CompilerOptions::default();
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/rcc-rustc-tests")
+            .join(name);
+        let ir = compile_program_named_checked(
+            "product.rs",
+            &source,
+            &options,
+            &RustcCheck::new(directory),
+            &mut |name| Err(format!("unexpected module {name}")),
+        )
+        .unwrap();
+        let program = crate::rcc_backend::try_compile(ir, &options, "main").unwrap();
+        let modes: Vec<_> = disasm(&program)
+            .into_iter()
+            .filter_map(|line| {
+                let word = usize::from(line.address.wrapping_sub(program.code_base));
+                if line.wide && program.words[word] >> 12 == 0xD {
+                    let word1 = program.words[word + 1];
+                    if word1 & 0x03f0 == 0x0020 {
+                        return Some(word1 & 0xf);
+                    }
+                }
+                None
+            })
+            .collect();
+        assert_eq!(modes, [index as u16 + 1], "{}", program.listing);
+        assert_eq!(execute(program).0, 0x600d);
+    }
+}
+
 /// A fix32 value live across a call has no callee-saved F register to live
 /// in, so it spills through a frame slot (`AddrOfFpuSpill` + FST/FLD).
 #[test]
