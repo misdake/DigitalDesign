@@ -45,7 +45,7 @@ fn configure(_: &mut Context<'_>, application: &mut Prepared, manifest: &Value) 
     }
 }
 
-pub const APPLICATIONS: &[Definition] = &[Definition {
+const STATIC_APPLICATION: Definition = Definition {
     name: "bench-tankracer-static",
     selection: Some("tankracer_static"),
     source: Some("applications/tankracer/rcc/main.rs"),
@@ -82,4 +82,9 @@ pub const APPLICATIONS: &[Definition] = &[Definition {
         ..RENDERER_ASSETS
     }),
     ..DEFAULT
-}];
+};
+
+#[path = "physics_application.rs"]
+mod physics;
+
+pub const APPLICATIONS: &[Definition] = &[STATIC_APPLICATION, physics::APPLICATION];

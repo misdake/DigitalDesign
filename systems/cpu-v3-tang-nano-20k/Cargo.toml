@@ -62,6 +62,16 @@ name = "tankracer-gpu-timing"
 path = "applications/tankracer/tools/gpu_timing/main.rs"
 test = false
 
+[[bin]]
+name = "tankracer-physics-check"
+path = "applications/tankracer/tools/physics_check.rs"
+test = false
+
+[[bin]]
+name = "tankracer-native-check"
+path = "applications/tankracer/tools/native_check.rs"
+test = false
+
 # apps test contracts; target names remain stable.
 
 [[test]]

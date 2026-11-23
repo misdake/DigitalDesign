@@ -3,6 +3,10 @@
 Build with a static scene archive and a camera sequence staged within the
 repository. The application uses the regular SDK and Display path.
 
+The same catalog registers `bench-tankracer-physics`, a separate frozen-contact
+single-vehicle benchmark. Its kernels, resource inputs and execution boundary
+are described in [physical update](/systems/cpu-v3-tang-nano-20k/applications/tankracer/physics.md).
+
 ```powershell
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map target/map.zip --camera target/cameras.json --out target/tankracer-map
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview bench-tankracer-static --snapshot target/tankracer-map --presents 2

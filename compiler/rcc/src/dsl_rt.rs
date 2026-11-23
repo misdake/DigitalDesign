@@ -298,6 +298,16 @@ pub fn log2(x: u16) -> u16 {
     }
 }
 
+/// Unsigned 16-bit product window [23:8], matching the MUL8 intrinsic.
+pub const fn mul8(a: u16, b: u16) -> u16 {
+    ((a as u32 * b as u32) >> 8) as u16
+}
+
+/// Unsigned high product word [31:16], matching the MUL16 intrinsic.
+pub const fn mul16(a: u16, b: u16) -> u16 {
+    ((a as u32 * b as u32) >> 16) as u16
+}
+
 /// unsigned `/` with a defined zero divisor (`x / 0 == 0`), matching the target
 /// routine. The raw `/` operator keeps Rust's panic on the host, so a program
 /// that must run both ways calls this when the divisor may be zero.
