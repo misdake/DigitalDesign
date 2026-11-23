@@ -52,6 +52,16 @@ test = false
 name = "bloxorz-profile-runner"
 path = "applications/bloxorz/tools/profile_runner.rs"
 
+[[bin]]
+name = "tankracer-static-workload"
+path = "applications/tankracer/tools/workload.rs"
+test = false
+
+[[bin]]
+name = "tankracer-gpu-timing"
+path = "applications/tankracer/tools/gpu_timing/main.rs"
+test = false
+
 # apps test contracts; target names remain stable.
 
 [[test]]

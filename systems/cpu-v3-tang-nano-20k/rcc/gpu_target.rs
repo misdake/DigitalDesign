@@ -224,7 +224,7 @@ fn gpu_target_retarget(
     if !gpu_target_owned(slot) {
         return false;
     }
-    let mut c = gpu_record_data(slot);
+    let c = gpu_record_data(slot);
     if !gpu_target_proven(c)
         || c[GPU_RECORD_GENERATION_LOW] != low
         || c[GPU_RECORD_GENERATION_HIGH] != high
@@ -240,6 +240,12 @@ fn gpu_target_retarget(
     if !gpu_target_targets(slot, color, depth) || !gpu_target_front_safe(color, depth) {
         return false;
     }
+    gpu_target_write(slot, color, depth)
+}
+
+// Call only after validating the sealed recording and replacement extents.
+fn gpu_target_write(slot: u16, color: Array<u16>, depth: Array<u16>) -> bool {
+    let mut c = gpu_record_data(slot);
     let native = gpu_native_scratch();
     let copy = unsafe { native.as_ptr().add(16).as_u16_array() };
     if c[GPU_RECORD_COPY_COUNT] != 0

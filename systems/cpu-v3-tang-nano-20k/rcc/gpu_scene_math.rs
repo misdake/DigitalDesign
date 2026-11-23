@@ -13,11 +13,21 @@ pub fn gpu_scene_fix_write(data: Array<u16>, at: u16, value: fix32) {
     fix32::store_words(data, at, value);
 }
 
-pub fn gpu_scene_zero(mut data: Array<u16>, count: u16) {
-    let mut at: u16 = 0;
-    while at < count {
-        data[at] = 0;
-        at += 1;
+pub fn gpu_scene_zero(data: Array<u16>, count: u16) {
+    let zero = vec4::new(fix32::zero(), fix32::zero(), fix32::zero(), fix32::zero());
+    let mut next = data.as_ptr();
+    let mut left = count;
+    while left >= 8 {
+        vec4::export(zero, next);
+        next = next.add(8);
+        left -= 8;
+    }
+    while left != 0 {
+        unsafe {
+            next.write(0, 0);
+        }
+        next = next.add(1);
+        left -= 1;
     }
 }
 

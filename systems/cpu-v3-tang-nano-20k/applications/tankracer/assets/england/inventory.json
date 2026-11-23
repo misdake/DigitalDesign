@@ -1,0 +1,8145 @@
+{
+  "format": "tankracer.static-input.v1",
+  "map": "ENGLAND",
+  "cup": 0,
+  "coordinates": {
+    "basis": "source Y-up, Z unreflected",
+    "bsm_units_per_world": 128,
+    "simulation_units_per_world": 1024,
+    "render_scale": 0.125
+  },
+  "display_distance_world": 200,
+  "source": {
+    "archive": {
+      "archive": "LEVELS/ENGLAND/FASTFILE.DAT",
+      "bytes": 1447092,
+      "sha256": "c0615c0683d17aa4b2f1753ad4be5ea5f9db291f8a37981edcaf38dfba151b76"
+    },
+    "world_sha256": "91ab2fc517cff972a09f184786bf8cf6b70b6c7090c4b174d79fd11c96cfbd3d"
+  },
+  "content": [
+    "terrain",
+    "roads",
+    "buildings",
+    "fixed props",
+    "fixed billboard anchors"
+  ],
+  "materials": 215,
+  "groups": 1235,
+  "texture_bytes": 1240064,
+  "textures": [
+    {
+      "name": "HEDGE1",
+      "source_sha256": "f739f7ac2ad4ab3afaae708769f0c03ed0c9fd5e83127c028309736586ec1716",
+      "file": "textures/HEDGE1.bin",
+      "bytes": 12800,
+      "sha256": "7a906dd41b811652ce383e7021e54a668dca2ceaa8e39cf9a9f07938d849fc42",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "ROCK2",
+      "source_sha256": "8da7ca1e5144993cd6670196716d26ea3676256c3844a29ef67715ede6fe6a0a",
+      "file": "textures/ROCK2.bin",
+      "bytes": 45568,
+      "sha256": "e4da691b38bc1e3ff0c936b7ada11285f4327cd418c62caae6efaa87ff6e7143",
+      "size": 128,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        },
+        {
+          "size": 128,
+          "bytes": 32768
+        }
+      ]
+    },
+    {
+      "name": "LSTONE",
+      "source_sha256": "5c78bdee041b8ffb3abee099f1d1548854c6f52ff72db1d785a89ada27576e50",
+      "file": "textures/LSTONE.bin",
+      "bytes": 12800,
+      "sha256": "52e476a7331534821b84876cac4268094e602e48281124488b10e4f2f562a0b5",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "LSTON1T2",
+      "source_sha256": "a5fa75b54e5a5f15437ec8bb887dcd19b4c638eb77f1b885468360cb899729b8",
+      "file": "textures/LSTON1T2.bin",
+      "bytes": 12800,
+      "sha256": "39496a834325ce4a4234b8f6a40beb06b7d6486e98919a92b512ff95e1c9c70d",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "BRIDGE",
+      "source_sha256": "4ca944938f7ca5646472d4c7e5af306e60d8defd9a6a66234a0303cb5f85d416",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 226,
+        "y": 2,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "HEDGE2B",
+      "source_sha256": "6ba68ef60751116fa55e39bd4fcb35227016bc0ac23357d96159e36b129367f1",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 242,
+        "y": 146,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "HEDGE2",
+      "source_sha256": "c7f24d39d86d832a07b80c8367f6a3b03343748db1a333fc171cc7092b0bed21",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 162,
+        "y": 146,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "FIELD",
+      "source_sha256": "1f899af63ed38ec3b6abf444b70b767314daa8190d6267c20af0b3a523a302d2",
+      "file": "textures/FIELD.bin",
+      "bytes": 12800,
+      "sha256": "5330d539af13c041e79676f8756d4b94f72fa0d6ed44f557da02500aad2e855f",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "ROUGH",
+      "source_sha256": "83f7fe4f66ea002c7cc1f193e7bd520982eff20a2ac6e01ab4867f7ad1632534",
+      "file": "textures/ROUGH.bin",
+      "bytes": 12800,
+      "sha256": "8b417c5b5a8e7b5013ecf3f5e4e92f80eedd9fa7adefcaf3491760f01f4fb6c8",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "NTREE1",
+      "source_sha256": "f0e4e6d402c5a7a1bf89833044ecc507db7a2d9bc18690389ed507dd4f59ab62",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 402,
+        "y": 146,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "NTREE2",
+      "source_sha256": "7777905b0e76acb5d76ae6950f87a89ab834d30406d765a76231c8f0404772cd",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 2,
+        "y": 226,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "STWALL",
+      "source_sha256": "9e7add8c73602e9661f4ac6b112ab103347bc569aa48b77fcb2f0c6b00d80944",
+      "file": "textures/STWALL.bin",
+      "bytes": 12800,
+      "sha256": "cb5f5ab6647130054e0b0c7e170afb78e038f7def8845ba8b13b9791e7dcf839",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "GRID2",
+      "source_sha256": "87927c20735b2dab8f697b8f12e06378799e7a7dff023e10e2a42c5134ccd941",
+      "file": "textures/GRID2.bin",
+      "bytes": 12800,
+      "sha256": "cbc955b489ad4cdc5bdaa24b768844a04fc59e0e7960b6b26cc455cb860a9ffc",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "ROAD4",
+      "source_sha256": "af36cd4031941c2fffe21e82dc474bfb5c2b5f0eabf6d18592bf2accd8fff8a1",
+      "file": "textures/ROAD4.bin",
+      "bytes": 45568,
+      "sha256": "3bb5a0f58ff22b54a41756b2f16d91907fb177103b46d97776f401bfa5608792",
+      "size": 128,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        },
+        {
+          "size": 128,
+          "bytes": 32768
+        }
+      ]
+    },
+    {
+      "name": "MUD2",
+      "source_sha256": "f292cc6e5c6ed62eb140c334c78e77e07fc36b4559f2a16ba41118dd205eeb36",
+      "file": "textures/MUD2.bin",
+      "bytes": 12800,
+      "sha256": "c108c61106f784120556b9b372502deefa08d35bc76589cb7314d74edd07602a",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "R2TOGRCR",
+      "source_sha256": "e5df9dc4b2866a0db22e0eb824a628922b895e5dc370b93c9f43014ffc197d4f",
+      "file": "textures/R2TOGRCR.bin",
+      "bytes": 12800,
+      "sha256": "91b56f3265524b2d00fa63513f8669b237af95357c8f64a1060676a8fb89c8ac",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "GRASS3",
+      "source_sha256": "c3ef8b19c0837f091cce431ef258189c4e9aad5b5e52781c957456b5b42f8f60",
+      "file": "textures/GRASS3.bin",
+      "bytes": 45568,
+      "sha256": "f6cd5b65a51706d22ba5006705c32a468e9e4a4ee67743cdb1a28578e5ed52c9",
+      "size": 128,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        },
+        {
+          "size": 128,
+          "bytes": 32768
+        }
+      ]
+    },
+    {
+      "name": "ROAD4C2",
+      "source_sha256": "a3dcfddc431b5c2d1897a79f0b7d24239373aec92876d26c5e579f713301bbe6",
+      "file": "textures/ROAD4C2.bin",
+      "bytes": 45568,
+      "sha256": "6d4919eda2deb6c2fc21664fd46e4a14370c13196ed2ccf9c6b301c2788c8ccf",
+      "size": 128,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        },
+        {
+          "size": 128,
+          "bytes": 32768
+        }
+      ]
+    },
+    {
+      "name": "CHRUCHRF",
+      "source_sha256": "8113aa8b39726f14be8bd7332fd0d5251080f0b8a5d0394d78165caf910c074c",
+      "file": "textures/CHRUCHRF.bin",
+      "bytes": 12800,
+      "sha256": "91cb4189776e0a39cb810b6b71a82f7ce4a9b2df0b4bf29b42754f7313ec8af0",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "CHRUCH2",
+      "source_sha256": "ffac5ad9d8535d4baa8da79cade719cc7b91dd9e43436dbf4c9880e4ca41c204",
+      "file": "textures/CHRUCH2.bin",
+      "bytes": 12800,
+      "sha256": "9ddb96a07650f548b01c3e7cfc0a0772b4d710f1fa518ad75934db659eb18c7c",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "CHRUCH1",
+      "source_sha256": "d1774c4256678c60d5bcd82f4999ee7fb5700625bfa5a48addc64f28de3442a5",
+      "file": "textures/CHRUCH1.bin",
+      "bytes": 12800,
+      "sha256": "45f7cb3bcfa68752dbb61a87d8dbd52b2031251af7a5464898ee7ce60f2a4457",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "CHRUCH3",
+      "source_sha256": "9e035c96a68526781f1d39451b7fba32fe3e6f69c3f6b273d66d849a6195bfca",
+      "file": "textures/CHRUCH3.bin",
+      "bytes": 12800,
+      "sha256": "2d4cdda4007f9c9626a491169e80243cecde431981aba1117e8371aad1ff59a8",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "GRAVEL",
+      "source_sha256": "4b79819fabd763c81ae4d8f06cc1ded90efdaee67909e7b99b6fe6d873749da7",
+      "file": "textures/GRAVEL.bin",
+      "bytes": 12800,
+      "sha256": "7c92bbf6b97f0d6f8f93bd06cedee94cb1d75d6c4d4c65b53ff29af7d3ab222e",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "W2RD3",
+      "source_sha256": "a947127728dd0ce9c4047b8abcd85f1e71788add0401aae951fad016e66630f4",
+      "file": "textures/W2RD3.bin",
+      "bytes": 12800,
+      "sha256": "04f3f9cd790ddc2735cef32b971e69abb8328fbd92ceb1ad615eeeb28f7ba06c",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "TREE2",
+      "source_sha256": "ee7123c5738dd3ce7078d5beaa3bf64135f910f0e7fc795caa1c8aec5ca4d809",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 322,
+        "y": 226,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "SIGNS2",
+      "source_sha256": "d5b0584ee6164e8a1e1819152097fb1acc3b1680527af5356e9d0967241f5936",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 162,
+        "y": 226,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "BRIDGE3",
+      "source_sha256": "24df49e36928fed337f30cfde6b3aff131c55678358c5f5ae7a829237e56234c",
+      "file": "textures/BRIDGE3.bin",
+      "bytes": 12800,
+      "sha256": "96c4d54eaa1f35e52c0ac5444e77cf6fd24c738d2025c379881fedfd14177ec2",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "BRIDGE2",
+      "source_sha256": "41afa3535e6d9885a5ed28c80fcd698fe4a867380ece9534675aff90575ec0cc",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 306,
+        "y": 2,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "WALL2RD",
+      "source_sha256": "9447e77f857608667c9287c2e6edb5947fadae65c5565bdc1abe20ad072599b7",
+      "file": "textures/WALL2RD.bin",
+      "bytes": 12800,
+      "sha256": "13a600df4518e1af92505d837b73a15d4277c941fd8e3faef3937d0add21e0da",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "TUDOR",
+      "source_sha256": "5743e4f70fcdaae983558a7a4c010db709427df345bae56252e0bb9bfcd838a0",
+      "file": "textures/TUDOR.bin",
+      "bytes": 45568,
+      "sha256": "9a238c7a44d820b914729b27ef0a7de3f0e2d23aff3f2e5858a699e9ee287b09",
+      "size": 128,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        },
+        {
+          "size": 128,
+          "bytes": 32768
+        }
+      ]
+    },
+    {
+      "name": "FENHED",
+      "source_sha256": "492e8eea9db0c5df85f5d92266043655ef83461d95903258bc8d0fdabe4cf448",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 82,
+        "y": 146,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "DKWOOD",
+      "source_sha256": "5e525e904c31a3d444cf0deed75e59bf68e60355e184fc744843c61a7481eda8",
+      "file": "textures/DKWOOD.bin",
+      "bytes": 12800,
+      "sha256": "b485c30ed588bafebc9d6e8b09cfcb5141018205e2c5d82c93297117316e50e6",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "OFFICE",
+      "source_sha256": "ef11f7b7ea4a2e438fd2dca118a5d6453979e12a0b7065dff0320abe5f5198b0",
+      "file": "textures/OFFICE.bin",
+      "bytes": 45568,
+      "sha256": "c02c57dd846a02e8546b6f6c0da1a24f2cb2672a06c535bf8eeaa93155ec413b",
+      "size": 128,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        },
+        {
+          "size": 128,
+          "bytes": 32768
+        }
+      ]
+    },
+    {
+      "name": "ROAD2",
+      "source_sha256": "f9ab1b7f13679806996f5b826fba732e79e29f7ae35439f6f3e100ab78a4a002",
+      "file": "textures/ROAD2.bin",
+      "bytes": 45568,
+      "sha256": "e54e9a70dba1452fda186d2e8475e0a665909f830a1fee77dbbeb19618ad0bf3",
+      "size": 128,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        },
+        {
+          "size": 128,
+          "bytes": 32768
+        }
+      ]
+    },
+    {
+      "name": "WFENCE1",
+      "source_sha256": "8a428a03114e80c9ab04432e7f08c7420e8b05cfd88a440bb84f518657b85d4a",
+      "file": "textures/WFENCE1.bin",
+      "bytes": 12800,
+      "sha256": "6f87d16f29328675f3eba920e47809e8d68afad7621541af5b1646c972096018",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "TREE3",
+      "source_sha256": "9a3524a9771eacb7c42c82741784c08700aef4581c87faacbe9bdb6329a5ede8",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 402,
+        "y": 226,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "HEDGE2C",
+      "source_sha256": "7c473b99c803dfedbf7b3f721185ec6e89c6af00c269303df9944fbb76bdf12f",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 322,
+        "y": 146,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "MUD2HEDG",
+      "source_sha256": "582323a04bfa7387cea234a9fb2bce2bec1f82ca41afb1ad1980df8a85424724",
+      "file": "textures/MUD2HEDG.bin",
+      "bytes": 12800,
+      "sha256": "d652995f16dcf65feb0e28563ef64e0182cca23c11e0a9e086e9ae4f3446db3c",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "MUD2CRAT",
+      "source_sha256": "5b08ca64afba03508459d016480da2e84770ab9fd781a638b807b3e17bf64c04",
+      "file": "textures/MUD2CRAT.bin",
+      "bytes": 12800,
+      "sha256": "db5c8d9261bec8e98984d4d3c2e463b4e9ca0fb6e521142b21c5be220def0097",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "TREE4",
+      "source_sha256": "6657a98e44dfebdaee0e1ea18ae8b2a26df6599503169ea8e6df5b730a61a432",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 2,
+        "y": 306,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "HOUSE1",
+      "source_sha256": "5e5452dfa9e5c804f2a3b9c5f27edd758df99119167bcc7ef6c9d461c40e7ba3",
+      "file": "textures/HOUSE1.bin",
+      "bytes": 12800,
+      "sha256": "6a879fb25eb391df026f46b568138d32b445e5b36e4bc9a25e369ed89f0851c7",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "IGATE",
+      "source_sha256": "06a68395170cf20d7a1c4e07545598b0eb21ecddfb07b53225b5be44fe2b118a",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 2,
+        "y": 2,
+        "width": 128,
+        "height": 128
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "ROCK3",
+      "source_sha256": "fd2af032329bcdaa48c186d5063e76b8cd8d4a0282feccccaac8d4be158a7cd9",
+      "file": "textures/ROCK3.bin",
+      "bytes": 12800,
+      "sha256": "8203bfc13d7db1e47360b9781b967b927d3407b8f8831bcda0b6e5f861c2d8e3",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "WATER",
+      "source_sha256": "d0f41e42f959b33b08c54f3a2603aa3c23fc61b1f607510d357f6fba9a83c7c4",
+      "file": "textures/WATER.bin",
+      "bytes": 12800,
+      "sha256": "963fd5e885e4228720c0c1c332987bb3cdf95f561db4031753f0b20429649750",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "ROCK1",
+      "source_sha256": "b835fdd762d8931c72566ce2628da425dba4167f516dd7100a79e119a81e4d51",
+      "file": "textures/ROCK1.bin",
+      "bytes": 12800,
+      "sha256": "ef640474f8d8cc7e67d3ea50f05ba493d68996b4d6f086a5620901fec854c1dd",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "LSTONE2",
+      "source_sha256": "207404e475cc313fa58fead3506d3d876357ce7d1cb279596508e9cb94ed2a4e",
+      "file": "textures/LSTONE2.bin",
+      "bytes": 12800,
+      "sha256": "b7b5155034b61ebcb067852f682759f88bddd2671b2588c574ba04c8d7c7cf11",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "SIGN2",
+      "source_sha256": "45625c5298357ba539d127234af605d02031e5b4d9822187591224b4ed2df8ce",
+      "file": "textures/SIGN2.bin",
+      "bytes": 12800,
+      "sha256": "85b9e518197028cb77b92b1f9c9fa31b96c475d8eab15efc917d10b84b1d6a29",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "BARK",
+      "source_sha256": "79c7cef94a93cfeea5ea5b351264a613f05101828b6d3c3d1c24e0fb1844ed59",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 146,
+        "y": 2,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "START3",
+      "source_sha256": "e650d4064f94464121975d885e54f3e484360036c94c06f4df49fbb36bd41a6c",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 242,
+        "y": 226,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "SIGN3",
+      "source_sha256": "0349601c9adce5af2f58e5ea8f83feb7e2907f0ce26897421ac8f84f6397dcdf",
+      "file": "textures/SIGN3.bin",
+      "bytes": 12800,
+      "sha256": "692685fccf1017b834aaf1f54d3dd000fad5148fec12b7dd459275085dbd6cf7",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "REPLOGO",
+      "source_sha256": "9e0984bf0b9dcfdc625a2cfafca0a29080421226d28ba0fe38c734340ee97cbd",
+      "file": "textures/REPLOGO.bin",
+      "bytes": 12800,
+      "sha256": "021f52a6c1715bafd235b4fbc3be6b2b32e56d282f9fb01e88d9b711f8fbde2a",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "CANNON",
+      "source_sha256": "84d19fbe7e95954ce869d712efebcbf2a6dc98ff96f40dfd24f746464e02b003",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 386,
+        "y": 2,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "SIGN1",
+      "source_sha256": "f355eb74afbfa20a18a5b417e47ec2557152868f82ea6964450ee80a4b06a440",
+      "file": "textures/SIGN1.bin",
+      "bytes": 12800,
+      "sha256": "24e5b6a6999bfa96dcdc795fcb7c3a629373696668f7dd5423a4b79c833cd137",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "WATGRV",
+      "source_sha256": "47aef4a9d06b40b8478fd004981c307895f0e8f93b261fbbd4b667825e5048f5",
+      "file": "textures/WATGRV.bin",
+      "bytes": 12800,
+      "sha256": "60067016a3ec1de675dde763c85f895706f5af9e50a5676b4c9ffc430a2131a9",
+      "size": 64,
+      "format": "Rgb565",
+      "mipmaps": true,
+      "levels": [
+        {
+          "size": 1,
+          "bytes": 512
+        },
+        {
+          "size": 2,
+          "bytes": 512
+        },
+        {
+          "size": 4,
+          "bytes": 512
+        },
+        {
+          "size": 8,
+          "bytes": 512
+        },
+        {
+          "size": 16,
+          "bytes": 512
+        },
+        {
+          "size": 32,
+          "bytes": 2048
+        },
+        {
+          "size": 64,
+          "bytes": 8192
+        }
+      ]
+    },
+    {
+      "name": "SCARE",
+      "source_sha256": "695eb94857a06ccbe609dd2bae169545d28dbbccb9b6cf9151b57cc15d872841",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 82,
+        "y": 226,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    },
+    {
+      "name": "CATTLEG",
+      "source_sha256": "40e99e70f0f0be7e9498fb0b1cd9d22edfa4e1c227803e154a6dd4448330c2fc",
+      "file": "textures/ALPHA.bin",
+      "bytes": 524288,
+      "sha256": "5070541ae9e9a07c750c5d129a4c6fb2c784243d8cc8d4475d512e4e0659d9d9",
+      "size": 512,
+      "format": "Rgba4444",
+      "mipmaps": false,
+      "region": {
+        "x": 2,
+        "y": 146,
+        "width": 64,
+        "height": 64
+      },
+      "levels": [
+        {
+          "size": 512,
+          "bytes": 524288
+        }
+      ]
+    }
+  ],
+  "meshes": [
+    {
+      "source_offset": 0,
+      "source_triangles": 3,
+      "visible_triangles": 3,
+      "group_names": [
+        "cell-3-1/0/",
+        "cell-3-1/1/"
+      ]
+    },
+    {
+      "source_offset": 48,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-2-3/2/",
+        "cell-2-3/3/",
+        "cell-2-3/4/",
+        "cell-2-3/5/"
+      ]
+    },
+    {
+      "source_offset": 96,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-2-3/6/",
+        "cell-2-3/7/",
+        "cell-2-3/8/",
+        "cell-2-3/9/",
+        "cell-2-3/10/",
+        "cell-2-3/11/"
+      ]
+    },
+    {
+      "source_offset": 144,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "mesh-144/12/"
+      ]
+    },
+    {
+      "source_offset": 192,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "mesh-192/13/"
+      ]
+    },
+    {
+      "source_offset": 240,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "mesh-240/13/"
+      ]
+    },
+    {
+      "source_offset": 288,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "mesh-288/13/"
+      ]
+    },
+    {
+      "source_offset": 336,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "mesh-336/14/"
+      ]
+    },
+    {
+      "source_offset": 384,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell--1-2/15/"
+      ]
+    },
+    {
+      "source_offset": 432,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell--1-2/15/"
+      ]
+    },
+    {
+      "source_offset": 480,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "mesh-480/16/",
+        "mesh-480/17/",
+        "mesh-480/18/",
+        "mesh-480/19/",
+        "mesh-480/12/"
+      ]
+    },
+    {
+      "source_offset": 528,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0-3/20/",
+        "cell-0-3/21/",
+        "cell-0-3/22/",
+        "cell-0-3/23/",
+        "cell-0-3/24/"
+      ]
+    },
+    {
+      "source_offset": 576,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0-3/21/",
+        "cell-0-3/20/",
+        "cell-0-3/23/",
+        "cell-0-3/22/",
+        "cell-0-3/24/",
+        "cell-1-3/22/"
+      ]
+    },
+    {
+      "source_offset": 624,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-624/18/[0,1]",
+        "mesh-624/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 672,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-672/18/[0,0]",
+        "mesh-672/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 720,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-720/18/[0,0]",
+        "mesh-720/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 768,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-768/18/[0,0]",
+        "mesh-768/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 816,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-816/18/[0,1]",
+        "mesh-816/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 864,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-864/18/[-1,1]",
+        "mesh-864/18/[-4,-2]"
+      ]
+    },
+    {
+      "source_offset": 912,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-912/18/[0,0]",
+        "mesh-912/18/[-3,-3]"
+      ]
+    },
+    {
+      "source_offset": 960,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-960/18/[0,0]",
+        "mesh-960/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 1008,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1008/18/[-1,0]",
+        "mesh-1008/18/[-1,-3]"
+      ]
+    },
+    {
+      "source_offset": 1056,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1056/18/[0,0]",
+        "mesh-1056/18/[0,-3]"
+      ]
+    },
+    {
+      "source_offset": 1104,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1104/18/[0,0]",
+        "mesh-1104/18/[0,-3]"
+      ]
+    },
+    {
+      "source_offset": 1152,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1152/18/[0,0]",
+        "mesh-1152/18/[0,-3]"
+      ]
+    },
+    {
+      "source_offset": 1200,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1200/18/[-1,1]",
+        "mesh-1200/18/[0,-3]"
+      ]
+    },
+    {
+      "source_offset": 1248,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1248/18/[-1,0]",
+        "mesh-1248/18/[-1,-3]"
+      ]
+    },
+    {
+      "source_offset": 1296,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1296/18/[0,0]",
+        "mesh-1296/18/[0,-3]"
+      ]
+    },
+    {
+      "source_offset": 1344,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1344/18/[0,0]",
+        "mesh-1344/18/[0,-3]"
+      ]
+    },
+    {
+      "source_offset": 1392,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1392/18/[0,1]",
+        "mesh-1392/18/[2,4]"
+      ]
+    },
+    {
+      "source_offset": 1440,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1440/18/[-1,0]",
+        "mesh-1440/18/[1,3]"
+      ]
+    },
+    {
+      "source_offset": 1488,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1488/18/[0,1]",
+        "mesh-1488/18/[2,4]"
+      ]
+    },
+    {
+      "source_offset": 1536,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1536/18/[0,1]",
+        "mesh-1536/18/[2,4]"
+      ]
+    },
+    {
+      "source_offset": 1584,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1584/18/[-1,0]",
+        "mesh-1584/18/[1,3]"
+      ]
+    },
+    {
+      "source_offset": 1632,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1632/18/[0,0]",
+        "mesh-1632/18/[2,2]"
+      ]
+    },
+    {
+      "source_offset": 1680,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1680/18/[0,0]",
+        "mesh-1680/18/[2,2]"
+      ]
+    },
+    {
+      "source_offset": 1728,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1728/18/[0,1]",
+        "mesh-1728/18/[3,3]"
+      ]
+    },
+    {
+      "source_offset": 1776,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1776/18/[0,0]",
+        "mesh-1776/18/[2,3]"
+      ]
+    },
+    {
+      "source_offset": 1824,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1824/18/[0,1]",
+        "mesh-1824/18/[3,3]"
+      ]
+    },
+    {
+      "source_offset": 1872,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1872/18/[0,0]",
+        "mesh-1872/18/[3,2]"
+      ]
+    },
+    {
+      "source_offset": 1920,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1920/18/[0,1]",
+        "mesh-1920/18/[2,3]"
+      ]
+    },
+    {
+      "source_offset": 1968,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-1968/18/[0,0]",
+        "mesh-1968/18/[3,2]"
+      ]
+    },
+    {
+      "source_offset": 2016,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2016/18/[0,0]",
+        "mesh-2016/18/[3,2]"
+      ]
+    },
+    {
+      "source_offset": 2064,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2064/18/[0,1]",
+        "mesh-2064/18/[3,3]"
+      ]
+    },
+    {
+      "source_offset": 2112,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2112/18/[0,1]",
+        "mesh-2112/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 2160,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2160/18/[0,0]",
+        "mesh-2160/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 2208,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2208/18/[0,0]",
+        "mesh-2208/18/[-4,-3]"
+      ]
+    },
+    {
+      "source_offset": 2256,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2256/18/[-1,0]",
+        "mesh-2256/18/[-4,-2]"
+      ]
+    },
+    {
+      "source_offset": 2304,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2304/18/[0,0]",
+        "mesh-2304/18/[-3,-3]"
+      ]
+    },
+    {
+      "source_offset": 2352,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2352/18/[0,0]",
+        "mesh-2352/18/[-3,-3]"
+      ]
+    },
+    {
+      "source_offset": 2400,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2400/18/[0,1]",
+        "mesh-2400/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 2448,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2448/18/[0,0]",
+        "mesh-2448/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 2496,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2496/18/[0,1]",
+        "mesh-2496/18/[-3,-2]"
+      ]
+    },
+    {
+      "source_offset": 2544,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2544/18/[0,0]",
+        "mesh-2544/18/[-3,-3]"
+      ]
+    },
+    {
+      "source_offset": 2592,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2592/18/[0,0]",
+        "mesh-2592/18/[3,1]"
+      ]
+    },
+    {
+      "source_offset": 2640,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2640/18/[0,1]",
+        "mesh-2640/18/[4,2]"
+      ]
+    },
+    {
+      "source_offset": 2688,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2688/18/[1,0]",
+        "mesh-2688/18/[4,2]"
+      ]
+    },
+    {
+      "source_offset": 2736,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2736/18/[1,0]",
+        "mesh-2736/18/[4,2]"
+      ]
+    },
+    {
+      "source_offset": 2784,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2784/18/[0,1]",
+        "mesh-2784/18/[3,2]"
+      ]
+    },
+    {
+      "source_offset": 2832,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2832/18/[0,0]",
+        "mesh-2832/18/[4,1]"
+      ]
+    },
+    {
+      "source_offset": 2880,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2880/18/[0,0]",
+        "mesh-2880/18/[4,1]"
+      ]
+    },
+    {
+      "source_offset": 2928,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2928/18/[0,0]",
+        "mesh-2928/18/[4,1]"
+      ]
+    },
+    {
+      "source_offset": 2976,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-2976/18/[1,0]",
+        "mesh-2976/18/[4,1]"
+      ]
+    },
+    {
+      "source_offset": 3024,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-3024/18/[1,0]",
+        "mesh-3024/18/[4,1]"
+      ]
+    },
+    {
+      "source_offset": 3072,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-3072/18/[4,0]",
+        "mesh-3072/18/[0,-1]"
+      ]
+    },
+    {
+      "source_offset": 3120,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-3-2/25/"
+      ]
+    },
+    {
+      "source_offset": 3168,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "cell-2-2/25/",
+        "cell-3-2/25/"
+      ]
+    },
+    {
+      "source_offset": 3216,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-2-2/25/"
+      ]
+    },
+    {
+      "source_offset": 3264,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-3-2/25/"
+      ]
+    },
+    {
+      "source_offset": 3312,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-3-0/26/",
+        "cell-3-0/27/",
+        "cell-3-0/28/"
+      ]
+    },
+    {
+      "source_offset": 3360,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-3-1/26/",
+        "cell-3-1/28/",
+        "cell-3-1/27/",
+        "cell-3-1/29/",
+        "cell-3-1/30/"
+      ]
+    },
+    {
+      "source_offset": 3408,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-3408/13/"
+      ]
+    },
+    {
+      "source_offset": 3456,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-0-0/31/",
+        "cell--1-0/31/"
+      ]
+    },
+    {
+      "source_offset": 3504,
+      "source_triangles": 30,
+      "visible_triangles": 30,
+      "group_names": [
+        "cell-0-0/32/",
+        "cell-0-0/33/",
+        "cell-0-0/34/",
+        "cell--1-0/33/",
+        "cell--1-0/32/",
+        "cell--1-0/34/",
+        "cell-0-0/35/",
+        "cell--1-0/36/",
+        "cell--1-0/35/",
+        "cell-0-0/36/"
+      ]
+    },
+    {
+      "source_offset": 3552,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-0-0/37/",
+        "cell-0-0/38/",
+        "cell-0-0/39/",
+        "cell--1-0/39/",
+        "cell--1-0/38/",
+        "cell--1-0/37/",
+        "cell-0-0/40/",
+        "cell-0-0/31/",
+        "cell--1-0/31/",
+        "cell--1-0/40/"
+      ]
+    },
+    {
+      "source_offset": 3600,
+      "source_triangles": 57,
+      "visible_triangles": 57,
+      "group_names": [
+        "cell--1-0/41/",
+        "cell--1-0/42/",
+        "cell--1-1/41/",
+        "cell--1-1/42/",
+        "cell-0-1/42/",
+        "cell-0-1/41/",
+        "cell-0-1/43/",
+        "cell-0-0/44/",
+        "cell-0-1/44/",
+        "cell-0-1/45/"
+      ]
+    },
+    {
+      "source_offset": 3648,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-0-1/31/",
+        "cell-0-1/40/"
+      ]
+    },
+    {
+      "source_offset": 3696,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-0-2/31/",
+        "cell-0-2/46/"
+      ]
+    },
+    {
+      "source_offset": 3744,
+      "source_triangles": 31,
+      "visible_triangles": 31,
+      "group_names": [
+        "cell-0-2/36/",
+        "cell-0-2/42/"
+      ]
+    },
+    {
+      "source_offset": 3792,
+      "source_triangles": 38,
+      "visible_triangles": 38,
+      "group_names": [
+        "cell-1-3/39/",
+        "cell-1-3/38/",
+        "cell-1-3/31/",
+        "cell-1-3/47/",
+        "cell-1-3/40/"
+      ]
+    },
+    {
+      "source_offset": 3840,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-1-3/36/",
+        "cell-1-3/48/"
+      ]
+    },
+    {
+      "source_offset": 3888,
+      "source_triangles": 31,
+      "visible_triangles": 31,
+      "group_names": [
+        "cell-2-3/47/",
+        "cell-2-3/31/",
+        "cell-2-2/31/",
+        "cell-2-3/37/",
+        "cell-2-2/37/",
+        "cell-2-3/38/",
+        "cell-2-3/39/",
+        "cell-2-2/39/",
+        "cell-2-2/38/",
+        "cell-2-3/40/",
+        "cell-2-2/40/"
+      ]
+    },
+    {
+      "source_offset": 3936,
+      "source_triangles": 19,
+      "visible_triangles": 19,
+      "group_names": [
+        "cell-2-3/39/",
+        "cell-2-3/40/",
+        "cell-2-2/31/",
+        "cell-2-3/31/",
+        "cell-2-3/38/"
+      ]
+    },
+    {
+      "source_offset": 3984,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-2-3/49/",
+        "cell-2-3/50/"
+      ]
+    },
+    {
+      "source_offset": 4032,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-3-2/25/"
+      ]
+    },
+    {
+      "source_offset": 4080,
+      "source_triangles": 42,
+      "visible_triangles": 42,
+      "group_names": [
+        "cell-3-2/51/",
+        "cell-2-2/51/",
+        "cell-3-2/52/",
+        "cell-3-2/53/",
+        "cell-3-2/54/",
+        "cell-3-2/55/",
+        "cell-2-2/52/",
+        "cell-3-2/56/"
+      ]
+    },
+    {
+      "source_offset": 4128,
+      "source_triangles": 48,
+      "visible_triangles": 48,
+      "group_names": [
+        "cell-3-2/57/",
+        "cell-3-2/42/",
+        "cell-2-2/42/"
+      ]
+    },
+    {
+      "source_offset": 4176,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-3-2/31/",
+        "cell-3-2/47/",
+        "cell-3-2/38/",
+        "cell-2-2/31/",
+        "cell-2-2/47/"
+      ]
+    },
+    {
+      "source_offset": 4224,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-2-3/32/"
+      ]
+    },
+    {
+      "source_offset": 4272,
+      "source_triangles": 35,
+      "visible_triangles": 35,
+      "group_names": [
+        "cell-0-1/47/",
+        "cell-0-1/31/",
+        "cell-0-1/46/",
+        "cell--1-1/31/"
+      ]
+    },
+    {
+      "source_offset": 4320,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "mesh-4320/13/",
+        "mesh-4320/18/",
+        "mesh-4320/58/"
+      ]
+    },
+    {
+      "source_offset": 4368,
+      "source_triangles": 11,
+      "visible_triangles": 11,
+      "group_names": [
+        "cell-1-3/59/",
+        "cell-1-3/22/"
+      ]
+    },
+    {
+      "source_offset": 4416,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-0-2/42/",
+        "cell-0-2/36/"
+      ]
+    },
+    {
+      "source_offset": 4464,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-0-2/25/"
+      ]
+    },
+    {
+      "source_offset": 4512,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "mesh-4512/13/"
+      ]
+    },
+    {
+      "source_offset": 4560,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell--1-0/49/",
+        "cell--1-0/42/",
+        "cell--1-0/10/",
+        "cell--1-0/7/"
+      ]
+    },
+    {
+      "source_offset": 4608,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell--1-0/60/",
+        "cell--1-0/36/"
+      ]
+    },
+    {
+      "source_offset": 4656,
+      "source_triangles": 35,
+      "visible_triangles": 35,
+      "group_names": [
+        "cell--1-1/44/",
+        "cell--1-1/61/",
+        "cell--1-1/62/",
+        "cell--1-1/63/",
+        "cell--1-1/64/",
+        "cell--1-1/42/",
+        "cell--1-1/45/",
+        "cell--1-1/60/",
+        "cell-0-1/42/",
+        "cell-0-1/60/"
+      ]
+    },
+    {
+      "source_offset": 4704,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell-0-0/65/",
+        "cell-0-0/44/",
+        "cell-0-0/61/",
+        "cell-0-0/45/",
+        "cell-0-0/42/"
+      ]
+    },
+    {
+      "source_offset": 4752,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "mesh-4752/16/",
+        "mesh-4752/17/",
+        "mesh-4752/18/",
+        "mesh-4752/13/",
+        "mesh-4752/58/",
+        "mesh-4752/19/",
+        "mesh-4752/12/"
+      ]
+    },
+    {
+      "source_offset": 4800,
+      "source_triangles": 34,
+      "visible_triangles": 34,
+      "group_names": [
+        "cell-0-2/66/",
+        "cell-0-3/66/",
+        "cell-0-2/67/"
+      ]
+    },
+    {
+      "source_offset": 4848,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-4848/13/"
+      ]
+    },
+    {
+      "source_offset": 4896,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-4896/13/",
+        "mesh-4896/17/",
+        "mesh-4896/19/",
+        "mesh-4896/18/",
+        "mesh-4896/58/"
+      ]
+    },
+    {
+      "source_offset": 4944,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-4944/13/"
+      ]
+    },
+    {
+      "source_offset": 4992,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-4992/13/"
+      ]
+    },
+    {
+      "source_offset": 5040,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-5040/13/"
+      ]
+    },
+    {
+      "source_offset": 5088,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-5088/13/"
+      ]
+    },
+    {
+      "source_offset": 5136,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0-3/68/",
+        "mesh-5136/17/",
+        "mesh-5136/13/",
+        "cell-0-3/36/"
+      ]
+    },
+    {
+      "source_offset": 5184,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "cell-1-3/69/",
+        "cell-1-3/70/",
+        "cell-1-3/71/",
+        "cell-1-3/72/",
+        "cell-1-3/73/",
+        "cell-1-3/74/"
+      ]
+    },
+    {
+      "source_offset": 5232,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell-1-3/75/",
+        "cell-1-3/23/",
+        "cell-1-3/20/",
+        "cell-1-3/21/"
+      ]
+    },
+    {
+      "source_offset": 5280,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell--1-0/59/",
+        "cell--1-0/76/",
+        "cell--1-0/2/",
+        "cell--1-1/2/",
+        "cell--1-1/59/"
+      ]
+    },
+    {
+      "source_offset": 5328,
+      "source_triangles": 28,
+      "visible_triangles": 28,
+      "group_names": [
+        "cell-0-3/31/",
+        "cell-1-3/31/"
+      ]
+    },
+    {
+      "source_offset": 5376,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-0-2/77/",
+        "cell--1-2/77/"
+      ]
+    },
+    {
+      "source_offset": 5424,
+      "source_triangles": 5,
+      "visible_triangles": 5,
+      "group_names": [
+        "cell-1-3/75/"
+      ]
+    },
+    {
+      "source_offset": 5472,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-5472/13/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 5520,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-5520/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 5568,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "mesh-5568/13/"
+      ]
+    },
+    {
+      "source_offset": 5616,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-3-1/31/",
+        "cell-3-1/37/"
+      ]
+    },
+    {
+      "source_offset": 5664,
+      "source_triangles": 23,
+      "visible_triangles": 23,
+      "group_names": [
+        "cell-3-1/42/",
+        "cell-3-1/65/",
+        "cell-3-1/78/"
+      ]
+    },
+    {
+      "source_offset": 5712,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "mesh-5712/13/"
+      ]
+    },
+    {
+      "source_offset": 5760,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-5760/13/",
+        "mesh-5760/17/"
+      ]
+    },
+    {
+      "source_offset": 5808,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "cell-3-1/79/"
+      ]
+    },
+    {
+      "source_offset": 5856,
+      "source_triangles": 29,
+      "visible_triangles": 28,
+      "group_names": [
+        "cell-3-2/36/",
+        "cell-3-2/35/",
+        "cell-3-2/33/",
+        "cell-3-2/32/",
+        "cell-3-2/34/"
+      ]
+    },
+    {
+      "source_offset": 5904,
+      "source_triangles": 29,
+      "visible_triangles": 29,
+      "group_names": [
+        "cell-3-2/31/",
+        "cell-3-2/80/",
+        "cell-3-2/47/",
+        "cell-3-2/38/",
+        "cell-3-2/81/",
+        "cell-3-1/81/",
+        "cell-3-1/82/"
+      ]
+    },
+    {
+      "source_offset": 5952,
+      "source_triangles": 89,
+      "visible_triangles": 89,
+      "group_names": [
+        "cell-3-1/83/",
+        "cell-3-1/84/",
+        "cell-3-1/85/",
+        "cell-3-1/86/",
+        "cell-3-1/0/",
+        "cell-3-1/42/",
+        "cell-3-1/20/",
+        "cell-3-1/34/",
+        "cell-3-1/38/",
+        "cell-3-1/48/",
+        "cell-3-1/47/",
+        "cell-3-1/80/",
+        "cell-3-1/87/",
+        "cell-3-1/88/",
+        "cell-3-1/89/",
+        "cell-3-1/90/",
+        "cell-3-1/91/",
+        "cell-3-1/92/",
+        "cell-3-1/37/",
+        "cell-3-1/33/",
+        "cell-3-1/32/",
+        "cell-3-1/93/",
+        "cell-3-1/1/",
+        "cell-3-1/21/",
+        "cell-2-1/86/"
+      ]
+    },
+    {
+      "source_offset": 6000,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-3-1/86/",
+        "cell-3-1/85/",
+        "cell-3-1/84/",
+        "cell-3-1/94/",
+        "cell-3-2/65/",
+        "cell-3-2/61/",
+        "cell-3-1/61/",
+        "cell-3-1/45/",
+        "cell-3-1/42/",
+        "cell-3-2/44/"
+      ]
+    },
+    {
+      "source_offset": 6048,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-3-1/45/",
+        "cell-3-1/42/"
+      ]
+    },
+    {
+      "source_offset": 6096,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-3-1/85/",
+        "cell-3-1/86/",
+        "cell-3-1/84/",
+        "cell-3-1/94/",
+        "cell-3-1/83/"
+      ]
+    },
+    {
+      "source_offset": 6144,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-3-2/95/",
+        "cell-3-2/96/",
+        "cell-3-2/97/",
+        "cell-3-2/98/"
+      ]
+    },
+    {
+      "source_offset": 6192,
+      "source_triangles": 48,
+      "visible_triangles": 48,
+      "group_names": [
+        "cell-3-2/31/",
+        "cell-3-2/38/",
+        "cell-3-2/40/",
+        "cell-3-2/37/",
+        "cell-3-2/39/"
+      ]
+    },
+    {
+      "source_offset": 6240,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell-3-2/83/",
+        "cell-3-2/94/",
+        "cell-3-2/84/",
+        "cell-3-2/85/",
+        "cell-3-2/86/"
+      ]
+    },
+    {
+      "source_offset": 6288,
+      "source_triangles": 34,
+      "visible_triangles": 34,
+      "group_names": [
+        "cell-3-2/31/",
+        "cell-3-2/38/"
+      ]
+    },
+    {
+      "source_offset": 6336,
+      "source_triangles": 35,
+      "visible_triangles": 35,
+      "group_names": [
+        "cell-3-2/86/",
+        "cell-3-2/83/"
+      ]
+    },
+    {
+      "source_offset": 6384,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell-3-2/34/"
+      ]
+    },
+    {
+      "source_offset": 6432,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2-3/25/"
+      ]
+    },
+    {
+      "source_offset": 6480,
+      "source_triangles": 21,
+      "visible_triangles": 21,
+      "group_names": [
+        "cell-2-2/59/"
+      ]
+    },
+    {
+      "source_offset": 6528,
+      "source_triangles": 19,
+      "visible_triangles": 19,
+      "group_names": [
+        "cell-0-1/40/",
+        "cell-0-1/31/",
+        "cell-0-1/39/",
+        "cell-0-1/38/",
+        "cell-0-1/37/"
+      ]
+    },
+    {
+      "source_offset": 6576,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "mesh-6576/13/"
+      ]
+    },
+    {
+      "source_offset": 6624,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-3-0/31/",
+        "cell-3-0/40/"
+      ]
+    },
+    {
+      "source_offset": 6672,
+      "source_triangles": 30,
+      "visible_triangles": 30,
+      "group_names": [
+        "cell-3-0/61/",
+        "cell-3-0/42/",
+        "cell-3-0/45/",
+        "cell-3-0/44/",
+        "cell-3-0/65/"
+      ]
+    },
+    {
+      "source_offset": 6720,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "mesh-6720/18/",
+        "mesh-6720/13/",
+        "mesh-6720/58/"
+      ]
+    },
+    {
+      "source_offset": 6768,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-0-3/39/",
+        "cell-0-3/31/",
+        "cell-0-3/40/"
+      ]
+    },
+    {
+      "source_offset": 6816,
+      "source_triangles": 23,
+      "visible_triangles": 23,
+      "group_names": [
+        "cell-0-3/42/",
+        "cell-1-3/42/",
+        "cell-0-3/61/",
+        "cell-0-3/45/",
+        "cell-0-3/44/"
+      ]
+    },
+    {
+      "source_offset": 6864,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell-0-3/6/",
+        "cell-0-3/7/",
+        "cell-0-3/10/",
+        "cell-1-3/49/",
+        "cell-0-3/49/",
+        "cell-1-3/74/",
+        "cell-1-3/25/"
+      ]
+    },
+    {
+      "source_offset": 6912,
+      "source_triangles": 21,
+      "visible_triangles": 21,
+      "group_names": [
+        "cell-3-1/31/",
+        "cell-3-1/37/"
+      ]
+    },
+    {
+      "source_offset": 6960,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "cell-3-1/84/",
+        "cell-3-1/83/",
+        "cell-3-2/83/",
+        "cell-3-2/94/",
+        "cell-3-2/84/",
+        "cell-3-2/85/",
+        "cell-3-2/86/"
+      ]
+    },
+    {
+      "source_offset": 7008,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "cell-3-1/39/",
+        "cell-3-1/31/",
+        "cell-3-2/31/",
+        "cell-3-2/40/",
+        "cell-3-2/39/"
+      ]
+    },
+    {
+      "source_offset": 7056,
+      "source_triangles": 43,
+      "visible_triangles": 43,
+      "group_names": [
+        "cell-3-1/23/",
+        "cell-3-1/22/",
+        "cell-3-2/22/",
+        "cell-3-1/33/",
+        "cell-3-1/36/",
+        "cell-3-2/36/",
+        "cell-3-2/24/",
+        "cell-3-2/23/",
+        "cell-3-2/20/",
+        "cell-3-2/21/",
+        "cell-3-2/35/",
+        "cell-3-2/33/",
+        "cell-3-2/34/",
+        "cell-3-2/32/"
+      ]
+    },
+    {
+      "source_offset": 7104,
+      "source_triangles": 29,
+      "visible_triangles": 29,
+      "group_names": [
+        "cell-1-3/49/",
+        "cell-1-3/22/"
+      ]
+    },
+    {
+      "source_offset": 7152,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-0-1/99/",
+        "cell-0-1/42/",
+        "cell-0-1/100/",
+        "cell-0-1/57/",
+        "cell-0-1/101/",
+        "cell-0-1/102/"
+      ]
+    },
+    {
+      "source_offset": 7200,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-0-1/44/",
+        "cell-0-1/61/",
+        "cell-0-1/45/",
+        "cell-0-1/42/"
+      ]
+    },
+    {
+      "source_offset": 7248,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-7248/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 7296,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-7296/13/[-3518,-148]",
+        "mesh-7296/13/[-603,-1245]",
+        "mesh-7296/13/[-608,258]",
+        "mesh-7296/13/[711,1232]",
+        "mesh-7296/13/[3965,1244]"
+      ]
+    },
+    {
+      "source_offset": 7344,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell--1-2/7/",
+        "cell-0-2/7/"
+      ]
+    },
+    {
+      "source_offset": 7392,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-7392/13/[-1006,-1870]",
+        "mesh-7392/13/[1633,2881]",
+        "mesh-7392/17/[-1411,-4004]",
+        "mesh-7392/13/[-463,547]",
+        "mesh-7392/13/[-1357,4003]"
+      ]
+    },
+    {
+      "source_offset": 7440,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-3-0/31/"
+      ]
+    },
+    {
+      "source_offset": 7488,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "cell-2--1/86/",
+        "cell-2--1/85/"
+      ]
+    },
+    {
+      "source_offset": 7536,
+      "source_triangles": 28,
+      "visible_triangles": 28,
+      "group_names": [
+        "cell-2--2/37/",
+        "cell-2--2/38/",
+        "cell-2--1/38/",
+        "cell-2--2/39/",
+        "cell-2--2/31/",
+        "cell-2--2/40/"
+      ]
+    },
+    {
+      "source_offset": 7584,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell-2--1/97/",
+        "cell-2--2/97/",
+        "mesh-7584/103/",
+        "cell-2--1/98/"
+      ]
+    },
+    {
+      "source_offset": 7632,
+      "source_triangles": 24,
+      "visible_triangles": 23,
+      "group_names": [
+        "cell-2--2/32/",
+        "cell-2--2/93/",
+        "cell-2--2/48/",
+        "cell-2--2/36/",
+        "cell-2--2/33/",
+        "cell-2--2/34/",
+        "cell-2--1/36/",
+        "cell-2--1/35/"
+      ]
+    },
+    {
+      "source_offset": 7680,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell-2--2/49/",
+        "cell-2--2/10/",
+        "cell-2--2/104/",
+        "cell-2--1/6/",
+        "cell-2--2/7/",
+        "cell-2--1/7/"
+      ]
+    },
+    {
+      "source_offset": 7728,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "cell-2--1/21/"
+      ]
+    },
+    {
+      "source_offset": 7776,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "mesh-7776/13/",
+        "mesh-7776/17/"
+      ]
+    },
+    {
+      "source_offset": 7824,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "mesh-7824/12/"
+      ]
+    },
+    {
+      "source_offset": 7872,
+      "source_triangles": 43,
+      "visible_triangles": 43,
+      "group_names": [
+        "cell-2--1/44/",
+        "cell-2--1/105/",
+        "cell-2--1/61/",
+        "cell-2-0/105/",
+        "cell-2-0/44/",
+        "cell-2-0/61/"
+      ]
+    },
+    {
+      "source_offset": 7920,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-3-0/36/",
+        "cell-3-0/33/",
+        "cell-3-0/35/",
+        "cell-3--1/35/",
+        "cell-3--1/106/",
+        "cell-3-0/107/"
+      ]
+    },
+    {
+      "source_offset": 7968,
+      "source_triangles": 44,
+      "visible_triangles": 44,
+      "group_names": [
+        "cell-2--1/106/",
+        "cell-2--1/36/",
+        "cell-2--1/108/",
+        "cell-2--1/109/",
+        "cell-2--1/107/",
+        "cell-2--1/35/"
+      ]
+    },
+    {
+      "source_offset": 8016,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "mesh-8016/19/",
+        "mesh-8016/18/",
+        "mesh-8016/17/",
+        "mesh-8016/16/",
+        "mesh-8016/12/"
+      ]
+    },
+    {
+      "source_offset": 8064,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-8064/13/"
+      ]
+    },
+    {
+      "source_offset": 8112,
+      "source_triangles": 36,
+      "visible_triangles": 36,
+      "group_names": [
+        "cell-3-0/65/",
+        "cell-3-0/44/",
+        "cell-3-0/42/",
+        "cell-3-0/45/",
+        "cell-4-0/42/",
+        "cell-3-1/42//1",
+        "cell-4-0/65/",
+        "cell-4-0/45/",
+        "cell-4-0/61/",
+        "cell-3-0/33//1",
+        "cell-3-0/35//1",
+        "cell-3-0/61/"
+      ]
+    },
+    {
+      "source_offset": 8160,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-8160/13/"
+      ]
+    },
+    {
+      "source_offset": 8208,
+      "source_triangles": 34,
+      "visible_triangles": 34,
+      "group_names": [
+        "cell-2--1/21/",
+        "cell-2--1/22/",
+        "cell-2--1/24/",
+        "cell-2--1/36/",
+        "cell-2--1/107/",
+        "cell-2--1/110/",
+        "cell-2--1/23/",
+        "cell-2--1/20/"
+      ]
+    },
+    {
+      "source_offset": 8256,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "mesh-8256/13/",
+        "mesh-8256/58/",
+        "mesh-8256/18/",
+        "mesh-8256/17/",
+        "mesh-8256/19/"
+      ]
+    },
+    {
+      "source_offset": 8304,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-0--1/49/",
+        "cell-0-0/10/",
+        "cell-0-0/7/",
+        "cell-0-0/104/"
+      ]
+    },
+    {
+      "source_offset": 8352,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "cell-0-2/44/"
+      ]
+    },
+    {
+      "source_offset": 8400,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell--1-2/42/",
+        "cell--1-2/45/",
+        "cell--1-2/36/",
+        "cell--1-1/36/",
+        "cell--1-1/42//1",
+        "cell--1-1/42/",
+        "cell-0-1/42/"
+      ]
+    },
+    {
+      "source_offset": 8448,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "cell-0-2/44/",
+        "cell-0-1/44//1",
+        "cell-0-1/44/"
+      ]
+    },
+    {
+      "source_offset": 8496,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-8496/13/"
+      ]
+    },
+    {
+      "source_offset": 8544,
+      "source_triangles": 19,
+      "visible_triangles": 19,
+      "group_names": [
+        "cell-0-3/77/"
+      ]
+    },
+    {
+      "source_offset": 8592,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-8592/13/[-1,-1]"
+      ]
+    },
+    {
+      "source_offset": 8640,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-8640/13/[-2623,1459]",
+        "mesh-8640/13/[-935,648]",
+        "mesh-8640/13/[852,-336]",
+        "mesh-8640/13/[2623,-1458]"
+      ]
+    },
+    {
+      "source_offset": 8688,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-3-2/111/"
+      ]
+    },
+    {
+      "source_offset": 8736,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-3-1/112/"
+      ]
+    },
+    {
+      "source_offset": 8784,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "mesh-8784/17/",
+        "mesh-8784/19/"
+      ]
+    },
+    {
+      "source_offset": 8832,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "mesh-8832/13/[269,-936]",
+        "mesh-8832/13/[-203,2205]",
+        "mesh-8832/13/[-928,3693]",
+        "mesh-8832/13/[281,658]",
+        "mesh-8832/13/[-679,-338]",
+        "mesh-8832/13/[-88,-3694]",
+        "mesh-8832/13/[872,-2697]"
+      ]
+    },
+    {
+      "source_offset": 8880,
+      "source_triangles": 29,
+      "visible_triangles": 29,
+      "group_names": [
+        "cell-0-1/74/",
+        "cell-0-1/73/",
+        "cell-0-1/72/",
+        "cell--1-1/71/",
+        "cell--1-1/70/",
+        "cell-0-1/25/",
+        "cell-0-1/113/",
+        "cell-0-1/114/",
+        "cell--1-1/114/",
+        "cell--1-1/67/",
+        "cell--1-1/115/"
+      ]
+    },
+    {
+      "source_offset": 8928,
+      "source_triangles": 58,
+      "visible_triangles": 58,
+      "group_names": [
+        "cell-0-1/57/",
+        "cell-0-1/116/",
+        "cell-0-1/65/",
+        "cell-0-1/42/"
+      ]
+    },
+    {
+      "source_offset": 8976,
+      "source_triangles": 11,
+      "visible_triangles": 11,
+      "group_names": [
+        "cell-0-1/117/",
+        "cell-0-1/118/"
+      ]
+    },
+    {
+      "source_offset": 9024,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-0-1/70/",
+        "cell-0-1/71/",
+        "cell-0-1/114/",
+        "cell-0-1/67/",
+        "cell-0-1/115/",
+        "cell-0-1/119/",
+        "cell-0-1/120/",
+        "cell-0-1/121/"
+      ]
+    },
+    {
+      "source_offset": 9072,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-9072/13/"
+      ]
+    },
+    {
+      "source_offset": 9120,
+      "source_triangles": 30,
+      "visible_triangles": 30,
+      "group_names": [
+        "cell-3-1/122/"
+      ]
+    },
+    {
+      "source_offset": 9168,
+      "source_triangles": 14,
+      "visible_triangles": 0,
+      "group_names": []
+    },
+    {
+      "source_offset": 9216,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "mesh-9216/13/"
+      ]
+    },
+    {
+      "source_offset": 9264,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-9264/13/",
+        "mesh-9264/18/",
+        "mesh-9264/58/"
+      ]
+    },
+    {
+      "source_offset": 9312,
+      "source_triangles": 11,
+      "visible_triangles": 11,
+      "group_names": [
+        "cell-1-3/31/",
+        "cell-1-3/47/"
+      ]
+    },
+    {
+      "source_offset": 9360,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-0-1/42/"
+      ]
+    },
+    {
+      "source_offset": 9408,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-2--1/122/",
+        "cell-2--1/123/",
+        "cell-2--1/124/",
+        "cell-2--1/125/"
+      ]
+    },
+    {
+      "source_offset": 9456,
+      "source_triangles": 45,
+      "visible_triangles": 45,
+      "group_names": [
+        "mesh-9456/16/",
+        "cell-2--1/85/",
+        "cell-2--1/1/",
+        "cell-2--1/47/",
+        "cell-2--1/80/",
+        "cell-3--1/80/",
+        "cell-3--1/47/",
+        "cell-2--1/92/",
+        "cell-2--1/37/",
+        "cell-3--1/48/",
+        "cell-2--1/93/",
+        "cell-2--1/32/",
+        "cell-3--1/126/",
+        "cell-2--1/127/",
+        "cell-2--1/128/",
+        "cell-3--1/129/",
+        "cell-3--1/87/"
+      ]
+    },
+    {
+      "source_offset": 9504,
+      "source_triangles": 19,
+      "visible_triangles": 19,
+      "group_names": [
+        "cell--1-0/44/",
+        "cell--1-0/65/",
+        "cell--1-0/42/",
+        "cell--1-0/45/",
+        "cell--1-0/61/"
+      ]
+    },
+    {
+      "source_offset": 9552,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-0-2/7/",
+        "cell-0-3/10/",
+        "cell-0-2/6/"
+      ]
+    },
+    {
+      "source_offset": 9600,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "mesh-9600/12/"
+      ]
+    },
+    {
+      "source_offset": 9648,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "cell-1-3/75/"
+      ]
+    },
+    {
+      "source_offset": 9696,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-0-2/6/",
+        "cell-0-2/68/",
+        "cell-0-2/36/",
+        "mesh-9696/17/"
+      ]
+    },
+    {
+      "source_offset": 9744,
+      "source_triangles": 12,
+      "visible_triangles": 0,
+      "group_names": []
+    },
+    {
+      "source_offset": 9792,
+      "source_triangles": 21,
+      "visible_triangles": 21,
+      "group_names": [
+        "cell-1-3/130/"
+      ]
+    },
+    {
+      "source_offset": 9840,
+      "source_triangles": 42,
+      "visible_triangles": 42,
+      "group_names": [
+        "cell-1-3/110/",
+        "cell-1-3/42/"
+      ]
+    },
+    {
+      "source_offset": 9888,
+      "source_triangles": 27,
+      "visible_triangles": 0,
+      "group_names": []
+    },
+    {
+      "source_offset": 9936,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell-3-1/131/",
+        "cell-3-1/132/",
+        "cell-3-1/82/"
+      ]
+    },
+    {
+      "source_offset": 9984,
+      "source_triangles": 37,
+      "visible_triangles": 37,
+      "group_names": [
+        "cell-3-2/42/",
+        "cell-3-2/45/",
+        "cell-3-2/61/",
+        "cell-3-2/83/",
+        "cell-3-2/94/",
+        "cell-3-2/84/",
+        "cell-3-2/65/",
+        "cell-3-2/85/"
+      ]
+    },
+    {
+      "source_offset": 10032,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-3-1/42/",
+        "cell-3-1/83/"
+      ]
+    },
+    {
+      "source_offset": 10080,
+      "source_triangles": 26,
+      "visible_triangles": 26,
+      "group_names": [
+        "cell-3-1/65/",
+        "cell-3-1/44/",
+        "cell-3-1/61/",
+        "cell-3-1/45/",
+        "cell-3-1/42/"
+      ]
+    },
+    {
+      "source_offset": 10128,
+      "source_triangles": 42,
+      "visible_triangles": 42,
+      "group_names": [
+        "cell-3-1/83/",
+        "cell-3-1/61/",
+        "cell-3-1/42/",
+        "cell-3-1/45/",
+        "cell-3-1/57/",
+        "cell-3-2/83/",
+        "cell-3-1/44/"
+      ]
+    },
+    {
+      "source_offset": 10176,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell-3-1/31/",
+        "cell-3-1/37/"
+      ]
+    },
+    {
+      "source_offset": 10224,
+      "source_triangles": 23,
+      "visible_triangles": 23,
+      "group_names": [
+        "cell-3-1/31/",
+        "cell-3-1/57/"
+      ]
+    },
+    {
+      "source_offset": 10272,
+      "source_triangles": 11,
+      "visible_triangles": 11,
+      "group_names": [
+        "cell-3-1/57/"
+      ]
+    },
+    {
+      "source_offset": 10320,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-3-1/42/"
+      ]
+    },
+    {
+      "source_offset": 10368,
+      "source_triangles": 43,
+      "visible_triangles": 43,
+      "group_names": [
+        "cell-3-0/61/",
+        "cell-3-0/44/",
+        "cell-3-0/45/",
+        "cell-3-0/65/",
+        "cell-3-0/42/",
+        "cell-3-1/42//1",
+        "cell-3-0/36/",
+        "cell-3-0/35/",
+        "cell-3-0/33/"
+      ]
+    },
+    {
+      "source_offset": 10416,
+      "source_triangles": 37,
+      "visible_triangles": 37,
+      "group_names": [
+        "cell-3-1/42/",
+        "cell-3-0/42/",
+        "cell-3-1/42//1",
+        "cell-3-1/36//1"
+      ]
+    },
+    {
+      "source_offset": 10464,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-3-1/65/",
+        "cell-4-1/65/",
+        "cell-3-1/21//1",
+        "cell-3-1/42/"
+      ]
+    },
+    {
+      "source_offset": 10512,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-3-1/42//1",
+        "cell-3-1/42/",
+        "cell-4-1/65/",
+        "cell-3-1/21/",
+        "cell-3-1/22/",
+        "cell-4-1/21/",
+        "cell-3-1/21//1"
+      ]
+    },
+    {
+      "source_offset": 10560,
+      "source_triangles": 35,
+      "visible_triangles": 35,
+      "group_names": [
+        "cell-3-0/44/",
+        "cell-3-0/61/",
+        "cell-3-0/42/",
+        "cell-3-0/45/",
+        "cell-3-0/33/",
+        "cell-3-0/34/",
+        "cell-3-0/36/"
+      ]
+    },
+    {
+      "source_offset": 10608,
+      "source_triangles": 30,
+      "visible_triangles": 30,
+      "group_names": [
+        "cell-3-0/42/"
+      ]
+    },
+    {
+      "source_offset": 10656,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-3-0/110/",
+        "cell-3-0/36/",
+        "cell-3-0/42/"
+      ]
+    },
+    {
+      "source_offset": 10704,
+      "source_triangles": 28,
+      "visible_triangles": 28,
+      "group_names": [
+        "cell-3-1/31//1",
+        "cell-3-0/40/",
+        "cell-3-1/31/",
+        "cell-3-1/40/",
+        "cell-3-0/37/",
+        "cell-3-0/38/",
+        "cell-3-0/39/"
+      ]
+    },
+    {
+      "source_offset": 10752,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "mesh-10752/17/"
+      ]
+    },
+    {
+      "source_offset": 10800,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell-3-1/133/",
+        "cell-3-1/134/"
+      ]
+    },
+    {
+      "source_offset": 10848,
+      "source_triangles": 21,
+      "visible_triangles": 21,
+      "group_names": [
+        "cell-3-2/39/",
+        "cell-3-2/38/",
+        "cell-3-2/31/",
+        "cell-3-2/40/"
+      ]
+    },
+    {
+      "source_offset": 10896,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-2-3/31/"
+      ]
+    },
+    {
+      "source_offset": 10944,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-3-2/31/",
+        "cell-3-2/38/",
+        "cell-2-2/31/",
+        "cell-2-2/38/"
+      ]
+    },
+    {
+      "source_offset": 10992,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-3-2/86/",
+        "cell-2-2/86/",
+        "cell-2-3/86/",
+        "cell-2-3/83/",
+        "cell-3-2/83//1",
+        "cell-3-2/83/",
+        "cell-2-3/25/"
+      ]
+    },
+    {
+      "source_offset": 11040,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2-3/70/"
+      ]
+    },
+    {
+      "source_offset": 11088,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2-3/32/"
+      ]
+    },
+    {
+      "source_offset": 11136,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "cell-3-2/34/",
+        "cell-2-2/34/",
+        "cell-2-3/32/"
+      ]
+    },
+    {
+      "source_offset": 11184,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-3-2/83/",
+        "cell-3-2/94/",
+        "cell-3-2/84/"
+      ]
+    },
+    {
+      "source_offset": 11232,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-2-2/25/",
+        "cell-3-2/25/"
+      ]
+    },
+    {
+      "source_offset": 11280,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-2-2/59/",
+        "cell-2-3/2/",
+        "cell-2-3/3/",
+        "cell-2-3/5/",
+        "cell-2-3/135/"
+      ]
+    },
+    {
+      "source_offset": 11328,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-3-2/36/",
+        "cell-3-2/34/",
+        "cell-3-2/33/",
+        "cell-3-2/35/"
+      ]
+    },
+    {
+      "source_offset": 11376,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-11376/19/",
+        "mesh-11376/17/",
+        "mesh-11376/18/",
+        "mesh-11376/58/",
+        "mesh-11376/13/"
+      ]
+    },
+    {
+      "source_offset": 11424,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-11424/58/",
+        "mesh-11424/13/",
+        "mesh-11424/18/",
+        "mesh-11424/17/",
+        "mesh-11424/19/"
+      ]
+    },
+    {
+      "source_offset": 11472,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-3-2/97/",
+        "cell-3-2/95/",
+        "cell-3-2/98/",
+        "cell-3-2/128/",
+        "cell-3-2/96/"
+      ]
+    },
+    {
+      "source_offset": 11520,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-3-1/111/"
+      ]
+    },
+    {
+      "source_offset": 11568,
+      "source_triangles": 35,
+      "visible_triangles": 35,
+      "group_names": [
+        "cell-3-0/105/",
+        "cell-3-0/61/",
+        "cell-3-0/107/",
+        "cell-3-0/42/",
+        "cell-3-0/45/",
+        "cell-2-0/105/",
+        "cell-3-0/61//1"
+      ]
+    },
+    {
+      "source_offset": 11616,
+      "source_triangles": 39,
+      "visible_triangles": 39,
+      "group_names": [
+        "cell-2--1/61/",
+        "cell-2--1/44/",
+        "cell-2--1/65/",
+        "cell-3--1/65/"
+      ]
+    },
+    {
+      "source_offset": 11664,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-3--1/61/"
+      ]
+    },
+    {
+      "source_offset": 11712,
+      "source_triangles": 40,
+      "visible_triangles": 40,
+      "group_names": [
+        "cell-3--1/136/",
+        "cell-3--1/108/",
+        "cell-3--1/36/",
+        "cell-3--1/35/",
+        "cell-3--1/33/",
+        "cell-2--1/36/",
+        "cell-2--1/35/",
+        "cell-2--1/33/",
+        "cell-3--1/137/",
+        "cell-3--1/106/",
+        "cell-2--1/106/",
+        "cell-3--1/109/",
+        "cell-3-0/109/",
+        "cell-3-0/107/",
+        "cell-3-0/106/",
+        "cell-2--1/136/"
+      ]
+    },
+    {
+      "source_offset": 11760,
+      "source_triangles": 27,
+      "visible_triangles": 27,
+      "group_names": [
+        "cell-2--1/107/",
+        "cell-2--1/106/",
+        "cell-2--1/35/",
+        "cell-2--1/36/",
+        "cell-2--1/33/"
+      ]
+    },
+    {
+      "source_offset": 11808,
+      "source_triangles": 1,
+      "visible_triangles": 1,
+      "group_names": [
+        "cell-2--1/61/"
+      ]
+    },
+    {
+      "source_offset": 11856,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell--1-0/31/",
+        "cell--1-0/40/",
+        "cell--1-0/39/",
+        "cell--1-0/38/",
+        "cell-0-0/37/",
+        "cell--1-0/37/"
+      ]
+    },
+    {
+      "source_offset": 11904,
+      "source_triangles": 28,
+      "visible_triangles": 28,
+      "group_names": [
+        "cell-2--2/31/"
+      ]
+    },
+    {
+      "source_offset": 11952,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-2--1/37/",
+        "cell-2--1/31/",
+        "cell-2--1/40/",
+        "cell-2--1/39/"
+      ]
+    },
+    {
+      "source_offset": 12000,
+      "source_triangles": 11,
+      "visible_triangles": 11,
+      "group_names": [
+        "cell-2--2/61/",
+        "cell-2--2/45/",
+        "cell-2--2/42/"
+      ]
+    },
+    {
+      "source_offset": 12048,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-2--2/36/",
+        "cell-2--2/33/",
+        "cell-2--2/35/"
+      ]
+    },
+    {
+      "source_offset": 12096,
+      "source_triangles": 21,
+      "visible_triangles": 21,
+      "group_names": [
+        "mesh-12096/13/",
+        "cell--1-0/105/",
+        "cell--1-0/42/",
+        "cell--1-0/45/",
+        "cell--1-0/61/",
+        "mesh-12096/58/",
+        "cell--1-0/44/"
+      ]
+    },
+    {
+      "source_offset": 12144,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "mesh-12144/18/",
+        "mesh-12144/138/",
+        "mesh-12144/17/",
+        "mesh-12144/19/"
+      ]
+    },
+    {
+      "source_offset": 12192,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-0-0/7/",
+        "cell-0-0/49/",
+        "cell-0-0/104/",
+        "cell-0-0/10/",
+        "cell-0-0/6/"
+      ]
+    },
+    {
+      "source_offset": 12240,
+      "source_triangles": 49,
+      "visible_triangles": 49,
+      "group_names": [
+        "cell-0-0/42/",
+        "cell--1-0/41/",
+        "cell-0-0/41/",
+        "cell--1-0/42/",
+        "cell-0-0/44/"
+      ]
+    },
+    {
+      "source_offset": 12288,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "cell-0-0/139/",
+        "cell-0-0/105/",
+        "cell-0-0/65/"
+      ]
+    },
+    {
+      "source_offset": 12336,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "mesh-12336/13/",
+        "mesh-12336/58/",
+        "mesh-12336/18/",
+        "mesh-12336/19/",
+        "mesh-12336/17/"
+      ]
+    },
+    {
+      "source_offset": 12384,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "cell--1-0/36/",
+        "cell-0-0/36/"
+      ]
+    },
+    {
+      "source_offset": 12432,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell--1-1/65/",
+        "cell--1-1/44/",
+        "cell--1-0/60/",
+        "cell--1-1/64/",
+        "cell--1-1/62/",
+        "cell--1-1/63/",
+        "cell--1-1/140/"
+      ]
+    },
+    {
+      "source_offset": 12480,
+      "source_triangles": 28,
+      "visible_triangles": 28,
+      "group_names": [
+        "cell--1-1/31/",
+        "cell--1-0/31/",
+        "cell--1-0/39/"
+      ]
+    },
+    {
+      "source_offset": 12528,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "mesh-12528/13/",
+        "mesh-12528/18/",
+        "mesh-12528/58/",
+        "mesh-12528/19/",
+        "mesh-12528/17/"
+      ]
+    },
+    {
+      "source_offset": 12576,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "mesh-12576/13/"
+      ]
+    },
+    {
+      "source_offset": 12624,
+      "source_triangles": 39,
+      "visible_triangles": 39,
+      "group_names": [
+        "cell-0-2/31/",
+        "cell-0-2/46/"
+      ]
+    },
+    {
+      "source_offset": 12672,
+      "source_triangles": 36,
+      "visible_triangles": 36,
+      "group_names": [
+        "cell-0-2/31/",
+        "cell-0-2/46/",
+        "cell--1-2/31/",
+        "cell-0-1/46/",
+        "cell--1-1/31//1",
+        "cell-0-1/31/"
+      ]
+    },
+    {
+      "source_offset": 12720,
+      "source_triangles": 39,
+      "visible_triangles": 39,
+      "group_names": [
+        "cell-0-2/36/",
+        "cell--1-2/36/",
+        "cell-0-2/42/",
+        "cell-0-2/45/",
+        "cell-0-2/61/",
+        "cell--1-2/44/",
+        "cell--1-2/65/",
+        "cell--1-2/42/",
+        "cell--1-2/61/",
+        "cell--1-2/45/"
+      ]
+    },
+    {
+      "source_offset": 12768,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell--1-2/6/",
+        "cell--1-2/141/",
+        "cell--1-2/142/",
+        "cell--1-2/143/",
+        "cell--1-2/7/"
+      ]
+    },
+    {
+      "source_offset": 12816,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell--1-1/142/",
+        "cell--1-1/6/",
+        "cell--1-1/141/",
+        "cell--1-1/7/",
+        "cell--1-1/143/"
+      ]
+    },
+    {
+      "source_offset": 12864,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-12864/19/",
+        "mesh-12864/58/",
+        "mesh-12864/18/"
+      ]
+    },
+    {
+      "source_offset": 12912,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "mesh-12912/19/"
+      ]
+    },
+    {
+      "source_offset": 12960,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell--1-3/66/",
+        "cell-0-3/66/",
+        "cell-0-2/66/",
+        "cell--1-2/66/"
+      ]
+    },
+    {
+      "source_offset": 13008,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell--1-2/144/",
+        "cell--1-2/145/",
+        "cell--1-3/146/",
+        "cell--1-3/147/",
+        "cell--1-3/145/",
+        "cell--1-2/147/",
+        "cell--1-2/146/"
+      ]
+    },
+    {
+      "source_offset": 13056,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell--1-2/144/",
+        "cell--1-2/145/",
+        "cell--1-2/146/",
+        "cell-0-2/147/",
+        "cell-0-2/145/",
+        "cell-0-2/146/",
+        "cell-0-2/144/"
+      ]
+    },
+    {
+      "source_offset": 13104,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0-2/25/"
+      ]
+    },
+    {
+      "source_offset": 13152,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0-3/49/",
+        "cell-0-3/104/",
+        "cell-0-3/10/"
+      ]
+    },
+    {
+      "source_offset": 13200,
+      "source_triangles": 41,
+      "visible_triangles": 41,
+      "group_names": [
+        "cell-0-3/61/",
+        "cell-0-3/42/",
+        "cell-0-2/42/",
+        "cell-0-3/45/",
+        "cell-0-3/44/"
+      ]
+    },
+    {
+      "source_offset": 13248,
+      "source_triangles": 38,
+      "visible_triangles": 38,
+      "group_names": [
+        "cell-1-3/37/",
+        "cell-1-3/31/",
+        "cell-1-3/40/",
+        "cell-1-3/39/",
+        "cell-1-3/38/"
+      ]
+    },
+    {
+      "source_offset": 13296,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-1-3/22/",
+        "cell-1-3/24/",
+        "cell-1-3/23/"
+      ]
+    },
+    {
+      "source_offset": 13344,
+      "source_triangles": 25,
+      "visible_triangles": 25,
+      "group_names": [
+        "cell-1-3/25/",
+        "cell-1-3/74/"
+      ]
+    },
+    {
+      "source_offset": 13392,
+      "source_triangles": 37,
+      "visible_triangles": 37,
+      "group_names": [
+        "cell-1-3/61/",
+        "cell-1-3/42/",
+        "cell-1-3/45/",
+        "cell-1-3/44/",
+        "cell-1-3/110/",
+        "cell-1-3/65/",
+        "cell-0-3/44/"
+      ]
+    },
+    {
+      "source_offset": 13440,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-0-3/10/",
+        "cell-0-3/104/",
+        "cell-0-3/7/",
+        "cell-1-3/6/",
+        "cell-0-3/6/"
+      ]
+    },
+    {
+      "source_offset": 13488,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-1-3/7/",
+        "cell-1-3/6/",
+        "cell-1-3/10/",
+        "cell-1-3/49/",
+        "cell-1-3/104/",
+        "cell-1-3/22/",
+        "cell-1-3/24/",
+        "cell-1-3/23/",
+        "cell-1-3/21/",
+        "cell-1-3/20/"
+      ]
+    },
+    {
+      "source_offset": 13536,
+      "source_triangles": 30,
+      "visible_triangles": 30,
+      "group_names": [
+        "cell-1-3/31/",
+        "cell-2-3/39/",
+        "cell-2-3/40/",
+        "cell-1-3/31//1",
+        "cell-1-3/40/",
+        "cell-1-3/39/",
+        "cell-2-3/38/",
+        "cell-2-2/38//1"
+      ]
+    },
+    {
+      "source_offset": 13584,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell-1-3/42//1",
+        "cell-1-3/42/",
+        "cell-2-3/42/"
+      ]
+    },
+    {
+      "source_offset": 13632,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-2-3/65/",
+        "cell-2-3/148/",
+        "cell-2-3/149/"
+      ]
+    },
+    {
+      "source_offset": 13680,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-2-3/104/",
+        "cell-2-3/49/",
+        "cell-2-3/150/",
+        "cell-2-3/50/"
+      ]
+    },
+    {
+      "source_offset": 13728,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-2-3/151/",
+        "cell-2-3/152/"
+      ]
+    },
+    {
+      "source_offset": 13776,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-2--1/32/",
+        "cell-2--1/36/"
+      ]
+    },
+    {
+      "source_offset": 13824,
+      "source_triangles": 51,
+      "visible_triangles": 51,
+      "group_names": [
+        "cell-2--1/21/",
+        "cell-2--1/128/",
+        "cell-2--1/86/",
+        "cell-2--1/32/",
+        "cell-2--1/37/"
+      ]
+    },
+    {
+      "source_offset": 13872,
+      "source_triangles": 11,
+      "visible_triangles": 11,
+      "group_names": [
+        "cell-0-2/44/"
+      ]
+    },
+    {
+      "source_offset": 13920,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-0-2/44/"
+      ]
+    },
+    {
+      "source_offset": 13968,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0-2/25/"
+      ]
+    },
+    {
+      "source_offset": 14016,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-0-2/36/"
+      ]
+    },
+    {
+      "source_offset": 14064,
+      "source_triangles": 49,
+      "visible_triangles": 49,
+      "group_names": [
+        "cell-2-2/2/",
+        "cell-2-2/76/",
+        "cell-2-2/59/",
+        "cell-2-2/153/",
+        "cell-2-2/5/",
+        "cell-2-2/3/",
+        "cell-2-2/4/",
+        "cell-2-2/154/",
+        "cell-2-2/142/",
+        "cell-2-3/155/",
+        "cell-1-2/59/"
+      ]
+    },
+    {
+      "source_offset": 14112,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-0-2/156/",
+        "mesh-14112/13/"
+      ]
+    },
+    {
+      "source_offset": 14160,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-0-2/156/",
+        "mesh-14160/13/"
+      ]
+    },
+    {
+      "source_offset": 14208,
+      "source_triangles": 3,
+      "visible_triangles": 3,
+      "group_names": [
+        "cell-2-3/57/",
+        "cell-2-3/157/"
+      ]
+    },
+    {
+      "source_offset": 14256,
+      "source_triangles": 26,
+      "visible_triangles": 26,
+      "group_names": [
+        "cell-1-2/2/",
+        "cell-1-3/59/",
+        "cell-1-3/76/",
+        "cell-1-3/2/",
+        "cell-1-2/3/",
+        "cell-1-2/4/",
+        "cell-1-3/3/",
+        "cell-1-2/76/",
+        "cell-1-2/59/"
+      ]
+    },
+    {
+      "source_offset": 14304,
+      "source_triangles": 36,
+      "visible_triangles": 36,
+      "group_names": [
+        "cell-0-2/31/",
+        "cell-0-2/46/",
+        "cell--1-2/31/",
+        "cell-0-1/46/",
+        "cell--1-1/31//1",
+        "cell-0-1/31/"
+      ]
+    },
+    {
+      "source_offset": 14352,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-0-2/31/",
+        "cell-0-2/46/"
+      ]
+    },
+    {
+      "source_offset": 14400,
+      "source_triangles": 31,
+      "visible_triangles": 31,
+      "group_names": [
+        "cell-0-2/42/",
+        "cell-0-2/36/",
+        "cell--1-2/42/"
+      ]
+    },
+    {
+      "source_offset": 14448,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-0-2/44/",
+        "cell-0-2/42/"
+      ]
+    },
+    {
+      "source_offset": 14496,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell--1-1/42/",
+        "cell-0-1/42/"
+      ]
+    },
+    {
+      "source_offset": 14544,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-0-1/65/",
+        "cell-0-1/139/"
+      ]
+    },
+    {
+      "source_offset": 14592,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-0-1/31/",
+        "cell-0-1/38/"
+      ]
+    },
+    {
+      "source_offset": 14640,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell--1-1/31/",
+        "cell-0-1/31/"
+      ]
+    },
+    {
+      "source_offset": 14688,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-2-3/120/",
+        "cell-2-3/149/",
+        "cell-2-3/67/"
+      ]
+    },
+    {
+      "source_offset": 14736,
+      "source_triangles": 43,
+      "visible_triangles": 43,
+      "group_names": [
+        "cell-2-3/142/",
+        "cell-2-3/158/",
+        "cell-2-3/155/",
+        "cell-2-3/159/",
+        "cell-2-2/158/",
+        "cell-2-2/142/"
+      ]
+    },
+    {
+      "source_offset": 14784,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-2-3/45/",
+        "cell-2-3/65/",
+        "cell-2-3/44/",
+        "cell-2-3/61/",
+        "cell-2-3/42/"
+      ]
+    },
+    {
+      "source_offset": 14832,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-3-2/25/"
+      ]
+    },
+    {
+      "source_offset": 14880,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell-2-3/74/",
+        "cell-2-3/25/"
+      ]
+    },
+    {
+      "source_offset": 14928,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-2-3/70/"
+      ]
+    },
+    {
+      "source_offset": 14976,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-2-2/74/",
+        "cell-2-3/74/"
+      ]
+    },
+    {
+      "source_offset": 15024,
+      "source_triangles": 40,
+      "visible_triangles": 40,
+      "group_names": [
+        "cell-0-2/31/",
+        "cell-0-2/46/"
+      ]
+    },
+    {
+      "source_offset": 15072,
+      "source_triangles": 27,
+      "visible_triangles": 27,
+      "group_names": [
+        "cell-3-0/36/",
+        "cell-3-0/110/",
+        "cell-3-0/107/"
+      ]
+    },
+    {
+      "source_offset": 15120,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-3--1/36/",
+        "cell-3-0/36/",
+        "cell-3--1/107/",
+        "cell-3--1/106/",
+        "cell-3--1/35/",
+        "cell-3-0/110/",
+        "cell-3-0/107/",
+        "cell-3-0/108/",
+        "cell-3--1/108/"
+      ]
+    },
+    {
+      "source_offset": 15168,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "mesh-15168/17/",
+        "mesh-15168/13/"
+      ]
+    },
+    {
+      "source_offset": 15216,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-3--1/65/",
+        "cell-3--1/139/",
+        "cell-3--1/105/",
+        "cell-3--1/44/",
+        "cell-3--1/61/"
+      ]
+    },
+    {
+      "source_offset": 15264,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-15264/13/"
+      ]
+    },
+    {
+      "source_offset": 15312,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "mesh-15312/18/",
+        "mesh-15312/17/",
+        "mesh-15312/19/",
+        "mesh-15312/58/",
+        "mesh-15312/13/"
+      ]
+    },
+    {
+      "source_offset": 15360,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-3-1/160/",
+        "cell-3-1/133/"
+      ]
+    },
+    {
+      "source_offset": 15408,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-15408/16/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 15456,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-2--2/22/",
+        "cell-2--2/161/",
+        "mesh-15456/13/",
+        "mesh-15456/16/",
+        "mesh-15456/17/"
+      ]
+    },
+    {
+      "source_offset": 15504,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-2--2/74/",
+        "cell-2--2/121/"
+      ]
+    },
+    {
+      "source_offset": 15552,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-2--2/121/"
+      ]
+    },
+    {
+      "source_offset": 15600,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-2--2/161/",
+        "mesh-15600/16/"
+      ]
+    },
+    {
+      "source_offset": 15648,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-2--2/92/",
+        "cell-2--2/31/"
+      ]
+    },
+    {
+      "source_offset": 15696,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-15696/16/[-1,1]"
+      ]
+    },
+    {
+      "source_offset": 15744,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-15744/16/[0,1]"
+      ]
+    },
+    {
+      "source_offset": 15792,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-15792/13/[-6,0]",
+        "mesh-15792/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 15840,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-15840/16/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 15888,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-15888/16/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 15936,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-15936/16/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 15984,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-15984/16/[0,1]"
+      ]
+    },
+    {
+      "source_offset": 16032,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2--2/92/",
+        "cell-2--3/92/"
+      ]
+    },
+    {
+      "source_offset": 16080,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2--2/161/",
+        "cell-2--3/161/",
+        "mesh-16080/16/"
+      ]
+    },
+    {
+      "source_offset": 16128,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-2--3/121/",
+        "cell-2--2/121/"
+      ]
+    },
+    {
+      "source_offset": 16176,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-2--2/121/",
+        "cell-2--3/121/"
+      ]
+    },
+    {
+      "source_offset": 16224,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2--3/161/",
+        "cell-2--2/161/",
+        "mesh-16224/16/"
+      ]
+    },
+    {
+      "source_offset": 16272,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-16272/16/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 16320,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-1--3/161/",
+        "cell-2--3/161/",
+        "mesh-16320/16/"
+      ]
+    },
+    {
+      "source_offset": 16368,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-2--3/121/",
+        "cell-1--3/121/"
+      ]
+    },
+    {
+      "source_offset": 16416,
+      "source_triangles": 5,
+      "visible_triangles": 5,
+      "group_names": [
+        "cell-1--3/161/"
+      ]
+    },
+    {
+      "source_offset": 16464,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell-2--3/92/",
+        "cell-1--3/92/"
+      ]
+    },
+    {
+      "source_offset": 16512,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-16512/16/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 16560,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-16560/16/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 16608,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-16608/16/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 16656,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-16656/16/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 16704,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-2--3/92/",
+        "cell-1--3/92/"
+      ]
+    },
+    {
+      "source_offset": 16752,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2--3/161/",
+        "cell-1--3/161/",
+        "mesh-16752/16/"
+      ]
+    },
+    {
+      "source_offset": 16800,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "cell-1--3/121/",
+        "cell-2--3/121/"
+      ]
+    },
+    {
+      "source_offset": 16848,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "cell-2--3/121/"
+      ]
+    },
+    {
+      "source_offset": 16896,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2--3/161/",
+        "mesh-16896/16/"
+      ]
+    },
+    {
+      "source_offset": 16944,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-16944/16/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 16992,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-1--3/22/",
+        "cell-1--3/161/",
+        "mesh-16992/13/",
+        "mesh-16992/16/"
+      ]
+    },
+    {
+      "source_offset": 17040,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "cell-1--3/121/"
+      ]
+    },
+    {
+      "source_offset": 17088,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "mesh-17088/13/"
+      ]
+    },
+    {
+      "source_offset": 17136,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-1--3/92/"
+      ]
+    },
+    {
+      "source_offset": 17184,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-17184/16/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 17232,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "cell-1--3/92/"
+      ]
+    },
+    {
+      "source_offset": 17280,
+      "source_triangles": 47,
+      "visible_triangles": 47,
+      "group_names": [
+        "cell-1--3/90/",
+        "cell-1--3/87/",
+        "cell-1--3/161/",
+        "cell-1--3/162/",
+        "cell-1--3/48/"
+      ]
+    },
+    {
+      "source_offset": 17328,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-1--3/121/"
+      ]
+    },
+    {
+      "source_offset": 17376,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-1--3/161/",
+        "mesh-17376/16/"
+      ]
+    },
+    {
+      "source_offset": 17424,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-2--2/74/"
+      ]
+    },
+    {
+      "source_offset": 17472,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2--2/22/",
+        "mesh-17472/13/",
+        "cell-2--2/42/",
+        "mesh-17472/58/"
+      ]
+    },
+    {
+      "source_offset": 17520,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-17520/19/"
+      ]
+    },
+    {
+      "source_offset": 17568,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "cell-0--3/137/",
+        "cell-1--3/137/"
+      ]
+    },
+    {
+      "source_offset": 17616,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-17616/13/"
+      ]
+    },
+    {
+      "source_offset": 17664,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "mesh-17664/13/"
+      ]
+    },
+    {
+      "source_offset": 17712,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-1--3/136/"
+      ]
+    },
+    {
+      "source_offset": 17760,
+      "source_triangles": 30,
+      "visible_triangles": 30,
+      "group_names": [
+        "cell-1--3/66/",
+        "cell-1--3/145/",
+        "cell-1--3/163/",
+        "cell-1--3/144/",
+        "cell-1--3/147/",
+        "cell-1--3/146/"
+      ]
+    },
+    {
+      "source_offset": 17808,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-0--3/164/",
+        "cell-0--3/144/",
+        "cell-0--3/165/",
+        "cell-1--3/165/",
+        "cell-1--3/166/",
+        "cell-1--3/163/",
+        "cell-1--3/146/",
+        "cell-1--3/145/",
+        "cell-1--3/144/",
+        "cell-0--3/167/",
+        "cell-0--3/163/"
+      ]
+    },
+    {
+      "source_offset": 17856,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-1--3/66/",
+        "cell-1--3/146/",
+        "cell-1--3/144/"
+      ]
+    },
+    {
+      "source_offset": 17904,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-1--3/145/",
+        "cell-1--3/163/",
+        "cell-1--3/164/",
+        "cell-1--3/147/",
+        "cell-1--3/144/",
+        "cell-1--3/146/",
+        "cell-1--3/66/",
+        "cell-1--3/15/",
+        "cell-0--3/144/"
+      ]
+    },
+    {
+      "source_offset": 17952,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-17952/13/"
+      ]
+    },
+    {
+      "source_offset": 18000,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-1--3/136/"
+      ]
+    },
+    {
+      "source_offset": 18048,
+      "source_triangles": 40,
+      "visible_triangles": 40,
+      "group_names": [
+        "cell-1--3/66/",
+        "cell-1--3/146/"
+      ]
+    },
+    {
+      "source_offset": 18096,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-1--3/136/"
+      ]
+    },
+    {
+      "source_offset": 18144,
+      "source_triangles": 40,
+      "visible_triangles": 40,
+      "group_names": [
+        "cell-1--3/146/",
+        "cell-1--3/144/",
+        "cell-1--3/145/",
+        "cell-1--3/66/",
+        "cell-1--3/147/"
+      ]
+    },
+    {
+      "source_offset": 18192,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "mesh-18192/13/",
+        "cell--1-0/168/",
+        "cell-0-0/168/"
+      ]
+    },
+    {
+      "source_offset": 18240,
+      "source_triangles": 28,
+      "visible_triangles": 28,
+      "group_names": [
+        "cell-0--1/37/",
+        "cell-0--1/31/",
+        "cell-0--1/38/",
+        "cell-0--1/39/",
+        "cell-0--1/40/",
+        "cell--1--1/39/",
+        "cell--1--1/37/",
+        "cell--1--1/38/"
+      ]
+    },
+    {
+      "source_offset": 18288,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell--1--1/97/",
+        "mesh-18288/17/"
+      ]
+    },
+    {
+      "source_offset": 18336,
+      "source_triangles": 32,
+      "visible_triangles": 31,
+      "group_names": [
+        "cell-0--1/36/",
+        "cell-0--1/32/",
+        "cell--1--1/36/"
+      ]
+    },
+    {
+      "source_offset": 18384,
+      "source_triangles": 29,
+      "visible_triangles": 29,
+      "group_names": [
+        "cell-0--1/49/",
+        "cell-0--1/104/",
+        "cell-0--1/10/",
+        "cell-0--1/7/",
+        "cell-0--1/6/",
+        "cell-0--1/42/",
+        "cell-0--1/65/",
+        "cell-0--1/137/"
+      ]
+    },
+    {
+      "source_offset": 18432,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "mesh-18432/13/",
+        "mesh-18432/17/"
+      ]
+    },
+    {
+      "source_offset": 18480,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-0--1/39/",
+        "cell--1--1/39/",
+        "cell-0-0/28/",
+        "cell--1-0/28/",
+        "cell-0-0/26/",
+        "cell--1-0/26/",
+        "cell--1--1/31/",
+        "cell--1--1/40/",
+        "cell-0--1/40/",
+        "cell-0--1/31/",
+        "cell-0-0/31/",
+        "cell--1-0/31//1"
+      ]
+    },
+    {
+      "source_offset": 18528,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell--1--1/65/",
+        "cell--1--1/44/",
+        "cell--1--1/61/",
+        "cell--1--1/45/",
+        "cell--1--1/42/",
+        "cell--1-0/42/"
+      ]
+    },
+    {
+      "source_offset": 18576,
+      "source_triangles": 34,
+      "visible_triangles": 34,
+      "group_names": [
+        "cell-0-0/36/",
+        "cell-0--1/36/",
+        "cell--1--1/36/",
+        "cell--1-0/32/",
+        "cell--1-0/36/"
+      ]
+    },
+    {
+      "source_offset": 18624,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-18624/13/",
+        "mesh-18624/19/",
+        "mesh-18624/18/",
+        "mesh-18624/58/"
+      ]
+    },
+    {
+      "source_offset": 18672,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "mesh-18672/169/",
+        "mesh-18672/170/",
+        "mesh-18672/171/",
+        "mesh-18672/172/",
+        "mesh-18672/14/",
+        "mesh-18672/173/",
+        "mesh-18672/17/"
+      ]
+    },
+    {
+      "source_offset": 18720,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "mesh-18720/13/",
+        "mesh-18720/58/",
+        "mesh-18720/18/",
+        "mesh-18720/19/",
+        "mesh-18720/17/"
+      ]
+    },
+    {
+      "source_offset": 18768,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-1--3/137/"
+      ]
+    },
+    {
+      "source_offset": 18816,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0-3/57/",
+        "cell-0-2/57/"
+      ]
+    },
+    {
+      "source_offset": 18864,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-18864/12/[0,1]",
+        "mesh-18864/13/[0,1]",
+        "mesh-18864/12/[-6,1]"
+      ]
+    },
+    {
+      "source_offset": 18912,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-18912/12/[0,1]",
+        "mesh-18912/13/[0,1]",
+        "mesh-18912/12/[-6,1]"
+      ]
+    },
+    {
+      "source_offset": 18960,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-18960/12/[-1,0]",
+        "mesh-18960/13/[-1,0]",
+        "mesh-18960/12/[-7,1]"
+      ]
+    },
+    {
+      "source_offset": 19008,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-19008/12/[0,0]",
+        "mesh-19008/13/[0,0]",
+        "mesh-19008/12/[-6,1]"
+      ]
+    },
+    {
+      "source_offset": 19056,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-19056/12/[-1,0]",
+        "mesh-19056/13/[-1,0]",
+        "mesh-19056/12/[-6,1]"
+      ]
+    },
+    {
+      "source_offset": 19104,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-19104/12/[-1,0]",
+        "mesh-19104/13/[-1,0]",
+        "mesh-19104/12/[-6,1]"
+      ]
+    },
+    {
+      "source_offset": 19152,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-19152/12/[-6,0]",
+        "mesh-19152/12/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 19200,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-19200/12/[-6,0]",
+        "mesh-19200/12/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 19248,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-19248/12/[-6,1]",
+        "mesh-19248/12/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 19296,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-19296/12/[-6,1]",
+        "mesh-19296/12/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 19344,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-19344/12/[-6,1]",
+        "mesh-19344/12/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 19392,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-19392/12/[-6,0]",
+        "mesh-19392/12/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 19440,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-2-3/148/"
+      ]
+    },
+    {
+      "source_offset": 19488,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-19488/174/[587,-902]",
+        "mesh-19488/13/[-32,-32]",
+        "mesh-19488/13/[-436,770]",
+        "mesh-19488/175/[-1142,1631]",
+        "mesh-19488/175/[1141,-1630]"
+      ]
+    },
+    {
+      "source_offset": 19536,
+      "source_triangles": 5,
+      "visible_triangles": 5,
+      "group_names": [
+        "cell-0--3/21/"
+      ]
+    },
+    {
+      "source_offset": 19584,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-19584/13/",
+        "mesh-19584/58/"
+      ]
+    },
+    {
+      "source_offset": 19632,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-0--3/21/"
+      ]
+    },
+    {
+      "source_offset": 19680,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-19680/13/"
+      ]
+    },
+    {
+      "source_offset": 19728,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-1--3/136/"
+      ]
+    },
+    {
+      "source_offset": 19776,
+      "source_triangles": 40,
+      "visible_triangles": 40,
+      "group_names": [
+        "cell-1--3/66/",
+        "cell-1--3/147/",
+        "cell-0--3/145/",
+        "cell-1--3/145/",
+        "cell-1--3/163/",
+        "cell-1--3/164/",
+        "cell-0--3/147/",
+        "cell-1--3/144/",
+        "cell-1--3/146/",
+        "cell-1--3/15/"
+      ]
+    },
+    {
+      "source_offset": 19824,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-0--3/164/",
+        "cell-0--3/144/",
+        "cell-0--3/165/",
+        "cell-0--3/166/",
+        "cell-0--3/163/",
+        "cell-0--3/146/",
+        "cell-0--3/145/",
+        "cell-0--3/15/",
+        "cell-0--3/167/"
+      ]
+    },
+    {
+      "source_offset": 19872,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "cell-0--2/66/",
+        "cell-0--2/146/",
+        "cell-0--2/176/",
+        "cell-0--2/144/"
+      ]
+    },
+    {
+      "source_offset": 19920,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-0--2/145/",
+        "cell-0--2/163/",
+        "cell-0--2/164/",
+        "cell-0--2/147/",
+        "cell-0--2/144/",
+        "cell-0--2/146/",
+        "cell-0--2/66/",
+        "cell-0--3/145/",
+        "cell-0--3/163/",
+        "cell-0--3/164/",
+        "cell-0--3/146/",
+        "cell-0--3/15/",
+        "cell-0--3/144/"
+      ]
+    },
+    {
+      "source_offset": 19968,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-19968/17/",
+        "mesh-19968/13/"
+      ]
+    },
+    {
+      "source_offset": 20016,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-1--2/136/"
+      ]
+    },
+    {
+      "source_offset": 20064,
+      "source_triangles": 40,
+      "visible_triangles": 40,
+      "group_names": [
+        "cell-1--2/66/",
+        "cell-0--2/66/",
+        "cell-0--2/146/",
+        "cell-1--2/146/",
+        "cell-1--3/66/",
+        "cell-1--3/146/",
+        "cell-0--3/66/"
+      ]
+    },
+    {
+      "source_offset": 20112,
+      "source_triangles": 3,
+      "visible_triangles": 3,
+      "group_names": [
+        "cell-1--2/177/",
+        "cell-1--2/136/"
+      ]
+    },
+    {
+      "source_offset": 20160,
+      "source_triangles": 19,
+      "visible_triangles": 19,
+      "group_names": [
+        "cell-1--2/66/",
+        "cell-1--2/147/",
+        "cell-1--2/146/",
+        "cell-1--2/145/",
+        "cell-0--2/146/",
+        "cell-0--2/147/",
+        "cell-0--2/145/",
+        "cell-0--2/66/"
+      ]
+    },
+    {
+      "source_offset": 20208,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "mesh-20208/178/",
+        "mesh-20208/179/",
+        "mesh-20208/138/",
+        "mesh-20208/180/",
+        "mesh-20208/181/",
+        "mesh-20208/103/"
+      ]
+    },
+    {
+      "source_offset": 20256,
+      "source_triangles": 11,
+      "visible_triangles": 11,
+      "group_names": [
+        "cell-0--2/21/",
+        "cell-0--2/22/",
+        "cell-0--2/110/"
+      ]
+    },
+    {
+      "source_offset": 20304,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-20304/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 20352,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-1--3/0/",
+        "cell-0--3/0/"
+      ]
+    },
+    {
+      "source_offset": 20400,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "mesh-20400/13/"
+      ]
+    },
+    {
+      "source_offset": 20448,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "mesh-20448/13/[-468,1570]",
+        "mesh-20448/13/[-959,2577]",
+        "mesh-20448/13/[-1645,3619]",
+        "mesh-20448/13/[1655,-3339]",
+        "mesh-20448/13/[1039,-2427]",
+        "mesh-20448/13/[-319,572]"
+      ]
+    },
+    {
+      "source_offset": 20496,
+      "source_triangles": 19,
+      "visible_triangles": 19,
+      "group_names": [
+        "cell-0--3/136/",
+        "cell-1--3/136/",
+        "cell-1--3/34/",
+        "cell-0--3/44/"
+      ]
+    },
+    {
+      "source_offset": 20544,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-1--3/34/"
+      ]
+    },
+    {
+      "source_offset": 20592,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0--3/0/",
+        "cell-1--3/0/"
+      ]
+    },
+    {
+      "source_offset": 20640,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-0--3/0/",
+        "cell-1--3/86/",
+        "cell-0--3/1/",
+        "cell-1--3/85/",
+        "cell-1--3/84/",
+        "cell-1--3/0/",
+        "cell-1--3/1/"
+      ]
+    },
+    {
+      "source_offset": 20688,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "mesh-20688/13/",
+        "mesh-20688/58/",
+        "mesh-20688/19/",
+        "mesh-20688/18/",
+        "mesh-20688/17/"
+      ]
+    },
+    {
+      "source_offset": 20736,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-20736/17/",
+        "mesh-20736/19/",
+        "mesh-20736/16/",
+        "mesh-20736/12/"
+      ]
+    },
+    {
+      "source_offset": 20784,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-20784/19/"
+      ]
+    },
+    {
+      "source_offset": 20832,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-20832/182/[0,1]"
+      ]
+    },
+    {
+      "source_offset": 20880,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-20880/183/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 20928,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-20928/184/[-1,1]"
+      ]
+    },
+    {
+      "source_offset": 20976,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-20976/14/"
+      ]
+    },
+    {
+      "source_offset": 21024,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-21024/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 21072,
+      "source_triangles": 11,
+      "visible_triangles": 11,
+      "group_names": [
+        "mesh-21072/13/"
+      ]
+    },
+    {
+      "source_offset": 21120,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-21120/13/[5,0]",
+        "mesh-21120/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 21168,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-21168/13/[-1,-5]",
+        "mesh-21168/13/[0,-1]"
+      ]
+    },
+    {
+      "source_offset": 21216,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-21216/18/[8,0]",
+        "mesh-21216/18/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 21264,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-0--1/86/"
+      ]
+    },
+    {
+      "source_offset": 21312,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "cell-0--1/21/",
+        "cell-0--1/97/"
+      ]
+    },
+    {
+      "source_offset": 21360,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0--1/36/",
+        "cell-0--1/32/"
+      ]
+    },
+    {
+      "source_offset": 21408,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0--1/22/",
+        "cell--1--1/22/",
+        "cell-0--1/110/"
+      ]
+    },
+    {
+      "source_offset": 21456,
+      "source_triangles": 32,
+      "visible_triangles": 32,
+      "group_names": [
+        "cell-0--1/37/",
+        "cell-0--1/31/"
+      ]
+    },
+    {
+      "source_offset": 21504,
+      "source_triangles": 12,
+      "visible_triangles": 0,
+      "group_names": []
+    },
+    {
+      "source_offset": 21552,
+      "source_triangles": 51,
+      "visible_triangles": 51,
+      "group_names": [
+        "cell-0--1/21/",
+        "cell-0--1/97/",
+        "cell-0--1/96/",
+        "cell-0--1/86/",
+        "cell-0--1/1/",
+        "cell-0--1/32/",
+        "cell-0--1/34/",
+        "cell-0--1/33/",
+        "cell-0--1/35/",
+        "cell-0--1/37/",
+        "cell-0--1/38/",
+        "cell-0--1/39/",
+        "cell-0--1/40/"
+      ]
+    },
+    {
+      "source_offset": 21600,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "mesh-21600/17/",
+        "mesh-21600/16/"
+      ]
+    },
+    {
+      "source_offset": 21648,
+      "source_triangles": 45,
+      "visible_triangles": 45,
+      "group_names": [
+        "mesh-21648/12/",
+        "cell-0--1/1/",
+        "cell-0--1/0/",
+        "cell-0--1/47/",
+        "cell-0--1/80/",
+        "cell-0--1/92/",
+        "cell-0--1/48/",
+        "cell-0--1/87/",
+        "cell-0--1/93/",
+        "cell-0--1/126/",
+        "cell-0--1/129/",
+        "cell-0--1/127/"
+      ]
+    },
+    {
+      "source_offset": 21696,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-0--1/122/"
+      ]
+    },
+    {
+      "source_offset": 21744,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "mesh-21744/16/",
+        "mesh-21744/12/",
+        "mesh-21744/17/",
+        "mesh-21744/18/",
+        "mesh-21744/19/",
+        "mesh-21744/58/",
+        "mesh-21744/13/"
+      ]
+    },
+    {
+      "source_offset": 21792,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-21792/174/[-1,-6]",
+        "mesh-21792/174/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 21840,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-21840/13/[-1,-4]",
+        "mesh-21840/13/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 21888,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-21888/13/[-1,-4]",
+        "mesh-21888/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 21936,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-21936/13/[-1,-4]",
+        "mesh-21936/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 21984,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-21984/13/[6,-1]",
+        "mesh-21984/13/[0,-1]"
+      ]
+    },
+    {
+      "source_offset": 22032,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-22032/13/[-14,-1720]",
+        "mesh-22032/13/[15,1720]"
+      ]
+    },
+    {
+      "source_offset": 22080,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-22080/17/[7,-1]",
+        "mesh-22080/17/[0,-1]"
+      ]
+    },
+    {
+      "source_offset": 22128,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-22128/13/[6,-1]",
+        "mesh-22128/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 22176,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-22176/19/[6,-1]",
+        "mesh-22176/19/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 22224,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-22224/13/[6,0]",
+        "mesh-22224/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 22272,
+      "source_triangles": 27,
+      "visible_triangles": 27,
+      "group_names": [
+        "cell-0-1/185/",
+        "cell-0-1/186/",
+        "cell-0-1/69/",
+        "cell-0-1/121/",
+        "cell-0-1/70/"
+      ]
+    },
+    {
+      "source_offset": 22320,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-0--2/110/"
+      ]
+    },
+    {
+      "source_offset": 22368,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-0--2/22/"
+      ]
+    },
+    {
+      "source_offset": 22416,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0--2/162/"
+      ]
+    },
+    {
+      "source_offset": 22464,
+      "source_triangles": 33,
+      "visible_triangles": 33,
+      "group_names": [
+        "cell-0--2/107/",
+        "cell-0--2/106/",
+        "cell-0--2/137/",
+        "cell-0--2/136/",
+        "cell-0--2/110/",
+        "cell-0--2/148/",
+        "cell-0--2/187/"
+      ]
+    },
+    {
+      "source_offset": 22512,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0--2/22/",
+        "cell-0--2/24/",
+        "cell-0--2/23/",
+        "cell-0--2/20/",
+        "cell-0--2/176/",
+        "cell-0--2/161/",
+        "cell-0--2/21/"
+      ]
+    },
+    {
+      "source_offset": 22560,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "mesh-22560/13/",
+        "mesh-22560/18/",
+        "mesh-22560/58/",
+        "mesh-22560/19/",
+        "mesh-22560/17/",
+        "mesh-22560/12/",
+        "mesh-22560/16/"
+      ]
+    },
+    {
+      "source_offset": 22608,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "cell-0--2/21/",
+        "cell-0--2/20/",
+        "cell-0--2/176/",
+        "cell-0--2/161/"
+      ]
+    },
+    {
+      "source_offset": 22656,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "mesh-22656/12/",
+        "mesh-22656/16/",
+        "mesh-22656/17/",
+        "mesh-22656/19/"
+      ]
+    },
+    {
+      "source_offset": 22704,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "mesh-22704/12/"
+      ]
+    },
+    {
+      "source_offset": 22752,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-0--2/176/"
+      ]
+    },
+    {
+      "source_offset": 22800,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "mesh-22800/13/"
+      ]
+    },
+    {
+      "source_offset": 22848,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0--2/22/"
+      ]
+    },
+    {
+      "source_offset": 22896,
+      "source_triangles": 28,
+      "visible_triangles": 28,
+      "group_names": [
+        "cell-0--2/110/",
+        "cell-0--2/148/"
+      ]
+    },
+    {
+      "source_offset": 22944,
+      "source_triangles": 29,
+      "visible_triangles": 29,
+      "group_names": [
+        "cell-0--2/110/",
+        "cell-0--1/110/",
+        "cell-0--2/107/",
+        "cell-0--2/106/",
+        "cell-0--2/136/"
+      ]
+    },
+    {
+      "source_offset": 22992,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0--2/20/",
+        "cell-0--2/21/",
+        "cell-0--2/23/",
+        "cell-0--2/24/",
+        "cell-0--2/22/"
+      ]
+    },
+    {
+      "source_offset": 23040,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "mesh-23040/19/",
+        "mesh-23040/17/",
+        "mesh-23040/18/",
+        "mesh-23040/13/",
+        "mesh-23040/58/"
+      ]
+    },
+    {
+      "source_offset": 23088,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-0--1/22/",
+        "cell-0--2/24/",
+        "cell-0--2/22/",
+        "cell-0--2/20/",
+        "cell-0--2/23/"
+      ]
+    },
+    {
+      "source_offset": 23136,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "mesh-23136/19/",
+        "mesh-23136/18/",
+        "mesh-23136/13/"
+      ]
+    },
+    {
+      "source_offset": 23184,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "mesh-23184/13/"
+      ]
+    },
+    {
+      "source_offset": 23232,
+      "source_triangles": 23,
+      "visible_triangles": 23,
+      "group_names": [
+        "cell-0--1/22/"
+      ]
+    },
+    {
+      "source_offset": 23280,
+      "source_triangles": 33,
+      "visible_triangles": 33,
+      "group_names": [
+        "mesh-23280/13/",
+        "mesh-23280/18/",
+        "mesh-23280/17/",
+        "mesh-23280/19/",
+        "mesh-23280/16/",
+        "mesh-23280/12/",
+        "mesh-23280/14/"
+      ]
+    },
+    {
+      "source_offset": 23328,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0--1/22/"
+      ]
+    },
+    {
+      "source_offset": 23376,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-0--1/110/"
+      ]
+    },
+    {
+      "source_offset": 23424,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0--1/93/"
+      ]
+    },
+    {
+      "source_offset": 23472,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-0--2/22/",
+        "cell-0--1/22/"
+      ]
+    },
+    {
+      "source_offset": 23520,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0--1/110/",
+        "cell-0--1/48/"
+      ]
+    },
+    {
+      "source_offset": 23568,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0--1/48/"
+      ]
+    },
+    {
+      "source_offset": 23616,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell--1--1/22/",
+        "cell-0--1/22/",
+        "cell-0--1/110/"
+      ]
+    },
+    {
+      "source_offset": 23664,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "cell-0--1/97/"
+      ]
+    },
+    {
+      "source_offset": 23712,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "cell-0--1/22/"
+      ]
+    },
+    {
+      "source_offset": 23760,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "mesh-23760/13/"
+      ]
+    },
+    {
+      "source_offset": 23808,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-1--3/122/"
+      ]
+    },
+    {
+      "source_offset": 23856,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-1--3/122/"
+      ]
+    },
+    {
+      "source_offset": 23904,
+      "source_triangles": 9,
+      "visible_triangles": 9,
+      "group_names": [
+        "cell-1--3/121/"
+      ]
+    },
+    {
+      "source_offset": 23952,
+      "source_triangles": 19,
+      "visible_triangles": 19,
+      "group_names": [
+        "mesh-23952/16/",
+        "cell-1--3/161/"
+      ]
+    },
+    {
+      "source_offset": 24000,
+      "source_triangles": 15,
+      "visible_triangles": 15,
+      "group_names": [
+        "cell-2-3/31/",
+        "cell-2-3/47/"
+      ]
+    },
+    {
+      "source_offset": 24048,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2-3/39/",
+        "cell-2-3/40/",
+        "cell-2-3/38/",
+        "cell-2-3/37/"
+      ]
+    },
+    {
+      "source_offset": 24096,
+      "source_triangles": 31,
+      "visible_triangles": 31,
+      "group_names": [
+        "cell-3-2/188/",
+        "cell-3-2/51/",
+        "cell-3-2/54/",
+        "cell-3-2/189/",
+        "cell-3-2/53/",
+        "cell-3-2/55/",
+        "cell-3-2/52/",
+        "cell-3-2/190/"
+      ]
+    },
+    {
+      "source_offset": 24144,
+      "source_triangles": 27,
+      "visible_triangles": 27,
+      "group_names": [
+        "mesh-24144/13/"
+      ]
+    },
+    {
+      "source_offset": 24192,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-3-2/36/",
+        "cell-3-2/35/",
+        "cell-3-2/33/"
+      ]
+    },
+    {
+      "source_offset": 24240,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-24240/17/",
+        "mesh-24240/19/",
+        "mesh-24240/16/"
+      ]
+    },
+    {
+      "source_offset": 24288,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "cell-0--2/110/"
+      ]
+    },
+    {
+      "source_offset": 24336,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "cell-0--2/22/"
+      ]
+    },
+    {
+      "source_offset": 24384,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "mesh-24384/12/"
+      ]
+    },
+    {
+      "source_offset": 24432,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0--2/176/"
+      ]
+    },
+    {
+      "source_offset": 24480,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-24480/19/",
+        "mesh-24480/18/",
+        "mesh-24480/13/"
+      ]
+    },
+    {
+      "source_offset": 24528,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "cell-0--2/22/"
+      ]
+    },
+    {
+      "source_offset": 24576,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "cell-0--2/110/",
+        "cell-0--2/148/"
+      ]
+    },
+    {
+      "source_offset": 24624,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "mesh-24624/16/",
+        "mesh-24624/12/",
+        "mesh-24624/17/"
+      ]
+    },
+    {
+      "source_offset": 24672,
+      "source_triangles": 89,
+      "visible_triangles": 89,
+      "group_names": [
+        "cell-1--3/161/",
+        "cell-1--3/22/",
+        "cell-1--4/22/",
+        "mesh-24672/13/",
+        "mesh-24672/16/",
+        "cell-1--3/74/",
+        "cell-1--4/74/",
+        "cell-1--3/31/",
+        "cell-1--4/31/",
+        "cell-1--3/121/",
+        "mesh-24672/12/",
+        "cell-1--3/92/"
+      ]
+    },
+    {
+      "source_offset": 24720,
+      "source_triangles": 12,
+      "visible_triangles": 0,
+      "group_names": []
+    },
+    {
+      "source_offset": 24768,
+      "source_triangles": 11,
+      "visible_triangles": 11,
+      "group_names": [
+        "mesh-24768/17/",
+        "mesh-24768/16/"
+      ]
+    },
+    {
+      "source_offset": 24816,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-2--1/122/",
+        "cell-2--1/125/",
+        "cell-2--1/123/",
+        "cell-2--1/124/"
+      ]
+    },
+    {
+      "source_offset": 24864,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-1--2/176/",
+        "cell-0--2/176/"
+      ]
+    },
+    {
+      "source_offset": 24912,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-24912/12/[0,0]",
+        "mesh-24912/13/[0,0]",
+        "mesh-24912/12/[-6,1]"
+      ]
+    },
+    {
+      "source_offset": 24960,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-24960/12/[-1,0]",
+        "mesh-24960/13/[-1,0]",
+        "mesh-24960/12/[-6,1]"
+      ]
+    },
+    {
+      "source_offset": 25008,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25008/12/[-5,0]",
+        "mesh-25008/12/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 25056,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25056/12/[-6,0]",
+        "mesh-25056/12/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 25104,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25104/13/[-5,0]",
+        "mesh-25104/12/[-5,0]",
+        "mesh-25104/13/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 25152,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25152/12/[-5,0]",
+        "mesh-25152/13/[0,0]",
+        "mesh-25152/12/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 25200,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25200/13/[-5,1]",
+        "mesh-25200/13/[0,1]"
+      ]
+    },
+    {
+      "source_offset": 25248,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25248/13/[-5,0]",
+        "mesh-25248/12/[-5,0]",
+        "mesh-25248/13/[0,0]",
+        "mesh-25248/12/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 25296,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "mesh-25296/19/",
+        "mesh-25296/17/",
+        "mesh-25296/18/"
+      ]
+    },
+    {
+      "source_offset": 25344,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25344/13/[1,-5]",
+        "mesh-25344/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 25392,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25392/13/[0,-5]",
+        "mesh-25392/13/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 25440,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25440/13/[-4,-4]",
+        "mesh-25440/13/[0,-1]"
+      ]
+    },
+    {
+      "source_offset": 25488,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25488/13/[-4,-4]",
+        "mesh-25488/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 25536,
+      "source_triangles": 5,
+      "visible_triangles": 0,
+      "group_names": []
+    },
+    {
+      "source_offset": 25584,
+      "source_triangles": 5,
+      "visible_triangles": 5,
+      "group_names": [
+        "cell-2--2/22/",
+        "mesh-25584/16/",
+        "mesh-25584/12/",
+        "cell-2--2/20/",
+        "cell-2--2/74/"
+      ]
+    },
+    {
+      "source_offset": 25632,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell--1-0/191/",
+        "cell--1-0/192/",
+        "cell--1-0/193/",
+        "cell--1-0/194/"
+      ]
+    },
+    {
+      "source_offset": 25680,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell--1--1/195/",
+        "cell--1--1/193/",
+        "cell--1--1/196/",
+        "cell--1--1/191/",
+        "cell--1--1/197/",
+        "cell--1-0/191/"
+      ]
+    },
+    {
+      "source_offset": 25728,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell--1-0/194/",
+        "cell--1-0/193/"
+      ]
+    },
+    {
+      "source_offset": 25776,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-0-3/198/",
+        "mesh-25776/19/"
+      ]
+    },
+    {
+      "source_offset": 25824,
+      "source_triangles": 10,
+      "visible_triangles": 10,
+      "group_names": [
+        "cell-0--3/198/",
+        "mesh-25824/19/"
+      ]
+    },
+    {
+      "source_offset": 25872,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-0-0/199/",
+        "mesh-25872/19/"
+      ]
+    },
+    {
+      "source_offset": 25920,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-25920/13/"
+      ]
+    },
+    {
+      "source_offset": 25968,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "mesh-25968/13/"
+      ]
+    },
+    {
+      "source_offset": 26016,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-0-3/199/",
+        "mesh-26016/19/"
+      ]
+    },
+    {
+      "source_offset": 26064,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-0-3/196/",
+        "mesh-26064/19/"
+      ]
+    },
+    {
+      "source_offset": 26112,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0-2/25/"
+      ]
+    },
+    {
+      "source_offset": 26160,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "cell-0-2/25/"
+      ]
+    },
+    {
+      "source_offset": 26208,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell-0-2/25/",
+        "cell-0-2/67/"
+      ]
+    },
+    {
+      "source_offset": 26256,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-1-3/21/",
+        "cell-0-3/20/",
+        "cell-0-3/23/"
+      ]
+    },
+    {
+      "source_offset": 26304,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "cell-0-3/23/",
+        "cell-0-2/23/",
+        "cell-0-2/20/",
+        "cell-0-2/21/"
+      ]
+    },
+    {
+      "source_offset": 26352,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "cell-0-2/21/"
+      ]
+    },
+    {
+      "source_offset": 26400,
+      "source_triangles": 2,
+      "visible_triangles": 0,
+      "group_names": []
+    },
+    {
+      "source_offset": 26448,
+      "source_triangles": 6,
+      "visible_triangles": 6,
+      "group_names": [
+        "mesh-26448/17/",
+        "mesh-26448/12/",
+        "mesh-26448/16/"
+      ]
+    },
+    {
+      "source_offset": 26496,
+      "source_triangles": 5,
+      "visible_triangles": 5,
+      "group_names": [
+        "mesh-26496/19/",
+        "mesh-26496/18/"
+      ]
+    },
+    {
+      "source_offset": 26544,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-2--2/42/",
+        "cell-2--2/61/",
+        "cell-2--2/45/",
+        "cell-2--1/137/",
+        "cell-2--1/65/",
+        "cell-2--2/44/"
+      ]
+    },
+    {
+      "source_offset": 26592,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "mesh-26592/13/"
+      ]
+    },
+    {
+      "source_offset": 26640,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-1-3/4/",
+        "cell-2-3/4/"
+      ]
+    },
+    {
+      "source_offset": 26688,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-26688/14/",
+        "cell-2-2/3/",
+        "cell-2-3/3/"
+      ]
+    },
+    {
+      "source_offset": 26736,
+      "source_triangles": 23,
+      "visible_triangles": 23,
+      "group_names": [
+        "cell-2-3/4/",
+        "cell-2-3/2/",
+        "cell-2-3/59/",
+        "cell-1-3/59/",
+        "cell-1-3/2/"
+      ]
+    },
+    {
+      "source_offset": 26784,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell-3-1/79/",
+        "cell-3-1/133/"
+      ]
+    },
+    {
+      "source_offset": 26832,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "cell-3-1/200/"
+      ]
+    },
+    {
+      "source_offset": 26880,
+      "source_triangles": 5,
+      "visible_triangles": 5,
+      "group_names": [
+        "cell-3-1/201/"
+      ]
+    },
+    {
+      "source_offset": 26928,
+      "source_triangles": 18,
+      "visible_triangles": 18,
+      "group_names": [
+        "mesh-26928/13/"
+      ]
+    },
+    {
+      "source_offset": 26976,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "cell-3-1/86/"
+      ]
+    },
+    {
+      "source_offset": 27024,
+      "source_triangles": 39,
+      "visible_triangles": 39,
+      "group_names": [
+        "cell-0-2/31/",
+        "cell-0-2/46/"
+      ]
+    },
+    {
+      "source_offset": 27072,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-0-2/81/"
+      ]
+    },
+    {
+      "source_offset": 27120,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "cell-0-3/31/",
+        "cell-0-3/39/",
+        "cell-0-3/40/",
+        "cell-0-3/38/",
+        "cell-0-2/31/"
+      ]
+    },
+    {
+      "source_offset": 27168,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-0-2/57/"
+      ]
+    },
+    {
+      "source_offset": 27216,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27216/13/[5,-1]",
+        "mesh-27216/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 27264,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27264/17/[6,-1]",
+        "mesh-27264/17/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 27312,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27312/13/[5,-1]",
+        "mesh-27312/13/[-1,-1]"
+      ]
+    },
+    {
+      "source_offset": 27360,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27360/19/[5,-1]",
+        "mesh-27360/19/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 27408,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27408/13/[5,0]",
+        "mesh-27408/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 27456,
+      "source_triangles": 19,
+      "visible_triangles": 19,
+      "group_names": [
+        "cell-0-0/42/"
+      ]
+    },
+    {
+      "source_offset": 27504,
+      "source_triangles": 13,
+      "visible_triangles": 13,
+      "group_names": [
+        "cell-0-0/42/",
+        "cell-0--1/42/"
+      ]
+    },
+    {
+      "source_offset": 27552,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-0-1/5/",
+        "cell-0-1/76/",
+        "cell-0-1/59/"
+      ]
+    },
+    {
+      "source_offset": 27600,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27600/13/[4,-1]",
+        "mesh-27600/13/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 27648,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27648/13/[4,-1]",
+        "mesh-27648/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 27696,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27696/13/[4,-1]",
+        "mesh-27696/13/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 27744,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27744/13/[4,0]",
+        "mesh-27744/13/[-1,1]"
+      ]
+    },
+    {
+      "source_offset": 27792,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-27792/13/[4,0]",
+        "mesh-27792/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 27840,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "mesh-27840/12/"
+      ]
+    },
+    {
+      "source_offset": 27888,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "cell-2-3/49/"
+      ]
+    },
+    {
+      "source_offset": 27936,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-3-1/31/",
+        "cell-3-1/37/"
+      ]
+    },
+    {
+      "source_offset": 27984,
+      "source_triangles": 20,
+      "visible_triangles": 20,
+      "group_names": [
+        "cell-3-1/133/"
+      ]
+    },
+    {
+      "source_offset": 28032,
+      "source_triangles": 17,
+      "visible_triangles": 17,
+      "group_names": [
+        "cell-3-1/79/",
+        "cell-3-1/133/"
+      ]
+    },
+    {
+      "source_offset": 28080,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "cell-3-1/200/"
+      ]
+    },
+    {
+      "source_offset": 28128,
+      "source_triangles": 5,
+      "visible_triangles": 5,
+      "group_names": [
+        "cell-3-1/201/"
+      ]
+    },
+    {
+      "source_offset": 28176,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-0-2/202/",
+        "cell-0-3/202/"
+      ]
+    },
+    {
+      "source_offset": 28224,
+      "source_triangles": 7,
+      "visible_triangles": 7,
+      "group_names": [
+        "cell-0-2/202/"
+      ]
+    },
+    {
+      "source_offset": 28272,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-28272/203/"
+      ]
+    },
+    {
+      "source_offset": 28320,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-28320/204/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 28368,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-28368/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 28416,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-28416/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 28464,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-2-3/25/"
+      ]
+    },
+    {
+      "source_offset": 28512,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-28512/18/[4,0]",
+        "mesh-28512/18/[1,-1]"
+      ]
+    },
+    {
+      "source_offset": 28560,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-28560/18/[4,0]",
+        "mesh-28560/18/[-1,-1]"
+      ]
+    },
+    {
+      "source_offset": 28608,
+      "source_triangles": 4,
+      "visible_triangles": 4,
+      "group_names": [
+        "mesh-28608/18/[4,0]",
+        "mesh-28608/18/[0,-1]"
+      ]
+    },
+    {
+      "source_offset": 28656,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-28656/13/[-1,0]"
+      ]
+    },
+    {
+      "source_offset": 28704,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-28704/13/[0,0]"
+      ]
+    },
+    {
+      "source_offset": 28752,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-28752/13/[0,-1]"
+      ]
+    },
+    {
+      "source_offset": 28800,
+      "source_triangles": 2,
+      "visible_triangles": 2,
+      "group_names": [
+        "mesh-28800/17/[-1,-1]"
+      ]
+    },
+    {
+      "source_offset": 28848,
+      "source_triangles": 22,
+      "visible_triangles": 22,
+      "group_names": [
+        "cell-0--1/93/",
+        "cell-0--1/48/"
+      ]
+    },
+    {
+      "source_offset": 28896,
+      "source_triangles": 24,
+      "visible_triangles": 24,
+      "group_names": [
+        "cell-2--3/205/",
+        "cell-2--3/48/"
+      ]
+    },
+    {
+      "source_offset": 28944,
+      "source_triangles": 8,
+      "visible_triangles": 8,
+      "group_names": [
+        "mesh-28944/19/"
+      ]
+    },
+    {
+      "source_offset": 28992,
+      "source_triangles": 14,
+      "visible_triangles": 14,
+      "group_names": [
+        "cell-3-2/25/"
+      ]
+    },
+    {
+      "source_offset": 29040,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-1-3/206/",
+        "cell-1-3/207/",
+        "cell-1-3/208/",
+        "cell-1-3/209/"
+      ]
+    },
+    {
+      "source_offset": 29088,
+      "source_triangles": 12,
+      "visible_triangles": 12,
+      "group_names": [
+        "cell-3-2/25/"
+      ]
+    },
+    {
+      "source_offset": 29136,
+      "source_triangles": 31,
+      "visible_triangles": 31,
+      "group_names": [
+        "cell-0-1/70/",
+        "cell-0-1/71/",
+        "cell-0-1/25/",
+        "cell-0-1/113/",
+        "cell-0-1/114/",
+        "cell-0-1/67/",
+        "cell-0-1/115/"
+      ]
+    },
+    {
+      "source_offset": 29184,
+      "source_triangles": 3,
+      "visible_triangles": 3,
+      "group_names": [
+        "cell-3-1/201/"
+      ]
+    },
+    {
+      "source_offset": 29232,
+      "source_triangles": 36,
+      "visible_triangles": 36,
+      "group_names": [
+        "cell-2-3/210/",
+        "cell-2-3/211/",
+        "cell-2-3/212/",
+        "cell-2-3/201/",
+        "cell-2-3/200/",
+        "cell-2-3/213/"
+      ]
+    },
+    {
+      "source_offset": 29280,
+      "source_triangles": 32,
+      "visible_triangles": 0,
+      "group_names": []
+    },
+    {
+      "source_offset": 29328,
+      "source_triangles": 16,
+      "visible_triangles": 16,
+      "group_names": [
+        "mesh-29328/16/",
+        "mesh-29328/14/",
+        "mesh-29328/12/",
+        "mesh-29328/214/"
+      ]
+    }
+  ],
+  "source_triangles": 8881,
+  "hidden": 116,
+  "disabled": 0,
+  "degenerate": 3,
+  "visible_triangles": 8762,
+  "billboard_triangles": 542,
+  "reverse_triangles": 216,
+  "source_vertices": 9291,
+  "terrain_lod": {
+    "groups": 28,
+    "fine_triangles": 948,
+    "coarse_triangles": 614,
+    "texture_bytes": 0
+  },
+  "cameras": {
+    "file": "cameras.json",
+    "views": 118,
+    "sha256": "08be507041683f8ebdef684cf4281447a710977674a3fa534a0b39447424c6de",
+    "quick_file": "cameras-quick.json",
+    "quick_views": 16,
+    "coverage_file": "cameras-coverage.json",
+    "coverage_views": 4
+  },
+  "package": {
+    "file": "scene.zip",
+    "bytes": 404956,
+    "sha256": "14d9936f245ad71ce66b1fd299d8d2758b6e1362e4eee6e431fb94bb9445df2d"
+  }
+}

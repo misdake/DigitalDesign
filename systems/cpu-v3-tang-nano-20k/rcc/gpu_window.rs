@@ -178,7 +178,8 @@ fn gpu_window_parts_mode(
     true
 }
 
-fn gpu_window_asset_read(low: Array<u16>, sector: u16, word: u16, count: u16) -> bool {
+/// Copy words from one immutable asset bank into an ordinary CPU buffer.
+pub fn gpu_window_asset_read(low: Array<u16>, sector: u16, word: u16, count: u16) -> bool {
     let end = gpu_asset_bank_end(sector);
     if end == 0 || count == 0 || count > 32768 || word >> 6 >= end - sector {
         return false;

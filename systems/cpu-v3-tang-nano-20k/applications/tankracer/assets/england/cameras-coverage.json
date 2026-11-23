@@ -1,0 +1,54 @@
+[
+  {
+    "eye": [
+      0,
+      2.5,
+      -33
+    ],
+    "target": [
+      0,
+      1,
+      -8
+    ],
+    "label": "start-near"
+  },
+  {
+    "eye": [
+      0,
+      2.5,
+      -33
+    ],
+    "target": [
+      0,
+      1,
+      -60
+    ],
+    "label": "start-rear"
+  },
+  {
+    "eye": [
+      10,
+      8,
+      -15
+    ],
+    "target": [
+      0,
+      1,
+      -8
+    ],
+    "label": "start-off-route"
+  },
+  {
+    "eye": [
+      0,
+      0.75,
+      -5
+    ],
+    "target": [
+      0,
+      0.75,
+      20
+    ],
+    "label": "start-low-near-plane"
+  }
+]

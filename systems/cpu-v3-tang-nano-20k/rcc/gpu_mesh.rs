@@ -189,16 +189,30 @@ fn gpu_mesh_draw_range(
             .add((first * 2) as i16)
             .as_u16_array()
     };
+    if !gpu_bind_payload(slot, native, plan.as_array())
+        || !gpu_mesh_emit(slot, native, plan.as_array(), entries, total)
+    {
+        return false;
+    }
+    gpu_bind_commit(slot, native, plan.as_array());
+    c[GPU_RECORD_UI_CLEAN] = 0;
+    true
+}
+
+fn gpu_mesh_emit(
+    slot: u16,
+    native: Array<u16>,
+    plan: Array<u16>,
+    entries: Array<u16>,
+    total: u16,
+) -> bool {
     let mut code = unsafe {
         native
             .as_ptr()
             .add(GPU_SCRATCH_COMMAND as i16)
             .as_u16_array()
     };
-    if !gpu_bind_payload(slot, native, plan.as_array()) {
-        return false;
-    }
-    let mut at = gpu_bind_code(slot, plan.as_array(), code);
+    let mut at = gpu_bind_code(slot, plan, code);
     let mut index: u16 = 0;
     while index < total {
         // Leave two words for the final DRAW after the last batch.
@@ -228,7 +242,5 @@ fn gpu_mesh_draw_range(
     if !gpu_record_append_reserved(slot, code, at + 2, code, 0, plan[GPU_BIND_PLAN_PUSH_END]) {
         return false;
     }
-    gpu_bind_commit(slot, native, plan.as_array());
-    c[GPU_RECORD_UI_CLEAN] = 0;
     true
 }

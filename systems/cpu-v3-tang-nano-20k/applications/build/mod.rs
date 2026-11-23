@@ -20,6 +20,7 @@ application_catalog! {
     demo_box_rabbit => "../../examples/demo_box_rabbit/application.rs",
     demo_billboard => "../../examples/demo_billboard/application.rs",
     game_bloxorz => "../../examples/game_bloxorz/application.rs",
+    tankracer => "../tankracer/application.rs",
     demo_render_to_texture => "../../examples/demo_render_to_texture/application.rs",
 }
 

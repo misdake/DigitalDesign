@@ -60,6 +60,13 @@ fn gpu_storage_copy_owned(low: Array<u16>, sector: u16, word: u16, count: u16, r
                 }
                 dcache_wait();
                 n += 16;
+            } else if chunk - n >= 8 {
+                if read {
+                    vec4::export(vec4::import(external), from_low);
+                } else {
+                    vec4::export(vec4::import(from_low), external);
+                }
+                n += 8;
             } else {
                 unsafe {
                     if read {
@@ -89,7 +96,7 @@ fn gpu_window_write_words(sector: u16, word: u16, src: Array<u16>, count: u16) -
     gpu_storage_copy_owned(src, sector, word, count, false)
 }
 
-// Complete, disjoint lines in one physical DSEG3 page. Neither pointer escapes.
+// Complete, disjoint lines within two physical pages. Neither pointer escapes.
 fn gpu_window_copy_lines(
     source: u16,
     source_word: u16,
@@ -100,11 +107,7 @@ fn gpu_window_copy_lines(
     if count == 0 {
         return true;
     }
-    if source >> 8 != target >> 8
-        || (source_word | target_word | count) & 15 != 0
-        || source_word > 16384
-        || target_word > 16384
-    {
+    if (source_word | target_word | count) & 15 != 0 || source_word > 16384 || target_word > 16384 {
         return false;
     }
     let from = ((source & 255) << 6) + source_word;
@@ -117,6 +120,9 @@ fn gpu_window_copy_lines(
         || count > 16384 - to
     {
         return false;
+    }
+    if source >> 8 != target >> 8 {
+        return gpu_storage_copy_pages(source >> 8, from, target >> 8, to, count);
     }
     if (from <= to && count > to - from) || (to < from && count > from - to) {
         return false;
@@ -170,11 +176,12 @@ fn gpu_window_copy_span(
     {
         return false;
     }
-    if source >> 8 == target >> 8
-        && source_word <= 16384 - ((source & 255) << 6)
-        && target_word <= 16384 - ((target & 255) << 6)
-        && count <= 16384 - ((source & 255) << 6) - source_word
-        && count <= 16384 - ((target & 255) << 6) - target_word
+    let from = (source & 255) << 6;
+    let to = (target & 255) << 6;
+    if source_word <= 16384 - from
+        && target_word <= 16384 - to
+        && count <= 16384 - from - source_word
+        && count <= 16384 - to - target_word
     {
         return gpu_window_copy_lines(source, source_word, target, target_word, count);
     }
@@ -192,4 +199,40 @@ fn gpu_window_copy_span(
         at += words;
     }
     true
+}
+
+// Leaf scope: the caller validated both spans. While DSEG1 is borrowed, only
+// scalar locals, the DSEG2 stack, mapping intrinsics and LCOPY may be accessed.
+// Static data stays in DSEG0; no heap pointer is dereferenced in this scope.
+fn gpu_storage_copy_pages(source: u16, from: u16, target: u16, to: u16, count: u16) -> bool {
+    let saved_source = read_dseg_page(1);
+    let saved_target = read_dseg_page(3);
+    dcache_wait();
+    unsafe {
+        write_dseg_page(1, source);
+        write_dseg_page(3, target);
+    }
+    if read_dseg_page(1) != source || read_dseg_page(3) != target {
+        unsafe {
+            write_dseg_page(3, saved_target);
+            write_dseg_page(1, saved_source);
+        }
+        return false;
+    }
+    let mut at: u16 = 0;
+    while at < count {
+        unsafe {
+            dcache_line_copy(
+                Ptr::from_addr(0x4000 | (from + at)),
+                Ptr::from_addr(0xc000 | (to + at)),
+            );
+        }
+        dcache_wait();
+        at += 16;
+    }
+    unsafe {
+        write_dseg_page(3, saved_target);
+        write_dseg_page(1, saved_source);
+    }
+    read_dseg_page(1) == saved_source && read_dseg_page(3) == saved_target
 }

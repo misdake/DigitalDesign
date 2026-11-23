@@ -3,6 +3,7 @@
     gpu_config,
     gpu_arena,
     gpu_record,
+    gpu_unlit,
     gpu_storage,
     gpu_packet,
     gpu_memcpy,
@@ -44,6 +45,8 @@ mod gpu_arena;
 use gpu_arena::*;
 mod gpu_record;
 use gpu_record::*;
+mod gpu_unlit;
+use gpu_unlit::*;
 mod gpu_storage;
 use gpu_storage::*;
 mod gpu_packet;
@@ -581,6 +584,7 @@ impl Drop for Mesh {
     }
 }
 fn gpu_api_copy_plane(slot: u16, s: Array<u16>, d: Array<u16>, kind: ResourceFactKind) {
+    gpu_unlit_end(slot);
     if gpu_record_overlap(s[0u16], s[1u16], d[0u16], d[1u16]) {
         gpu_api_fail(GpuFault::RecorderOperation, slot, 0);
     }
@@ -737,6 +741,7 @@ impl Drop for CommandBuffer {
 impl Pass {
     /// Append an immutable part while retaining the next immediate draw's state.
     pub fn draw_prepared(&mut self, part: PreparedDrawsPtr) {
+        gpu_unlit_end(self.slot);
         gpu_api_checked(
             gpu_group_part_append(self.slot, part.data()),
             GpuCheck::Prepared,
@@ -1419,6 +1424,7 @@ impl Pass {
         );
     }
     pub fn draw_ui(&mut self, grid: UiGridPtr, clip: CellRect) {
+        gpu_unlit_end(self.slot);
         gpu_api_checked(
             gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0,
             GpuCheck::Prepared,
@@ -1464,6 +1470,7 @@ fn gpu_api_draw(
     view_slot: u16,
     billboard: u16,
 ) {
+    gpu_unlit_end(slot);
     let mesh = mesh_ptr.data();
     gpu_api_checked(
         mesh_ptr.first <= mesh[GPU_MESH_COUNT]
@@ -2032,5 +2039,104 @@ impl ColorBufferPtr {
 impl DepthBufferPtr {
     fn data(self) -> Array<u16> {
         gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::Depth))
+    }
+}
+
+/// Immutable directory and prevalidated unlit material bindings.
+/// Keep the referenced GPU mesh and texture bytes resident through retirement.
+/// A bank uses one lighting environment and one Model snapshot per recording.
+#[rcc_resource]
+pub struct UnlitBank {
+    data: u16,
+}
+impl UnlitBank {
+    pub fn new(mesh: MeshPtr) -> Self {
+        Self {
+            data: gpu_unlit_new(mesh.data(), mesh.first, mesh.count).addr(),
+        }
+    }
+    /// Register a fixed textured draw before the first preparation.
+    pub fn add(
+        &mut self,
+        state: RenderStatePtr,
+        material: MaterialPtr,
+        view: TextureViewPtr,
+        vertical_billboard: bool,
+    ) -> u16 {
+        let mut flags: u16 = 1;
+        if vertical_billboard {
+            flags |= BANK_VERTICAL;
+        }
+        gpu_unlit_add(
+            unsafe { Ptr::from_addr(self.data).as_u16_array() },
+            state.data(),
+            material.data(),
+            view.data(),
+            flags,
+        )
+    }
+    pub fn add_colored(&mut self, state: RenderStatePtr, material: MaterialPtr) -> u16 {
+        let data = unsafe { Ptr::from_addr(self.data).as_u16_array() };
+        gpu_unlit_add(data, state.data(), material.data(), data, 0)
+    }
+}
+impl Drop for UnlitBank {
+    fn drop(&mut self) {
+        if GPU_UNLIT_OWNER[0u16] == self.data {
+            gpu_unlit_end(0);
+        }
+        if GPU_UNLIT_OWNER[1u16] == self.data {
+            gpu_unlit_end(1);
+        }
+        free(Ptr::from_addr(self.data));
+    }
+}
+impl CommandBuffer {
+    /// Reserve the bank prefix in an empty CB before opening its Pass.
+    pub fn prepare_unlit(&mut self, bank: &mut UnlitBank, camera: CameraPtr, model: ModelPtr) {
+        gpu_api_checked(
+            gpu_unlit_prepare(
+                self.slot,
+                unsafe { Ptr::from_addr(bank.data).as_u16_array() },
+                camera.data(),
+                model.data(),
+            ),
+            GpuCheck::Mesh,
+        );
+    }
+    /// Update View and Target for a completed bank-only recording.
+    pub fn patch_unlit(
+        &mut self,
+        bank: &UnlitBank,
+        camera: CameraPtr,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
+    ) {
+        gpu_api_checked(
+            gpu_unlit_patch(
+                self.slot,
+                unsafe { Ptr::from_addr(bank.data).as_u16_array() },
+                camera.data(),
+                color.data(),
+                depth.data(),
+            ),
+            GpuCheck::TargetBinding,
+        );
+    }
+}
+impl Pass {
+    /// Draw a meshlet range with the prepared Model and View and a fixed binding.
+    /// Ordinary draw, prepared part, UI or copy commands end the bank phase.
+    pub fn draw_unlit(&mut self, bank: &UnlitBank, binding: u16, first: u16, count: u16) {
+        gpu_api_checked(
+            gpu_unlit_draw(
+                self.slot,
+                unsafe { Ptr::from_addr(bank.data).as_u16_array() },
+                binding,
+                first,
+                count,
+            ),
+            GpuCheck::Mesh,
+        );
     }
 }

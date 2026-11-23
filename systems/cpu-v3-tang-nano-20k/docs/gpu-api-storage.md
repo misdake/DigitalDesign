@@ -197,7 +197,8 @@ transient context. `ready()` observes completion; `invalidate()` discards it.
 Part commands capture World, material, raster/filter and asset addresses. They
 contain no View upload or scene install. `Pass::draw_prepared(ptr)` installs the
 current Pass View/light if needed and copies the aligned commands. The same-page
-route uses direct LCOPY; cross-page sources use bounded aligned CPU staging.
+route uses direct LCOPY while each span fits one page; a span crossing a
+page boundary uses bounded aligned CPU staging.
 World/texture backing is not copied on append. Desired Pass Camera/state remains
 unchanged. Both ordinary Mesh and unlit Billboard use the same encoder here.
 
@@ -466,14 +467,39 @@ No pointer into the window escapes.
 Within each page, a complete 16-word span whose two pointers are 32-byte aligned
 uses dual-address `LCOPY`. Both pointers use their own DSEG translation; the
 source is the newest cache value and the destination is DRAM. The helper waits
-before further use or remapping. Scalar operations handle partial or differently
-aligned spans, preserving adjacent words. A completed line copy does not replace
-the final submission publication for the remaining scalar stores.
+before further use or remapping. Raw eight-word vector transfers handle other
+complete spans, and scalar operations handle the tail. Cached stores still
+require submission publication.
+
+The command-fragment copier validates aligned, disjoint ranges. When each range
+fits one page, it uses DSEG3 for same-page copies or temporarily borrows DSEG1
+for the source of a cross-page copy. The cross-page leaf uses scalar locals
+and the DSEG2 stack. It waits for each LCOPY and restores both mappings before
+returning. All heap accesses and function calls occur outside that leaf scope.
 
 These helpers operate on CPU-owned storage. They do not acquire GPU-written
 data, wait for GPU retirement, invalidate GPU caches, or publish each chunk.
 Explicit ownership/cache ordering precedes reads of GPU output; submission is
 the publication boundary for CPU stores.
+
+### Reusable unlit draw lists
+
+`UnlitBank` snapshots a validated mesh directory and deduplicates fixed unlit
+World responses and Material packets. Up to 256 World keys share the same world
+lighting. The native mesh and texture bytes stay resident through retirement.
+
+`prepare_unlit` on an empty command buffer reserves its push prefix: a 64-word
+View packet, then one 64-word World slot per unique binding. The Model snapshot
+is taken once for that recording. `draw_unlit` fills each used World slot once
+and uses the same binding and meshlet command encoders as ordinary draws.
+Vertical billboard offsets use the shared View basis and the existing DRAW
+facing bit.
+
+For a completed bank-only recording, `patch_unlit` updates View and Target
+while leaving the World packets and command stream resident. Target overlap
+checks precede the writes, and submission checks the GPU/Display leases.
+A normal draw, prepared draw, UI or copy ends the bank phase. A later bank
+draw or replay requires reset and preparation.
 
 ## Command records
 
@@ -494,7 +520,8 @@ commands160..223 and View192..255 have explicit lifetimes. Scratch30 records
 the CPU-only Billboard classification;31 selects the DRAW facing bits. Material preparation
 writes World's final12 words116..127 directly. View is published before command
 encoding reuses192..223. A directory no longer occupies scratch. Complete
-aligned transfer lines can use LCOPY; partial spans retain scalar stores.
+aligned transfer lines can use LCOPY; eight-word transfers and scalar tails
+handle the remaining spans.
 
 CPU-owned copies and comparisons advance pointers in eight-word chunks with a
 scalar tail. The scratch is temporary output, not a binding cache. Only a changed

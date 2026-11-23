@@ -48,6 +48,10 @@ class Sources:
         self._asset(symbol, payload, 'UI_ATLAS_ALIGNMENT',
                     f'UiAtlasDesc=unsafe {{ UiAtlasDesc::from_asset({symbol}_BYTES) }}')
 
+    def bytes(self, symbol, payload):
+        self._asset(symbol, payload, 'GPU_ASSET_ALIGNMENT',
+                    f'AssetBytes={symbol}_BYTES')
+
     def font(self, symbol, characters):
         """Select the shared base font and track its producer/data inputs."""
         import ui_font

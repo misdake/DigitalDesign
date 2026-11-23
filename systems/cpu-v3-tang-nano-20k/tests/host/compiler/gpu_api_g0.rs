@@ -233,6 +233,28 @@ fn main(){let saved=read_dseg_page(3);let mut n:u16=0;
  check(gpu_window_read_words(0x9200,1,middle,31));
  check(aligned[0u16]==0x4000&&aligned[32u16]==0x4020);
  n=1;while n<32{check(aligned[n]==0x4000+n);n+=1;}
+ // Different low/external alignment, a DSEG page fence, and a scalar tail.
+ n=0;while n<64{aligned[n]=0x5000+n;n+=1;}
+ check(gpu_window_write_words(0x9300,16379,middle,39));
+ n=1;while n<40{aligned[n]=0;n+=1;}
+ check(gpu_window_read_words(0x9300,16379,middle,39));
+ check(aligned[0u16]==0x5000&&aligned[40u16]==0x5028);
+ n=1;while n<40{check(aligned[n]==0x5000+n);n+=1;}
+ // Command templates and active streams may occupy different physical pages.
+ let saved_heap=read_dseg_page(1);
+ unsafe{write_dseg_page(1,7);}
+ check(gpu_window_copy_lines(0x9100,0,0x9400,16,64));
+ check(read_dseg_page(1)==7&&read_dseg_page(3)==saved);
+ n=0;while n<64{aligned[n]=0;n+=1;}
+ check(gpu_window_read_words(0x9400,16,aligned,64));
+ n=0;while n<64{check(aligned[n]==0x4000+n);n+=1;}
+ check(gpu_window_copy_lines(0x9400,16,0x9400,96,32));
+ check(!gpu_window_copy_lines(0x9400,16,0x9400,32,32));
+ check(!gpu_window_copy_lines(0x9400,1,0x9500,0,16));
+ check(!gpu_window_copy_lines(0x94ff,48,0x9500,0,32));
+ check(gpu_window_copy_lines(65535,65535,65535,65535,0));
+ check(read_dseg_page(1)==7&&read_dseg_page(3)==saved);
+ unsafe{write_dseg_page(1,saved_heap);}
  check(read_dseg_page(3)==saved);halt(0x600d);}"#;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
     let out = std::env::var_os("RCC_RUSTC_TEST_DIR")
@@ -254,10 +276,41 @@ fn main(){let saved=read_dseg_page(3);let mut n:u16=0;
     let code = rcc_backend::try_compile(parsed, &options, "main").unwrap();
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(&code.words);
+    let leaf = code
+        .debug
+        .functions
+        .iter()
+        .find(|function| function.name == "gpu_storage_copy_pages")
+        .unwrap()
+        .addr;
+    let mut borrowed_steps = 0;
     let mut copied_lines = 0;
     let mut halted = false;
     for _ in 0..500_000 {
         let pc = usize::from(cpu.pc());
+        if cpu.data_segments()[1] == 0x91 {
+            borrowed_steps += 1;
+            assert!(
+                (leaf.0..leaf.1).contains(&pc),
+                "copy scope called out while heap page was borrowed"
+            );
+            assert_eq!((cpu.data_segments()[0], cpu.data_segments()[2]), (0, 2));
+            let mut word = code.words[pc];
+            let mut offset = word & 15;
+            if word >> 12 == 15 {
+                offset |= (word & 4095) << 4;
+                word = code.words[pc + 1];
+                offset = (offset & 65520) | (word & 15);
+            }
+            if word >> 12 == 8 || word >> 12 == 9 {
+                let base = cpu.registers()[usize::from((word >> 4) & 15)];
+                let address = base.wrapping_add(offset);
+                assert!(
+                    !(0x4000..0x8000).contains(&address),
+                    "copy scope dereferenced ordinary heap memory"
+                );
+            }
+        }
         if code.words[pc] >> 8 == 0x67 {
             copied_lines += 1;
         }
@@ -268,6 +321,7 @@ fn main(){let saved=read_dseg_page(3);let mut n:u16=0;
         }
     }
     assert!(halted, "storage copy exceeded its step bound");
+    assert!(borrowed_steps > 0, "cross-page scope did not execute");
     assert!(
         copied_lines >= 10,
         "aligned and partial spans did not execute LCOPY"

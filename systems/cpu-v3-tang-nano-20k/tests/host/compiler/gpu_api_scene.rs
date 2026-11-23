@@ -194,3 +194,193 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
         );
     }
 }
+
+#[test]
+fn unlit_bank_reuses_native_instances_and_matches_ordinary_binding_bytes() {
+    const BANK_SOURCE: &str = r#"mod gpu_api;use gpu_api::*;
+fn main(){
+ let memory:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_sectors(0x9800,512)},push:unsafe{GpuMemory::from_sectors(0x9a00,512)}};
+ let other:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_sectors(0xfc00,512)},push:unsafe{GpuMemory::from_sectors(0xfe00,512)}};
+ let mut gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:memory,command_b:Some(other)});
+ let mut a=gpu.command_buffer();let mut b=gpu.command_buffer();
+ let mut cam=Camera::new(CameraDesc::new(Vec3::zero(),Vec3::zero(),Projection::from_focal_pixels(fix32::from_int(200),fix32::from_int(120))));
+ let model=Model::new(Transform::identity());
+ let red=Material::new(MaterialDesc::diffuse(Rgba8{r:220,g:10,b:20,a:255}).with_unlit(true));
+ let blue=Material::new(MaterialDesc::diffuse(Rgba8{r:10,g:20,b:220,a:128}).with_unlit(true));
+ let state=RenderState::new(RenderStateDesc::opaque(Lighting::ambient(fix32::one())));
+ let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
+ let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
+ let mesh=Mesh::from_native(MeshDesc{directory_sector:0xa000,directory_word:0,meshlet_count:1,storage:unsafe{GpuMemory::from_sectors(0xa000,16)}});
+ let mut bank=UnlitBank::new(mesh.ptr());
+ let r=bank.add_colored(state.ptr(),red.ptr());
+ let u=bank.add_colored(state.ptr(),blue.ptr());
+ let again=bank.add_colored(state.ptr(),red.ptr());if r!=again{halt(0xbad);}
+ a.reset();a.prepare_unlit(&mut bank,cam.ptr(),model.ptr());
+ {let mut p=a.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());p.set_camera(cam.ptr());p.set_state(state.ptr());
+ p.draw_unlit(&bank,r,0,1);p.draw_unlit(&bank,u,0,1);p.draw_unlit(&bank,r,0,1);}
+ cam.set_pose(Vec3::new(fix32::one(),fix32::zero(),fix32::zero()),Vec3::zero());
+ a.patch_unlit(&bank,cam.ptr(),color.ptr(),depth.ptr());
+ {let mut p=b.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());p.set_camera(cam.ptr());p.set_state(state.ptr());
+ p.draw_colored(mesh.ptr(),model.ptr(),red.ptr());p.draw_colored(mesh.ptr(),model.ptr(),blue.ptr());p.draw_colored(mesh.ptr(),model.ptr(),red.ptr());}
+ halt(0x600d);
+}"#;
+    for debug in [false, true] {
+        let program = compile_bank_fixture(BANK_SOURCE, debug, "unlit-bank-native");
+        let records = match program
+            .debug
+            .globals
+            .iter()
+            .find(|g| g.name == "GPU_CB_RECORDS")
+            .unwrap()
+            .loc
+        {
+            rcc::VarLoc::Global(at) => usize::from(at),
+            _ => unreachable!(),
+        };
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        cpu.physical_memory_mut()[0xa000 * 64..0xa000 * 64 + 2].copy_from_slice(&[0xa001, 1]);
+        let mut halted = false;
+        for _ in 0..5_000_000 {
+            if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
+                assert_eq!(signal, 0x600d);
+                halted = true;
+                break;
+            }
+        }
+        assert!(halted, "bounded unlit-bank timeout");
+        let memory = cpu.physical_memory_mut();
+        let snapshots = |memory: &[u16], records: usize, slot: usize| {
+            let c = &memory[records + slot * 160..records + (slot + 1) * 160];
+            let commands =
+                &memory[usize::from(c[1]) * 64..usize::from(c[1]) * 64 + usize::from(c[5])];
+            let mut view = vec![0; 64];
+            let mut world = vec![0; 64];
+            let mut result = Vec::new();
+            for code in commands.chunks_exact(2) {
+                let opcode = code[1] >> 12;
+                if opcode == 1 {
+                    let sector = (usize::from(code[1] & 4095) << 4) | usize::from(code[0] >> 12);
+                    let word = usize::from((code[0] >> 6) & 48);
+                    let local = (code[0] >> 3) & 127;
+                    let source = sector * 64 + word;
+                    let target = match local {
+                        92 => &mut view,
+                        80 => &mut world,
+                        _ => continue,
+                    };
+                    let count = target.len();
+                    target.copy_from_slice(&memory[source..source + count]);
+                } else if opcode == 3 {
+                    result.push((view.clone(), world.clone(), code[0] >> 1));
+                }
+            }
+            result
+        };
+        assert_eq!(
+            snapshots(memory, records, 0),
+            snapshots(memory, records, 1),
+            "fixed-bank native binding bytes differ"
+        );
+        assert_eq!(snapshots(memory, records, 0).len(), 3);
+        assert_eq!(
+            memory[records + 15],
+            3,
+            "mesh and two target resource facts"
+        );
+        let baseline = compile_bank_fixture(
+            &BANK_SOURCE.replace(
+                "cam.set_pose(Vec3::new(fix32::one(),fix32::zero(),fix32::zero()),Vec3::zero());",
+                "",
+            ),
+            debug,
+            "unlit-bank-tail-baseline",
+        );
+        let baseline_records = match baseline
+            .debug
+            .globals
+            .iter()
+            .find(|g| g.name == "GPU_CB_RECORDS")
+            .unwrap()
+            .loc
+        {
+            rcc::VarLoc::Global(at) => usize::from(at),
+            _ => unreachable!(),
+        };
+        let mut baseline_cpu = CpuV3Sim::default();
+        baseline_cpu.set_boot_window(&baseline.words);
+        baseline_cpu.physical_memory_mut()[0xa000 * 64..0xa000 * 64 + 2]
+            .copy_from_slice(&[0xa001, 1]);
+        let mut finished = false;
+        for _ in 0..5_000_000 {
+            if let StepOutcome::Halted { signal } = baseline_cpu.step().unwrap() {
+                assert_eq!(signal, 0x600d);
+                finished = true;
+                break;
+            }
+        }
+        assert!(finished);
+        let expected_prefix =
+            snapshots(baseline_cpu.physical_memory_mut(), baseline_records, 1)[..2].to_vec();
+        for command in ["p.draw_colored(mesh.ptr(),model.ptr(),blue.ptr());"] {
+            let mixed = BANK_SOURCE.replace(
+                "p.draw_unlit(&bank,r,0,1);p.draw_unlit(&bank,u,0,1);",
+                &format!("p.draw_unlit(&bank,r,0,1);{command}p.draw_unlit(&bank,r,0,1);"),
+            );
+            let rejected = compile_bank_fixture(&mixed, debug, "unlit-bank-exclusive");
+            let mut cpu = CpuV3Sim::default();
+            cpu.set_boot_window(&rejected.words);
+            cpu.physical_memory_mut()[0xa000 * 64..0xa000 * 64 + 2].copy_from_slice(&[0xa001, 1]);
+            let mut stopped = false;
+            for _ in 0..5_000_000 {
+                if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
+                    assert_ne!(signal, 0x600d, "mixed bank command accepted: {command}");
+                    stopped = true;
+                    break;
+                }
+            }
+            assert!(stopped, "bounded mixed-bank timeout");
+            let memory = cpu.physical_memory_mut();
+            let used = usize::from(memory[records + 5]);
+            let commands = &memory[0x9800 * 64..0x9800 * 64 + used];
+            assert_eq!(
+                commands.chunks_exact(2).filter(|p| p[1] >> 12 == 3).count(),
+                2,
+                "generic tail must append, then bank resumption rejects before its draw"
+            );
+            assert_eq!(
+                snapshots(memory, records, 0),
+                expected_prefix,
+                "generic tail must preserve its native Render/Instance bytes"
+            );
+        }
+        for replacement in [
+            "a.reset();",
+            "a.reset();a.prepare_unlit(&mut bank,cam.ptr(),model.ptr());a.reset();",
+            "a.reset();a.prepare_unlit(&mut bank,cam.ptr(),model.ptr());bank.add_colored(state.ptr(),red.ptr());",
+        ] {
+            let invalid = BANK_SOURCE.replace("a.reset();a.prepare_unlit(&mut bank,cam.ptr(),model.ptr());", replacement);
+            let rejected = compile_bank_fixture(&invalid, debug, "unlit-bank-lifecycle");
+            let mut cpu = CpuV3Sim::default();
+            cpu.set_boot_window(&rejected.words);
+            cpu.physical_memory_mut()[0xa000 * 64..0xa000 * 64 + 2].copy_from_slice(&[0xa001, 1]);
+            let mut stopped = false;
+            for _ in 0..5_000_000 {
+                if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
+                    assert_ne!(signal, 0x600d, "invalid bank lifecycle accepted: {replacement}");
+                    stopped = true;
+                    break;
+                }
+            }
+            assert!(stopped, "bounded rejected-bank timeout");
+        }
+    }
+}
+
+fn compile_bank_fixture(source: &str, debug: bool, label: &str) -> rcc_backend::CpuV3Program {
+    let parsed = super::gpu_api_resources::parse(source, label, debug)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    options.gpu_debug = debug;
+    rcc_backend::try_compile(parsed, &options, "main").unwrap()
+}
