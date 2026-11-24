@@ -1,7 +1,7 @@
 ---
 id: bloxorz-live-transitions
 status: implemented
-last-verified: 2026-11-23
+last-verified: 2026-11-24
 ---
 
 # Game animation and cached RTT veil
@@ -62,9 +62,34 @@ with alpha.
 
 Rules and outgoing animation clocks still advance, while fade visuals deliberately
 freeze at those two boundaries. Ordinary entry/goal/fall animation remains live.
-Only completed RTT captures increment `session_captured`. Every consumer retains
+Only completed RTT snapshots call `BloxorzSession::captured`. Every consumer retains
 scene depth without writing it; the HUD is drawn separately on Back. Final GPU
 wait, Display retirement and fault-held ownership preserve their existing roles.
+
+## State ownership
+
+[`BloxorzSession`](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/rcc/session.rs)
+owns one persistent game instance. `begin`, `tick`, `try_move`, `undo`,
+`reset_level`, `captured`, `presented` and `end` borrow that instance; none
+copies the whole state to the stack. Rendering reads named level, rules,
+motion, animation and transition fields. `BlockOrientations` belongs to the
+same session and owns its once-allocated rotation history between `begin`
+and `end`; undo restores both logical state and actor orientation.
+
+| Owner | Target storage | Contents |
+| --- | --- | --- |
+| `BloxorzSession` | 907 static words | Level, rules, packed undo, motion, clocks, fall pose and orientation metadata |
+| `PresentationState` in main | 12 static words | HUD, background selection, resting-model key and bridge cache |
+| `DrawStatistics` | 3 static words | Draw count and the last completed render interval with validity |
+| `ShadowWorkspace` | 436 static words | Cache key, statistics, reusable polygon scratch and aligned batch pointer |
+
+The timer-free `bloxorz_core` still uses a compact word ABI. `LevelState`
+has eight header words followed by 300 cell words; `RuleState` has ten words
+in the rules engine's order. Both are `repr(C)`. Only `level_words` and
+`rule_words` expose that representation for rules calls and fixture setup.
+The six-word rule snapshot and two-word-per-entry undo ring remain encoded
+buffers inside the session. These formats and the native geometry packages
+are arrays by design; application phase/cache fields use named members.
 
 ## Rules and animation
 
@@ -137,9 +162,22 @@ at2/3, Q16 eye XYZ at4..9, focal at10/11, far at12/13, the planar-carrier applic
 Face words pack X4:0, Z9:5, face12:10 and atlas variant14:13. The five face codes
 are top,+X,+Z,-X,-Z. Static-neighbor interior sides are omitted; camera-facing
 boundary sides are retained, including boundaries beside dynamic surfaces. Fragile cells use a separate retained batch with reversible index visibility; splitter top faces use the marker atlas while their sides use the original floor texture.
-Twenty immutable native templates cover five faces and four UV variants. Their original per-face path remains available for controlled diagnostics; normal static floors use the load-time batches described below. No second baked per-stage floor geometry is retained.
-The generated app loader reads this archive through DSEG3, waits before mapping
-and before restoring its saved page, and never returns a window pointer.
+Twenty base native templates cover five faces and four UV variants; four goal-split templates complete the ground table. Their original per-face path remains available for controlled diagnostics; normal static floors use the load-time batches described below. No second baked per-stage floor geometry is retained.
+The producer also emits CPU-resident typed level headers, palettes and native
+quad templates from the same archive values. Camera code reads `eye`, `focal`
+and `far` directly from `BloxLevelHeader`. The complete tables occupy 2,944 bytes.
+`blox_asset_read` copies compact level rules into the existing LevelState in one
+operation. `level_assets.rs` snapshots the current level's two contiguous face
+lists into `LevelGeometryCache`; its producer-sized payload is at most 247 words,
+with four metadata words. These lists are CPU recording input, not GPU backing.
+The cache is keyed by immutable level identity and reused when restarting it.
+
+Block reads validate source/destination bounds, map DSEG3 once per 16-Kword page,
+copy sequentially and restore the incoming mapping once. Destinations remain
+below logical 0xc000. Cache tags and issued CPU accesses use physical addresses;
+immutable archive reads require no per-word DWAIT or cache invalidation. No
+window pointer escapes. Per-face/template/palette/header access uses ordinary
+low-memory storage; the driver does not manage game-level caching.
 
 Far is an admission limit, not a D16 precision control. For each level, the tool
 projects a conservative animation box into the fixed camera: X/Z extend14 units
@@ -171,8 +209,11 @@ enforces that limit independently of runtime stack allocation.
 
 ## Level and frame HUD
 
-The normal app always draws `LEVEL` and1..33. Circle toggles `DRAW` and `MS` while
-input is unlocked; the capture-card diagnostic keeps its separate existing UI.
+The app always draws `LEVEL` and1..33. Circle toggles `DRAW` and `MS` while
+input is unlocked. Simulation and emulation use this same presentation path;
+the game has no capture-card input script, UART progress protocol or brightness
+freeze/stop mode. Bounded test entries take only a frame limit. Host fixtures
+supply input and time and observe the existing frame/submission boundaries.
 Statistics describe the previous completed frame and show dashes before one is
 available. `DRAW` counts every actual native DRAW plus native UI range: mesh
 calls add their public meshlet count, each partial-width UI row adds one, and a

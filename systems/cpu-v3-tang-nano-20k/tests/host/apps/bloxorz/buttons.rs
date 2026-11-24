@@ -9,7 +9,7 @@ fn incremental_button_parts_match_fresh_color_depth_and_display() {
     for mode in ["cached", "fresh"] {
         let (program, resources, out) = application_case(
             &format!("button-parts-{mode}"),
-            Some("run(18,false,128);"),
+            Some("run(18);"),
             None,
             scenarios::button_parts(mode == "fresh"),
         );
@@ -21,7 +21,7 @@ fn incremental_button_parts_match_fresh_color_depth_and_display() {
         let mut by_frame = vec![];
         let mut soft_parts = vec![];
         let mut ninth_parts = vec![];
-        let level = global(&program, "LEVEL");
+        let level = global(&program, "GAME_SESSION.level");
         let mut halted = false;
         for _ in 0..35_000_000 {
             if sim.waiting_for_vblank() {

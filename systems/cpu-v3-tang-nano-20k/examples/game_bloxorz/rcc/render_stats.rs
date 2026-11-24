@@ -2,7 +2,16 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
-pub static DRAW_CALLS: Buf<u16, 1> = Buf::new([0]);
+pub struct DrawStatistics {
+    pub draw_calls: u16,
+    pub render_microseconds: u16,
+    pub render_time_valid: u16,
+}
+pub static DRAW_STATS: DrawStatistics = DrawStatistics {
+    draw_calls: 0,
+    render_microseconds: 0,
+    render_time_valid: 0,
+};
 pub fn counted_draw(
     pass: &mut Pass,
     mesh: &Mesh,
@@ -11,7 +20,7 @@ pub fn counted_draw(
     view: &TextureView,
 ) {
     pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
-    DRAW_CALLS[0u16] += mesh.meshlet_count();
+    DRAW_STATS.draw_calls += mesh.meshlet_count();
 }
 pub fn counted_part_draw(
     recording: &mut PreparedPart,
@@ -21,20 +30,19 @@ pub fn counted_part_draw(
     view: &TextureView,
 ) {
     recording.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
-    DRAW_CALLS[0u16] += mesh.meshlet_count();
+    DRAW_STATS.draw_calls += mesh.meshlet_count();
 }
 pub fn counted_ui(pass: &mut Pass, grid: &UiGrid, rect: CellRect) {
     pass.draw_ui(grid.ptr(), rect);
     if rect.width != 0 && rect.height != 0 {
-        DRAW_CALLS[0u16] += if rect.width == 50 { 1u16 } else { rect.height };
+        DRAW_STATS.draw_calls += if rect.width == 50 { 1u16 } else { rect.height };
     }
 }
 
 // Value and validity are separate from DRAW: cold F1 has no preceding vblank.
-pub static FRAME_RENDER_US: Buf<u16, 2> = Buf::new([0; 2]);
 pub fn render_time_complete(elapsed: u16, started: bool) {
-    FRAME_RENDER_US[0u16] = elapsed;
-    FRAME_RENDER_US[1u16] = if started && elapsed != 65535 {
+    DRAW_STATS.render_microseconds = elapsed;
+    DRAW_STATS.render_time_valid = if started && elapsed != 65535 {
         1u16
     } else {
         0u16
@@ -42,7 +50,7 @@ pub fn render_time_complete(elapsed: u16, started: bool) {
 }
 
 pub fn draw_render_time(grid: &mut UiGrid, x: u16, y: u16) {
-    if FRAME_RENDER_US[1u16] == 0 {
+    if DRAW_STATS.render_time_valid == 0 {
         grid.write(
             CellRect {
                 x,
@@ -54,7 +62,7 @@ pub fn draw_render_time(grid: &mut UiGrid, x: u16, y: u16) {
         );
         return;
     }
-    let elapsed = FRAME_RENDER_US[0u16];
+    let elapsed = DRAW_STATS.render_microseconds;
     // The last four valid readings already round down. Avoid overflowing u16.
     let rounded = if elapsed <= 65530 {
         elapsed + 5

@@ -13,7 +13,7 @@ fn render_us_uses_last_gpu_wait_excludes_present_and_recovers_after_saturation()
         };
         let (program, resources, out) =
             application_case(name, None, None, scenarios::render_time(fade));
-        let timing = global(&program, "FRAME_RENDER_US");
+        let timing = global(&program, "DRAW_STATS.render_microseconds");
         let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
         sim.cpu_mut().set_boot_window(&program.words);
         preload(sim.cpu_mut().physical_memory_mut(), &resources);

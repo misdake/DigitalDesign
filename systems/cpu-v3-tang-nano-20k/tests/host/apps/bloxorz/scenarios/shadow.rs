@@ -21,19 +21,19 @@ pub(in super::super) fn frame_schedule(pose: &str, shadow_cost: bool) -> Applica
         } else {
             "PLAY"
         };
-        source = source.required_replace("session_init();", &format!("session_init();level_reset({level});SESSION[0u16]={initial};SESSION[1u16]=0;BACKGROUND[0u16]=0;"));
+        source = source.required_replace("GAME_SESSION.begin();", &format!("GAME_SESSION.begin();GAME_SESSION.reset_level({level});GAME_SESSION.animation.phase={initial};GAME_SESSION.animation.elapsed=0;RENDER_STATE.background=0;"));
         let tick = if pose.contains("split-lifetime") {
-            "if number==0 {GAME[0u16]=2;GAME[1u16]=4;GAME[2u16]=1;session_move(0);let mut ticks:u16=0;while ticks<10 {session_tick(0,0,50);ticks+=1;}}session_tick(0,0,0);"
+            "if number==0 {GAME_SESSION.rules.x=2;GAME_SESSION.rules.z=4;GAME_SESSION.rules.orientation=1;GAME_SESSION.try_move(0);let mut ticks:u16=0;while ticks<10 {GAME_SESSION.tick(0,0,50);ticks+=1;}}GAME_SESSION.tick(0,0,0);"
         } else if pose.contains("entry") {
-            "session_tick(buttons,held,0);SESSION[0u16]=ENTRY_OPEN;SESSION[1u16]=if number<2 {50u16}else{100u16};"
+            "GAME_SESSION.tick(buttons,held,0);GAME_SESSION.animation.phase=ENTRY_OPEN;GAME_SESSION.animation.elapsed=if number<2 {50u16}else{100u16};"
         } else if pose.contains("goal") || pose.contains("fallback") {
-            "session_tick(buttons,held,0);TRANSITION[0u16]=0;SESSION[0u16]=if number<2 {GOAL_OPEN}else{GOAL_CLOSE};SESSION[1u16]=100;"
+            "GAME_SESSION.tick(buttons,held,0);GAME_SESSION.transition.phase=0;GAME_SESSION.animation.phase=if number<2 {GOAL_OPEN}else{GOAL_CLOSE};GAME_SESSION.animation.elapsed=100;"
         } else if pose.contains("moving") {
-            "if number==0 {session_move(0);}session_tick(buttons,held,40);"
+            "if number==0 {GAME_SESSION.try_move(0);}GAME_SESSION.tick(buttons,held,40);"
         } else {
-            "session_tick(buttons,held,0);"
+            "GAME_SESSION.tick(buttons,held,0);"
         };
-        source = source.required_replace("session_tick(buttons, held, elapsed);", tick);
+        source = source.required_replace("GAME_SESSION.tick(buttons, held, elapsed);", tick);
 
         source
     });
@@ -44,17 +44,17 @@ pub(in super::super) fn frame_schedule(pose: &str, shadow_cost: bool) -> Applica
 pub(in super::super) fn shadow_cache(forced: bool) -> ApplicationCase {
     edited("renderer_game_three_frames", move |mut source| {
         source = source
-            .required_replace("run(3, false, 128);", "run(9, false, 128);")
+            .required_replace("run(3);", "run(9);")
             .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;");
         source=source.required_replace("    loop {",r#"    loop {
-        if number==0 {level_reset(1);GAME[0u16]=4;GAME[1u16]=4;GAME[2u16]=0;SESSION[0u16]=PLAY;BACKGROUND[0u16]=0;}
-        if number==2 {GAME[0u16]=5;}
-        if number==3 {GAME[3u16]=1;}
-        if number==4 {level_reset(0);GAME[0u16]=7;GAME[1u16]=4;SESSION[0u16]=PLAY;}
-        if number==5 {SESSION[0u16]=GOAL_DROP;SESSION[1u16]=0;}
-        if number==6 {level_reset(0);GAME[0u16]=7;GAME[1u16]=4;SESSION[0u16]=GOAL_DROP;SESSION[1u16]=0;}
-        if number==7 {SESSION[0u16]=ENTRY_OPEN;SESSION[1u16]=0;}
-        if number==8 {SESSION[0u16]=PLAY;}
+        if number==0 {GAME_SESSION.reset_level(1);GAME_SESSION.rules.x=4;GAME_SESSION.rules.z=4;GAME_SESSION.rules.orientation=0;GAME_SESSION.animation.phase=PLAY;RENDER_STATE.background=0;}
+        if number==2 {GAME_SESSION.rules.x=5;}
+        if number==3 {GAME_SESSION.rules.bridge_mask=1;}
+        if number==4 {GAME_SESSION.reset_level(0);GAME_SESSION.rules.x=7;GAME_SESSION.rules.z=4;GAME_SESSION.animation.phase=PLAY;}
+        if number==5 {GAME_SESSION.animation.phase=GOAL_DROP;GAME_SESSION.animation.elapsed=0;}
+        if number==6 {GAME_SESSION.reset_level(0);GAME_SESSION.rules.x=7;GAME_SESSION.rules.z=4;GAME_SESSION.animation.phase=GOAL_DROP;GAME_SESSION.animation.elapsed=0;}
+        if number==7 {GAME_SESSION.animation.phase=ENTRY_OPEN;GAME_SESSION.animation.elapsed=0;}
+        if number==8 {GAME_SESSION.animation.phase=PLAY;}
 "#);
         source=source.required_replace("gpu.submit(commands);","signal(14,commands.push_words());signal(15,commands.command_words());gpu.submit(commands);");
         if forced {
@@ -90,7 +90,7 @@ pub(in super::super) fn shadow_diagnostic(variant: &str) -> ApplicationCase {
             "carrier-heavy-fallback"
         ]
         .contains(&variant));
-        assert_eq!(source.matches("session_init();").count(), 1);
+        assert_eq!(source.matches("GAME_SESSION.begin();").count(), 1);
         if variant == "far64" || variant == "far64-always" {
             assert_eq!(source.matches("let far = level_far(which);").count(), 1);
             source = source.required_replace(
@@ -98,37 +98,37 @@ pub(in super::super) fn shadow_diagnostic(variant: &str) -> ApplicationCase {
                 "let far = fix32::from_int(63);",
             );
         }
-        source = source.required_replace("session_init();", "diagnostic_pose();");
+        source = source.required_replace("GAME_SESSION.begin();", "diagnostic_pose();");
         let setup = if variant == "goal-always" {
-            "level_reset(1);GAME[0u16]=13;GAME[1u16]=2;GAME[2u16]=2;SESSION[0u16]=PLAY;session_move(3);let mut tick:u16=0;while tick<63 {session_tick(0,0,10);tick+=1;}"
+            "GAME_SESSION.reset_level(1);GAME_SESSION.rules.x=13;GAME_SESSION.rules.z=2;GAME_SESSION.rules.orientation=2;GAME_SESSION.animation.phase=PLAY;GAME_SESSION.try_move(3);let mut tick:u16=0;while tick<63 {GAME_SESSION.tick(0,0,10);tick+=1;}"
         } else if variant == "carrier-play" {
-            "level_reset(1);SESSION[0u16]=PLAY;"
+            "GAME_SESSION.reset_level(1);GAME_SESSION.animation.phase=PLAY;"
         } else if variant == "carrier-open" {
-            "level_reset(1);GAME[0u16]=13;GAME[1u16]=2;GAME[2u16]=2;SESSION[0u16]=PLAY;session_move(3);let mut tick:u16=0;while tick<32 {session_tick(0,0,10);tick+=1;}"
+            "GAME_SESSION.reset_level(1);GAME_SESSION.rules.x=13;GAME_SESSION.rules.z=2;GAME_SESSION.rules.orientation=2;GAME_SESSION.animation.phase=PLAY;GAME_SESSION.try_move(3);let mut tick:u16=0;while tick<32 {GAME_SESSION.tick(0,0,10);tick+=1;}"
         } else if variant == "carrier-drop" {
-            "level_reset(1);GAME[0u16]=13;GAME[1u16]=2;GAME[2u16]=2;SESSION[0u16]=PLAY;session_move(3);let mut tick:u16=0;while tick<63 {session_tick(0,0,10);tick+=1;}"
+            "GAME_SESSION.reset_level(1);GAME_SESSION.rules.x=13;GAME_SESSION.rules.z=2;GAME_SESSION.rules.orientation=2;GAME_SESSION.animation.phase=PLAY;GAME_SESSION.try_move(3);let mut tick:u16=0;while tick<63 {GAME_SESSION.tick(0,0,10);tick+=1;}"
         } else if variant == "carrier-close" {
-            "level_reset(1);GAME[0u16]=13;GAME[1u16]=2;GAME[2u16]=2;SESSION[0u16]=PLAY;session_move(3);let mut tick:u16=0;while tick<102 {session_tick(0,0,10);tick+=1;}"
+            "GAME_SESSION.reset_level(1);GAME_SESSION.rules.x=13;GAME_SESSION.rules.z=2;GAME_SESSION.rules.orientation=2;GAME_SESSION.animation.phase=PLAY;GAME_SESSION.try_move(3);let mut tick:u16=0;while tick<102 {GAME_SESSION.tick(0,0,10);tick+=1;}"
         } else if variant == "carrier-soft-fallback" {
-            "level_reset(14);SESSION[0u16]=PLAY;"
+            "GAME_SESSION.reset_level(14);GAME_SESSION.animation.phase=PLAY;"
         } else if variant == "carrier-heavy-fallback" {
-            "level_reset(16);SESSION[0u16]=PLAY;"
+            "GAME_SESSION.reset_level(16);GAME_SESSION.animation.phase=PLAY;"
         } else if variant == "right-standing" {
-            "level_reset(1);GAME[0u16]=13;GAME[1u16]=2;GAME[2u16]=0;SESSION[0u16]=PLAY;"
+            "GAME_SESSION.reset_level(1);GAME_SESSION.rules.x=13;GAME_SESSION.rules.z=2;GAME_SESSION.rules.orientation=0;GAME_SESSION.animation.phase=PLAY;"
         } else if variant.starts_with("bridge-") {
             if variant == "bridge-on-always" {
-                "level_reset(1);GAME[0u16]=12;GAME[1u16]=5;GAME[2u16]=0;GAME[3u16]=2;SESSION[0u16]=PLAY;"
+                "GAME_SESSION.reset_level(1);GAME_SESSION.rules.x=12;GAME_SESSION.rules.z=5;GAME_SESSION.rules.orientation=0;GAME_SESSION.rules.bridge_mask=2;GAME_SESSION.animation.phase=PLAY;"
             } else {
-                "level_reset(1);GAME[0u16]=12;GAME[1u16]=5;GAME[2u16]=0;GAME[3u16]=0;SESSION[0u16]=PLAY;"
+                "GAME_SESSION.reset_level(1);GAME_SESSION.rules.x=12;GAME_SESSION.rules.z=5;GAME_SESSION.rules.orientation=0;GAME_SESSION.rules.bridge_mask=0;GAME_SESSION.animation.phase=PLAY;"
             }
         } else {
-            "level_reset(1);GAME[0u16]=13;GAME[1u16]=2;GAME[2u16]=0;SESSION[0u16]=PLAY;session_move(2);let mut tick:u16=0;while tick<11 {session_tick(0,0,10);tick+=1;}"
+            "GAME_SESSION.reset_level(1);GAME_SESSION.rules.x=13;GAME_SESSION.rules.z=2;GAME_SESSION.rules.orientation=0;GAME_SESSION.animation.phase=PLAY;GAME_SESSION.try_move(2);let mut tick:u16=0;while tick<11 {GAME_SESSION.tick(0,0,10);tick+=1;}"
         };
         source.push_str(&format!(
-            "\nfn diagnostic_pose(){{session_init();{setup}BACKGROUND[0u16]=0;}}\n"
+            "\nfn diagnostic_pose(){{GAME_SESSION.begin();{setup}RENDER_STATE.background=0;}}\n"
         ));
         source = source
-            .required_replace("run(3, false, 128);", "run(1, false, 128);")
+            .required_replace("run(3);", "run(1);")
             .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;");
         let shadow_begin = source
             .find("let shadow_state = RenderState::new(RenderStateDesc {")
@@ -159,7 +159,7 @@ pub(in super::super) fn shadow_diagnostic(variant: &str) -> ApplicationCase {
             assert_eq!(source.matches("a: 87,").count(), 1);
             source = source.required_replace("a: 87,", "a: 0,");
         } else if variant == "no-block" {
-            source = source.required_replace("if block_visible() {", "if false {");
+            source = source.required_replace("if GAME_SESSION.block_visible() {", "if false {");
         }
 
         source
@@ -185,15 +185,15 @@ pub(in super::super) fn web_shadow(case_name: &str) -> ApplicationCase {
             .find(|c| c["name"] == case_name.as_str())
             .unwrap();
         source = source.required_replace(
-            "session_init();",
+            "GAME_SESSION.begin();",
             if case_name == "entry" {
-                "session_init();SESSION[0u16]=ENTRY_RISE;SESSION[1u16]=190;BACKGROUND[0u16]=0;"
+                "GAME_SESSION.begin();GAME_SESSION.animation.phase=ENTRY_RISE;GAME_SESSION.animation.elapsed=190;RENDER_STATE.background=0;"
             } else {
-                "session_init();SESSION[0u16]=PLAY;BACKGROUND[0u16]=0;"
+                "GAME_SESSION.begin();GAME_SESSION.animation.phase=PLAY;RENDER_STATE.background=0;"
             },
         );
         source = source
-            .required_replace("run(3, false, 128);", "run(1, false, 128);")
+            .required_replace("run(3);", "run(1);")
             .required_replace("let elapsed = now - clock.previous;", "let elapsed:u16=0;");
         let begin = source.find("fn prepare_block(").unwrap();
         let end = begin + source[begin..].find("\nfn draw_block(").unwrap();

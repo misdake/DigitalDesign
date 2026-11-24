@@ -20,9 +20,7 @@ fn atlas_fixed_scenes_and_real_submission_inputs() {
         serde_json::json!({"application_source":"8235b96fd799e0234d97dd1b653a930cc44d56b5","driver_source":"8235b96fd799e0234d97dd1b653a930cc44d56b5"})
     };
     if before {
-        assert!(frozen
-            .join("examples/game_bloxorz/rcc/main.rs")
-            .is_file());
+        assert!(frozen.join("examples/game_bloxorz/rcc/main.rs").is_file());
     }
     let sizes = std::env::var("BLOXORZ_ATLAS_SIZES").unwrap_or_else(|_| "6x7".into());
     assert!(matches!(sizes.as_str(), "6x7" | "7x7" | "6x8"));
@@ -33,7 +31,7 @@ fn atlas_fixed_scenes_and_real_submission_inputs() {
     };
     let (program, resources, out) = application_case(
         &name,
-        Some("run(7,false,128);"),
+        Some("run(7);"),
         before.then_some(frozen.as_path()),
         scenarios::fragile_atlas((!before).then(|| scenarios::atlas_sizes(&sizes)), before),
     );

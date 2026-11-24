@@ -20,8 +20,7 @@ impl Device for Idle {
 #[test]
 fn all_cube_orientations_preserve_world_and_normal_columns() {
     let module = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("examples/game_bloxorz/rcc/orientation.rs"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/game_bloxorz/rcc/orientation.rs"),
     )
     .unwrap();
     let body = &module[module.find("pub const ROTATION_IDENTITY").unwrap()..];
@@ -136,20 +135,20 @@ fn roll_completion_inverse_and_undo_keep_the_same_local_faces() {
 let memory:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_sectors(0x9800,512)},push:unsafe{GpuMemory::from_sectors(0x9a00,512)}};
 let absent:Option<CommandMemory>=None;let gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:memory,command_b:absent});
 let mut model=Model::new(Transform::new(Vec3::zero(),Vec3::zero(),Vec3::new(fix32::from_int(1),fix32::from_int(1),fix32::from_int(1))));
-session_init();LEVEL[0u16]=15;LEVEL[1u16]=10;LEVEL[6u16]=150;LEVEL[7u16]=2;
-let mut i:u16=0;while i<150 {LEVEL[8+i*2]=1;LEVEL[9+i*2]=0;i+=1;}
-GAME[0u16]=5;GAME[1u16]=4;GAME[2u16]=0;GAME[3u16]=0;GAME[4u16]=0;GAME[5u16]=0;GAME[9u16]=0;SESSION[0u16]=PLAY;
-block_pose(&mut model);world_probe(&model);check(block_orientation()==8);
-check(session_move(0));SESSION[1u16]=220;MOTION[4u16]=220;
-block_pose(&mut model);world_probe(&model);
-session_tick(0,0,0);check(SESSION[0u16]==PLAY);check(block_orientation()!=8);
-block_pose(&mut model);world_probe(&model);
-check(session_move(1));SESSION[1u16]=220;MOTION[4u16]=220;
-block_pose(&mut model);world_probe(&model);session_tick(0,0,0);check(block_orientation()==8);
-block_pose(&mut model);world_probe(&model);
-session_tick(32768,0,0);check(GAME[5u16]==1);check(block_orientation()!=8);
-block_pose(&mut model);world_probe(&model);
-level_reset(0);check(block_orientation()==8);session_end();drop(model);drop(gpu);
+GAME_SESSION.begin();GAME_SESSION.level.width=15;GAME_SESSION.level.height=10;GAME_SESSION.level.cell_count=150;GAME_SESSION.level.schema=2;
+let mut i:u16=0;while i<150 {GAME_SESSION.level_words()[8+i*2]=1;GAME_SESSION.level_words()[9+i*2]=0;i+=1;}
+GAME_SESSION.rules.x=5;GAME_SESSION.rules.z=4;GAME_SESSION.rules.orientation=0;GAME_SESSION.rules.bridge_mask=0;GAME_SESSION.rules.status=0;GAME_SESSION.rules.moves=0;GAME_SESSION.rules.split=0;GAME_SESSION.animation.phase=PLAY;
+GAME_SESSION.block_pose(&mut model);world_probe(&model);check(GAME_SESSION.block_orientation()==8);
+check(GAME_SESSION.try_move(0));GAME_SESSION.animation.elapsed=220;GAME_SESSION.motion.elapsed=220;
+GAME_SESSION.block_pose(&mut model);world_probe(&model);
+GAME_SESSION.tick(0,0,0);check(GAME_SESSION.animation.phase==PLAY);check(GAME_SESSION.block_orientation()!=8);
+GAME_SESSION.block_pose(&mut model);world_probe(&model);
+check(GAME_SESSION.try_move(1));GAME_SESSION.animation.elapsed=220;GAME_SESSION.motion.elapsed=220;
+GAME_SESSION.block_pose(&mut model);world_probe(&model);GAME_SESSION.tick(0,0,0);check(GAME_SESSION.block_orientation()==8);
+GAME_SESSION.block_pose(&mut model);world_probe(&model);
+GAME_SESSION.tick(32768,0,0);check(GAME_SESSION.rules.moves==1);check(GAME_SESSION.block_orientation()!=8);
+GAME_SESSION.block_pose(&mut model);world_probe(&model);
+GAME_SESSION.reset_level(0);check(GAME_SESSION.block_orientation()==8);GAME_SESSION.end();drop(model);drop(gpu);
 "#;
     let (program, resources, out) = application("orientation-roll-continuity", Some(body));
     let mut sim = cpu_v3_tang_nano_20k::system_sim::CpuV3SystemSim::new(
@@ -295,20 +294,20 @@ fn rendered_roll_endpoints_and_transparent_bridge_occlusion() {
 #[test]
 fn split_swap_merge_undo_and_reset_preserve_each_actor_orientation() {
     let body = r#"
-session_init();level_reset(7);SESSION[0u16]=PLAY;SESSION[1u16]=0;TRANSITION[0u16]=0;SESSION[3u16]=0;
-GAME[0u16]=2;GAME[1u16]=4;GAME[2u16]=1;check(session_move(0));
-let mut n:u16=0;while n<11 {session_tick(0,0,50);n+=1;}
-let inherited=rotation_current(0);check(inherited==rotation_current(1)&&inherited!=8);
-check(session_move(6));check(rotation_current(0)==inherited&&rotation_current(1)==inherited);
-session_tick(32768,0,0);SESSION[3u16]=0;
-check(session_move(2));n=0;while n<5 {session_tick(0,0,50);n+=1;}
-let first=rotation_current(0);check(first==rotation_quarter(inherited,2)&&rotation_current(1)==inherited);
-check(session_move(6));check(rotation_current(0)==first&&rotation_current(1)==inherited);
-n=0;while n<4 {check(session_move(3));let mut k:u16=0;while k<5 {session_tick(0,0,50);k+=1;}n+=1;}
-check(GAME[9u16]==0);check(rotation_current(0)==inherited);
-session_tick(32768,0,0);check(GAME[9u16]!=0&&rotation_current(0)==first);
-check(rotation_current(1)==rotation_quarter(rotation_quarter(rotation_quarter(inherited,3),3),3));
-level_reset(0);check(rotation_current(0)==8&&rotation_current(1)==8&&rotation_animation()==8);session_end();
+GAME_SESSION.begin();GAME_SESSION.reset_level(7);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=0;GAME_SESSION.animation.held_lock=0;
+GAME_SESSION.rules.x=2;GAME_SESSION.rules.z=4;GAME_SESSION.rules.orientation=1;check(GAME_SESSION.try_move(0));
+let mut n:u16=0;while n<11 {GAME_SESSION.tick(0,0,50);n+=1;}
+let inherited=GAME_SESSION.rotations.current(0);check(inherited==GAME_SESSION.rotations.current(1)&&inherited!=8);
+check(GAME_SESSION.try_move(6));check(GAME_SESSION.rotations.current(0)==inherited&&GAME_SESSION.rotations.current(1)==inherited);
+GAME_SESSION.tick(32768,0,0);GAME_SESSION.animation.held_lock=0;
+check(GAME_SESSION.try_move(2));n=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}
+let first=GAME_SESSION.rotations.current(0);check(first==rotation_quarter(inherited,2)&&GAME_SESSION.rotations.current(1)==inherited);
+check(GAME_SESSION.try_move(6));check(GAME_SESSION.rotations.current(0)==first&&GAME_SESSION.rotations.current(1)==inherited);
+n=0;while n<4 {check(GAME_SESSION.try_move(3));let mut k:u16=0;while k<5 {GAME_SESSION.tick(0,0,50);k+=1;}n+=1;}
+check(GAME_SESSION.rules.split==0);check(GAME_SESSION.rotations.current(0)==inherited);
+GAME_SESSION.tick(32768,0,0);check(GAME_SESSION.rules.split!=0&&GAME_SESSION.rotations.current(0)==first);
+check(GAME_SESSION.rotations.current(1)==rotation_quarter(rotation_quarter(rotation_quarter(inherited,3),3),3));
+GAME_SESSION.reset_level(0);check(GAME_SESSION.rotations.current(0)==8&&GAME_SESSION.rotations.current(1)==8&&GAME_SESSION.rotations.animation()==8);GAME_SESSION.end();
 "#;
     fn export_orientation(source: &Path, target: &Path) {
         let session = std::fs::read_to_string(source.join("session.rs")).unwrap();

@@ -117,9 +117,9 @@ fn goal_carrier_surface_ownership_diagnostic() {
         }
 
         let m = sim.cpu().physical_memory_slice();
-        let at = global(&program, "SESSION");
+        let at = global(&program, "GAME_SESSION.animation");
         assert_eq!(&m[at..at + 2], &expected);
-        let game = global(&program, "GAME");
+        let game = global(&program, "GAME_SESSION.rules");
         let active = sim.display_state().active_base as usize;
         for (filename, base) in [
             ("color-physical.bin", active),

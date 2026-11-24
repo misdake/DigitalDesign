@@ -23,12 +23,12 @@ fn all_stage_fragile_vertices_and_every_cell_index_hide_restore_match_native_ora
     let body = r#"
 let owner=fragile_begin();let mut level:u16=0;
 while level<33 {
- level_reset(level);fragile_rebuild(owner);signal(1,level);signal(2,owner.addr());
+ GAME_SESSION.reset_level(level);fragile_rebuild(owner);signal(1,level);signal(2,owner.addr());
  let mut cell:u16=0;
- while cell<LEVEL[6u16] {
-  if level_field(cell,0)==2 {
-   FRACTURE[0u16]=cell;SESSION[0u16]=CRACK;fragile_sync(owner);signal(3,cell);
-   FRACTURE[0u16]=65535;SESSION[0u16]=PLAY;fragile_sync(owner);signal(4,cell);
+ while cell<GAME_SESSION.level.cell_count {
+  if GAME_SESSION.level_field(cell,0)==2 {
+   GAME_SESSION.fracture_cell=cell;GAME_SESSION.animation.phase=CRACK;fragile_sync(owner);signal(3,cell);
+   GAME_SESSION.fracture_cell=65535;GAME_SESSION.animation.phase=PLAY;fragile_sync(owner);signal(4,cell);
   }
   cell+=1;
  }
@@ -226,14 +226,14 @@ fragile_end(owner);
 fn retained_cb_refetches_changed_mesh_indices_and_degenerates_cover_no_pixels() {
     use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
     let body = r#"
-session_init();level_reset(3);LEVEL[0u16]=1;LEVEL[1u16]=1;LEVEL[6u16]=1;LEVEL[7u16]=2;LEVEL[8u16]=2;
+GAME_SESSION.begin();GAME_SESSION.reset_level(3);GAME_SESSION.level.width=1;GAME_SESSION.level.height=1;GAME_SESSION.level.cell_count=1;GAME_SESSION.level.schema=2;GAME_SESSION.level_words()[8]=2;
 let owner=fragile_begin();fragile_rebuild(owner);
 let mut gpu=Gpu::init(board_gpu_config());let mut commands=gpu.command_buffer();
 let color=board_color_b();let depth=board_depth();let camera=game_camera();let state=game_solid_state();
 let model=game_floor_model();let material=game_material(Rgba8::white(),true);let texture=marker_texture();let view=texture.view();let mesh=fragile_mesh(owner);
 {let mut pass=commands.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0)), DepthLoad::clear(65535));pass.set_camera(camera.ptr());pass.set_state(state.ptr());pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());}
 let mut n:u16=0;while n<3 {
- FRACTURE[0u16]=if n==1 {0u16}else{65535u16};SESSION[0u16]=if n==1 {CRACK}else{PLAY};
+ GAME_SESSION.fracture_cell=if n==1 {0u16}else{65535u16};GAME_SESSION.animation.phase=if n==1 {CRACK}else{PLAY};
  fragile_sync(owner);gpu.submit(commands);commands=gpu.wait();signal(2,n);n+=1;
 }
 drop(commands);fragile_end(owner);
@@ -429,7 +429,7 @@ fn level4_play_native_cpu_cost_and_instruction_oracles() {
         }
         let (program, resources, out) = application_case(
             &format!("fragile-{arm}-play-cpu-cost-six-frames"),
-            Some("run(6,false,128);"),
+            Some("run(6);"),
             sources,
             scenarios::fragile_play(arm == "accepted"),
         );
@@ -657,7 +657,7 @@ fn inflight_mesh_patch_rebuild_and_free_stop_before_mutation() {
         "fragile_rebuild(owner);",
         "fragile_end(owner);",
     ] {
-        let body=format!("level_reset(3);let owner=fragile_begin();fragile_rebuild(owner);signal(2,owner.addr());FRACTURE[0u16]=5;SESSION[0u16]=CRACK;{action}");
+        let body=format!("GAME_SESSION.reset_level(3);let owner=fragile_begin();fragile_rebuild(owner);signal(2,owner.addr());GAME_SESSION.fracture_cell=5;GAME_SESSION.animation.phase=CRACK;{action}");
         let (program, resources, _) = application_case(
             &format!("fragile-busy-{}", action.split('(').next().unwrap()),
             Some(&body),
@@ -728,7 +728,7 @@ fn representative_mixed_material_goal_and_level_rebuilds_render_against_accepted
     for (arm, sources) in [("accepted", Some(accepted.as_path())), ("candidate", None)] {
         let (program, resources, out) = application_case(
             &format!("fragile-{arm}-representative-cpu-cost-scenes"),
-            Some("run(5,false,128);"),
+            Some("run(5);"),
             sources,
             scenarios::fragile_representative(arm == "accepted"),
         );
@@ -786,15 +786,15 @@ fn ordinary_restart_next_stage_shadow_and_finite_heap_lifetimes_close() {
     use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
     let (program, resources, out) = application_case(
         "fragile-flow-restart-next",
-        Some("run(8,false,128);"),
+        Some("run(8);"),
         None,
         scenarios::fragile_flow(),
     );
     let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
     sim.cpu_mut().set_boot_window(&program.words);
     preload(sim.cpu_mut().physical_memory_mut(), &resources);
-    let fracture = global(&program, "FRACTURE");
-    let shadow = global(&program, "SHADOW_BATCH_BASE");
+    let fracture = global(&program, "GAME_SESSION.fracture_cell");
+    let shadow = global(&program, "SHADOW_WORKSPACE.batch_base");
     let mut context = 0;
     let mut frames = Vec::new();
     let mut starts = 0;
@@ -855,7 +855,7 @@ fn ordinary_restart_next_stage_shadow_and_finite_heap_lifetimes_close() {
 fn compact_ground_normal_basis_matches_original_axial_inverse_transpose() {
     use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
     let body = r#"
-session_init();level_reset(3);let owner=ground_begin();ground_rebuild();
+GAME_SESSION.begin();GAME_SESSION.reset_level(3);let owner=ground_begin();ground_rebuild();
 let mut gpu=Gpu::init(board_gpu_config());let mut commands=gpu.command_buffer();let color=board_color_b();let depth=board_depth();let camera=game_camera();let state=game_solid_state();let mut model=game_floor_model();let mut material=game_material(Rgba8::white(),false);let texture=game_texture();let view=texture.view();
 {let mut pass=commands.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0)), DepthLoad::clear(65535));pass.set_camera(camera.ptr());pass.set_state(state.ptr());draw_ground_batches(&mut pass,&mut model,&mut material);let half=fix32::from_words(32768,0);model.set_pose(Transform::new(Vec3::zero(),Vec3::zero(),Vec3::new(half,half,half)));let mesh=ground_mesh(0);pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());}
 gpu.submit(commands);commands=gpu.wait();drop(commands);ground_end(owner);

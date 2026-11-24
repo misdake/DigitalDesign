@@ -1,7 +1,5 @@
 //! All-stage Bloxorz with reusable static geometry commands and cached RTT transitions.
 use crate::dsl_rt::*;
-mod device_abi;
-use device_abi::*;
 mod gpu_api;
 use gpu_api::*;
 mod scene_resources;
@@ -10,6 +8,8 @@ mod ui_text;
 use ui_text::*;
 mod game_assets;
 use game_assets::*;
+mod level_assets;
+use level_assets::*;
 mod static_buffer;
 use static_buffer::StaticBuffer;
 #[static_buffer]
@@ -36,17 +36,58 @@ mod fragile_batches;
 use fragile_batches::*;
 mod pad_cache;
 use pad_cache::*;
-pub static HUD: Buf<u16, 3> = Buf::new([0; 3]);
 
-pub static BACKGROUND: Buf<u16, 1> = Buf::new([1]);
+struct HudState {
+    enabled: u16,
+    previous_draws: u16,
+    valid: u16,
+}
 // One caller-owned block Model lives for this run; retain only its resting key.
-static BLOCK_POSE_KEY: Buf<u16, 3> = Buf::new([0; 3]);
+struct RestingBlockKey {
+    cell: u16,
+    generation: u16,
+    orientation: u16,
+}
+struct BridgeCache {
+    generation: u16,
+    mask: u16,
+    opaque_draws: u16,
+    button_storage: u16,
+    transparent_draws: u16,
+}
+
+struct PresentationState {
+    hud: HudState,
+    background: u16,
+    resting_block: RestingBlockKey,
+    bridges: BridgeCache,
+}
+static RENDER_STATE: PresentationState = PresentationState {
+    hud: HudState {
+        enabled: 0,
+        previous_draws: 0,
+        valid: 0,
+    },
+    background: 1,
+    resting_block: RestingBlockKey {
+        cell: 0,
+        generation: 0,
+        orientation: 0,
+    },
+    bridges: BridgeCache {
+        generation: 0,
+        mask: 65535,
+        opaque_draws: 0,
+        button_storage: 0,
+        transparent_draws: 0,
+    },
+};
 fn scene_color_load(
     commands: &mut CommandBuffer,
     source: &ColorBuffer,
     target: ColorBufferPtr,
 ) -> ColorLoad {
-    if BACKGROUND[0u16] != 0 {
+    if RENDER_STATE.background != 0 {
         commands.copy_color(source.ptr(), target);
         return ColorLoad::load();
     }
@@ -73,12 +114,12 @@ fn tile_pose(index: u16, y: fix32) -> Transform {
     let half = fix!(0.5);
     Transform::new(
         Vec3::new(
-            fix32::from_int((index % LEVEL[0u16]) as i16)
-                - fix32::from_int(LEVEL[0u16] as i16) * half
+            fix32::from_int((index % GAME_SESSION.level.width) as i16)
+                - fix32::from_int(GAME_SESSION.level.width as i16) * half
                 + half,
             y,
-            fix32::from_int(div_u16(index, LEVEL[0u16]) as i16)
-                - fix32::from_int(LEVEL[1u16] as i16) * half
+            fix32::from_int(div_u16(index, GAME_SESSION.level.width) as i16)
+                - fix32::from_int(GAME_SESSION.level.height as i16) * half
                 + half,
         ),
         Vec3::zero(),
@@ -177,15 +218,15 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
     let marker_view = clamped_texture_view(&marker_texture);
     let half = fix!(0.5);
     let carrier = goal_carrier_enabled();
-    let count = blox_scene_face_count(MOTION[6u16]);
+    let count = level_face_count();
     let mut i: u16 = 0;
     while i < count {
-        let face = blox_scene_face(MOTION[6u16], i);
+        let face = level_face(i);
         let x = face & 31;
         let z = (face >> 5) & 31;
-        let index = z * LEVEL[0u16] + x;
-        let gx = SESSION[6u16];
-        let gz = SESSION[7u16];
+        let index = z * GAME_SESSION.level.width + x;
+        let gx = GAME_SESSION.animation.goal_x;
+        let gz = GAME_SESSION.animation.goal_z;
         let direction = (face >> 10) & 7;
         let inside = x + 1 >= gx && x <= gx + 1 && z + 1 >= gz && z <= gz + 1;
         if carrier
@@ -199,7 +240,7 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
             i += 1;
             continue;
         }
-        let top = ((face >> 10) & 7) == 0 && level_field(index, 0) == 7;
+        let top = ((face >> 10) & 7) == 0 && GAME_SESSION.level_field(index, 0) == 7;
         let mesh = game_mesh_part(
             if top {
                 MARKED_SPLIT_FIRST + (face >> 13)
@@ -210,9 +251,12 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
         );
         model.set_pose(Transform::new(
             Vec3::new(
-                fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half + half,
+                fix32::from_int(x as i16) - fix32::from_int(GAME_SESSION.level.width as i16) * half
+                    + half,
                 fix32::zero(),
-                fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half + half,
+                fix32::from_int(z as i16)
+                    - fix32::from_int(GAME_SESSION.level.height as i16) * half
+                    + half,
             ),
             Vec3::zero(),
             Vec3::new(half, half, half),
@@ -222,7 +266,7 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
             material.set_uniform_color(Rgba8::white());
             counted_draw(pass, &mesh, model, material, &marker_view);
         } else {
-            if level_field(index, 0) == 7 {
+            if GAME_SESSION.level_field(index, 0) == 7 {
                 material.set_uniform_color(Rgba8 {
                     r: 139,
                     g: 92,
@@ -249,26 +293,25 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
 }
 
 // Generation, bridge mask, opaque count, button-list owner, transparent count.
-static BRIDGE_COMMANDS: Buf<u16, 5> = Buf::new([0, 65535, 0, 0, 0]);
 fn button_cache_begin() {
     let owner = malloc(47);
-    BRIDGE_COMMANDS[3u16] = owner.addr();
+    RENDER_STATE.bridges.button_storage = owner.addr();
     let mut cache = unsafe { owner.as_u16_array() };
     cache[0u16] = 0;
 }
 fn button_cache_end() {
-    free(Ptr::from_addr(BRIDGE_COMMANDS[3u16]));
-    BRIDGE_COMMANDS[3u16] = 0;
+    free(Ptr::from_addr(RENDER_STATE.bridges.button_storage));
+    RENDER_STATE.bridges.button_storage = 0;
 }
 fn button_cache_data() -> Array<u16> {
-    unsafe { Ptr::from_addr(BRIDGE_COMMANDS[3u16]).as_u16_array() }
+    unsafe { Ptr::from_addr(RENDER_STATE.bridges.button_storage).as_u16_array() }
 }
 fn button_cache_rebuild() {
     let mut cache = button_cache_data();
     let mut count: u16 = 0;
     let mut i: u16 = 0;
-    while i < LEVEL[6u16] {
-        let kind = level_field(i, 0);
+    while i < GAME_SESSION.level.cell_count {
+        let kind = GAME_SESSION.level_field(i, 0);
         if kind == 3 || kind == 4 {
             if count >= 13 {
                 halt(0xbad);
@@ -283,7 +326,7 @@ fn button_cache_rebuild() {
     cache[0u16] = count;
 }
 fn sync_bridge_group(parts: Array<PreparedDrawsPtr>) {
-    if BRIDGE_COMMANDS[0u16] != LEVEL_GENERATION[0u16] {
+    if RENDER_STATE.bridges.generation != GAME_SESSION.generation {
         let mut i: u16 = 0;
         while i < 16 {
             let part = parts[i];
@@ -291,14 +334,14 @@ fn sync_bridge_group(parts: Array<PreparedDrawsPtr>) {
             i += 1;
         }
         button_cache_rebuild();
-        BRIDGE_COMMANDS[0u16] = LEVEL_GENERATION[0u16];
-        BRIDGE_COMMANDS[1u16] = visual_mask();
-    } else if BRIDGE_COMMANDS[1u16] != visual_mask() {
+        RENDER_STATE.bridges.generation = GAME_SESSION.generation;
+        RENDER_STATE.bridges.mask = GAME_SESSION.visual_mask();
+    } else if RENDER_STATE.bridges.mask != GAME_SESSION.visual_mask() {
         let opaque = parts[0u16];
         opaque.invalidate();
         let hints = parts[15u16];
         hints.invalidate();
-        BRIDGE_COMMANDS[1u16] = visual_mask();
+        RENDER_STATE.bridges.mask = GAME_SESSION.visual_mask();
     }
 }
 // The stage owns the mapping: opaque bridges0, up to thirteen switches,
@@ -308,7 +351,7 @@ fn prepare_bridges(parts: Array<PreparedDrawsPtr>, scene: &mut SceneResources, t
     if parts[part].ready() {
         return;
     }
-    let before = DRAW_CALLS[0u16];
+    let before = DRAW_STATS.draw_calls;
     let mut recording = parts[part].record();
     if transparent {
         recording.set_state(scene.hint_state.ptr());
@@ -322,19 +365,20 @@ fn prepare_bridges(parts: Array<PreparedDrawsPtr>, scene: &mut SceneResources, t
         transparent,
     );
     recording.finish();
-    let count = if transparent { 4u16 } else { 2u16 };
-    BRIDGE_COMMANDS[count] = DRAW_CALLS[0u16] - before;
-    DRAW_CALLS[0u16] = before;
+    let count = DRAW_STATS.draw_calls - before;
+    if transparent {
+        RENDER_STATE.bridges.transparent_draws = count;
+    } else {
+        RENDER_STATE.bridges.opaque_draws = count;
+    }
+    DRAW_STATS.draw_calls = before;
 }
 
 fn visible_tile_side(i: u16) -> u16 {
-    let eye = fix32::from_words(
-        blox_level_meta(MOTION[6u16], 4),
-        blox_level_meta(MOTION[6u16], 5),
-    );
+    let eye = BLOX_LEVEL_HEADERS[GAME_SESSION.motion.level].eye.x;
     let half = fix!(0.5);
-    let center = fix32::from_int((i % LEVEL[0u16]) as i16)
-        - fix32::from_int(LEVEL[0u16] as i16) * half
+    let center = fix32::from_int((i % GAME_SESSION.level.width) as i16)
+        - fix32::from_int(GAME_SESSION.level.width as i16) * half
         + half;
     if eye < center {
         1u16
@@ -351,16 +395,17 @@ fn draw_bridges(
     let texture = game_texture();
     let view = clamped_texture_view(&texture);
     let mut i: u16 = 0;
-    while i < LEVEL[6u16] {
+    while i < GAME_SESSION.level.cell_count {
         let selected = if transparent {
-            visual_mask() & level_field(i, 1) == 0
+            GAME_SESSION.visual_mask() & GAME_SESSION.level_field(i, 1) == 0
         } else {
-            visual_mask() & level_field(i, 1) != 0
+            GAME_SESSION.visual_mask() & GAME_SESSION.level_field(i, 1) != 0
         };
-        if level_field(i, 0) == 5 && selected {
-            let bit = level_field(i, 1);
-            let active = visual_mask() & bit != 0;
-            let variant = ((i % LEVEL[0u16]) * 3 + div_u16(i, LEVEL[0u16]) * 5) % 4;
+        if GAME_SESSION.level_field(i, 0) == 5 && selected {
+            let bit = GAME_SESSION.level_field(i, 1);
+            let active = GAME_SESSION.visual_mask() & bit != 0;
+            let variant =
+                ((i % GAME_SESSION.level.width) * 3 + div_u16(i, GAME_SESSION.level.width) * 5) % 4;
             let mesh = game_mesh_part(
                 if active {
                     BRIDGE_TILE_FIRST + variant + visible_tile_side(i) * 4
@@ -419,11 +464,11 @@ fn draw_switch_tile(
     let one = fix32::from_int(1);
     if kind == 3 || kind == 4 {
         let bit = 1u16 << channel;
-        let active = visual_mask() & bit != 0;
+        let active = GAME_SESSION.visual_mask() & bit != 0;
         let mut sink = fix32::zero();
         if kind == 3 && active {
             sink = fix32::from_words(3277, 0);
-            let f = switch_fraction(channel);
+            let f = GAME_SESSION.switch_fraction(channel);
             if f < one {
                 let sc = fsincos(f * fix32::from_words(9280, 3));
                 let wave = sc.x();
@@ -464,21 +509,26 @@ fn prepare_switches(
     material: &mut Material,
 ) {
     let mut cache = button_cache_data();
-    let mask = visual_mask();
+    let mask = GAME_SESSION.visual_mask();
     let mut j: u16 = 0;
     while j < cache[0u16] {
         let i = cache[1 + j * 3];
-        let kind = level_field(i, 0);
-        let bit = level_field(i, 1);
+        let kind = GAME_SESSION.level_field(i, 0);
+        let bit = GAME_SESSION.level_field(i, 1);
         let channel = bit_channel(bit);
         let key = if mask & bit != 0 {
-            32768 + if kind == 4 { 0u16 } else { switch_age(channel) }
+            32768
+                + if kind == 4 {
+                    0u16
+                } else {
+                    GAME_SESSION.switch_age(channel)
+                }
         } else {
             0u16
         };
         let part = j + 1;
         if !parts[part].ready() || cache[2 + j * 3] != key {
-            let before = DRAW_CALLS[0u16];
+            let before = DRAW_STATS.draw_calls;
             let mut recording = parts[part].record();
             recording.set_state(scene.state.ptr());
             draw_switch_tile(
@@ -491,8 +541,8 @@ fn prepare_switches(
             );
             recording.finish();
             cache[2 + j * 3] = key;
-            cache[3 + j * 3] = DRAW_CALLS[0u16] - before;
-            DRAW_CALLS[0u16] = before;
+            cache[3 + j * 3] = DRAW_STATS.draw_calls - before;
+            DRAW_STATS.draw_calls = before;
         }
         j += 1;
     }
@@ -503,57 +553,52 @@ fn draw_switches(pass: &mut Pass, parts: Array<PreparedDrawsPtr>) {
     let mut j: u16 = 0;
     while j < cache[0u16] {
         pass.draw_prepared(parts[j + 1]);
-        DRAW_CALLS[0u16] += cache[3 + j * 3];
+        DRAW_STATS.draw_calls += cache[3 + j * 3];
         j += 1;
     }
 }
 fn prepare_block(model: &mut Model) {
-    if !block_visible() {
-        BLOCK_POSE_KEY[0u16] = 0;
+    if !GAME_SESSION.block_visible() {
+        RENDER_STATE.resting_block.cell = 0;
         return;
     }
-    let resting = visual_mode() == PLAY && MOTION[5u16] == 0;
-    let key = (GAME[0u16] & 31) | ((GAME[1u16] & 31) << 5) | ((GAME[2u16] & 3) << 10) | 32768;
-    if split_visual()
+    let resting = GAME_SESSION.visual_mode() == PLAY && GAME_SESSION.motion.moving == 0;
+    let key = (GAME_SESSION.rules.x & 31)
+        | ((GAME_SESSION.rules.z & 31) << 5)
+        | ((GAME_SESSION.rules.orientation & 3) << 10)
+        | 32768;
+    if GAME_SESSION.split_visual()
         || !resting
-        || BLOCK_POSE_KEY[0u16] != key
-        || BLOCK_POSE_KEY[1u16] != LEVEL_GENERATION[0u16]
-        || BLOCK_POSE_KEY[2u16] != block_orientation()
+        || RENDER_STATE.resting_block.cell != key
+        || RENDER_STATE.resting_block.generation != GAME_SESSION.generation
+        || RENDER_STATE.resting_block.orientation != GAME_SESSION.block_orientation()
     {
-        block_pose(model);
+        GAME_SESSION.block_pose(model);
     }
-    BLOCK_POSE_KEY[0u16] = if resting && !split_visual() {
+    RENDER_STATE.resting_block.cell = if resting && !GAME_SESSION.split_visual() {
         key
     } else {
         0u16
     };
-    BLOCK_POSE_KEY[1u16] = LEVEL_GENERATION[0u16];
-    BLOCK_POSE_KEY[2u16] = block_orientation();
+    RENDER_STATE.resting_block.generation = GAME_SESSION.generation;
+    RENDER_STATE.resting_block.orientation = GAME_SESSION.block_orientation();
 }
 
 fn draw_block(pass: &mut Pass, block: &Mesh, model: &mut Model, material: &Material) {
-    if block_visible() {
+    if GAME_SESSION.block_visible() {
         let texture = game_texture();
         let view = clamped_texture_view(&texture);
         counted_draw(pass, block, model, material, &view);
     }
 }
 fn level_eye(which: u16) -> Vec3 {
-    Vec3::new(
-        fix32::from_words(blox_level_meta(which, 4), blox_level_meta(which, 5)),
-        fix32::from_words(blox_level_meta(which, 6), blox_level_meta(which, 7)),
-        fix32::from_words(blox_level_meta(which, 8), blox_level_meta(which, 9)),
-    )
+    BLOX_LEVEL_HEADERS[which].eye
 }
 fn level_far(which: u16) -> fix32 {
-    fix32::from_words(blox_level_meta(which, 12), blox_level_meta(which, 13))
+    BLOX_LEVEL_HEADERS[which].far
 }
 fn level_projection(which: u16) -> Projection {
-    let far = level_far(which);
-    Projection::from_focal_pixels(
-        fix32::from_words(blox_level_meta(which, 10), blox_level_meta(which, 11)),
-        far,
-    )
+    Projection::from_focal_pixels(BLOX_LEVEL_HEADERS[which].focal, level_far(which))
 }
 fn game_camera() -> Camera {
     let mut camera = Camera::look_at(
@@ -580,54 +625,6 @@ fn web_camera_axes(camera: &mut Camera) {
         row2: v.row2,
     });
 }
-// Capture-only progress: ASCII stage, four hexadecimal digits and LF.
-// A=loop, B=source begin, C=source retired, D=consumer submit,
-// E=consumer wait, F=presented, H=selected-brightness halt.
-fn capture_report(stage: u16, value: u16) {
-    let mut i: u16 = 0;
-    while i < 6 {
-        let mut byte = stage;
-        if i == 5 {
-            byte = 10;
-        }
-        if i > 0 && i < 5 {
-            let nibble = (value >> ((4 - i) * 4)) & 15;
-            byte = if nibble < 10 {
-                nibble + 48
-            } else {
-                nibble + 55
-            };
-        }
-        while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 {}
-        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, byte);
-        i += 1;
-    }
-}
-// Explicit capture-card diagnostic only: hold the initial scene, make one real
-// rule move, hold that result, then stop after an opaque selected-brightness RTT frame.
-static CAPTURE_STIMULUS: Buf<u16, 2> = Buf::new([0; 2]);
-fn capture_buttons(elapsed: u16) -> u16 {
-    if SESSION[0u16] != PLAY {
-        return 0;
-    }
-    let phase = CAPTURE_STIMULUS[0u16];
-    let dt = if elapsed > 50 { 50u16 } else { elapsed };
-    if phase == 1 && GAME[5u16] == 1 {
-        CAPTURE_STIMULUS[0u16] = 2;
-        CAPTURE_STIMULUS[1u16] = 0;
-        return 0;
-    }
-    if phase == 0 || phase == 2 {
-        CAPTURE_STIMULUS[1u16] += dt;
-        if CAPTURE_STIMULUS[1u16] >= 2000 {
-            CAPTURE_STIMULUS[1u16] = 0;
-            CAPTURE_STIMULUS[0u16] = phase + 1;
-            return if phase == 0 { 32u16 } else { 8u16 };
-        }
-    }
-    0
-}
-
 #[inline(never)]
 fn finish_frame(gpu: &mut Gpu, commands: CommandBuffer, started: bool) -> CommandBuffer {
     gpu.submit(commands);
@@ -672,8 +669,8 @@ fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
         },
         b"LEVEL ",
     );
-    text_u16_field(grid, 6, 0, 2, MOTION[6u16] + 1);
-    if HUD[0u16] != 0 {
+    text_u16_field(grid, 6, 0, 2, GAME_SESSION.motion.level + 1);
+    if RENDER_STATE.hud.enabled != 0 {
         grid.write(
             CellRect {
                 x: 0,
@@ -692,8 +689,8 @@ fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
             },
             b"MS ",
         );
-        if HUD[2u16] != 0 {
-            text_u16_field(grid, 5, 1, 4, HUD[1u16]);
+        if RENDER_STATE.hud.valid != 0 {
+            text_u16_field(grid, 5, 1, 4, RENDER_STATE.hud.previous_draws);
         } else {
             grid.write(
                 CellRect {
@@ -733,44 +730,21 @@ fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
 struct FrameClock {
     previous: u16,
 }
-fn advance_gameplay(
-    clock: &mut FrameClock,
-    automatic_capture: bool,
-    capture_brightness: u16,
-) -> u16 {
+fn advance_gameplay(clock: &mut FrameClock) {
     gamepad_capture();
     let input = gamepad_take_frame();
-    if !fading() && input.pressed & 8192 != 0 {
-        HUD[0u16] ^= 1;
+    if !GAME_SESSION.fading() && input.pressed & 8192 != 0 {
+        RENDER_STATE.hud.enabled ^= 1;
     }
-    if !fading() && input.pressed & 1 != 0 {
-        BACKGROUND[0u16] ^= 1;
+    if !GAME_SESSION.fading() && input.pressed & 1 != 0 {
+        RENDER_STATE.background ^= 1;
     }
     let now = time_milliseconds();
     let elapsed = now - clock.previous;
     clock.previous = now;
-    let buttons = if automatic_capture {
-        capture_buttons(elapsed)
-    } else {
-        input.pressed
-    };
-    let held = if automatic_capture {
-        buttons & 240
-    } else {
-        input.buttons & 240
-    };
-    session_tick(buttons, held, elapsed);
-    if automatic_capture && CAPTURE_STIMULUS[0u16] == 3 && TRANSITION[0u16] == FADE_OUT {
-        let stop = if capture_brightness == 255 {
-            0u16
-        } else {
-            160u16
-        };
-        if TRANSITION[1u16] > stop {
-            TRANSITION[1u16] = stop;
-        }
-    }
-    input.connected
+    let buttons = input.pressed;
+    let held = input.buttons & 240;
+    GAME_SESSION.tick(buttons, held, elapsed);
 }
 
 struct StaticScene {
@@ -804,9 +778,10 @@ fn refresh_static_scene(
     fragile_owner: Ptr,
     target: &SceneTarget,
 ) -> CommandBuffer {
-    if cache.generation != LEVEL_GENERATION[0u16] {
+    if cache.generation != GAME_SESSION.generation {
         commands.reset();
         cache.valid = false;
+        level_geometry_load(GAME_SESSION.motion.level);
         if ground_enabled() && !ground_matches_level() {
             dynamic_commands.reset();
             ground_rebuild();
@@ -819,16 +794,18 @@ fn refresh_static_scene(
     // Geometry changes only after both preceding CBs retired. Visible fragile
     // coverage is part of the recording key, not a per-frame command patch.
     fragile_sync(fragile_owner);
-    if cache.background_mode != BACKGROUND[0u16] || cache.hidden != fragile_hidden(fragile_owner) {
+    if cache.background_mode != RENDER_STATE.background
+        || cache.hidden != fragile_hidden(fragile_owner)
+    {
         cache.valid = false;
     }
     if cache.valid {
         let binding = commands.target_binding();
         commands.retarget_target(binding, target.color, target.depth);
-        DRAW_CALLS[0u16] += cache.draws;
+        DRAW_STATS.draw_calls += cache.draws;
     } else {
         commands.reset();
-        let previous_draws = DRAW_CALLS[0u16];
+        let previous_draws = DRAW_STATS.draw_calls;
         record_static_scene(
             &mut commands,
             target,
@@ -837,9 +814,9 @@ fn refresh_static_scene(
             fragile_owner,
         );
         cache.valid = true;
-        cache.draws = DRAW_CALLS[0u16] - previous_draws;
-        cache.generation = LEVEL_GENERATION[0u16];
-        cache.background_mode = BACKGROUND[0u16];
+        cache.draws = DRAW_STATS.draw_calls - previous_draws;
+        cache.generation = GAME_SESSION.generation;
+        cache.background_mode = RENDER_STATE.background;
         cache.hidden = fragile_hidden(fragile_owner);
     }
     commands
@@ -859,7 +836,7 @@ fn prepare_pads(
     {
         return;
     }
-    let before = DRAW_CALLS[0u16];
+    let before = DRAW_STATS.draw_calls;
     let mut recording = parts[14u16].record();
     recording.set_state(scene.state.ptr());
     draw_pad_part(
@@ -987,8 +964,8 @@ fn prepare_pads(
     pad_cache[11u16] = pad_cache[1u16];
     pad_cache[12u16] = pad_cache[2u16];
     pad_cache[13u16] = pad_cache[5u16];
-    pad_cache[14u16] = DRAW_CALLS[0u16] - before;
-    DRAW_CALLS[0u16] = before;
+    pad_cache[14u16] = DRAW_STATS.draw_calls - before;
+    DRAW_STATS.draw_calls = before;
 }
 
 fn record_dynamic_scene(
@@ -1001,10 +978,10 @@ fn record_dynamic_scene(
     pass.set_state(scene.state.ptr());
     prepare_block(&mut scene.block_model);
     pass.draw_prepared(parts[0u16]);
-    DRAW_CALLS[0u16] += BRIDGE_COMMANDS[2u16];
+    DRAW_STATS.draw_calls += RENDER_STATE.bridges.opaque_draws;
     draw_switches(pass, parts);
     pass.draw_prepared(parts[14u16]);
-    DRAW_CALLS[0u16] += pad_cache[14u16];
+    DRAW_STATS.draw_calls += pad_cache[14u16];
 
     pass.set_state(scene.shadow_state.ptr());
     draw_shadow(
@@ -1014,8 +991,8 @@ fn record_dynamic_scene(
         &scene.shadow_material,
         &scene.block_model,
     );
-    if split_visual() {
-        idle_cube_pose(&mut scene.idle_model);
+    if GAME_SESSION.split_visual() {
+        GAME_SESSION.idle_cube_pose(&mut scene.idle_model);
         draw_shadow(
             pass,
             &scene.shadow_mesh,
@@ -1026,7 +1003,7 @@ fn record_dynamic_scene(
     }
     pass.set_state(scene.state.ptr());
     draw_block(pass, &scene.block, &mut scene.block_model, &scene.material);
-    if split_visual() {
+    if GAME_SESSION.split_visual() {
         draw_block(
             pass,
             &scene.block,
@@ -1037,14 +1014,13 @@ fn record_dynamic_scene(
     // Opaque geometry and receiver shadows are complete. Inactive
     // bridge hints now test opaque depth without writing it.
     pass.draw_prepared(parts[15u16]);
-    DRAW_CALLS[0u16] += BRIDGE_COMMANDS[4u16];
+    DRAW_STATS.draw_calls += RENDER_STATE.bridges.transparent_draws;
 }
 
 struct FrameOverlay {
     offscreen_view: TextureView,
     tint_material: Material,
     previous_tint: u16,
-    automatic_capture: bool,
 }
 fn record_overlay(
     pass: &mut Pass,
@@ -1073,38 +1049,11 @@ fn record_overlay(
             &overlay.tint_material,
             &overlay.offscreen_view,
         );
-        if overlay.automatic_capture {
-            counted_ui(
-                pass,
-                grid,
-                CellRect {
-                    x: 0,
-                    y: 0,
-                    width: 4,
-                    height: 1,
-                },
-            );
-        }
-    } else {
-        if overlay.automatic_capture {
-            counted_ui(
-                pass,
-                grid,
-                CellRect {
-                    x: 0,
-                    y: 0,
-                    width: 7,
-                    height: 1,
-                },
-            );
-        }
     }
-    if !overlay.automatic_capture {
-        draw_hud(pass, grid);
-    }
+    draw_hud(pass, grid);
 }
 
-fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
+fn run(limit: u16) {
     let mut gpu = Gpu::init(board_gpu_config());
     let mut commands = gpu.command_buffer();
     let mut prepared_pool = PreparedPool::new(GpuMemory::from_buffer(PREPARED_STORAGE));
@@ -1121,8 +1070,8 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     }
     let mut scene_commands = gpu.command_buffer();
     button_cache_begin();
-    BRIDGE_COMMANDS[0u16] = 0;
-    BRIDGE_COMMANDS[1u16] = 65535;
+    RENDER_STATE.bridges.generation = 0;
+    RENDER_STATE.bridges.mask = 65535;
     let ground_owner = ground_begin();
     let shadow_owner = shadow_batch_begin();
     let fragile_owner = fragile_begin();
@@ -1152,15 +1101,14 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         offscreen_view: offscreen_view,
         tint_material: game_material(Rgba8::white(), true),
         previous_tint: 65535,
-        automatic_capture: automatic_capture,
     };
     let mut grid = game_ui_grid();
-    session_init();
+    GAME_SESSION.begin();
     pad_cache_update(pad_cache);
     let mut carrier_texture = pad_carrier_texture();
     let mut carrier_view = clamped_texture_view(&carrier_texture);
     shadow_invalidate();
-    BLOCK_POSE_KEY[0u16] = 0;
+    RENDER_STATE.resting_block.cell = 0;
     gamepad_init();
     let mut clock = FrameClock {
         previous: time_milliseconds(),
@@ -1171,13 +1119,10 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     loop {
         shadow_batch_frame();
         signal(4, number);
-        if automatic_capture {
-            capture_report(65, number);
-        }
-        let connected = advance_gameplay(&mut clock, automatic_capture, capture_brightness);
-        if camera_level != MOTION[6u16] {
+        advance_gameplay(&mut clock);
+        if camera_level != GAME_SESSION.motion.level {
             static_scene.valid = false;
-            camera_level = MOTION[6u16];
+            camera_level = GAME_SESSION.motion.level;
             scene.camera.set_look_at_y_up(
                 level_eye(camera_level),
                 Vec3::new(fix32::zero(), fix!(0.6), fix32::zero()),
@@ -1185,24 +1130,21 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
             scene.camera.set_projection(level_projection(camera_level));
             web_camera_axes(&mut scene.camera);
         }
-        let fade = fading();
-        let color = if fade { tint() } else { 255u16 };
+        let fade = GAME_SESSION.fading();
+        let color = if fade { GAME_SESSION.tint() } else { 255u16 };
         let back = if back_b { &color_b } else { &color_a };
         let target = if fade { &offscreen } else { back };
-        let capture = fade && (!snapshot_valid || snapshot_generation != LEVEL_GENERATION[0u16]);
-        let prepare_scene = !fade || capture;
+        let refresh_snapshot =
+            fade && (!snapshot_valid || snapshot_generation != GAME_SESSION.generation);
+        let prepare_scene = !fade || refresh_snapshot;
         if !fade {
             snapshot_valid = false;
         }
-        DRAW_CALLS[0u16] = 0;
-        if automatic_capture {
-            text_u16_field(&mut grid, 0, 0, 4, GAME[5u16]);
-            text_u16_field(&mut grid, 6, 0, 1, connected);
-        }
+        DRAW_STATS.draw_calls = 0;
         if prepare_scene {
             commands.reset();
             sync_bridge_group(parts.as_array());
-            if pad_cache[0u16] != LEVEL_GENERATION[0u16] {
+            if pad_cache[0u16] != GAME_SESSION.generation {
                 drop(carrier_view);
                 drop(carrier_texture);
                 carrier_texture = pad_carrier_texture();
@@ -1222,9 +1164,6 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 &scene_target,
             );
             gpu.submit(scene_commands);
-            if automatic_capture && fade {
-                capture_report(66, number);
-            }
             commands.reset();
             prepare_bridges(parts.as_array(), &mut scene, false);
             prepare_switches(parts.as_array(), &mut scene, &mut hatch_material);
@@ -1244,18 +1183,6 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     DepthLoad::load(),
                 );
                 record_dynamic_scene(&mut pass, &mut scene, pad_cache, parts.as_array());
-                if automatic_capture {
-                    counted_ui(
-                        &mut pass,
-                        &grid,
-                        CellRect {
-                            x: 0,
-                            y: 0,
-                            width: 7,
-                            height: 1,
-                        },
-                    );
-                }
             }
             // The other CB is CPU-owned while the immutable static CB runs.
             // Its Load dependency is checked only after static completion,
@@ -1265,20 +1192,14 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 gpu.submit(commands);
                 commands = gpu.wait();
                 snapshot_valid = true;
-                snapshot_generation = LEVEL_GENERATION[0u16];
-                session_captured();
-                signal(11, SESSION[4u16]);
-                if automatic_capture {
-                    capture_report(67, number);
-                }
+                snapshot_generation = GAME_SESSION.generation;
+                GAME_SESSION.captured();
+                signal(11, GAME_SESSION.animation.captured_frames);
             }
         }
         if fade {
-            if automatic_capture {
-                text_u16_field(&mut grid, 0, 0, 4, 1000 + color);
-            }
             commands.reset();
-            if capture {
+            if refresh_snapshot {
                 commands.invalidate_textures();
             }
         }
@@ -1290,38 +1211,16 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
             let mut pass = commands.pass(back.ptr(), depth.ptr(), color_load, DepthLoad::load());
             record_overlay(&mut pass, &scene, &mut overlay, &mut grid, fade, color);
         }
-        if automatic_capture {
-            capture_report(68, color);
-        }
         commands = finish_frame(&mut gpu, commands, render_started);
-        if automatic_capture {
-            capture_report(69, color);
-        }
-        HUD[1u16] = DRAW_CALLS[0u16];
-        HUD[2u16] = 1;
+        RENDER_STATE.hud.previous_draws = DRAW_STATS.draw_calls;
+        RENDER_STATE.hud.valid = 1;
         display.set_next_swap(back.ptr());
         display.wait_vblank();
         time_clear_microseconds();
         render_started = true;
         gamepad_capture();
-        signal(12, SESSION[0u16]);
-        if automatic_capture {
-            capture_report(70, SESSION[0u16]);
-        }
-        if automatic_capture
-            && CAPTURE_STIMULUS[0u16] == 3
-            && TRANSITION[0u16] == FADE_OUT
-            && color == capture_brightness
-        {
-            capture_report(72, color);
-            capture_report(76, dev_recv(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW));
-            capture_report(85, dev_recv(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH));
-            capture_report(77, dev_recv(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT));
-            capture_report(80, dev_recv(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND));
-            capture_report(71, dev_recv(GPU_DEVICE, GPU_STATUS));
-            halt(0x600d);
-        }
-        session_presented();
+        signal(12, GAME_SESSION.animation.phase);
+        GAME_SESSION.presented();
         back_b = !back_b;
         number += 1;
         if limit != 0 && number == limit {
@@ -1335,17 +1234,17 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     fragile_end(fragile_owner);
     free(pad_owner);
     button_cache_end();
-    session_end();
+    GAME_SESSION.end();
 }
 
 pub fn renderer_game_frames() {
-    run(120, false, 128);
+    run(120);
     halt(0x600d);
 }
 fn main() {
-    run(0, false, 128);
+    run(0);
 }
 pub fn renderer_game_three_frames() {
-    run(3, false, 128);
+    run(3);
     halt(0x600d);
 }

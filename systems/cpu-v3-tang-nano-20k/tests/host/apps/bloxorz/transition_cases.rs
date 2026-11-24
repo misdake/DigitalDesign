@@ -8,11 +8,11 @@ fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
         system_sim::{CpuV3SystemSim, VBlankMode},
     };
     let (program, resources, out) = application("web-cached-veil", None);
-    let session = global(&program, "SESSION");
-    let transition = global(&program, "TRANSITION");
-    let motion = global(&program, "MOTION");
-    let game = global(&program, "GAME");
-    let hud = global(&program, "HUD");
+    let session = global(&program, "GAME_SESSION.animation");
+    let transition = global(&program, "GAME_SESSION.transition");
+    let motion = global(&program, "GAME_SESSION.motion");
+    let game = global(&program, "GAME_SESSION.rules");
+    let hud = global(&program, "RENDER_STATE.hud");
     let mut observed_draws = 0;
     let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
     sim.cpu_mut().set_boot_window(&program.words);
@@ -352,19 +352,21 @@ fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
 }
 
 #[test]
-fn cached_veil_diagnostic_updates_transmittance_overlay_on_every_consumer() {
+fn cached_veil_reuses_snapshot_with_normal_hud() {
     use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
     let (program, resources, out) = application_case(
-        "web-stage1-warm-cached-diagnostic",
+        "web-stage1-warm-cached-veil",
         None,
         None,
         scenarios::cached_veil(),
     );
-    let session = global(&program, "SESSION");
+    let session = global(&program, "GAME_SESSION.animation");
+    let transition = global(&program, "GAME_SESSION.transition");
     let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
     sim.cpu_mut().set_boot_window(&program.words);
     preload(sim.cpu_mut().physical_memory_mut(), &resources);
-    let mut overlays = vec![];
+    let mut times = vec![];
+    let mut frames = vec![];
     let mut snapshots = 0;
     let mut starts = 0;
     let mut halted = false;
@@ -396,7 +398,11 @@ fn cached_veil_diagnostic_updates_transmittance_overlay_on_every_consumer() {
                 } else {
                     frozen = Some(image);
                 }
-                overlays.push(actual_hud_number(&actual_hud_cells(m, 0)[..4]));
+                let row = actual_hud_cells(m, 0);
+                assert_eq!(&row[..6], b"LEVEL ");
+                assert_eq!(actual_hud_number(&row[6..8]), 1);
+                times.push(m[transition + 1]);
+                frames.push(sim.render_active_framebuffer());
             }
             StepOutcome::Halted { signal } => {
                 assert_eq!(signal, 0x600d);
@@ -406,15 +412,16 @@ fn cached_veil_diagnostic_updates_transmittance_overlay_on_every_consumer() {
             _ => {}
         }
     }
-    assert!(halted, "bounded4M diagnostic timeout");
+    assert!(halted, "bounded4M cached-veil timeout");
     assert_eq!(snapshots, 1);
-    assert_eq!(starts, 8, "one cache build precedes the boundary snapshot");
-    assert_eq!(overlays, [1255, 1224, 1192, 1160, 1128]);
+    assert_eq!(starts, 7, "two snapshot producers and five veil consumers");
+    assert_eq!(times, [0, 40, 80, 120, 160]);
+    assert!(frames.windows(2).all(|pair| pair[0] != pair[1]));
     assert!(!sim.display_state().swap_pending);
     assert!(sim.gpu().last_error().is_none());
     write_display_ppm(
-        &out.join("half-diagnostic-display.ppm"),
+        &out.join("cached-veil-display.ppm"),
         &sim.render_active_framebuffer(),
     );
-    std::fs::write(out.join("diagnostic-qualification.json"),serde_json::to_vec_pretty(&serde_json::json!({"overlays":overlays,"snapshots":snapshots,"submissions":starts,"maximum_steps":4000000,"snapshot_immutable":true,"selected_128_halt_after_retired_present":true})).unwrap()).unwrap();
+    std::fs::write(out.join("qualification.json"),serde_json::to_vec_pretty(&serde_json::json!({"fade_times_ms":times,"snapshots":snapshots,"submissions":starts,"maximum_steps":4000000,"snapshot_immutable":true,"normal_level_hud":true,"distinct_fade_frames":true})).unwrap()).unwrap();
 }

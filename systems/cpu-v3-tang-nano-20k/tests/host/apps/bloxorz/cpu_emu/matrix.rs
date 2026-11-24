@@ -55,8 +55,8 @@ fn compile(arm: &str, level: u16) {
             // before entering it instead of referring to an out-of-scope local.
             source
                 .required_replace(
-                    "session_tick(buttons, held, elapsed);",
-                    "session_tick(buttons, held, CPU_MATRIX_DT[0u16]);",
+                    "GAME_SESSION.tick(buttons, held, elapsed);",
+                    "GAME_SESSION.tick(buttons, held, CPU_MATRIX_DT[0u16]);",
                 )
                 .required_replace(
                     "signal(4, number);",
@@ -68,7 +68,7 @@ fn compile(arm: &str, level: u16) {
     };
     let (program, resources, out) = application_case(
         &format!("matrix-{arm}-level{level}"),
-        Some(&format!("run({count},false,128);")),
+        Some(&format!("run({count});")),
         None,
         case,
     );
@@ -135,12 +135,12 @@ fn compile(arm: &str, level: u16) {
         })
         .collect();
     let globals: BTreeMap<_, _> = [
-        "GAME",
-        "SESSION",
-        "MOTION",
-        "SHADOW_INFO",
-        "BACKGROUND",
-        "HUD",
+        "GAME_SESSION.rules",
+        "GAME_SESSION.animation",
+        "GAME_SESSION.motion",
+        "SHADOW_WORKSPACE.info",
+        "RENDER_STATE.background",
+        "RENDER_STATE.hud",
     ]
     .into_iter()
     .map(|name| (name, global(&program, name)))
@@ -367,12 +367,12 @@ fn run(out: &Path) {
                     assert_eq!(depth, expected[frames.len()]["depth_sha256"]);
                     assert_eq!(rgb_hash, expected[frames.len()]["rgb_sha256"]);
                     let state: BTreeMap<_, _> = [
-                        ("GAME", 10),
-                        ("SESSION", 9),
-                        ("MOTION", 17),
-                        ("SHADOW_INFO", 3),
-                        ("BACKGROUND", 1),
-                        ("HUD", 3),
+                        ("GAME_SESSION.rules", 10),
+                        ("GAME_SESSION.animation", 9),
+                        ("GAME_SESSION.motion", 17),
+                        ("SHADOW_WORKSPACE.info", 3),
+                        ("RENDER_STATE.background", 1),
+                        ("RENDER_STATE.hud", 3),
                     ]
                     .into_iter()
                     .map(|(name, words)| {
@@ -418,9 +418,15 @@ fn run(out: &Path) {
                             .all(|span| span["function"] != "draw_shadow_hull"
                                 || !(3..=6).contains(&(span["frame"].as_u64().unwrap() as usize))));
                         if level == 29 {
-                            assert_eq!(frames.last().unwrap()["state"]["SESSION"][0], 1);
-                            assert_eq!(frames.last().unwrap()["state"]["SESSION"][1], 17);
-                            assert_eq!(frames.last().unwrap()["state"]["GAME"][5], 1);
+                            assert_eq!(
+                                frames.last().unwrap()["state"]["GAME_SESSION.animation"][0],
+                                1
+                            );
+                            assert_eq!(
+                                frames.last().unwrap()["state"]["GAME_SESSION.animation"][1],
+                                17
+                            );
+                            assert_eq!(frames.last().unwrap()["state"]["GAME_SESSION.rules"][5], 1);
                             assert_eq!(
                                 spans
                                     .iter()
@@ -430,7 +436,10 @@ fn run(out: &Path) {
                                 1
                             );
                         } else {
-                            assert_eq!(frames.last().unwrap()["state"]["BACKGROUND"][0], 0);
+                            assert_eq!(
+                                frames.last().unwrap()["state"]["RENDER_STATE.background"][0],
+                                0
+                            );
                         }
                         let result = json!({"input":metadata,"frames":frames,"functions":spans,"submissions":submits,"minimum_sp":minimum_sp,
                             "host_seconds":wall.elapsed().as_secs_f64(),"cycles":native.cycles(),"oracle_equal":true,

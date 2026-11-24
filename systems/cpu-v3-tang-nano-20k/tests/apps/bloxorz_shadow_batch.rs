@@ -111,7 +111,7 @@ fn application_from_sources(
     }
 
     if name.contains("-sweep-") {
-        source = source.replace("run(3, false, 128);", "run(24, false, 128);");
+        source = source.replace("run(3);", "run(24);");
         source = source.replace(
             "session_tick(buttons,held,0);",
             "if number==0 {session_move(0);}session_tick(buttons,held,10);",
@@ -174,7 +174,14 @@ fn application_from_sources(
     }
     let path = local.join("shadow.rs");
     let mut shadow = if baseline.is_some() {
-        let output=std::process::Command::new("git").current_dir(root).args(["show",&format!("{BASE}:systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/rcc/shadow.rs")]).output().unwrap();
+        let output = std::process::Command::new("git")
+            .current_dir(root)
+            .args([
+                "show",
+                &format!("{BASE}:systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/rcc/shadow.rs"),
+            ])
+            .output()
+            .unwrap();
         assert!(output.status.success());
         String::from_utf8(output.stdout).unwrap()
     } else {
@@ -215,7 +222,16 @@ fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){le
         // Rebuild instrumentation from the original chosen module; the two
         // total-shadow signals have identical frequency on both arms.
         let mut plain = if baseline.is_some() {
-            let result=std::process::Command::new("git").current_dir(root).args(["show",&format!("{BASE}:systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/rcc/shadow.rs")]).output().unwrap();
+            let result = std::process::Command::new("git")
+                .current_dir(root)
+                .args([
+                    "show",
+                    &format!(
+                        "{BASE}:systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/rcc/shadow.rs"
+                    ),
+                ])
+                .output()
+                .unwrap();
             assert!(result.status.success());
             String::from_utf8(result.stdout).unwrap()
         } else {

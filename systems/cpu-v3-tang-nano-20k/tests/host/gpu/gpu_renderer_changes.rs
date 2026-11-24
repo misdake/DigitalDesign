@@ -118,18 +118,37 @@ fn actual_changed_application_records_completed_sequential_passes() {
 
 const PAGE: usize = 0x7df800 / 2;
 pub(super) fn global(program: &rcc_backend::CpuV3Program, name: &str) -> usize {
-    match program
+    let mut path = name.split('.');
+    let root = path.next().unwrap();
+    let variable = program
         .debug
         .globals
         .iter()
-        .find(|v| v.name == name)
-        .unwrap()
-        .loc
-    {
-        rcc::VarLoc::Global(a) => usize::from(a),
-        _ => panic!("global"),
+        .find(|v| v.name == root)
+        .unwrap_or_else(|| panic!("missing global {root}"));
+    let rcc::VarLoc::Global(address) = variable.loc else {
+        panic!("not a global {root}")
+    };
+    let mut address = usize::from(address);
+    let mut ty = variable.ty.as_str();
+    for field in path {
+        let layout = program
+            .debug
+            .types
+            .iter()
+            .find(|t| t.name == ty)
+            .unwrap_or_else(|| panic!("missing type {ty} in {name}"));
+        let member = layout
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .unwrap_or_else(|| panic!("missing field {field} in {ty}"));
+        address += usize::from(member.offset);
+        ty = &member.ty;
     }
+    address
 }
+
 #[derive(Clone)]
 struct Draw {
     camera: scene::Case,

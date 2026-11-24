@@ -86,9 +86,9 @@ fn web_first_two_stage_play_frames_use_functional_gpu_and_actual_display() {
                 );
             }
         }
-        let game = global(&program, "GAME");
+        let game = global(&program, "GAME_SESSION.rules");
         let pose = memory[game..game + 10].to_vec();
-        let session = global(&program, "SESSION");
+        let session = global(&program, "GAME_SESSION.animation");
         let animation = memory[session..session + 2].to_vec();
         if name == "web-goal-mid" {
             assert_eq!(pose[4], 1);
@@ -333,9 +333,9 @@ fn optimization_rotation_colour_depth_diagnostic() {
             )
             .unwrap();
         }
-        let game = global(&program, "GAME");
-        let session = global(&program, "SESSION");
-        let motion = global(&program, "MOTION");
+        let game = global(&program, "GAME_SESSION.rules");
+        let session = global(&program, "GAME_SESSION.animation");
+        let motion = global(&program, "GAME_SESSION.motion");
         let expected = if variant == "goal-always" {
             [5, 210]
         } else if variant.starts_with("bridge-") || variant == "right-standing" {
@@ -386,10 +386,10 @@ fn all_stages_and_new_presentations_render_with_real_cpu_gpu_and_display() {
             .collect::<Vec<_>>(),
     )
     .unwrap();
-    let game = global(&program, "GAME");
-    let session = global(&program, "SESSION");
-    let motion = global(&program, "MOTION");
-    let hud = global(&program, "HUD");
+    let game = global(&program, "GAME_SESSION.rules");
+    let session = global(&program, "GAME_SESSION.animation");
+    let motion = global(&program, "GAME_SESSION.motion");
+    let hud = global(&program, "RENDER_STATE.hud");
     let mut frames: Vec<serde_json::Value> = vec![];
     let mut count = 0;
     let mut submissions = vec![];
@@ -486,7 +486,7 @@ fn all_stages_and_new_presentations_render_with_real_cpu_gpu_and_display() {
                         }
                     }
                 }
-                frames.push(serde_json::json!({"frame":frame,"executed_draw_calls":calls,"hud":m[hud..hud+3],"render_us":m[global(&program,"FRAME_RENDER_US")..global(&program,"FRAME_RENDER_US")+2],"level":m[motion+6]+1,"steps":step,"game":m[game..game+10],"session":m[session..session+2],"motion":m[motion..motion+17],"submissions":std::mem::take(&mut submissions)}));
+                frames.push(serde_json::json!({"frame":frame,"executed_draw_calls":calls,"hud":m[hud..hud+3],"render_us":m[global(&program,"DRAW_STATS.render_microseconds")..global(&program,"DRAW_STATS.render_microseconds")+2],"level":m[motion+6]+1,"steps":step,"game":m[game..game+10],"session":m[session..session+2],"motion":m[motion..motion+17],"submissions":std::mem::take(&mut submissions)}));
                 assert!(sim.gpu().last_error().is_none());
                 if frame >= 33 {
                     for (file, base) in [
@@ -531,11 +531,81 @@ fn all_stages_and_new_presentations_render_with_real_cpu_gpu_and_display() {
 }
 
 #[test]
+fn archive_block_read_crosses_pages_and_restores_mapping() {
+    let body = r#"
+let owner=malloc(BLOX_ARCHIVE_WORDS+2);let mut words=unsafe{owner.as_u16_array()};
+words[0u16]=0x1234;words[BLOX_ARCHIVE_WORDS+1]=0x5678;
+unsafe{write_dseg_page(3,77);}
+blox_asset_read(0,unsafe{owner.add(1).as_u16_array()},BLOX_ARCHIVE_WORDS);
+check(read_dseg_page(3)==77);
+blox_asset_read(BLOX_ARCHIVE_WORDS,words,0);
+check(read_dseg_page(3)==77);
+check(words[0u16]==0x1234&&words[BLOX_ARCHIVE_WORDS+1]==0x5678);
+signal(1,owner.addr());signal(2,BLOX_ARCHIVE_WORDS);
+"#;
+    let (program, resources, out) = application("archive-block-read", Some(body));
+    let bytes = std::fs::read(out.join("blox_levels.bin")).unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
+    let source = manifest["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["file"] == "blox_levels.bin")
+        .unwrap()["address"]
+        .as_u64()
+        .unwrap() as usize;
+    let mut cpu = cpu_v3::CpuV3Sim::default();
+    cpu.set_boot_window(&program.words);
+    preload(cpu.physical_memory_mut(), &resources);
+    let mut address = None;
+    let mut count = None;
+    let mut pages = vec![];
+    let mut previous = cpu.data_segments()[3];
+    let mut halted = false;
+    for _ in 0..2_000_000 {
+        let outcome = cpu.step().unwrap();
+        let page = cpu.data_segments()[3];
+        if page != previous {
+            pages.push(page);
+            previous = page;
+        }
+        match outcome {
+            StepOutcome::Signaled(e) if e.signal_type == 1 => address = Some(usize::from(e.value)),
+            StepOutcome::Signaled(e) if e.signal_type == 2 => count = Some(usize::from(e.value)),
+            StepOutcome::Halted { signal } => {
+                assert_eq!(signal, 0x600d);
+                halted = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(halted, "bounded archive copy timed out");
+    let count = count.unwrap();
+    let first = source / 32768;
+    let last = (source + count * 2 - 1) / 32768;
+    assert_ne!(
+        first, last,
+        "fixture must exercise a physical page boundary"
+    );
+    assert_eq!(pages, [77, first as u16, last as u16, 77]);
+    let at = address.unwrap() + 1;
+    let expected: Vec<_> = bytes[..count * 2]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    assert_eq!(&cpu.physical_memory_slice()[at..at + count], expected);
+}
+
+#[test]
 fn load_time_ground_meshlets_preserve_all_legacy_grid_vertices_and_attributes() {
     let body = r#"
 let owner=malloc(512);let words=unsafe{owner.as_u16_array()};let info:Buf<u16,5>=Buf::new([0;5]);
 let mut level:u16=0;while level<33 {
- level_reset(level);let mut first:u16=0;
+ GAME_SESSION.reset_level(level);level_geometry_load(level);let mut first:u16=0;
  loop {
   ground_meshlet(first,words,info.as_array());
   if info[1u16]==0 {break;}

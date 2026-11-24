@@ -65,8 +65,8 @@ pub(super) fn prepare_source(
     // Observe retained native pose calls without requiring that implementation.
     if observe_pose {
         source = source.replace(
-            "block_pose(model);",
-            "block_pose(model);world_probe(model);",
+            "GAME_SESSION.block_pose(model);",
+            "GAME_SESSION.block_pose(model);world_probe(model);",
         );
         source += "\nfn world_probe(model:&Model){let world=model.world();let words:Buf<u16,24>=Buf::new([world.row0.x.lo_bits(),world.row0.x.hi_bits(),world.row0.y.lo_bits(),world.row0.y.hi_bits(),world.row0.z.lo_bits(),world.row0.z.hi_bits(),world.row0.w.lo_bits(),world.row0.w.hi_bits(),world.row1.x.lo_bits(),world.row1.x.hi_bits(),world.row1.y.lo_bits(),world.row1.y.hi_bits(),world.row1.z.lo_bits(),world.row1.z.hi_bits(),world.row1.w.lo_bits(),world.row1.w.hi_bits(),world.row2.x.lo_bits(),world.row2.x.hi_bits(),world.row2.y.lo_bits(),world.row2.y.hi_bits(),world.row2.z.lo_bits(),world.row2.z.hi_bits(),world.row2.w.lo_bits(),world.row2.w.hi_bits()]);signal(13,words.as_ptr().addr());}\n";
     }
@@ -152,6 +152,11 @@ pub(super) fn application_case(
     let source = prepare_source(source, probe, case.entry, case.edit, case.observe_pose);
     std::fs::write(out.join("compiled-main.rs"), &source).unwrap();
     let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    // Match the ordinary application's working-buffer bank. Frozen fixture
+    // assets remain at their explicit high-memory addresses.
+    options.asset_banks = vec![rcc::frontend::static_assets::AssetBank {
+        bytes: 0x100000..0x400000,
+    }];
     if let Some(enabled) = case.automatic_inline {
         options.inline.automatic = enabled;
     }
@@ -196,6 +201,9 @@ pub(super) fn application_case(
         .unwrap();
     }
     let frontend_static_words = ir.debug.static_data_end;
+    for buffer in &ir.assets.buffers {
+        resources.push((buffer.address, vec![0; buffer.bytes]));
+    }
     let (program, inline) =
         rcc_backend::try_compile_with_inline_report(ir, &options, "main").unwrap();
     if !case.observe_pose {
@@ -224,48 +232,48 @@ pub(super) fn check_swap_bridge_failure(level: u16, route: &[u16]) {
         .join(",");
     let body = format!(
         r#"
-session_init();level_reset({level});SESSION[0u16]=PLAY;TRANSITION[0u16]=0;SESSION[3u16]=0;
+GAME_SESSION.begin();GAME_SESSION.reset_level({level});GAME_SESSION.animation.phase=PLAY;GAME_SESSION.transition.phase=0;GAME_SESSION.animation.held_lock=0;
 let route:Buf<u16,{count}>=Buf::new([{moves}]);
 let mut saved:Buf<u16,10>=Buf::new([0;10]);let mut n:u16=0;
 while n+1<{count} {{
-    let mut j:u16=0;while j<10 {{saved[j]=GAME[j];j+=1;}}
-    check(session_move(route[n]));
+    let mut j:u16=0;while j<10 {{saved[j]=GAME_SESSION.rule_words()[j];j+=1;}}
+    check(GAME_SESSION.try_move(route[n]));
     if route[n]==6 {{
-        check(GAME[4u16]==0 && SESSION[0u16]==PLAY && GAME[8u16]==(saved[8u16]^1));
-        session_tick(32768,0,0);j=0;while j<10 {{check(GAME[j]==saved[j]);j+=1;}}
-        check(session_move(6));
+        check(GAME_SESSION.rules.status==0 && GAME_SESSION.animation.phase==PLAY && GAME_SESSION.rules.active_cube==(saved[8u16]^1));
+        GAME_SESSION.tick(32768,0,0);j=0;while j<10 {{check(GAME_SESSION.rule_words()[j]==saved[j]);j+=1;}}
+        check(GAME_SESSION.try_move(6));
     }}
-    let mut ticks:u16=0;while SESSION[0u16]!=PLAY && ticks<40 {{session_tick(0,0,50);ticks+=1;}}
-    check(SESSION[0u16]==PLAY && GAME[4u16]==0);SESSION[3u16]=0;n+=1;
+    let mut ticks:u16=0;while GAME_SESSION.animation.phase!=PLAY && ticks<40 {{GAME_SESSION.tick(0,0,50);ticks+=1;}}
+    check(GAME_SESSION.animation.phase==PLAY && GAME_SESSION.rules.status==0);GAME_SESSION.animation.held_lock=0;n+=1;
 }}
-let mut j:u16=0;while j<10 {{saved[j]=GAME[j];j+=1;}}
-let before=block_transform();let supported=idle_cube_transform();
-let generation=LEVEL_GENERATION[0u16];signal(6,1);
-check(route[n]==6 && session_move(6));
-check(GAME[4u16]==2 && GAME[9u16]==1 && SESSION[0u16]==FALL && !fading());signal(6,2);
-let at=if saved[8u16]==0 {{GAME[1u16]*LEVEL[0u16]+GAME[0u16]}}else{{GAME[7u16]*LEVEL[0u16]+GAME[6u16]}};
-check(level_field(at,0)==5 && GAME[3u16]&level_field(at,1)==0);
-check(GAME[8u16]==(saved[8u16]^1) && MOTION[12u16]==saved[8u16]);
-let falling=block_transform();let idle=idle_cube_transform();
+let mut j:u16=0;while j<10 {{saved[j]=GAME_SESSION.rule_words()[j];j+=1;}}
+let before=GAME_SESSION.block_transform();let supported=GAME_SESSION.idle_cube_transform();
+let generation=GAME_SESSION.generation;signal(6,1);
+check(route[n]==6 && GAME_SESSION.try_move(6));
+check(GAME_SESSION.rules.status==2 && GAME_SESSION.rules.split==1 && GAME_SESSION.animation.phase==FALL && !GAME_SESSION.fading());signal(6,2);
+let at=if saved[8u16]==0 {{GAME_SESSION.rules.z*GAME_SESSION.level.width+GAME_SESSION.rules.x}}else{{GAME_SESSION.rules.other_z*GAME_SESSION.level.width+GAME_SESSION.rules.other_x}};
+check(GAME_SESSION.level_field(at,0)==5 && GAME_SESSION.rules.bridge_mask&GAME_SESSION.level_field(at,1)==0);
+check(GAME_SESSION.rules.active_cube==(saved[8u16]^1) && GAME_SESSION.motion.from_active==saved[8u16]);
+let falling=GAME_SESSION.block_transform();let idle=GAME_SESSION.idle_cube_transform();
 check(falling.position.x==before.position.x && falling.position.y==before.position.y && falling.position.z==before.position.z);
 check(falling.scale.x==before.scale.x && falling.scale.y==before.scale.y && falling.scale.z==before.scale.z);
 check(idle.position.x==supported.position.x && idle.position.y==supported.position.y && idle.position.z==supported.position.z);
-session_tick(0,0,50);session_tick(0,0,50);session_tick(0,0,50);
-let dropped=block_transform();let idle=idle_cube_transform();
+GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);
+let dropped=GAME_SESSION.block_transform();let idle=GAME_SESSION.idle_cube_transform();
 check(dropped.position.y<before.position.y && dropped.position.x==before.position.x && dropped.position.z==before.position.z);
 check(idle.position.x==supported.position.x && idle.position.y==supported.position.y && idle.position.z==supported.position.z);signal(6,3);
 // Undo before the fade restores both identities, mask and move count exactly.
-session_tick(32768,0,0);j=0;while j<10 {{check(GAME[j]==saved[j]);j+=1;}}
-check(SESSION[0u16]==PLAY && !fading());check(session_move(6));
-n=0;while n<12 {{session_tick(0,0,50);n+=1;}}
-check(SESSION[0u16]==FALL && fading() && GAME[4u16]==2);signal(6,4);
-n=0;while TRANSITION[1u16]<320 && n<8 {{session_tick(0,0,50);n+=1;}}
-check(TRANSITION[1u16]==320 && LEVEL_GENERATION[0u16]==generation && GAME[4u16]==2);
-session_presented();check(TRANSITION[0u16]==HOLD && SESSION[0u16]==ENTRY_OPEN);
-check(LEVEL_GENERATION[0u16]==generation+1 && MOTION[6u16]=={level} && GAME[4u16]==0 && GAME[5u16]==0);
-n=0;while n<10 {{session_tick(0,0,50);n+=1;}}check(TRANSITION[1u16]==380);session_presented();
-n=0;while n<12 {{session_tick(0,0,50);n+=1;}}
-check(!fading() && SESSION[0u16]==PLAY && session_move(route[0u16]));signal(6,5);
+GAME_SESSION.tick(32768,0,0);j=0;while j<10 {{check(GAME_SESSION.rule_words()[j]==saved[j]);j+=1;}}
+check(GAME_SESSION.animation.phase==PLAY && !GAME_SESSION.fading());check(GAME_SESSION.try_move(6));
+n=0;while n<12 {{GAME_SESSION.tick(0,0,50);n+=1;}}
+check(GAME_SESSION.animation.phase==FALL && GAME_SESSION.fading() && GAME_SESSION.rules.status==2);signal(6,4);
+n=0;while GAME_SESSION.transition.elapsed<320 && n<8 {{GAME_SESSION.tick(0,0,50);n+=1;}}
+check(GAME_SESSION.transition.elapsed==320 && GAME_SESSION.generation==generation && GAME_SESSION.rules.status==2);
+GAME_SESSION.presented();check(GAME_SESSION.transition.phase==HOLD && GAME_SESSION.animation.phase==ENTRY_OPEN);
+check(GAME_SESSION.generation==generation+1 && GAME_SESSION.motion.level=={level} && GAME_SESSION.rules.status==0 && GAME_SESSION.rules.moves==0);
+n=0;while n<10 {{GAME_SESSION.tick(0,0,50);n+=1;}}check(GAME_SESSION.transition.elapsed==380);GAME_SESSION.presented();
+n=0;while n<12 {{GAME_SESSION.tick(0,0,50);n+=1;}}
+check(!GAME_SESSION.fading() && GAME_SESSION.animation.phase==PLAY && GAME_SESSION.try_move(route[0u16]));signal(6,5);
 "#,
         count = route.len()
     );

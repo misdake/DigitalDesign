@@ -53,7 +53,7 @@ fn moving_right_frame_system_profile() {
 fn measure() {
     let (program, resources, out) = application_case(
         "moving-cache-stage29",
-        Some("run(5,false,128);"),
+        Some("run(5);"),
         None,
         scenarios::moving(),
     );
@@ -107,10 +107,10 @@ fn measure() {
     }
     assert!(entries.values().any(|n| n == "draw_shadow"));
     assert!(entries.values().any(|n| n == "shadow_project"));
-    let session = global(&program, "SESSION");
-    let game = global(&program, "GAME");
-    let motion = global(&program, "MOTION");
-    let shadow = global(&program, "SHADOW_INFO");
+    let session = global(&program, "GAME_SESSION.animation");
+    let game = global(&program, "GAME_SESSION.rules");
+    let motion = global(&program, "GAME_SESSION.motion");
+    let shadow = global(&program, "SHADOW_WORKSPACE.info");
     let records = global(&program, "GPU_CB_RECORDS");
     let addresses = BTreeMap::from([
         ("phase", session),

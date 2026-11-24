@@ -427,7 +427,7 @@ fn ordinary_batch_slots_publish_after_retirement_and_free_on_finite_exit() {
     let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
     sim.cpu_mut().set_boot_window(&program.words);
     super::preload(sim.cpu_mut().physical_memory_mut(), &resources);
-    let batch = global(&program, "SHADOW_BATCH_BASE");
+    let batch = global(&program, "SHADOW_WORKSPACE.batch_base");
     let records = global(&program, "GPU_CB_RECORDS");
     let facts = global(&program, "GPU_CB_RESOURCE_FACTS");
     let heap_begin = global(&program, "HEAP_BEGIN");

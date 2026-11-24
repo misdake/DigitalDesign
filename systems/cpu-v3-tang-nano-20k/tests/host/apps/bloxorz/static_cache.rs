@@ -44,7 +44,7 @@ fn measure() {
     } else {
         let (program, resources, out) = application_case(
             &format!("static-cache-{arm}"),
-            Some("run(3,false,128);"),
+            Some("run(3);"),
             None,
             scenarios::static_cache(scenarios::cache_level()),
         );
@@ -196,7 +196,7 @@ pub(super) fn retained_static_scene_regression() {
         let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
         sim.cpu_mut().set_boot_window(&program.words);
         super::preload(sim.cpu_mut().physical_memory_mut(), &resources);
-        let hud = super::global(&program, "HUD");
+        let hud = super::global(&program, "RENDER_STATE.hud");
         let mut counts = vec![];
         let mut frames = vec![];
         let mut starts = 0;

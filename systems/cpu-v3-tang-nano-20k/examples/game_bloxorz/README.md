@@ -49,8 +49,8 @@ Background bytes and their transfer/Display contract are described with the
 The [ground shadow](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/docs/shadow.md) follows the prepared player matrix through clipped unit-triangle Instances.
 Static floors are generated into a stable heap package at stage load and drawn in material groups; moving and transparent objects retain their own paths. Static well components share native mesh groups. Entrance/goal parts retain
 separate Models and stable pose/texture caches, with fifteen metadata words
-allocated once on the heap. The caller retains a packed
-two-word resting block key so unchanged poses avoid rebuilding source World and
+allocated once on the heap. The caller retains a named resting block key (cell,
+generation and accumulated orientation) so unchanged poses avoid rebuilding source World and
 normal matrices. Animation poses still update; Camera revisions update the shared
 View independently. Prepared bridge, switch and pad parts retain World and use
 the enclosing Pass camera when replayed.

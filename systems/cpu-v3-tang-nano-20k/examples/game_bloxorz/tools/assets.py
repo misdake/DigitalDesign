@@ -216,51 +216,74 @@ def pack(output,main_log2=8,marker_log2=8):
     constants += f'pub const BLOXORZ_INITIAL_PLAY:u16={int(phase == "play")};\n'
     manifest['initial_phase'] = phase
     constants += 'pub const BLOX_LEVEL_COUNT:u16=33;\npub const BLOX_LEVEL_DATA_SECTOR:u16=46656;\n'
-    constants += r"""
-// Read-only app assets. Restore DSEG3 before renderer calls; no pointer escapes.
-fn blox_asset_word(word:u16)->u16 {
-    let sector=BLOX_LEVEL_DATA_SECTOR+(word>>6);
-    let saved=read_dseg_page(3);dcache_wait();
-    unsafe {write_dseg_page(3,sector>>8);}
-    let value=unsafe {Ptr::from_addr(0xc000|((sector&255)<<6)|(word&63)).read(0)};
-    dcache_wait();unsafe {write_dseg_page(3,saved);}
-    value
+    # CPU-only tables share the archive's single generated source of truth.
+    def cpu_words(name, words):
+        return f'pub static {name}:Buf<u16,{len(words)}>=Buf::new([' + ','.join(map(str, words)) + ']);\n'
+    constants += """
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct BloxLevelHeader {
+    pub packed_first:u16,pub packed_words:u16,pub faces_first:u16,pub face_count:u16,
+    pub eye:Vec3,pub focal:fix32,pub far:fix32,pub carrier:u16,pub ground_first:u16,
 }
-pub fn blox_palette_word(channel:u16,shade:u16,part:u16)->u16 {blox_asset_word(BLOX_PALETTE_WORD+(channel&7)*8+shade*2+part)}
-pub fn blox_level_meta(which:u16,field:u16)->u16 {blox_asset_word(4+which*16+field)}
+"""
+    headers = []
+    for n in range(33):
+        row = archive[4 + n * 16:4 + (n + 1) * 16]
+        def fixed(at):
+            return f'fix32::from_words({row[at]},{row[at + 1]})'
+        eye = f'Vec3{{x:{fixed(4)},y:{fixed(6)},z:{fixed(8)}}}'
+        headers.append('BloxLevelHeader{' +
+                       f'packed_first:{row[0]},packed_words:{row[1]},faces_first:{row[2]},face_count:{row[3]},' +
+                       f'eye:{eye},focal:{fixed(10)},far:{fixed(12)},carrier:{row[14]},ground_first:{row[15]}' + '}')
+    constants += 'pub static BLOX_LEVEL_HEADERS:Buf<BloxLevelHeader,33>=Buf::new([' + ','.join(headers) + ']);\n'
+
+    constants += cpu_words('BLOX_PALETTE', archive[palette_word:ground_template_word])
+    constants += cpu_words('BLOX_GROUND_TEMPLATES', archive[ground_template_word:fragile_template_word])
+    constants += cpu_words('BLOX_FRAGILE_TEMPLATES', archive[fragile_template_word:])
+    geometry_words = max(
+        (archive_meta[n + 1]['level_offset'] if n + 1 < len(archive_meta) else palette_word)
+        - meta['faces_offset'] for n, meta in enumerate(archive_meta))
+    constants += f'pub const BLOX_LEVEL_GEOMETRY_WORDS:u16={geometry_words};\n'
+    constants += f'pub const BLOX_ARCHIVE_WORDS:u16={len(archive)};\n'
+    constants += r"""
+// Immutable source in external SDRAM; destination stays below the DSEG3 window.
+// The cache tags and outstanding accesses already carry physical addresses.
+pub fn blox_asset_read(start:u16,mut out:Array<u16>,count:u16) {
+    if start>BLOX_ARCHIVE_WORDS || count>BLOX_ARCHIVE_WORDS-start
+        || out.as_ptr().addr()>=0xc000 || count>0xc000-out.as_ptr().addr() {halt(0xb14);}
+    if count==0 {return;}
+    let saved=read_dseg_page(3);
+    let mut word=start;let mut copied:u16=0;
+    while copied<count {
+        let sector=BLOX_LEVEL_DATA_SECTOR+(word>>6);
+        let offset=((sector&255)<<6)|(word&63);
+        unsafe {write_dseg_page(3,sector>>8);}
+        let source=Ptr::from_addr(0xc000|offset);
+        let mut chunk=count-copied;
+        if chunk>16384-offset {chunk=16384-offset;}
+        let mut i:u16=0;
+        while i<chunk {out[copied+i]=unsafe{source.read(i as i16)};i+=1;}
+        copied+=chunk;word+=chunk;
+    }
+    unsafe {write_dseg_page(3,saved);}
+}
+pub fn blox_palette_word(channel:u16,shade:u16,part:u16)->u16 {
+    BLOX_PALETTE[(channel&7)*8+shade*2+part]
+}
 pub fn blox_fixture_level(which:u16,mut out:Array<u16>){
     if which>=BLOX_LEVEL_COUNT {halt(0xb10);}
-    let start=blox_level_meta(which,0);let count=blox_level_meta(which,1);
-    let mut i:u16=0;while i<count {out[i]=blox_asset_word(start+i);i+=1;}
+    let header=&BLOX_LEVEL_HEADERS[which];
+    blox_asset_read(header.packed_first,out,header.packed_words);
 }
-pub fn blox_ground_faces_base(which:u16)->u16 {blox_level_meta(which,15)}
-pub fn blox_ground_face(base:u16,index:u16)->u16 {blox_asset_word(base+index)}
 pub fn blox_ground_template(which:u16,mut out:Array<u16>){
-    let start=BLOX_GROUND_TEMPLATE_WORD+which*20;
-    let saved=read_dseg_page(3);dcache_wait();
-    let mut page:u16=65535;let mut i:u16=0;
-    while i<20 {
-        let word=start+i;let sector=BLOX_LEVEL_DATA_SECTOR+(word>>6);
-        if sector>>8!=page {dcache_wait();page=sector>>8;unsafe{write_dseg_page(3,page);}}
-        out[i]=unsafe{Ptr::from_addr(0xc000|((sector&255)<<6)|(word&63)).read(0)};
-        i+=1;
-    }
-    dcache_wait();unsafe{write_dseg_page(3,saved);}
+    let start=which*20;let mut i:u16=0;
+    while i<20 {out[i]=BLOX_GROUND_TEMPLATES[start+i];i+=1;}
 }
-pub fn blox_scene_face_count(which:u16)->u16 {blox_level_meta(which,3)}
 pub fn blox_fragile_template(variant:u16,face:u16,mut out:Array<u16>){
-    let start=BLOX_FRAGILE_TEMPLATE_WORD+variant*100+face*20;
-    let saved=read_dseg_page(3);dcache_wait();
-    let mut page:u16=65535;let mut i:u16=0;
-    while i<20 {
-        let word=start+i;let sector=BLOX_LEVEL_DATA_SECTOR+(word>>6);
-        if sector>>8!=page {dcache_wait();page=sector>>8;unsafe{write_dseg_page(3,page);}}
-        out[i]=unsafe{Ptr::from_addr(0xc000|((sector&255)<<6)|(word&63)).read(0)};
-        i+=1;
-    }
-    dcache_wait();unsafe{write_dseg_page(3,saved);}
+    let start=variant*100+face*20;let mut i:u16=0;
+    while i<20 {out[i]=BLOX_FRAGILE_TEMPLATES[start+i];i+=1;}
 }
-pub fn blox_scene_face(which:u16,index:u16)->u16 {blox_asset_word(blox_level_meta(which,2)+index)}
 """
     manifest['stage_archive']=archive_meta
     manifest['goal_carrier']=dict(apertures=48,step=.02,plane_y=0,texture_phases=4,fallback_levels=[i+1 for i,l in enumerate(all_levels) if not C.applicable(l)],baked_floor_g=232,baked_floor_lod_q3=0,continuous_state_animation=True)

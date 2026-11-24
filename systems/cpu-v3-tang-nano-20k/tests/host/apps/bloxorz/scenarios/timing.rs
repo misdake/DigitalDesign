@@ -6,12 +6,12 @@ pub(in super::super) fn cpu_shadow() -> ApplicationCase {
         source = with_frame_number(source);
         source = source
             .required_replace(
-                "session_init();",
-                "session_init();level_reset(28);SESSION[0u16]=PLAY;SESSION[1u16]=0;HUD[0u16]=0;",
+                "GAME_SESSION.begin();",
+                "GAME_SESSION.begin();GAME_SESSION.reset_level(28);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
             )
             .required_replace(
-                "session_tick(buttons, held, elapsed);",
-                "session_tick(buttons, held, if number==2 {17u16}else{0u16});",
+                "GAME_SESSION.tick(buttons, held, elapsed);",
+                "GAME_SESSION.tick(buttons, held, if number==2 {17u16}else{0u16});",
             );
 
         source
@@ -21,8 +21,8 @@ pub(in super::super) fn cpu_shadow() -> ApplicationCase {
 pub(in super::super) fn moving() -> ApplicationCase {
     edited("renderer_game_frames", move |mut source| {
         source = source.required_replace(
-            "session_init();",
-            "session_init();level_reset(28);SESSION[0u16]=PLAY;SESSION[1u16]=0;HUD[0u16]=0;",
+            "GAME_SESSION.begin();",
+            "GAME_SESSION.begin();GAME_SESSION.reset_level(28);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
         );
         // Physical Device5 input and the real millisecond clock drive the roll.
 
@@ -35,14 +35,14 @@ pub(in super::super) fn render_time(fade: bool) -> ApplicationCase {
         source = stage_source(source, 0, false, false, true);
 
         source = source.required_replace(
-            "session_init();",
+            "GAME_SESSION.begin();",
             if fade {
-                "session_init();HUD[0u16]=1;TRANSITION[0u16]=FADE_OUT;TRANSITION[1u16]=160;"
+                "GAME_SESSION.begin();RENDER_STATE.hud.enabled=1;GAME_SESSION.transition.phase=FADE_OUT;GAME_SESSION.transition.elapsed=160;"
             } else {
-                "session_init();HUD[0u16]=1;"
+                "GAME_SESSION.begin();RENDER_STATE.hud.enabled=1;"
             },
         );
-        source = source.required_replace("run(3, false, 128);", "run(4, false, 128);");
+        source = source.required_replace("run(3);", "run(4);");
 
         source
     })
@@ -52,12 +52,15 @@ pub(in super::super) fn cpu_cost(legacy: bool) -> ApplicationCase {
     let case = edited("renderer_game_three_frames", move |mut source| {
         source = stage_source(source, 0, false, false, true);
 
-        assert_eq!(source.matches("level_reset(0);").count(), 1);
-        source = source.required_replace("level_reset(0);", "level_reset(7);");
+        assert_eq!(source.matches("GAME_SESSION.reset_level(0);").count(), 1);
+        source = source.required_replace(
+            "GAME_SESSION.reset_level(0);",
+            "GAME_SESSION.reset_level(7);",
+        );
         let mode = if legacy { 2 } else { 1 };
         source = source.required_replace(
             "pub fn renderer_game_three_frames() {",
-            &format!("pub fn renderer_game_three_frames() {{GROUND_BATCH_MODE[0u16]={mode};"),
+            &format!("pub fn renderer_game_three_frames() {{unsafe{{addr_of(&GROUND_BATCH_MODE).write(0,{mode});}}"),
         );
         source = source.required_replace(
             "ground_rebuild();",

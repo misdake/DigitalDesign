@@ -46,7 +46,7 @@ fn native_triangle_instances_match_independent_web_shadow_clipping_samples() {
         assert!(sim.gpu().last_error().is_none());
         assert!(push < 32768);
         let memory = sim.cpu().physical_memory_slice();
-        let info = global(&program, "SHADOW_INFO");
+        let info = global(&program, "SHADOW_WORKSPACE.info");
         let stats = memory[info..info + 3].to_vec();
         assert_eq!(
             usize::from(stats[1]),
@@ -54,7 +54,7 @@ fn native_triangle_instances_match_independent_web_shadow_clipping_samples() {
             "{name} receivers"
         );
 
-        let at = global(&program, "SHADOW_HULL");
+        let at = global(&program, "SHADOW_WORKSPACE.hull");
         let actual = (0..usize::from(stats[0]))
             .map(|i| {
                 [
@@ -219,7 +219,7 @@ fn shadow_geometry_cache_matches_fresh_instances_across_real_inputs() {
     for (name, forced) in [("web-cache-cached", false), ("web-cache-forced", true)] {
         let (program, resources, _) =
             application_case(name, None, None, scenarios::shadow_cache(forced));
-        let info = global(&program, "SHADOW_INFO");
+        let info = global(&program, "SHADOW_WORKSPACE.info");
         let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
         sim.cpu_mut().set_boot_window(&program.words);
         preload(sim.cpu_mut().physical_memory_mut(), &resources);

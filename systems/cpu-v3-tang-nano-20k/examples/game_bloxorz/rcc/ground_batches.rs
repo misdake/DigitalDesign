@@ -6,12 +6,14 @@ mod session;
 use session::*;
 mod gpu_api;
 use gpu_api::*;
+mod level_assets;
+use level_assets::*;
 
-pub static GROUND_BATCH_MODE: Buf<u16, 1> = Buf::new([1]);
+pub static GROUND_BATCH_MODE: u16 = 1;
 static GROUND_BASE: u16 = 0;
 
 pub fn ground_global_quantization() -> bool {
-    LEVEL[0u16] <= 15 && LEVEL[1u16] <= 15
+    GAME_SESSION.level.width <= 15 && GAME_SESSION.level.height <= 15
 }
 
 pub fn ground_face_key(face: u16) -> u16 {
@@ -19,7 +21,7 @@ pub fn ground_face_key(face: u16) -> u16 {
     let z = (face >> 5) & 31;
     let direction = (face >> 10) & 7;
     let mut material: u16 = 0;
-    if level_field(z * LEVEL[0u16] + x, 0) == 7 {
+    if GAME_SESSION.level_field(z * GAME_SESSION.level.width + x, 0) == 7 {
         material = if direction == 0 { 1u16 } else { 2u16 };
     }
     let bucket = if ground_global_quantization() {
@@ -29,7 +31,7 @@ pub fn ground_face_key(face: u16) -> u16 {
             1u16
         }
     } else {
-        1 + x / 3 + (z / 3) * ((LEVEL[0u16] + 2) / 3)
+        1 + x / 3 + (z / 3) * ((GAME_SESSION.level.width + 2) / 3)
     };
     material * 32 + bucket
 }
@@ -57,14 +59,13 @@ fn ground_index(mut words: Array<u16>, base: u16, triangle: u16) {
 // Caller owns at least512 output heap words and five info words. The complete
 // record stays in the heap; only the20-word immutable template is local.
 pub fn ground_meshlet(first: u16, mut words: Array<u16>, mut info: Array<u16>) {
-    let base = blox_ground_faces_base(MOTION[6u16]);
-    let count = blox_ground_face(base, 0);
+    let count = ground_face_count();
     info[0u16] = first;
     info[1u16] = 0;
     if first >= count {
         return;
     }
-    let key = ground_face_key(blox_ground_face(base, first + 1));
+    let key = ground_face_key(ground_face(first));
     let material = key >> 5;
     let bucket = key & 31;
     let global = ground_global_quantization();
@@ -77,7 +78,7 @@ pub fn ground_meshlet(first: u16, mut words: Array<u16>, mut info: Array<u16>) {
     let mut cursor = first;
     let mut quads: u16 = 0;
     while cursor < count && quads < 16 {
-        let face = blox_ground_face(base, cursor + 1);
+        let face = ground_face(cursor);
         if ground_face_key(face) != key {
             break;
         }
@@ -136,15 +137,15 @@ pub fn ground_meshlet(first: u16, mut words: Array<u16>, mut info: Array<u16>) {
     let bx = if bucket == 0 || global {
         0u16
     } else {
-        ((bucket - 1) % ((LEVEL[0u16] + 2) / 3)) * 6
+        ((bucket - 1) % ((GAME_SESSION.level.width + 2) / 3)) * 6
     };
     let bz = if bucket == 0 || global {
         0u16
     } else {
-        ((bucket - 1) / ((LEVEL[0u16] + 2) / 3)) * 6
+        ((bucket - 1) / ((GAME_SESSION.level.width + 2) / 3)) * 6
     };
-    words[9u16] = (bx as i16 - LEVEL[0u16] as i16) as u16;
-    words[13u16] = (bz as i16 - LEVEL[1u16] as i16) as u16;
+    words[9u16] = (bx as i16 - GAME_SESSION.level.width as i16) as u16;
+    words[13u16] = (bz as i16 - GAME_SESSION.level.height as i16) as u16;
     if bucket != 0 {
         words[10u16] = if global { 26624u16 } else { 39424u16 };
         words[11u16] = if global { 65534u16 } else { 65535u16 };
@@ -162,7 +163,7 @@ pub fn ground_meshlet(first: u16, mut words: Array<u16>, mut info: Array<u16>) {
 }
 
 pub fn ground_enabled() -> bool {
-    GROUND_BATCH_MODE[0u16] == 1
+    GROUND_BATCH_MODE == 1
 }
 fn ground_metadata() -> Array<u16> {
     unsafe { Ptr::from_addr(GROUND_BASE).as_u16_array() }
@@ -185,16 +186,17 @@ pub fn ground_begin() -> Ptr {
     owner
 }
 pub fn ground_matches_level() -> bool {
-    GROUND_BASE != 0 && ground_metadata()[7u16] == MOTION[6u16] + 1
+    GROUND_BASE != 0 && ground_metadata()[7u16] == GAME_SESSION.motion.level + 1
 }
 // Both caller-owned CBs have retired and been reset before this mutation.
 // Storage remains allocated and unmoved until ground_end, after CB Drop.
 pub fn ground_rebuild() {
-    if LEVEL[0u16] == 0
-        || LEVEL[1u16] == 0
-        || LEVEL[0u16] > 31
-        || LEVEL[1u16] > 31
-        || ((LEVEL[0u16] + 2) / 3) * ((LEVEL[1u16] + 2) / 3) > 31
+    level_geometry_load(GAME_SESSION.motion.level);
+    if GAME_SESSION.level.width == 0
+        || GAME_SESSION.level.height == 0
+        || GAME_SESSION.level.width > 31
+        || GAME_SESSION.level.height > 31
+        || ((GAME_SESSION.level.width + 2) / 3) * ((GAME_SESSION.level.height + 2) / 3) > 31
     {
         halt(0xb13);
     }
@@ -233,7 +235,7 @@ pub fn ground_rebuild() {
         first = info[0u16];
     }
     metadata[6u16] = used;
-    metadata[7u16] = MOTION[6u16] + 1;
+    metadata[7u16] = GAME_SESSION.motion.level + 1;
 }
 pub fn ground_count(material: u16) -> u16 {
     ground_metadata()[material * 2 + 1]

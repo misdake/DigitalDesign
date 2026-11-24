@@ -31,33 +31,83 @@ struct ShadowKey {
     mask: u16,
     receivers: u16,
 }
-static SHADOW_VALID: Buf<u16, 1> = Buf::new([0]);
-static SHADOW_KEY: Buf<ShadowKey, 1> = Buf::new([ShadowKey {
-    row0: Vec4 {
-        x: fix32::zero(),
-        y: fix32::zero(),
-        z: fix32::zero(),
-        w: fix32::zero(),
+
+pub struct ShadowStatistics {
+    pub hull_points: u16,
+    pub receivers: u16,
+    pub triangles: u16,
+}
+pub struct ShadowWorkspace {
+    valid: u16,
+    key: ShadowKey,
+    pub info: ShadowStatistics,
+    corners: Buf<ShadowScalar, 24>,
+    points: Buf<ShadowScalar, 40>,
+    hull: Buf<ShadowScalar, 42>,
+    clip_a: Buf<ShadowScalar, 48>,
+    clip_b: Buf<ShadowScalar, 48>,
+    batch_base: u16,
+}
+pub static SHADOW_WORKSPACE: ShadowWorkspace = ShadowWorkspace {
+    valid: 0,
+    key: ShadowKey {
+        row0: Vec4 {
+            x: fix32::zero(),
+            y: fix32::zero(),
+            z: fix32::zero(),
+            w: fix32::zero(),
+        },
+        row1: Vec4 {
+            x: fix32::zero(),
+            y: fix32::zero(),
+            z: fix32::zero(),
+            w: fix32::zero(),
+        },
+        row2: Vec4 {
+            x: fix32::zero(),
+            y: fix32::zero(),
+            z: fix32::zero(),
+            w: fix32::zero(),
+        },
+        generation: 0,
+        mask: 0,
+        receivers: 0,
     },
-    row1: Vec4 {
-        x: fix32::zero(),
-        y: fix32::zero(),
-        z: fix32::zero(),
-        w: fix32::zero(),
+    info: ShadowStatistics {
+        hull_points: 0,
+        receivers: 0,
+        triangles: 0,
     },
-    row2: Vec4 {
-        x: fix32::zero(),
-        y: fix32::zero(),
-        z: fix32::zero(),
-        w: fix32::zero(),
-    },
-    generation: 0,
-    mask: 0,
-    receivers: 0,
-}]);
+    corners: Buf::new(
+        [ShadowScalar {
+            value: fix32::zero(),
+        }; 24],
+    ),
+    points: Buf::new(
+        [ShadowScalar {
+            value: fix32::zero(),
+        }; 40],
+    ),
+    hull: Buf::new(
+        [ShadowScalar {
+            value: fix32::zero(),
+        }; 42],
+    ),
+    clip_a: Buf::new(
+        [ShadowScalar {
+            value: fix32::zero(),
+        }; 48],
+    ),
+    clip_b: Buf::new(
+        [ShadowScalar {
+            value: fix32::zero(),
+        }; 48],
+    ),
+    batch_base: 0,
+};
 
 pub fn shadow_invalidate() {
-    SHADOW_VALID[0u16] = 0;
+    SHADOW_WORKSPACE.valid = 0;
     if shadow_batch_enabled() {
         let mut data = shadow_batch_data();
         data[68u16] = 0;
@@ -68,7 +118,7 @@ fn shadow_row_equal(a: Vec4, b: Vec4) -> bool {
     a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w
 }
 fn shadow_receivers() -> u16 {
-    let mode = visual_mode();
+    let mode = GAME_SESSION.visual_mode();
     let mut flags: u16 = 0;
     if mode == ENTRY_OPEN || mode == ENTRY_RISE {
         flags = 1;
@@ -76,47 +126,21 @@ fn shadow_receivers() -> u16 {
     if mode > GOAL_OPEN && mode <= GOAL_CLOSE {
         flags |= 2;
     }
-    if FRACTURE[0u16] != 65535 && fragile_dropped(FRACTURE[0u16]) {
-        flags |= 4 | (FRACTURE[0u16] << 3);
+    if GAME_SESSION.fracture_cell != 65535
+        && GAME_SESSION.fragile_dropped(GAME_SESSION.fracture_cell)
+    {
+        flags |= 4 | (GAME_SESSION.fracture_cell << 3);
     }
     flags
 }
-
-pub static SHADOW_INFO: Buf<u16, 3> = Buf::new([0; 3]);
-
-static SHADOW_CORNERS: Buf<ShadowScalar, 24> = Buf::new(
-    [ShadowScalar {
-        value: fix32::zero(),
-    }; 24],
-);
-static SHADOW_POINTS: Buf<ShadowScalar, 40> = Buf::new(
-    [ShadowScalar {
-        value: fix32::zero(),
-    }; 40],
-);
-static SHADOW_HULL: Buf<ShadowScalar, 42> = Buf::new(
-    [ShadowScalar {
-        value: fix32::zero(),
-    }; 42],
-);
-static SHADOW_CLIP_A: Buf<ShadowScalar, 48> = Buf::new(
-    [ShadowScalar {
-        value: fix32::zero(),
-    }; 48],
-);
-static SHADOW_CLIP_B: Buf<ShadowScalar, 48> = Buf::new(
-    [ShadowScalar {
-        value: fix32::zero(),
-    }; 48],
-);
 
 // Corners and projected candidates die after hull construction. Reuse those
 // slots for4+6 triangle records, while hull and per-cell clipping remain live.
 fn shadow_cache_memory(index: u16) -> Array<ShadowScalar> {
     if index < 4 {
-        SHADOW_CORNERS.as_array()
+        SHADOW_WORKSPACE.corners.as_array()
     } else {
-        SHADOW_POINTS.as_array()
+        SHADOW_WORKSPACE.points.as_array()
     }
 }
 fn shadow_cache_offset(index: u16) -> u16 {
@@ -190,12 +214,12 @@ fn shadow_project(world: Mat3x4) -> u16 {
         let px = world.row0.x * x + world.row0.y * y + world.row0.z * z + world.row0.w;
         let py = world.row1.x * x + world.row1.y * y + world.row1.z * z + world.row1.w;
         let pz = world.row2.x * x + world.row2.y * y + world.row2.z * z + world.row2.w;
-        SHADOW_CORNERS[i * 3].value = px;
-        SHADOW_CORNERS[i * 3 + 1].value = py;
-        SHADOW_CORNERS[i * 3 + 2].value = pz;
+        SHADOW_WORKSPACE.corners[i * 3].value = px;
+        SHADOW_WORKSPACE.corners[i * 3 + 1].value = py;
+        SHADOW_WORKSPACE.corners[i * 3 + 2].value = pz;
         if py >= fix32::zero() {
-            SHADOW_POINTS[count * 2].value = px - half * py;
-            SHADOW_POINTS[count * 2 + 1].value = pz - half * py;
+            SHADOW_WORKSPACE.points[count * 2].value = px - half * py;
+            SHADOW_WORKSPACE.points[count * 2 + 1].value = pz - half * py;
             count += 1;
         }
         i += 1;
@@ -206,16 +230,22 @@ fn shadow_project(world: Mat3x4) -> u16 {
         while axis < 3 {
             let j = i ^ (1 << axis);
             if i < j {
-                let ya = SHADOW_CORNERS[i * 3 + 1].value;
-                let yb = SHADOW_CORNERS[j * 3 + 1].value;
+                let ya = SHADOW_WORKSPACE.corners[i * 3 + 1].value;
+                let yb = SHADOW_WORKSPACE.corners[j * 3 + 1].value;
                 if (ya >= fix32::zero() && yb < fix32::zero())
                     || (ya < fix32::zero() && yb >= fix32::zero())
                 {
                     let t = shadow_ratio(ya, yb);
-                    SHADOW_POINTS[count * 2].value = SHADOW_CORNERS[i * 3].value
-                        + (SHADOW_CORNERS[j * 3].value - SHADOW_CORNERS[i * 3].value) * t;
-                    SHADOW_POINTS[count * 2 + 1].value = SHADOW_CORNERS[i * 3 + 2].value
-                        + (SHADOW_CORNERS[j * 3 + 2].value - SHADOW_CORNERS[i * 3 + 2].value) * t;
+                    SHADOW_WORKSPACE.points[count * 2].value = SHADOW_WORKSPACE.corners[i * 3]
+                        .value
+                        + (SHADOW_WORKSPACE.corners[j * 3].value
+                            - SHADOW_WORKSPACE.corners[i * 3].value)
+                            * t;
+                    SHADOW_WORKSPACE.points[count * 2 + 1].value =
+                        SHADOW_WORKSPACE.corners[i * 3 + 2].value
+                            + (SHADOW_WORKSPACE.corners[j * 3 + 2].value
+                                - SHADOW_WORKSPACE.corners[i * 3 + 2].value)
+                                * t;
                     count += 1;
                 }
             }
@@ -235,33 +265,34 @@ fn shadow_hull(count: u16) -> u16 {
     }
     let mut i: u16 = 1;
     while i < count {
-        let x = SHADOW_POINTS[i * 2].value;
-        let z = SHADOW_POINTS[i * 2 + 1].value;
+        let x = SHADOW_WORKSPACE.points[i * 2].value;
+        let z = SHADOW_WORKSPACE.points[i * 2 + 1].value;
         let mut j = i;
         while j > 0
-            && (SHADOW_POINTS[(j - 1) * 2].value > x
-                || (SHADOW_POINTS[(j - 1) * 2].value == x
-                    && SHADOW_POINTS[(j - 1) * 2 + 1].value > z))
+            && (SHADOW_WORKSPACE.points[(j - 1) * 2].value > x
+                || (SHADOW_WORKSPACE.points[(j - 1) * 2].value == x
+                    && SHADOW_WORKSPACE.points[(j - 1) * 2 + 1].value > z))
         {
-            SHADOW_POINTS[j * 2].value = SHADOW_POINTS[(j - 1) * 2].value;
-            SHADOW_POINTS[j * 2 + 1].value = SHADOW_POINTS[(j - 1) * 2 + 1].value;
+            SHADOW_WORKSPACE.points[j * 2].value = SHADOW_WORKSPACE.points[(j - 1) * 2].value;
+            SHADOW_WORKSPACE.points[j * 2 + 1].value =
+                SHADOW_WORKSPACE.points[(j - 1) * 2 + 1].value;
             j -= 1;
         }
-        SHADOW_POINTS[j * 2].value = x;
-        SHADOW_POINTS[j * 2 + 1].value = z;
+        SHADOW_WORKSPACE.points[j * 2].value = x;
+        SHADOW_WORKSPACE.points[j * 2 + 1].value = z;
         i += 1;
     }
     let mut size: u16 = 0;
     i = 0;
     while i < count {
-        let x = SHADOW_POINTS[i * 2].value;
-        let z = SHADOW_POINTS[i * 2 + 1].value;
+        let x = SHADOW_WORKSPACE.points[i * 2].value;
+        let z = SHADOW_WORKSPACE.points[i * 2 + 1].value;
         while size >= 2
             && shadow_turn(
-                SHADOW_HULL[(size - 2) * 2].value,
-                SHADOW_HULL[(size - 2) * 2 + 1].value,
-                SHADOW_HULL[(size - 1) * 2].value,
-                SHADOW_HULL[(size - 1) * 2 + 1].value,
+                SHADOW_WORKSPACE.hull[(size - 2) * 2].value,
+                SHADOW_WORKSPACE.hull[(size - 2) * 2 + 1].value,
+                SHADOW_WORKSPACE.hull[(size - 1) * 2].value,
+                SHADOW_WORKSPACE.hull[(size - 1) * 2 + 1].value,
                 x,
                 z,
             ) <= fix32::zero()
@@ -269,8 +300,8 @@ fn shadow_hull(count: u16) -> u16 {
             size -= 1;
         }
         assert(size < 21, 0x5a03);
-        SHADOW_HULL[size * 2].value = x;
-        SHADOW_HULL[size * 2 + 1].value = z;
+        SHADOW_WORKSPACE.hull[size * 2].value = x;
+        SHADOW_WORKSPACE.hull[size * 2 + 1].value = z;
         size += 1;
         i += 1;
     }
@@ -278,14 +309,14 @@ fn shadow_hull(count: u16) -> u16 {
     i = count - 1;
     while i > 0 {
         i -= 1;
-        let x = SHADOW_POINTS[i * 2].value;
-        let z = SHADOW_POINTS[i * 2 + 1].value;
+        let x = SHADOW_WORKSPACE.points[i * 2].value;
+        let z = SHADOW_WORKSPACE.points[i * 2 + 1].value;
         while size > lower
             && shadow_turn(
-                SHADOW_HULL[(size - 2) * 2].value,
-                SHADOW_HULL[(size - 2) * 2 + 1].value,
-                SHADOW_HULL[(size - 1) * 2].value,
-                SHADOW_HULL[(size - 1) * 2 + 1].value,
+                SHADOW_WORKSPACE.hull[(size - 2) * 2].value,
+                SHADOW_WORKSPACE.hull[(size - 2) * 2 + 1].value,
+                SHADOW_WORKSPACE.hull[(size - 1) * 2].value,
+                SHADOW_WORKSPACE.hull[(size - 1) * 2 + 1].value,
                 x,
                 z,
             ) <= fix32::zero()
@@ -293,8 +324,8 @@ fn shadow_hull(count: u16) -> u16 {
             size -= 1;
         }
         assert(size < 21, 0x5a03);
-        SHADOW_HULL[size * 2].value = x;
-        SHADOW_HULL[size * 2 + 1].value = z;
+        SHADOW_WORKSPACE.hull[size * 2].value = x;
+        SHADOW_WORKSPACE.hull[size * 2 + 1].value = z;
         size += 1;
     }
     size - 1
@@ -380,7 +411,7 @@ fn shadow_triangle(
         bx: bx,
         bz: bz,
     };
-    let at = SHADOW_INFO[2u16];
+    let at = SHADOW_WORKSPACE.info.triangles;
     if at < 10 {
         shadow_cache_store(at, triangle);
     } else {
@@ -426,8 +457,8 @@ fn shadow_draw(
     );
     // The immutable shadow mesh carries white vertex colors and no texture UVs.
     pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr());
-    DRAW_CALLS[0u16] += mesh.meshlet_count();
-    SHADOW_INFO[2u16] += 1;
+    DRAW_STATS.draw_calls += mesh.meshlet_count();
+    SHADOW_WORKSPACE.info.triangles += 1;
 }
 
 pub fn draw_shadow(
@@ -440,19 +471,19 @@ pub fn draw_shadow(
     if shadow_batch_enabled() {
         shadow_batch_select();
     }
-    if !block_visible() {
+    if !GAME_SESSION.block_visible() {
         if shadow_batch_enabled() {
             let mut data = shadow_batch_slot();
             data[4u16] = 0;
         }
         shadow_invalidate();
-        SHADOW_INFO[0u16] = 0;
-        SHADOW_INFO[1u16] = 0;
-        SHADOW_INFO[2u16] = 0;
+        SHADOW_WORKSPACE.info.hull_points = 0;
+        SHADOW_WORKSPACE.info.receivers = 0;
+        SHADOW_WORKSPACE.info.triangles = 0;
         return;
     }
     let world = block.world();
-    let mask = visual_mask();
+    let mask = GAME_SESSION.visual_mask();
     let receivers = shadow_receivers();
     if shadow_batch_enabled() {
         if shadow_batch_matches(world, mask, receivers) {
@@ -460,20 +491,20 @@ pub fn draw_shadow(
             shadow_batch_draw(pass, model, material);
             return;
         }
-        SHADOW_VALID[0u16] = 0;
+        SHADOW_WORKSPACE.valid = 0;
         shadow_batch_prepare(world, mask, receivers);
     }
-    let key = SHADOW_KEY[0u16];
-    if SHADOW_VALID[0u16] != 0
-        && key.generation == LEVEL_GENERATION[0u16]
+    let key = SHADOW_WORKSPACE.key;
+    if SHADOW_WORKSPACE.valid != 0
+        && key.generation == GAME_SESSION.generation
         && key.mask == mask
         && key.receivers == receivers
         && shadow_row_equal(world.row0, key.row0)
         && shadow_row_equal(world.row1, key.row1)
         && shadow_row_equal(world.row2, key.row2)
     {
-        let count = SHADOW_INFO[2u16];
-        SHADOW_INFO[2u16] = 0;
+        let count = SHADOW_WORKSPACE.info.triangles;
+        SHADOW_WORKSPACE.info.triangles = 0;
         let mut i: u16 = 0;
         while i < count {
             shadow_draw(pass, mesh, model, material, shadow_cache_load(i));
@@ -482,21 +513,21 @@ pub fn draw_shadow(
         return;
     }
     if !shadow_batch_enabled() {
-        SHADOW_VALID[0u16] = 1;
-        SHADOW_KEY[0u16] = ShadowKey {
+        SHADOW_WORKSPACE.valid = 1;
+        SHADOW_WORKSPACE.key = ShadowKey {
             row0: world.row0,
             row1: world.row1,
             row2: world.row2,
-            generation: LEVEL_GENERATION[0u16],
+            generation: GAME_SESSION.generation,
             mask: mask,
             receivers: receivers,
         };
     }
-    SHADOW_INFO[0u16] = 0;
-    SHADOW_INFO[1u16] = 0;
-    SHADOW_INFO[2u16] = 0;
+    SHADOW_WORKSPACE.info.hull_points = 0;
+    SHADOW_WORKSPACE.info.receivers = 0;
+    SHADOW_WORKSPACE.info.triangles = 0;
     let count = shadow_hull(shadow_project(world));
-    SHADOW_INFO[0u16] = count;
+    SHADOW_WORKSPACE.info.hull_points = count;
     draw_shadow_hull(pass, mesh, model, material, count, mask);
 }
 
@@ -513,14 +544,14 @@ fn draw_shadow_hull(
         shadow_batch_finish(pass, model, material);
         return;
     }
-    let mut min_x = SHADOW_HULL[0u16].value;
+    let mut min_x = SHADOW_WORKSPACE.hull[0u16].value;
     let mut max_x = min_x;
-    let mut min_z = SHADOW_HULL[1u16].value;
+    let mut min_z = SHADOW_WORKSPACE.hull[1u16].value;
     let mut max_z = min_z;
     let mut i: u16 = 1;
     while i < count {
-        let x = SHADOW_HULL[i * 2].value;
-        let z = SHADOW_HULL[i * 2 + 1].value;
+        let x = SHADOW_WORKSPACE.hull[i * 2].value;
+        let z = SHADOW_WORKSPACE.hull[i * 2 + 1].value;
         if x < min_x {
             min_x = x;
         }
@@ -537,12 +568,12 @@ fn draw_shadow_hull(
     }
     let half = fix!(0.5);
     let one = fix32::from_int(1);
-    let mode = visual_mode();
+    let mode = GAME_SESSION.visual_mode();
     // Inclusive overlap needs x >= min_x + half_width - 1 and
     // x <= max_x + half_width. Floor the lower bound conservatively so
     // exact shared boundaries retain the original clipping/admission order.
-    let width = LEVEL[0u16];
-    let height = LEVEL[1u16];
+    let width = GAME_SESSION.level.width;
+    let height = GAME_SESSION.level.height;
     let half_width = fix32::from_int(width as i16) * half;
     let half_height = fix32::from_int(height as i16) * half;
     let mut first_x = (min_x + half_width - one).to_int();
@@ -566,13 +597,14 @@ fn draw_shadow_hull(
         let top = fix32::from_int(z) - half_height;
         let mut x = first_x;
         i = z as u16 * width + x as u16;
-        while x <= last_x && i < LEVEL[6u16] {
-            let kind = level_field(i, 0);
+        while x <= last_x && i < GAME_SESSION.level.cell_count {
+            let kind = GAME_SESSION.level_field(i, 0);
             let left = fix32::from_int(x) - half_width;
-            let start = x as u16 == LEVEL[2u16] && z as u16 == LEVEL[3u16];
+            let start =
+                x as u16 == GAME_SESSION.level.start_x && z as u16 == GAME_SESSION.level.start_z;
             let receiving = kind != 0
-                && !fragile_dropped(i)
-                && !(kind == 5 && mask & level_field(i, 1) == 0)
+                && !GAME_SESSION.fragile_dropped(i)
+                && !(kind == 5 && mask & GAME_SESSION.level_field(i, 1) == 0)
                 && !(start && (mode == ENTRY_OPEN || mode == ENTRY_RISE))
                 && !(kind == 6 && mode > GOAL_OPEN && mode <= GOAL_CLOSE);
             if receiving
@@ -581,48 +613,51 @@ fn draw_shadow_hull(
                 && top + one >= min_z
                 && top <= max_z
             {
-                let mut points = SHADOW_HULL.as_array();
-                let mut destination = SHADOW_CLIP_A.as_array();
+                let mut points = SHADOW_WORKSPACE.hull.as_array();
+                let mut destination = SHADOW_WORKSPACE.clip_a.as_array();
                 let mut n = count;
                 if min_x < left {
                     n = shadow_clip(points, destination, n, left, 0);
                     points = destination;
-                    destination =
-                        if points.as_ptr().addr() == SHADOW_CLIP_A.as_array().as_ptr().addr() {
-                            SHADOW_CLIP_B.as_array()
-                        } else {
-                            SHADOW_CLIP_A.as_array()
-                        };
+                    destination = if points.as_ptr().addr()
+                        == SHADOW_WORKSPACE.clip_a.as_array().as_ptr().addr()
+                    {
+                        SHADOW_WORKSPACE.clip_b.as_array()
+                    } else {
+                        SHADOW_WORKSPACE.clip_a.as_array()
+                    };
                 }
                 if max_x > left + one {
                     n = shadow_clip(points, destination, n, left + one, 1);
                     points = destination;
-                    destination =
-                        if points.as_ptr().addr() == SHADOW_CLIP_A.as_array().as_ptr().addr() {
-                            SHADOW_CLIP_B.as_array()
-                        } else {
-                            SHADOW_CLIP_A.as_array()
-                        };
+                    destination = if points.as_ptr().addr()
+                        == SHADOW_WORKSPACE.clip_a.as_array().as_ptr().addr()
+                    {
+                        SHADOW_WORKSPACE.clip_b.as_array()
+                    } else {
+                        SHADOW_WORKSPACE.clip_a.as_array()
+                    };
                 }
                 if min_z < top {
                     n = shadow_clip(points, destination, n, top, 2);
                     points = destination;
-                    destination =
-                        if points.as_ptr().addr() == SHADOW_CLIP_A.as_array().as_ptr().addr() {
-                            SHADOW_CLIP_B.as_array()
-                        } else {
-                            SHADOW_CLIP_A.as_array()
-                        };
+                    destination = if points.as_ptr().addr()
+                        == SHADOW_WORKSPACE.clip_a.as_array().as_ptr().addr()
+                    {
+                        SHADOW_WORKSPACE.clip_b.as_array()
+                    } else {
+                        SHADOW_WORKSPACE.clip_a.as_array()
+                    };
                 }
                 if max_z > top + one {
                     n = shadow_clip(points, destination, n, top + one, 3);
                     points = destination;
                 }
                 if n >= 3 {
-                    SHADOW_INFO[1u16] += 1;
+                    SHADOW_WORKSPACE.info.receivers += 1;
                 }
                 if shadow_batch_enabled() {
-                    SHADOW_INFO[2u16] += shadow_batch_cell(points, n, left, top);
+                    SHADOW_WORKSPACE.info.triangles += shadow_batch_cell(points, n, left, top);
                 } else {
                     let mut triangle: u16 = 2;
                     while triangle < n {
@@ -641,9 +676,8 @@ fn draw_shadow_hull(
 // Caller-owned receiver-cell buffers. Rebuild only after prior GPU retirement
 // and CB reset; free only after the caller has dropped both command buffers.
 const SHADOW_BATCH_DIAGNOSTICS: u16 = 0;
-static SHADOW_BATCH_BASE: u16 = 0;
 fn shadow_batch_data() -> Array<u16> {
-    unsafe { Ptr::from_addr(SHADOW_BATCH_BASE).as_u16_array() }
+    unsafe { Ptr::from_addr(SHADOW_WORKSPACE.batch_base).as_u16_array() }
 }
 fn shadow_batch_slot() -> Array<u16> {
     unsafe { Ptr::from_addr(shadow_batch_data()[1u16]).as_u16_array() }
@@ -652,7 +686,7 @@ pub fn shadow_batch_begin() -> Ptr {
     let owner = malloc(8575);
     let base = (owner.addr() + 63) & 65472;
     unsafe {
-        addr_of(&SHADOW_BATCH_BASE).write(0, base);
+        addr_of(&SHADOW_WORKSPACE.batch_base).write(0, base);
     }
     let mut data = shadow_batch_data();
     let mut i: u16 = 0;
@@ -667,18 +701,18 @@ pub fn shadow_batch_frame() {
 }
 pub fn shadow_batch_end(owner: Ptr) {
     unsafe {
-        addr_of(&SHADOW_BATCH_BASE).write(0, 0);
+        addr_of(&SHADOW_WORKSPACE.batch_base).write(0, 0);
     }
     free(owner);
 }
 fn shadow_batch_enabled() -> bool {
-    SHADOW_BATCH_BASE != 0
+    SHADOW_WORKSPACE.batch_base != 0
 }
 fn shadow_batch_select() {
     let mut data = shadow_batch_data();
     let slot = data[0u16];
     assert(slot < 2, 0x5b01);
-    data[1u16] = SHADOW_BATCH_BASE + 64 + slot * 4224;
+    data[1u16] = SHADOW_WORKSPACE.batch_base + 64 + slot * 4224;
     data[0u16] = slot + 1;
 }
 fn shadow_batch_scalar(mut data: Array<u16>, at: u16, value: fix32, store: bool) -> bool {
@@ -698,7 +732,7 @@ fn shadow_batch_row(data: Array<u16>, at: u16, row: Vec4, store: bool) -> bool {
 fn shadow_batch_matches(world: Mat3x4, mask: u16, receivers: u16) -> bool {
     let data = shadow_batch_slot();
     data[4u16] != 0
-        && data[29u16] == LEVEL_GENERATION[0u16]
+        && data[29u16] == GAME_SESSION.generation
         && data[30u16] == mask
         && data[31u16] == receivers
         && shadow_batch_row(data, 5, world.row0, false)
@@ -712,7 +746,7 @@ fn shadow_batch_prepare(world: Mat3x4, mask: u16, receivers: u16) {
     shadow_batch_row(data, 5, world.row0, true);
     shadow_batch_row(data, 13, world.row1, true);
     shadow_batch_row(data, 21, world.row2, true);
-    data[29u16] = LEVEL_GENERATION[0u16];
+    data[29u16] = GAME_SESSION.generation;
     data[30u16] = mask;
     data[31u16] = receivers;
     if SHADOW_BATCH_DIAGNOSTICS != 0 {
@@ -725,9 +759,9 @@ fn shadow_batch_prepare(world: Mat3x4, mask: u16, receivers: u16) {
 }
 fn shadow_batch_restore() {
     let data = shadow_batch_slot();
-    SHADOW_INFO[0u16] = data[1u16];
-    SHADOW_INFO[1u16] = data[2u16];
-    SHADOW_INFO[2u16] = data[3u16];
+    SHADOW_WORKSPACE.info.hull_points = data[1u16];
+    SHADOW_WORKSPACE.info.receivers = data[2u16];
+    SHADOW_WORKSPACE.info.triangles = data[3u16];
 }
 fn shadow_batch_index(mut words: Array<u16>, base: u16, triangle: u16, fan: u16) {
     let at = base + (triangle / 3) * 4;
@@ -878,16 +912,16 @@ fn shadow_batch_draw(pass: &mut Pass, model: &mut Model, material: &Material) {
         },
     );
     pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr());
-    DRAW_CALLS[0u16] += mesh.meshlet_count();
+    DRAW_STATS.draw_calls += mesh.meshlet_count();
 }
 fn shadow_batch_finish(pass: &mut Pass, model: &mut Model, material: &Material) {
     if !shadow_batch_enabled() {
         return;
     }
     let mut data = shadow_batch_slot();
-    data[1u16] = SHADOW_INFO[0u16];
-    data[2u16] = SHADOW_INFO[1u16];
-    data[3u16] = SHADOW_INFO[2u16];
+    data[1u16] = SHADOW_WORKSPACE.info.hull_points;
+    data[2u16] = SHADOW_WORKSPACE.info.receivers;
+    data[3u16] = SHADOW_WORKSPACE.info.triangles;
     data[4u16] = 1;
     shadow_batch_draw(pass, model, material);
 }

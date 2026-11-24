@@ -1,10 +1,18 @@
 ---
 id: bloxorz-ground-shadow
 status: implemented
-last-verified: 2026-11-05
+last-verified: 2026-11-24
 ---
 
 # Ground shadow
+
+The module's persistent state is grouped in `ShadowWorkspace`: the validity
+flag and full world/receiver key, named hull/receiver/triangle statistics,
+and five reusable buffers of 24, 40, 42, 48 and 48 fixed-point scalars.
+Corners and projected points are reused for cached triangles after hull
+construction; hull and clipping outputs remain separate while live. The
+batch pointer identifies caller-owned heap storage and is cleared before
+that owner is freed. Grouping this state adds no storage or allocation.
 
 The application draws the Web box shadow through an immutable unit-triangle mesh and ordinary public `Model::set_matrices` / `Pass::draw_colored` calls. Its CPU geometry consumes the already prepared player world matrix; floor, switch, well and player rendering use the same session state. The shadow is drawn after receivers and before the player, with depth test Always, depth writes disabled and SrcOver alpha 87/255, color (10,13,18). Its plane is y=393/65536. The unit mesh has a +Y normal, RGB white and no face culling. Its independent Y matrix column preserves that normal for each nondegenerate X/Z fan. The CPU receiver clipping gates the shadow to supported cells and excludes open start/goal cells. Using Always avoids rejecting coplanar shadow fragments through D16 quantization; the shadow never changes depth. Both ordinary and RTT source paths restore the opaque Less/depth-write state before drawing the player. The configured far value is an admission threshold, not a rescaling of interpolated D16 precision.
 

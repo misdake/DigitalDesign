@@ -23,7 +23,7 @@ pub struct PadPart {
 }
 
 pub fn goal_carrier_enabled() -> bool {
-    blox_level_meta(MOTION[6u16], 14) != 0
+    BLOX_LEVEL_HEADERS[GAME_SESSION.motion.level].carrier != 0
 }
 fn opening(start: bool, mode: u16, t: u16) -> fix32 {
     let one = fix32::from_int(1);
@@ -50,10 +50,10 @@ fn cached_opening(cache: Array<u16>, start: bool) -> fix32 {
 // generation, entry/goal normalized animation keys, initialized/dirty/visible
 // masks, goal mesh index, then the two exact Q16 opening values.
 pub fn pad_cache_update(mut cache: Array<u16>) {
-    let mode = visual_mode();
-    let t = visual_time();
-    if cache[0u16] != LEVEL_GENERATION[0u16] {
-        cache[0u16] = LEVEL_GENERATION[0u16];
+    let mode = GAME_SESSION.visual_mode();
+    let t = GAME_SESSION.visual_time();
+    if cache[0u16] != GAME_SESSION.generation {
+        cache[0u16] = GAME_SESSION.generation;
         cache[1u16] = 65535;
         cache[2u16] = 65535;
         cache[3u16] = 0;
@@ -96,7 +96,7 @@ pub fn pad_cache_update(mut cache: Array<u16>) {
             visible |= 96;
         }
     }
-    if SESSION[6u16] != 65535 {
+    if GAME_SESSION.animation.goal_x != 65535 {
         if mode <= GOAL_OPEN || mode > GOAL_CLOSE {
             visible |= 2;
         }
@@ -152,7 +152,7 @@ pub fn pad_part_material(role: u16) -> Material {
     game_material(color, unlit)
 }
 pub fn pad_carrier_texture() -> Texture {
-    let phase = (SESSION[6u16] * 3 + SESSION[7u16] * 5) & 3;
+    let phase = (GAME_SESSION.animation.goal_x * 3 + GAME_SESSION.animation.goal_z * 5) & 3;
     Texture::from_native(TextureDesc {
         format: TextureFormat::Rgb565,
         memory: unsafe { GpuMemory::from_sectors(60416 + phase * 256, 256) },
@@ -176,12 +176,24 @@ pub fn draw_pad_part(
     }
     if cache[3u16] & bit == 0 || cache[4u16] & bit != 0 {
         let start = role == 0 || (role >= 3 && role <= 6);
-        let x = if start { LEVEL[2u16] } else { SESSION[6u16] };
-        let z = if start { LEVEL[3u16] } else { SESSION[7u16] };
+        let x = if start {
+            GAME_SESSION.level.start_x
+        } else {
+            GAME_SESSION.animation.goal_x
+        };
+        let z = if start {
+            GAME_SESSION.level.start_z
+        } else {
+            GAME_SESSION.animation.goal_z
+        };
         let one = fix32::from_int(1);
         let half = fix!(0.5);
-        let cx = fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half + half;
-        let cz = fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half + half;
+        let cx = fix32::from_int(x as i16)
+            - fix32::from_int(GAME_SESSION.level.width as i16) * half
+            + half;
+        let cz = fix32::from_int(z as i16)
+            - fix32::from_int(GAME_SESSION.level.height as i16) * half
+            + half;
         if role < 3 {
             let scale = if role == 2 || (role == 1 && goal_carrier_enabled()) {
                 half
@@ -231,8 +243,16 @@ pub fn draw_pad_part(
 }
 
 pub fn draw_pad_well(pass: &mut Pass, model: &mut Model, material: &mut Material, start: bool) {
-    let x = if start { LEVEL[2u16] } else { SESSION[6u16] };
-    let z = if start { LEVEL[3u16] } else { SESSION[7u16] };
+    let x = if start {
+        GAME_SESSION.level.start_x
+    } else {
+        GAME_SESSION.animation.goal_x
+    };
+    let z = if start {
+        GAME_SESSION.level.start_z
+    } else {
+        GAME_SESSION.animation.goal_z
+    };
     if x == 65535 {
         return;
     }
@@ -257,9 +277,11 @@ pub fn draw_pad_well(pass: &mut Pass, model: &mut Model, material: &mut Material
     }
     model.set_pose(Transform::new(
         Vec3::new(
-            fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half + half,
+            fix32::from_int(x as i16) - fix32::from_int(GAME_SESSION.level.width as i16) * half
+                + half,
             fix32::zero(),
-            fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half + half,
+            fix32::from_int(z as i16) - fix32::from_int(GAME_SESSION.level.height as i16) * half
+                + half,
         ),
         Vec3::zero(),
         Vec3::one(),

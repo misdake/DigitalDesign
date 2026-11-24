@@ -227,13 +227,11 @@ fn bloxorz_one_play_frame_has_identical_color_depth_and_lower_matrix_cost() {
         + &fs::read_to_string(assets.join("renderer_assets.rs")).unwrap();
     let app = root.join("examples/game_bloxorz/rcc");
     let original = fs::read_to_string(app.join("main.rs")).unwrap();
-    assert_eq!(original.matches("run(0, false, 128);").count(), 1);
-    let source = original
-        .replace("run(0, false, 128);", "run(1, false, 128);halt(0x600d);")
-        .replace(
-            "session_init();",
-            "session_init();level_reset(0);SESSION[0u16]=PLAY;BACKGROUND[0u16]=0;",
-        );
+    assert_eq!(original.matches("run(0);").count(), 1);
+    let source = original.replace("run(0);", "run(1);halt(0x600d);").replace(
+        "session_init();",
+        "session_init();level_reset(0);SESSION[0u16]=PLAY;BACKGROUND[0u16]=0;",
+    );
     fs::write(out.join("bounded-bloxorz-main.rs"), &source).unwrap();
     let mut old = AFTER[..AFTER.find("// Writes exactly 42").unwrap()]
         .replace("#[inline]\r\n", "")

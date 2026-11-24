@@ -22,7 +22,8 @@ fn sectors(cells: u16) -> u16 {
     (64 + cells * 120 + ((cells * 10 + 2) / 3) * 4 + 63) >> 6
 }
 fn bucket_of(cell: u16) -> u16 {
-    (cell % LEVEL[0u16]) / 3 + (div_u16(cell, LEVEL[0u16]) / 3) * ((LEVEL[0u16] + 2) / 3)
+    (cell % GAME_SESSION.level.width) / 3
+        + (div_u16(cell, GAME_SESSION.level.width) / 3) * ((GAME_SESSION.level.width + 2) / 3)
 }
 // RMW each six-bit field. Every qword has three18-bit triangles and10 padding bits.
 fn indices(mut words: Array<u16>, slot: u16, hidden: bool) {
@@ -64,17 +65,18 @@ fn record(mut words: Array<u16>, cells: Array<u16>, count: u16, bucket: u16) {
     }
     words[0u16] = count * 20 | ((count * 10) << 8);
     words[1u16] = 20 | ((count * 30) << 8);
-    let columns = (LEVEL[0u16] + 2) / 3;
-    words[9u16] = (((bucket % columns) * 6) as i16 - LEVEL[0u16] as i16) as u16;
+    let columns = (GAME_SESSION.level.width + 2) / 3;
+    words[9u16] = (((bucket % columns) * 6) as i16 - GAME_SESSION.level.width as i16) as u16;
     words[10u16] = 39424;
     words[11u16] = 65535;
-    words[13u16] = ((div_u16(bucket, columns) * 6) as i16 - LEVEL[1u16] as i16) as u16;
+    words[13u16] =
+        ((div_u16(bucket, columns) * 6) as i16 - GAME_SESSION.level.height as i16) as u16;
     words[14u16] = 265;
     let template: Buf<u16, 20> = Buf::new([0; 20]);
     let mut tile: u16 = 0;
     while tile < count {
-        let x = cells[tile] % LEVEL[0u16];
-        let z = div_u16(cells[tile], LEVEL[0u16]);
+        let x = cells[tile] % GAME_SESSION.level.width;
+        let z = div_u16(cells[tile], GAME_SESSION.level.width);
         let variant = (x * 3 + z * 5) % 4;
         let mut face: u16 = 0;
         while face < 5 {
@@ -109,12 +111,12 @@ pub fn fragile_begin() -> Ptr {
         c[i] = 0;
         i += 1;
     }
-    c[4u16] = LEVEL_GENERATION[0u16] - 1;
+    c[4u16] = GAME_SESSION.generation - 1;
     c[5u16] = 65535;
     owner
 }
 pub fn fragile_matches_level(owner: Ptr) -> bool {
-    data(owner)[4u16] == LEVEL_GENERATION[0u16]
+    data(owner)[4u16] == GAME_SESSION.generation
 }
 // Both CBs are retired/reset by the application before a level rebuild/free.
 pub fn fragile_rebuild(owner: Ptr) {
@@ -130,14 +132,14 @@ pub fn fragile_rebuild(owner: Ptr) {
     c[1u16] = 0;
     c[2u16] = 0;
     c[7u16] = 0;
-    let buckets = ((LEVEL[0u16] + 2) / 3) * ((LEVEL[1u16] + 2) / 3);
+    let buckets = ((GAME_SESSION.level.width + 2) / 3) * ((GAME_SESSION.level.height + 2) / 3);
     let mut bucket: u16 = 0;
     let mut payload: u16 = 0;
     while bucket < buckets {
         let mut n: u16 = 0;
         let mut i: u16 = 0;
-        while i < LEVEL[6u16] {
-            if level_field(i, 0) == 2 && bucket_of(i) == bucket {
+        while i < GAME_SESSION.level.cell_count {
+            if GAME_SESSION.level_field(i, 0) == 2 && bucket_of(i) == bucket {
                 n += 1;
             }
             i += 1;
@@ -173,12 +175,15 @@ pub fn fragile_rebuild(owner: Ptr) {
         while bucket < buckets {
             let mut count: u16 = 0;
             let mut i: u16 = 0;
-            while i <= LEVEL[6u16] {
-                if i < LEVEL[6u16] && level_field(i, 0) == 2 && bucket_of(i) == bucket {
+            while i <= GAME_SESSION.level.cell_count {
+                if i < GAME_SESSION.level.cell_count
+                    && GAME_SESSION.level_field(i, 0) == 2
+                    && bucket_of(i) == bucket
+                {
                     cells[count] = i;
                     count += 1;
                 }
-                if count == 3 || (i == LEVEL[6u16] && count != 0) {
+                if count == 3 || (i == GAME_SESSION.level.cell_count && count != 0) {
                     let record_words = unsafe { Ptr::from_addr(next).as_u16_array() };
                     record(record_words, cells.as_array(), count, bucket);
                     directory[entry * 2] = next >> 6;
@@ -202,7 +207,7 @@ pub fn fragile_rebuild(owner: Ptr) {
             halt(0xfb03);
         }
     }
-    c[4u16] = LEVEL_GENERATION[0u16];
+    c[4u16] = GAME_SESSION.generation;
 }
 fn patch(c: Array<u16>, cell: u16, hidden: bool) {
     let map = unsafe { Ptr::from_addr(c[7u16]).as_u16_array() };
@@ -220,8 +225,10 @@ fn patch(c: Array<u16>, cell: u16, hidden: bool) {
 }
 pub fn fragile_sync(owner: Ptr) {
     let mut c = data(owner);
-    let hidden = if FRACTURE[0u16] != 65535 && fragile_dropped(FRACTURE[0u16]) {
-        FRACTURE[0u16]
+    let hidden = if GAME_SESSION.fracture_cell != 65535
+        && GAME_SESSION.fragile_dropped(GAME_SESSION.fracture_cell)
+    {
+        GAME_SESSION.fracture_cell
     } else {
         65535u16
     };

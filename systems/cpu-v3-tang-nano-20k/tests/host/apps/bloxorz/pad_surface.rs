@@ -28,7 +28,7 @@ fn pad_surface_fixed_controls_and_candidate() {
     };
     let (program, resources, out) = application_case(
         &name,
-        Some("run(13,false,128);"),
+        Some("run(13);"),
         frozen.as_deref(),
         scenarios::fragile_pad(
             frozen.is_none().then(|| scenarios::atlas_sizes(&arm)),
@@ -47,7 +47,7 @@ fn pad_surface_fixed_controls_and_candidate() {
     let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
     sim.cpu_mut().set_boot_window(&program.words);
     preload(sim.cpu_mut().physical_memory_mut(), &resources);
-    let session = global(&program, "SESSION");
+    let session = global(&program, "GAME_SESSION.animation");
     let mut frames = vec![];
     let mut count = 0;
     let mut inputs = vec![];

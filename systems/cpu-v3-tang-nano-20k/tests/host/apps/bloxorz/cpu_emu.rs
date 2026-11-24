@@ -36,7 +36,7 @@ fn level29_shadow_frame_cpu_cycles_and_instruction_oracle() {
     let arm = std::env::var("BLOXORZ_CPU_ARM").expect("explicit CPU arm");
     let (program, resources, root) = application_case(
         "cpu-shadow-stage29",
-        Some("run(3,false,128);"),
+        Some("run(3);"),
         None,
         scenarios::cpu_shadow(),
     );
@@ -112,9 +112,9 @@ fn level29_shadow_frame_cpu_cycles_and_instruction_oracle() {
     let mut frames = vec![];
     let mut state = None;
     let mut minimum_sp = 0xc000u16;
-    let session = global(&program, "SESSION");
-    let game = global(&program, "GAME");
-    let shadow = global(&program, "SHADOW_INFO");
+    let session = global(&program, "GAME_SESSION.animation");
+    let game = global(&program, "GAME_SESSION.rules");
+    let shadow = global(&program, "SHADOW_WORKSPACE.info");
     halted = false;
     for _ in 0..24_000_000 {
         assert!(
