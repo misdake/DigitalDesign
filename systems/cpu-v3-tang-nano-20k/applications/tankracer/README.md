@@ -324,6 +324,10 @@ and full acceptance. Its checked host fixture runs the actual RCC function
 against the original visibility rules, including fixed-point clip boundaries,
 moving cameras, rear views and off-route positions:
 
+Group-center acceptance checks depth first, then horizontal and vertical
+containment. Each rejected component ends that fast path before the next
+projection. Boundary groups retain their full conservative box test.
+
 ```powershell
 python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_classification.py --output target/classification-check
 ```

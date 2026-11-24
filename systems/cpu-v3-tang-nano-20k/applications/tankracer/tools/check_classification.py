@@ -15,7 +15,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     world = Path(__file__).resolve().parents[1] / 'rcc/world.rs'
     source = world.read_text()
-    functions = ['fixed', 'row', 'project', 'absolute_basis', 'extent_at', 'intersects',
+    functions = ['fixed', 'row', 'project', 'absolute_basis', 'extent_at', 'center_visible', 'intersects',
                  'classify_cluster']
     fixture = PRELUDE + '\n'.join(function(source, name) for name in functions)
     fixture += TESTS
@@ -90,6 +90,12 @@ fn oracle(view:&View,words:Array<u16>,at:u16)->u16 {
 }
 fn write(mut words:Array<u16>,at:u16,v:fix32) { words[at]=v.lo_bits();words[at+1]=v.hi_bits(); }
 fn random(seed:&mut u32)->f64 { *seed=seed.wrapping_mul(1664525).wrapping_add(1013904223); *seed as f64/u32::MAX as f64 }
+fn center_oracle(view:&View,bound:&Vec4,depth:fix32)->bool {
+    let x=project(&view.matrix.row0,bound).abs();
+    let y=project(&view.matrix.row1,bound).abs();
+    depth>fix32::zero() && depth<=DISPLAY_DISTANCE
+        && x<=depth*X_PER_DEPTH && y<=depth*Y_PER_DEPTH
+}
 '''
 
 TESTS = r'''
@@ -120,6 +126,9 @@ fn classifier_matches_original_over_motion_and_jumps() {
         for id in 0..128u16 {
             let expected=oracle(&v,data,id*16);
             assert_eq!(classify_cluster(&v,data,id*16),expected,"fresh {frame}/{id}");
+            let bound=row(data,id*16);
+            let depth=-project(&v.matrix.row2,&bound);
+            assert_eq!(center_visible(&v,&bound,depth),center_oracle(&v,&bound,depth));
         }
     }
 }
@@ -137,6 +146,20 @@ fn clipping_boundaries_include_fixed_point_neighbors() {
                 write(data,12,fix32(extent));
                 write(data,0,fix32(((depth as i64*X_PER_DEPTH.0 as i64)>>16) as i32+x));
                 assert_eq!(classify_cluster(&v,data,0),oracle(&v,data,0));
+            }
+        }
+    }
+}
+#[test]
+fn center_boundaries_keep_closed_side_edges_and_open_near_plane() {
+    let v=view(0.0,0.0,0.0,0.0,0.0);
+    for depth in [-1,0,1,65536,25*65536,25*65536+1] {
+        for x_delta in [-1,0,1] {
+            for y_delta in [-1,0,1] {
+                let d=fix32(depth);
+                let bound=Vec4{x:d*X_PER_DEPTH+fix32(x_delta),
+                    y:d*Y_PER_DEPTH+fix32(y_delta),z:-d,w:fix32::zero()};
+                assert_eq!(center_visible(&v,&bound,d),center_oracle(&v,&bound,d));
             }
         }
     }

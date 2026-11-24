@@ -580,12 +580,13 @@ fn group_bound(words: Array<u16>, at: u16) -> Vec4 {
 }
 
 fn center_visible(view: &View, bound: &Vec4, depth: fix32) -> bool {
-    let x = project(&view.matrix.row0, bound).abs();
-    let y = project(&view.matrix.row1, bound).abs();
-    depth > fix32::zero()
-        && depth <= DISPLAY_DISTANCE
-        && x <= depth * X_PER_DEPTH
-        && y <= depth * Y_PER_DEPTH
+    if depth <= fix32::zero() || depth > DISPLAY_DISTANCE {
+        return false;
+    }
+    if project(&view.matrix.row0, bound).abs() > depth * X_PER_DEPTH {
+        return false;
+    }
+    project(&view.matrix.row1, bound).abs() <= depth * Y_PER_DEPTH
 }
 
 fn intersects(view: &View, bound: &Vec4, extent: vec3, depth: fix32) -> bool {
