@@ -65,7 +65,7 @@ pub(super) fn borrow(l: &mut FnLower, reference: &syn::ExprReference) -> Result<
                 l,
                 words,
                 reference,
-                "borrowed temporary exceeds the 255-word frame limit",
+                "borrowed temporary exceeds the 16-bit local frame address range",
             )?;
             let address = l.b.addr_of_local(slot);
             if is_aggregate(&ty) {

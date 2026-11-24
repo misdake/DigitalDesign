@@ -508,7 +508,12 @@ A fieldless enum is one word holding the variant's discriminant (`Idle` = 0, `Ru
 declaration order). `Trace::Run` is a compile-time constant, so it works anywhere a `u16` works:
 a binding, an argument, a return value, a struct field, a `Buf<Trace, N>` element, and `e as u16`.
 
-- Variants must be fieldless, unique and without explicit discriminants. Checked source
+- Variants must be fieldless and have unique names and discriminants. An explicit
+  `u16` integer literal can set the first or any later value: `A = 1, B, C = 8, D`
+  means `1, 2, 8, 9`. An omitted first value is zero; other omitted values increment
+  the preceding value. Duplicate values, out-of-range literals and implicit overflow
+  beyond 65535 are rejected. Arbitrary discriminant expressions are not supported.
+  Constant evaluation and runtime lowering share the same discriminant table. Checked source
   requires `#[repr(u16)]`; another representation is rejected. The unchecked legacy entry
   also retains its previous implicit word representation. `Copy`, `Clone`, `PartialEq`
   and `Eq` derive markers, `#[allow]` and `#[doc]` are accepted.
@@ -520,8 +525,18 @@ a binding, an argument, a return value, a struct field, a `Buf<Trace, N>` elemen
   patterns are errors. The value is tested once and the arms become a chain of branches.
 - Exhaustiveness follows Rust: a match on an enum must list every variant or have a `_` arm, and a
   match on integers needs `_` — otherwise the same source would not build on the host.
-- Out of scope for now (§12): variants with payload, explicit discriminants, `#[repr]`, enum
-  statics, and casting an integer *to* an enum.
+- `enum_from_u16::<E>(word)` accepts only a fieldless `#[repr(u16)]` enum and a
+  `u16`. It checks membership in the actual discriminants, including holes, and
+  halts with `0xffe5` on invalid input in both debug and release. Consecutive
+  discriminants share range checks; conversion evaluates its argument once.
+- `unsafe { enum_from_u16_unchecked::<E>(word) }` reuses the input value with no
+  target check or data conversion. The caller must prove it is a declared
+  discriminant. A guarded index with a business-specific fallback can use this
+  form after its guard; a plain `as E` cast remains invalid Rust.
+- The rustc check projection generates host mappings from the actual variants.
+  Safe host conversion never constructs an invalid enum through a generic
+  transmute; its invalid-input signal matches the target.
+- Payload variants and enum statics remain outside this enum subset.
 ## 10. Arrays: `Buf<T, N>`
 
 C semantics: an array is N consecutive words, addressed by a plain (single-word) pointer,
@@ -860,8 +875,11 @@ on those paths, without changing cleanup or saved-register semantics.
 
 Register allocation reconstructs spilled single-definition GPR immediates at
 their uses instead of assigning stack homes. Phi/multiply-defined values and FPU
-spills retain ordinary homes; frame addresses are not reconstructed. After
-allocation, adjacent exact stack store/reloads become register copies, preserving
+spills retain ordinary homes; frame addresses are not reconstructed. Phi spill
+edges read every old input before any destination stack home
+is overwritten. Loop-carried chains and swaps retain simultaneous phi semantics
+even when both sides spill.
+After allocation, adjacent exact stack store/reloads become register copies, preserving
 the load's definition. Within a reachable block, repeated immediate definitions
 in an unchanged physical register also become copies (and emit no word when
 registers match). Calls, static-initialization scratch use and GPR definitions
@@ -1431,7 +1449,10 @@ ordinary structs and the existing fieldless `repr(u16)` enums (§9d). `Self`
 names the defining nominal type; enum methods may be declared in another loaded
 file. Value receivers and ordinary struct/tuple
 parameters use isolated values evaluated in argument order, before later
-arguments can modify their sources. Borrowed receivers use the original place
+arguments can modify their sources. Borrowed receivers use the original place,
+including static structs and their fields; they do not snapshot a static into
+the stack. Calls involving resource arguments retain the same receiver place
+when ownership lowering runs before value-method lowering. Borrows work
 through an internal view; shared and mutable receiver legality is checked by rustc
 before lowering. One-word aggregates use registers; larger arguments use
 caller-owned snapshots and larger returns use the hidden destination ABI (§14).
@@ -1445,7 +1466,12 @@ the optional optimization passes disabled.
 
 The builder returns completed scratch ranges to a first-fit free list, merges
 adjacent ranges and can grow a free tail in place. `local_slots` remains the
-physical frame high water mark, with the same 255-word limit. Named/addressable
+physical frame high water mark. Frame-slot indices are 16-bit; CPU V3 accepts
+at most 32,767 words per function, including saved registers, locals, GPR spills
+and FPU spill alignment. This is an addressing bound, not a proof that an
+application's full call stack fits between the heap and stack boundaries.
+The backend rejects oversized frames before instruction selection. Small frames
+keep the same layout and instruction encodings. Named/addressable
 locals and sret output places are not reclaimed. If a call result contains Ptr,
 Array or packed-byte addresses, including nested aggregate fields, its call
 storage is conservatively retained for the function. This is not general escape
@@ -1468,7 +1494,8 @@ chains; public `view_of` still requires an existing place. General reference
 support does not change. Rustc still checks mutability,
 aliasing, moves and unsafe calls before rewriting. Trait/generic impls and
 non-function impl members remain unsupported. The restrictions on enum payloads,
-representations, explicit discriminants, constants and tuples are unchanged.
+representations, constants and tuples are unchanged. Explicit discriminants and
+integer conversion follow §9d.
 
 `u8` arithmetic, bitwise operations, writes and casts retain the low eight bits;
 registers and ordinary fields still occupy sixteen-bit words. Packed bytes are a

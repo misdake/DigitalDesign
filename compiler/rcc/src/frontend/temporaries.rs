@@ -40,7 +40,7 @@ pub(super) fn allocate(
     words: u16,
     at: &impl syn::spanned::Spanned,
     diagnostic: &str,
-) -> Result<u8, syn::Error> {
+) -> Result<u16, syn::Error> {
     let allocation =
         l.b.try_alloc_temporary(words)
             .ok_or_else(|| err(at, diagnostic))?;

@@ -20,6 +20,7 @@ mod cfg;
 mod constants;
 mod cseg;
 mod diagnostics;
+mod enum_values;
 mod fixed_literals;
 mod liveness;
 mod modules;
@@ -970,6 +971,7 @@ type StructTable = std::collections::BTreeMap<String, StructDef>;
 struct EnumDef {
     variants: Vec<(String, u16)>,
     partial_eq: bool,
+    repr_u16: bool,
 }
 
 /// resolved enums by name
@@ -1361,8 +1363,8 @@ fn const_eval_inner(
 /// whether a static's type is an aggregate, which needs the resolved layouts and
 /// is therefore laid out after the struct pass (spec §9.4). Scalar buffers stay on
 /// the original path so their addresses do not move.
-/// `enum E { A, B }`: fieldless variants only, no generics and no explicit
-/// discriminants; repr(u16), Copy/Clone/PartialEq/Eq, allow and doc are accepted and
+/// `enum E { A = 1, B }`: fieldless variants only, no generics; explicit
+/// u16 literal discriminants, repr(u16), Copy/Clone/PartialEq/Eq, allow and doc are accepted and
 /// anything else is an error (spec §9d)
 fn enum_def(item: &syn::ItemEnum, checked: bool) -> Result<EnumDef, syn::Error> {
     if !item.generics.params.is_empty() {
@@ -1416,26 +1418,7 @@ fn enum_def(item: &syn::ItemEnum, checked: bool) -> Result<EnumDef, syn::Error> 
             "enum attributes support repr(u16), Copy/Clone/PartialEq/Eq, doc and allow only",
         ));
     }
-    let mut variants: Vec<(String, u16)> = vec![];
-    for (index, variant) in item.variants.iter().enumerate() {
-        if !matches!(variant.fields, syn::Fields::Unit) {
-            return Err(err(
-                variant,
-                "only fieldless variants are supported (a C-style enum, spec §9d)",
-            ));
-        }
-        if let Some((_, value)) = &variant.discriminant {
-            return Err(err(value, "explicit discriminants are not supported"));
-        }
-        let name = variant.ident.to_string();
-        if variants.iter().any(|(existing, _)| *existing == name) {
-            return Err(err(
-                &variant.ident,
-                format!("variant `{name}` defined twice"),
-            ));
-        }
-        variants.push((name, index as u16));
-    }
+    let variants = enum_values::discriminants(item)?;
     if variants.is_empty() {
         return Err(err(item, "an enum needs at least one variant"));
     }
@@ -1447,6 +1430,7 @@ fn enum_def(item: &syn::ItemEnum, checked: bool) -> Result<EnumDef, syn::Error> 
     Ok(EnumDef {
         variants,
         partial_eq,
+        repr_u16,
     })
 }
 
@@ -2664,7 +2648,7 @@ fn let_tuple(
             ),
         ));
     }
-    let slot = l.b.alloc_local_slots(elems.len() as u8);
+    let slot = l.b.alloc_local_slots(elems.len() as u16);
     let base = l.b.addr_of_local(slot);
     init_tuple_at(l, base, &elems, init)?;
     let values: Vec<(VReg, Ty)> = elems
@@ -2788,7 +2772,7 @@ enum VarKind {
     /// SSA value (register allocated)
     Ssa { var: VarId },
     /// memory-resident in the stack frame (address-taken locals and arrays)
-    Local { slot: u8 },
+    Local { slot: u16 },
 }
 
 struct VarInfo {
@@ -3333,7 +3317,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                 let slot = l.b.try_alloc_local_slots(size).ok_or_else(|| {
                     err(
                         &init.1,
-                        "aggregate storage exceeds the 255-word local frame limit",
+                        "aggregate storage exceeds the 16-bit local frame address range",
                     )
                 })?;
                 let base = l.b.addr_of_local(slot);
@@ -3437,7 +3421,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                             l,
                             size,
                             &a.right,
-                            "aggregate assignment exceeds the 255-word local frame limit",
+                            "aggregate assignment exceeds the 16-bit local frame address range",
                         )?;
                         let value = l.b.addr_of_local(slot);
                         init_aggregate_at(l, value, &ty, &a.right)?;
@@ -4954,6 +4938,11 @@ fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
         }
         Expr::Paren(p) => peek_type(l, &p.expr),
         Expr::Call(call) => {
+            if enum_values::is_conversion(call) {
+                return enum_values::target(call, &l.globals.enums)
+                    .ok()
+                    .map(Ty::Enum);
+            }
             let name = path_ident(&call.func).ok()?;
             let ty = &l.sigs.get(&name)?.ret;
             (matches!(ty, Ty::Enum(_) | Ty::Reference(..))
@@ -5541,7 +5530,7 @@ fn aggregate_word_value(l: &mut FnLower, e: &Expr, ty: &Ty) -> Result<VReg, syn:
             l,
             1,
             e,
-            "aggregate value exceeds the 255-word local frame limit",
+            "aggregate value exceeds the 16-bit local frame address range",
         )?;
         let destination = l.b.addr_of_local(slot);
         init_aggregate_at(l, destination, ty, e)?;
@@ -5584,7 +5573,7 @@ fn call_arg_values(l: &mut FnLower, call: &syn::ExprCall) -> Result<Vec<(VReg, T
                     l,
                     size,
                     a,
-                    "aggregate argument storage exceeds the 255-word local frame limit",
+                    "aggregate argument storage exceeds the 16-bit local frame address range",
                 )?;
                 let destination = l.b.addr_of_local(slot);
                 init_aggregate_at(l, destination, ty, a)?;
@@ -5668,6 +5657,10 @@ fn call_expr_inner(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Er
         l.unsafe_ops += 1;
     }
 
+    if enum_values::is_conversion(call) {
+        return enum_values::lower(l, call);
+    }
+
     // intrinsics with non-value arguments must be handled before generic arg
     // evaluation (assert takes a condition, addr_of takes a reference)
     match name.as_str() {
@@ -5712,7 +5705,7 @@ fn call_expr_inner(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Er
                     l,
                     size,
                     &r.expr,
-                    "value receiver exceeds the 255-word local frame limit",
+                    "value receiver exceeds the 16-bit local frame address range",
                 )?;
                 if is_aggregate(&ty) {
                     let destination = l.b.addr_of_local(slot);
@@ -7527,7 +7520,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_buffer_layout_cycles_and_oversized_frames_are_errors() {
+    fn owned_buffer_layout_cycles_and_frame_indices_do_not_wrap() {
         let error = parse_source_with("struct A { values: Buf<A, 1> } fn main() { halt(0); }", 0)
             .err()
             .unwrap()
@@ -7537,8 +7530,7 @@ mod tests {
             "fn main() { let b: Buf<u16, 256> = Buf::new([0; 256]); halt(0); }",
             "fn main() { let mut b: Buf<u16, 128> = Buf::new([0; 128]); b = Buf::new([1; 128]); halt(0); }",
         ] {
-            let error = parse_source_with(source, 0).err().unwrap().to_string();
-            assert!(error.contains("255-word local frame limit"), "{error}");
+            assert!(parse_source_with(source, 0).is_ok());
         }
     }
 

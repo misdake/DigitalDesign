@@ -29,7 +29,7 @@ pub(super) const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::Regi
     link_register: REG_LINK,
     stack_register: REG_SP,
     temporary_register: REG_TMP,
-    maximum_frame_words: 255,
+    maximum_frame_words: i16::MAX as usize,
     // FPU v2 ABI (Q16.16, contiguous scalar ranges): F0..F3 returns, F4..F27
     // arguments placed compactly, F28..F62 ordinary allocation, F63 the
     // parallel-move scratch. All FPU registers are caller-saved and ACC is

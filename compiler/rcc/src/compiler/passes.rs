@@ -837,7 +837,7 @@ fn frame_addresses(f: &IrFunc, mutable: &HashSet<VReg>) -> HashMap<VReg, u16> {
     for block in f.rpo() {
         for inst in &f.blocks[block].insts {
             let known = match *inst {
-                Instr::AddrOfLocal { dst, slot } => Some((dst, u16::from(slot))),
+                Instr::AddrOfLocal { dst, slot } => Some((dst, slot)),
                 Instr::Mov { dst, src } => addresses.get(&src).map(|&slot| (dst, slot)),
                 Instr::Bin {
                     dst,
@@ -883,11 +883,10 @@ fn forward_memory_values(f: &mut IrFunc) -> bool {
         addresses
             .get(&base)
             .map(|slot| slot.wrapping_add(offset as u16))
-            .filter(|slot| *slot < u16::from(f.local_slots))
-            .map(|slot| slot as u8)
+            .filter(|slot| *slot < f.local_slots)
     };
     let mut changed = false;
-    let mut outgoing: Vec<Option<HashMap<u8, VReg>>> = vec![None; f.blocks.len()];
+    let mut outgoing: Vec<Option<HashMap<u16, VReg>>> = vec![None; f.blocks.len()];
     for id in f.rpo() {
         let block = &mut f.blocks[id];
         let mut locals = HashMap::new();

@@ -15,8 +15,8 @@ pub struct TemporaryLocal {
     range: Range<u16>,
 }
 impl TemporaryLocal {
-    pub fn slot(&self) -> u8 {
-        self.range.start as u8
+    pub fn slot(&self) -> u16 {
+        self.range.start
     }
 }
 
@@ -241,22 +241,21 @@ impl FuncBuilder {
 
     /// allocate `n` frame-local slots (address-taken locals / local arrays),
     /// returning the base slot index
-    pub fn alloc_local_slots(&mut self, n: u8) -> u8 {
-        self.try_alloc_local_slots(u16::from(n))
-            .expect("local storage exceeds the 255-word frame limit")
+    pub fn alloc_local_slots(&mut self, n: u16) -> u16 {
+        self.try_alloc_local_slots(n)
+            .expect("local storage exceeds the 16-bit frame address range")
     }
 
     /// Reserve aggregate storage without truncating or overflowing the frame.
-    pub fn try_alloc_local_slots(&mut self, n: u16) -> Option<u8> {
-        let n = u8::try_from(n).ok()?;
+    pub fn try_alloc_local_slots(&mut self, n: u16) -> Option<u16> {
         if let Some(index) = self
             .free_local_ranges
             .iter()
-            .position(|range| range.end - range.start >= u16::from(n))
+            .position(|range| range.end - range.start >= n)
         {
             let range = &mut self.free_local_ranges[index];
-            let base = range.start as u8;
-            range.start += u16::from(n);
+            let base = range.start;
+            range.start += n;
             if range.start == range.end {
                 self.free_local_ranges.remove(index);
             }
@@ -265,8 +264,8 @@ impl FuncBuilder {
         // A dead tail can grow in place. Appending after the historical peak
         // would unnecessarily reject a larger replacement scratch allocation.
         if let Some(tail) = self.free_local_ranges.last() {
-            if tail.end == u16::from(self.func.local_slots) {
-                let base = tail.start as u8;
+            if tail.end == self.func.local_slots {
+                let base = tail.start;
                 let end = base.checked_add(n)?;
                 self.free_local_ranges.pop();
                 self.func.local_slots = end;
@@ -279,7 +278,7 @@ impl FuncBuilder {
     }
 
     pub fn try_alloc_temporary(&mut self, words: u16) -> Option<TemporaryLocal> {
-        let start = u16::from(self.try_alloc_local_slots(words)?);
+        let start = self.try_alloc_local_slots(words)?;
         Some(TemporaryLocal {
             range: start..start + words,
         })
@@ -304,16 +303,16 @@ impl FuncBuilder {
         }
     }
 
-    pub fn load_local(&mut self, slot: u8) -> VReg {
+    pub fn load_local(&mut self, slot: u16) -> VReg {
         let dst = self.fresh_vreg();
         self.push(Instr::LoadLocal { dst, slot });
         dst
     }
-    pub fn store_local(&mut self, slot: u8, src: VReg) {
+    pub fn store_local(&mut self, slot: u16, src: VReg) {
         self.push(Instr::StoreLocal { slot, src });
     }
     /// dst = sp + slot (address of a frame-local variable)
-    pub fn addr_of_local(&mut self, slot: u8) -> VReg {
+    pub fn addr_of_local(&mut self, slot: u16) -> VReg {
         let dst = self.fresh_vreg();
         self.push(Instr::AddrOfLocal { dst, slot });
         dst
@@ -477,7 +476,7 @@ impl FuncBuilder {
         });
     }
     /// dst_gpr = address of the 4-word-aligned FPU spill slot `slot`
-    pub fn addr_of_fpu_spill(&mut self, slot: u8) -> VReg {
+    pub fn addr_of_fpu_spill(&mut self, slot: u16) -> VReg {
         let dst = self.fresh_vreg();
         self.push(Instr::AddrOfFpuSpill { dst, slot });
         dst
@@ -1167,8 +1166,8 @@ mod tests {
         let combined = b.try_alloc_temporary(160).expect("adjacent scratch merges");
         assert_eq!(combined.slot(), 32);
         assert!(
-            b.try_alloc_temporary(64).is_none(),
-            "live extents still exceed 255 words"
+            b.try_alloc_temporary(u16::MAX).is_none(),
+            "live extents must not wrap the 16-bit slot index"
         );
         b.release_temporary(combined);
         let larger = b

@@ -17,25 +17,11 @@ pub enum PageId {
 }
 impl PageId {
     pub fn from_index(index: u16) -> Self {
-        if index == 1 {
-            return Self::Triangles;
+        if index >= PAGE_COUNT {
+            return Self::Home;
         }
-        if index == 2 {
-            return Self::Waves;
-        }
-        if index == 3 {
-            return Self::Controller;
-        }
-        if index == 4 {
-            return Self::Color;
-        }
-        if index == 5 {
-            return Self::Geometry;
-        }
-        if index == 6 {
-            return Self::GpuLab;
-        }
-        Self::Home
+        // All values in the guarded range are declared variants.
+        unsafe { enum_from_u16_unchecked::<Self>(index) }
     }
     pub fn next(self) -> Self {
         Self::from_index((self as u16 + 1) % PAGE_COUNT)

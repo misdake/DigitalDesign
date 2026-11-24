@@ -127,7 +127,6 @@ fn rustc_enum_methods_preserve_checked_rejections() {
         ("generic","#[repr(u16)] enum E{A}impl E{fn id<T>(&self,value:T)->T{value}}fn main(){}","generic/default value methods"),
         ("wrong-return","#[repr(u16)] enum E{A}impl E{fn wrong(&self)->Self{3}}fn main(){}","rustc E0308"),
         ("trait","#[repr(u16)] enum E{A}impl core::convert::From<u16> for E{fn from(value:u16)->Self{Self::A}}fn main(){}","nongeneric inherent"),
-        ("discriminant","#[repr(u16)] enum E{A=4}impl E{fn make()->Self{Self::A}}fn main(){}","explicit discriminants"),
         ("tuple","#[repr(u16)] enum E{A}impl E{fn code(&self)->u16{0}}fn main(){let (a,b)=(E::A,E::A);}","tuple elements"),
         ("payload","#[repr(u16)] enum E{A(u16)}impl E{fn make()->Self{Self::A(1)}}fn main(){}","fieldless variants"),
         ("repr","#[repr(u8)] enum E{A}impl E{fn make()->Self{Self::A}}fn main(){}","repr(u16)"),
@@ -227,5 +226,84 @@ fn main(){let mut index:u16=0;while index<17{
             format!("{result:?}\ncode_words={}\n", program.words.len()),
         )
         .unwrap();
+    }
+}
+
+#[test]
+fn explicit_enum_values_and_both_conversions_keep_the_one_word_abi() {
+    execute(
+        "enum-values",
+        r#"
+#[repr(u16)]#[derive(Copy,Clone,PartialEq)]enum Mode{First=1,Second,High=8,Last,Max=65535,Zero=0}
+const HIGH:u16=Mode::High as u16;
+fn choose(value:u16)->Mode{enum_from_u16::<Mode>(value)}
+fn raw(value:u16)->Mode{unsafe{enum_from_u16_unchecked::<Mode>(value)}}
+struct Holder{mode:Mode,tail:u16}
+fn main(){
+ let value=Holder{mode:choose(2),tail:99};
+ if value.mode!=Mode::Second||value.tail!=99||HIGH!=8{halt(1);}
+ let mut i=8u16;while i<10{if choose(i) as u16!=i{halt(2);}i+=1;}
+ if choose(65535)!=Mode::Max||choose(0)!=Mode::Zero||raw(1)!=Mode::First{halt(3);}
+ halt(0x600d);
+}"#,
+    );
+    let ir=parse("enum-raw-cost", "#[repr(u16)]enum E{A=1,B}fn raw(v:u16)->E{unsafe{enum_from_u16_unchecked::<E>(v)}}fn main(){let v=raw(1);halt(v as u16);}").unwrap();
+    let raw = ir.funcs.iter().find(|f| f.name == "raw").unwrap();
+    assert_eq!(
+        raw.blocks.len(),
+        1,
+        "unchecked conversion must not emit a test"
+    );
+    assert!(
+        raw.blocks[0].insts.is_empty(),
+        "unchecked conversion reuses its input vreg"
+    );
+}
+
+#[test]
+fn checked_enum_conversion_rejects_gaps_and_outside_values_in_both_profiles() {
+    for optimized in [true, false] {
+        for value in [0, 3, 10, 65535] {
+            let source=format!("#[repr(u16)]enum E{{A=1,B,C=8,D}}fn main(){{let value=enum_from_u16::<E>({value});halt(value as u16);}}");
+            let options = CompilerOptions {
+                opt: if optimized {
+                    rcc::Opts::default()
+                } else {
+                    rcc::Opts::disabled()
+                },
+                ..CompilerOptions::default()
+            };
+            let program = try_compile(
+                parse(&format!("enum-invalid-{value}-{optimized}"), &source).unwrap(),
+                &options,
+                "main",
+            )
+            .unwrap();
+            let mut cpu = CpuV3Sim::default();
+            cpu.set_boot_window(&program.words);
+            assert!(matches!(
+                cpu.run(10000).unwrap(),
+                RunOutcome::Halted { signal: 0xffe5, .. }
+            ));
+        }
+    }
+}
+
+#[test]
+fn enum_conversion_keeps_nominal_and_unsafe_constraints() {
+    for (label, source) in [
+        (
+            "unsafe",
+            "#[repr(u16)]enum E{A}fn main(){let v=enum_from_u16_unchecked::<E>(0);}",
+        ),
+        ("not-enum", "fn main(){let v=enum_from_u16::<u16>(0);}"),
+        ("duplicate", "#[repr(u16)]enum E{A=1,B=1}fn main(){}"),
+        ("overflow", "#[repr(u16)]enum E{A=65535,B}fn main(){}"),
+        ("negative", "#[repr(u16)]enum E{A=-1}fn main(){}"),
+    ] {
+        assert!(
+            parse(&format!("enum-invalid-{label}"), source).is_err(),
+            "{label}"
+        );
     }
 }

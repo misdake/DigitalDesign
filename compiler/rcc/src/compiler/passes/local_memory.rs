@@ -9,8 +9,7 @@ pub(super) fn eliminate(function: &mut IrFunc) -> bool {
         addresses
             .get(&base)
             .map(|slot| slot.wrapping_add(offset as u16))
-            .filter(|slot| *slot < u16::from(function.local_slots))
-            .map(|slot| slot as u8)
+            .filter(|slot| *slot < function.local_slots)
     };
     let mut reads = HashSet::new();
     let mut escaped = false;
@@ -74,7 +73,7 @@ pub(super) fn eliminate(function: &mut IrFunc) -> bool {
     }
     let mut changed = false;
     for block in &mut function.blocks {
-        let mut overwritten: HashMap<u8, usize> = HashMap::new();
+        let mut overwritten: HashMap<u16, usize> = HashMap::new();
         let mut remove = HashSet::new();
         for (index, inst) in block.insts.iter().enumerate().rev() {
             let store = match *inst {

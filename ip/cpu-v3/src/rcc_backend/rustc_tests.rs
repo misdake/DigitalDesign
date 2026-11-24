@@ -88,6 +88,26 @@ fn execute(label: &str, source: &str) {
 }
 
 #[test]
+fn static_value_method_receivers_preserve_resource_borrows() {
+    execute(
+        "static-value-resource-borrow",
+        r#"
+mod owner;
+struct Helper{total:u16}
+impl Helper{
+ fn visit(&mut self,renderer:&mut Renderer){self.total+=renderer.identity();}
+ fn add(&mut self,value:u16){self.total+=value;}
+ fn read(&self)->u16{self.total}
+}
+static HELPER:Helper=Helper{total:0};
+fn main(){let mut renderer=open(7);HELPER.visit(&mut renderer);HELPER.visit(&mut renderer);
+ HELPER.add(3);
+ if HELPER.total!=17||HELPER.read()!=17||renderer.identity()!=7{halt(1);}halt(0x600d);}
+"#,
+    );
+}
+
+#[test]
 fn rustc_one_word_values_use_registers_and_preserve_argument_snapshots() {
     let calls = "if read(identity(value))!=21{halt(0xbad);}".repeat(260);
     execute(
@@ -235,20 +255,63 @@ fn main(){{
 "#
         ),
     );
-    let overflow = r#"
+    execute(
+        "temporary-wide-live-storage",
+        r#"
 struct Wide{values:Buf<u16,100>}
-fn wide()->Wide{Wide{values:Buf::new([0u16;100])}}
-fn read(a:Wide,b:Wide,c:Wide)->u16{a.values[0u16]+b.values[0u16]+c.values[0u16]}
-fn main(){halt(read(wide(),wide(),wide()));}
-"#;
-    let error = parse("temporary-real-overflow", overflow)
-        .err()
-        .expect("simultaneously live storage cannot exceed 255 words")
-        .to_string();
-    assert!(
-        error.contains("aggregate argument storage exceeds the 255-word"),
-        "{error}"
+fn wide()->Wide{Wide{values:Buf::new([7u16;100])}}
+fn read(a:Wide,b:Wide,c:Wide)->u16{a.values[99u16]+b.values[99u16]+c.values[99u16]}
+fn main(){if read(wide(),wide(),wide())!=21{halt(0xbad);}halt(0x600d);}
+"#,
     );
+}
+
+#[test]
+fn rustc_wide_frame_preserves_arrays_calls_and_fpu_spills() {
+    let source = r#"
+#[inline(never)]
+fn called(x:fix32)->fix32{x*fix32::from_int(4)}
+#[inline(never)]
+fn probe(seed:fix32)->u16{
+ let mut words:Buf<u16,300>=Buf::new([0;300]);
+ let mut i=0u16;
+ while i<300{words[i]=i+100;i+=1;}
+ let a=seed+fix32::from_int(1);
+ let b=seed*fix32::from_int(2);
+ let c=seed-fix32::from_int(3);
+ let d=called(seed);
+ if words[0u16]!=100||words[255u16]!=355||words[256u16]!=356||words[299u16]!=399{halt(0xbad);}
+ (a+b+c+d).to_int() as u16
+}
+fn main(){if probe(fix32::from_int(5))!=38{halt(0xbad);}halt(0x600d);}
+"#;
+    for optimized in [true, false] {
+        let options = CompilerOptions {
+            opt: if optimized {
+                rcc::Opts::default()
+            } else {
+                rcc::Opts::disabled()
+            },
+            ..CompilerOptions::default()
+        };
+        let compiled = try_compile(
+            parse_with_options(&format!("wide-frame-{optimized}"), source, &options).unwrap(),
+            &options,
+            "main",
+        )
+        .unwrap();
+        assert!(compiled
+            .debug
+            .functions
+            .iter()
+            .any(|function| function.frame_size > 300));
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&compiled.words);
+        assert!(matches!(
+            cpu.run(100_000).unwrap(),
+            RunOutcome::Halted { signal: 0x600d, .. }
+        ));
+    }
 }
 
 #[test]

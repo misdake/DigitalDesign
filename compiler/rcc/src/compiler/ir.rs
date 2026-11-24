@@ -312,26 +312,26 @@ pub enum Instr {
     /// slot index, resolved to load_sp/store_sp in codegen)
     LoadSp {
         dst: VReg,
-        slot: u8,
+        slot: u16,
     },
     StoreSp {
-        slot: u8,
+        slot: u16,
         src: VReg,
     },
     /// frame-local slot access for address-taken locals and local arrays;
     /// slots are assigned by the frontend (distinct from spill slots)
     LoadLocal {
         dst: VReg,
-        slot: u8,
+        slot: u16,
     },
     StoreLocal {
-        slot: u8,
+        slot: u16,
         src: VReg,
     },
     /// dst = sp + slot (address of a frame-local variable)
     AddrOfLocal {
         dst: VReg,
-        slot: u8,
+        slot: u16,
     },
     // ----- CpuV3 FPU v2 scalar instructions (Fpu-class vregs unless noted) -----
     /// `Fd = Fa op Fb` (scalar ADD/SUB/MUL)
@@ -471,7 +471,7 @@ pub enum Instr {
     /// (register allocator spills only; the word offset is resolved in codegen)
     AddrOfFpuSpill {
         dst: VReg,
-        slot: u8,
+        slot: u16,
     },
 }
 
@@ -797,7 +797,7 @@ pub struct IrFunc {
     /// number of frame-local slots assigned by the frontend (address-taken
     /// locals and local arrays); frame layout puts these after callee saves
     /// and before spill slots
-    pub local_slots: u8,
+    pub local_slots: u16,
     /// register class of every vreg (indexed by vreg id)
     pub vreg_class: Vec<RegClass>,
     /// number of contiguous F registers a vreg occupies (indexed by vreg id):

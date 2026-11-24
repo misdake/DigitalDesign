@@ -420,7 +420,7 @@ pub fn compile_function(
                     inst,
                     *ir_line,
                     &reg,
-                    alloc.callee_saved.len() as u8,
+                    alloc.callee_saved.len() as u16,
                     alloc.local_slots,
                     &calls,
                     &mut lines,
@@ -578,8 +578,8 @@ fn emit_inst(
     inst: &Instr,
     ir_line: Option<u32>,
     reg: &dyn Fn(VReg) -> u8,
-    local_base: u8,
-    n_locals: u8,
+    local_base: u16,
+    n_locals: u16,
     calls: &CallLowering<'_>,
     lines: &mut Vec<MachineLine>,
 ) {
@@ -768,24 +768,26 @@ fn emit_inst(
             panic!("segment/cache-control forms are CpuV3-only; the v2.6 ISA cannot encode them")
         }
         Instr::LoadSp { dst, slot } => {
-            let (hi, lo) = hi_lo(local_base + n_locals + *slot);
+            let (hi, lo) =
+                hi_lo(u8::try_from(local_base + n_locals + *slot).expect("validated V2 frame"));
             lines.push(MachineLine::Inst(load_sp(hi, lo, reg(*dst)), ir_line));
         }
         Instr::StoreSp { slot, src } => {
-            let (hi, lo) = hi_lo(local_base + n_locals + *slot);
+            let (hi, lo) =
+                hi_lo(u8::try_from(local_base + n_locals + *slot).expect("validated V2 frame"));
             lines.push(MachineLine::Inst(store_sp(hi, lo, reg(*src)), ir_line));
         }
         Instr::LoadLocal { dst, slot } => {
-            let (hi, lo) = hi_lo(local_base + *slot);
+            let (hi, lo) = hi_lo(u8::try_from(local_base + *slot).expect("validated V2 frame"));
             lines.push(MachineLine::Inst(load_sp(hi, lo, reg(*dst)), ir_line));
         }
         Instr::StoreLocal { slot, src } => {
-            let (hi, lo) = hi_lo(local_base + *slot);
+            let (hi, lo) = hi_lo(u8::try_from(local_base + *slot).expect("validated V2 frame"));
             lines.push(MachineLine::Inst(store_sp(hi, lo, reg(*src)), ir_line));
         }
         Instr::AddrOfLocal { dst, slot } => {
             // dst = sp + frame offset of the local slot
-            let (hi, lo) = hi_lo(local_base + *slot);
+            let (hi, lo) = hi_lo(u8::try_from(local_base + *slot).expect("validated V2 frame"));
             lines.push(MachineLine::Inst(mov(REG_SP, reg(*dst)), ir_line));
             if local_base + *slot > 0 {
                 lines.push(MachineLine::Inst(load_lo(hi, lo, REG_TMP), ir_line));

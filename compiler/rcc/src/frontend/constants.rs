@@ -669,11 +669,12 @@ fn evaluator(
         for item in &file.items {
             match item {
                 Item::Enum(e) => {
-                    for (index, variant) in e.variants.iter().enumerate() {
-                        evaluator.enum_values.insert(
-                            (e.ident.to_string(), variant.ident.to_string()),
-                            index as u16,
-                        );
+                    for (name, value) in
+                        super::enum_values::discriminants(e).map_err(|error| (fi, error))?
+                    {
+                        evaluator
+                            .enum_values
+                            .insert((e.ident.to_string(), name), value);
                     }
                 }
                 Item::Const(c) => {

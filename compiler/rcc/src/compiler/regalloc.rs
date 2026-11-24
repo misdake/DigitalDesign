@@ -52,13 +52,13 @@ pub struct Allocation {
     pub callee_saved: Vec<u8>,
     /// frame-local slots assigned by the frontend (address-taken locals and
     /// local arrays)
-    pub local_slots: u8,
+    pub local_slots: u16,
     /// number of GPR spill slots used
-    pub spill_slots: u8,
+    pub spill_slots: u16,
     /// number of FPU spill slots; each is 4 words and 4-aligned, in an area
     /// after both scalar areas (preceded by up to 3 words of alignment
     /// padding)
-    pub fpu_spill_slots: u8,
+    pub fpu_spill_slots: u16,
 }
 impl Allocation {
     pub fn frame_size(&self) -> usize {
@@ -76,16 +76,16 @@ impl Allocation {
         }
     }
     /// word offset from sp where the FPU spill alignment window starts
-    pub fn fpu_area_offset(&self) -> u8 {
-        self.callee_saved.len() as u8 + self.local_slots + self.spill_slots
+    pub fn fpu_area_offset(&self) -> u16 {
+        self.callee_saved.len() as u16 + self.local_slots + self.spill_slots
     }
     /// frame slot index of a frontend local slot in the default locals-first layout
-    pub fn local_frame_slot(&self, slot: u8) -> u8 {
-        self.callee_saved.len() as u8 + slot
+    pub fn local_frame_slot(&self, slot: u16) -> u16 {
+        self.callee_saved.len() as u16 + slot
     }
     /// frame slot index of a GPR spill in the default locals-first layout
-    pub fn spill_frame_slot(&self, slot: u8) -> u8 {
-        self.callee_saved.len() as u8 + self.local_slots + slot
+    pub fn spill_frame_slot(&self, slot: u16) -> u16 {
+        self.callee_saved.len() as u16 + self.local_slots + slot
     }
 }
 
@@ -160,8 +160,8 @@ pub fn try_allocate_with_convention(
     let abi = insert_abi_shims(&mut f, convention);
     split_critical_edges(&mut f);
 
-    let mut spill_slots = 0u8;
-    let mut fpu_spill_slots = 0u8;
+    let mut spill_slots = 0u16;
+    let mut fpu_spill_slots = 0u16;
     for _ in 0..8 {
         let intervals = compute_intervals(&f);
         let affinity = if coalesce {
@@ -244,8 +244,8 @@ fn forward_adjacent_stack_reloads(f: &mut IrFunc) {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RematerializedValue {
     Immediate(u16),
-    LocalAddress(u8),
-    FpuSpillAddress(u8),
+    LocalAddress(u16),
+    FpuSpillAddress(u16),
 }
 
 // Constants and frame addresses can already be present in the destination
@@ -1528,8 +1528,8 @@ fn scan_class(
 
 /// Stack homes and input-free recipes for one spill-rewrite round.
 struct SpillLocations {
-    gpr: HashMap<VReg, u8>,
-    fpu: HashMap<VReg, u8>,
+    gpr: HashMap<VReg, u16>,
+    fpu: HashMap<VReg, u16>,
     rematerialized: HashMap<VReg, Instr>,
 }
 impl SpillLocations {
@@ -1573,8 +1573,8 @@ impl SpillLocations {
 fn rewrite_spills(
     f: &mut IrFunc,
     spilled: &[VReg],
-    next_slot: &mut u8,
-    next_fpu_slot: &mut u8,
+    next_slot: &mut u16,
+    next_fpu_slot: &mut u16,
 ) -> Result<(), AllocationError> {
     let mut locations = SpillLocations::new(f, spilled);
     for &v in spilled {
@@ -1595,12 +1595,12 @@ fn rewrite_spills(
                 locations.fpu.insert(v, *next_fpu_slot);
                 // a spill slot is a 4-word unit; a vector needs 2 words per
                 // lane, so a vec2 uses one unit, a vec3/vec4 two
-                *next_fpu_slot = next_fpu_slot.checked_add(f.lanes(v).div_ceil(2)).ok_or(
-                    AllocationError::SpillCapacity {
+                *next_fpu_slot = next_fpu_slot
+                    .checked_add(u16::from(f.lanes(v).div_ceil(2)))
+                    .ok_or(AllocationError::SpillCapacity {
                         function: f.name,
                         class: RegClass::Fpu,
-                    },
-                )?;
+                    })?;
             }
         }
     }
@@ -1611,6 +1611,9 @@ fn rewrite_spills(
     // collected in the first pass and applied in a second pass, because a
     // pred may be visited after the block holding the phi
     let mut edge_appends: HashMap<BlockId, Vec<Instr>> = HashMap::new();
+    // Phi assignments are simultaneous, including their stack homes. Capture
+    // every old edge input before writing any spilled phi destination.
+    let mut edge_stores: HashMap<BlockId, Vec<Instr>> = HashMap::new();
 
     for b in 0..f.blocks.len() {
         // phis
@@ -1624,7 +1627,15 @@ fn rewrite_spills(
                     let mut lines = vec![];
                     let mut v = v;
                     reload(&mut v, &locations, &spilled, f, app, &mut lines, None);
-                    spill_store(v, phi.dst, &locations, f, app, &mut lines, None);
+                    spill_store(
+                        v,
+                        phi.dst,
+                        &locations,
+                        f,
+                        edge_stores.entry(p).or_default(),
+                        &mut lines,
+                        None,
+                    );
                 }
             } else {
                 for (p, v) in &mut phi.args {
@@ -1775,12 +1786,16 @@ fn rewrite_spills(
     }
 
     // edge appends targeted at pred blocks (from phis of successors)
-    for (b, app) in edge_appends {
+    for (b, mut app) in edge_appends {
+        if let Some(stores) = edge_stores.remove(&b) {
+            app.extend(stores);
+        }
         let n = app.len();
         f.blocks[b].insts.extend(app);
         let line = f.blocks[b].term_line;
         f.blocks[b].lines.extend(std::iter::repeat_n(line, n));
     }
+    debug_assert!(edge_stores.is_empty());
     Ok(())
 }
 
@@ -1955,6 +1970,50 @@ pub(crate) fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
 mod spill_capacity_tests {
     use super::*;
     #[test]
+    fn spilled_loop_phis_swap_old_stack_values_simultaneously() {
+        let (mut builder, _) = crate::FuncBuilder::new("spill_phi_swap", 0, 1);
+        let first = builder.load_imm(11);
+        let second = builder.load_imm(22);
+        builder.ret(&[first]);
+        let mut f = builder.finish();
+        let a = f.fresh_vreg(RegClass::Gpr);
+        let b = f.fresh_vreg(RegClass::Gpr);
+        f.blocks[0].term = Some(Terminator::Jmp { target: 1 });
+        f.blocks.push(Block {
+            phis: vec![
+                Phi {
+                    dst: a,
+                    args: vec![(0, first), (1, b)],
+                },
+                Phi {
+                    dst: b,
+                    args: vec![(0, second), (1, a)],
+                },
+            ],
+            term: Some(Terminator::Jmp { target: 1 }),
+            preds: vec![0, 1],
+            ..Block::default()
+        });
+        let (mut gpr, mut fpu) = (0, 0);
+        rewrite_spills(&mut f, &[a, b], &mut gpr, &mut fpu).unwrap();
+        let mut stack = [11, 22];
+        for expected in [[22, 11], [11, 22]] {
+            let mut values = HashMap::new();
+            for instruction in &f.blocks[1].insts {
+                match instruction {
+                    Instr::LoadSp { dst, slot } => {
+                        values.insert(*dst, stack[usize::from(*slot)]);
+                    }
+                    Instr::StoreSp { slot, src } => {
+                        stack[usize::from(*slot)] = values[src];
+                    }
+                    other => panic!("unexpected phi edge instruction: {other:?}"),
+                }
+            }
+            assert_eq!(stack, expected);
+        }
+    }
+    #[test]
     fn allocated_constants_are_reused_only_until_their_register_is_written_or_called() {
         let (mut b, _) = crate::FuncBuilder::new("constants", 0, 1);
         let a = b.load_imm(7);
@@ -2076,7 +2135,10 @@ mod spill_capacity_tests {
 
     #[test]
     fn spilled_slot_counters_cannot_wrap_before_frame_check() {
-        for (class, lanes, start) in [(RegClass::Gpr, 1, 255), (RegClass::Fpu, 4, 254)] {
+        for (class, lanes, start) in [
+            (RegClass::Gpr, 1, u16::MAX),
+            (RegClass::Fpu, 4, u16::MAX - 1),
+        ] {
             let (mut builder, _) = crate::FuncBuilder::new("overflow", 0, 0);
             builder.ret(&[]);
             let mut f = builder.finish();

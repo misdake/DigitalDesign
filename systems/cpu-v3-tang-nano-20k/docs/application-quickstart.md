@@ -64,8 +64,8 @@ Use `--headless` for a run without a window, or `--xinput-slot 1` to select anot
 controller. The [workflow guide](/systems/cpu-v3-tang-nano-20k/docs/application-workflow.md#preview-and-run)
 lists defaults and overrides. See the
 [core demo controls](/systems/cpu-v3-tang-nano-20k/examples/demo_showcase/README.md#controls).
-To start a specific page, use `preview core-demo --page 5`, for example.
-To export without running, use `build hello-gpu --out target/hello-gpu`;
+To start a specific page, use `preview demo-showcase --page 5`, for example.
+To export without running, use `build sample-hello-gpu --out target/hello-gpu`;
 `build --out` requires a new or empty directory and never overwrites a snapshot.
 Build failures print the main diagnostic and full log directory; matching
 runtime failures resolve source lines through the snapshot's debug metadata.

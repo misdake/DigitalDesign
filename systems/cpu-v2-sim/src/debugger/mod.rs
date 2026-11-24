@@ -381,7 +381,7 @@ impl DebugSession {
         match v.loc {
             VarLoc::Global(addr) => VarValue::Mem(addr, self.preview(addr, &v.ty)),
             VarLoc::Frame(slot) => {
-                let addr = self.sim.state.reg[14].wrapping_add(slot as u16);
+                let addr = self.sim.state.reg[14].wrapping_add(slot);
                 VarValue::Mem(addr, self.preview(addr, &v.ty))
             }
             VarLoc::Param(r) => {

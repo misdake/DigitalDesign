@@ -10,6 +10,7 @@ struct Calls<'a> {
     ownership: HashSet<String>,
     returns: HashMap<String, Type>,
     fields: HashMap<(String, String), Type>,
+    globals: HashMap<String, Type>,
     scopes: Vec<HashMap<String, Type>>,
 }
 
@@ -31,6 +32,7 @@ impl Calls<'_> {
                     .iter()
                     .rev()
                     .find_map(|scope| scope.get(&name))
+                    .or_else(|| self.globals.get(&name))
                     .cloned()
             }
             Expr::Struct(value) => {
@@ -205,11 +207,22 @@ pub(in crate::frontend) fn prepare(
         ownership: HashSet::new(),
         returns: HashMap::new(),
         fields: HashMap::new(),
+        globals: HashMap::new(),
         scopes: vec![],
     };
     for file in files.iter() {
         for item in &file.items {
             match item {
+                Item::Static(value) => {
+                    calls
+                        .globals
+                        .insert(value.ident.to_string(), *value.ty.clone());
+                }
+                Item::Const(value) => {
+                    calls
+                        .globals
+                        .insert(value.ident.to_string(), *value.ty.clone());
+                }
                 Item::Fn(function) => {
                     if let ReturnType::Type(_, ty) = &function.sig.output {
                         calls

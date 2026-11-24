@@ -547,7 +547,7 @@ impl Compiler {
                                 let mut v = v.clone();
                                 match v.loc {
                                     VarLoc::Frame(slot) => {
-                                        v.loc = VarLoc::Frame(*callee_base as u8 + slot);
+                                        v.loc = VarLoc::Frame(*callee_base as u16 + slot);
                                     }
                                     VarLoc::ParamIndex(index) => {
                                         v.loc = VarLoc::Param(

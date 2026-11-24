@@ -463,8 +463,7 @@ impl V3DebugSession {
         match v.loc {
             VarLoc::Global(addr) => VarValue::Mem(addr, self.preview(addr, &v.ty)),
             VarLoc::Frame(slot) => {
-                let addr =
-                    self.cpu().registers()[usize::from(STACK_REGISTER)].wrapping_add(slot as u16);
+                let addr = self.cpu().registers()[usize::from(STACK_REGISTER)].wrapping_add(slot);
                 VarValue::Mem(addr, self.preview(addr, &v.ty))
             }
             VarLoc::Param(r) => {

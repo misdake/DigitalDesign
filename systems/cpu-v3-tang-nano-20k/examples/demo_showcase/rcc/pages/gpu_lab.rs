@@ -24,16 +24,11 @@ pub enum LabTab {
 }
 impl LabTab {
     pub fn from_index(index: u16) -> Self {
-        if index == 1 {
-            return Self::Camera;
+        if index >= 4 {
+            return Self::Surface;
         }
-        if index == 2 {
-            return Self::Light;
-        }
-        if index == 3 {
-            return Self::Material;
-        }
-        Self::Surface
+        // All values in the guarded range are declared variants.
+        unsafe { enum_from_u16_unchecked::<Self>(index) }
     }
 }
 pub struct GpuLab {

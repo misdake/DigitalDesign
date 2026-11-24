@@ -314,7 +314,9 @@ pub(super) fn is_value_temporary(l: &FnLower, expression: &Expr) -> bool {
                 return true;
             };
             let name = name.to_string();
-            l.lookup(&name).is_none() && !l.globals.scalars.contains_key(&name)
+            l.lookup(&name).is_none()
+                && !l.globals.scalars.contains_key(&name)
+                && !l.globals.aggregates.contains_key(&name)
         }
         Expr::Field(_) | Expr::Index(_) => false,
         Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => false,

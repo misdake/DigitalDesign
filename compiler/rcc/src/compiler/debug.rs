@@ -9,7 +9,7 @@ pub enum VarLoc {
     /// global/static: absolute data address
     Global(u16),
     /// frame-local: frame slot index (callee-save area included)
-    Frame(u8),
+    Frame(u16),
     /// ABI register (params)
     Param(u8),
     /// Source parameter index before a target ABI assigns a register.

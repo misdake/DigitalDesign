@@ -13,6 +13,31 @@ use std::cell::{Cell, UnsafeCell};
 use std::ops::{Index, IndexMut};
 use std::sync::Mutex;
 
+/// Compiler-provided mapping for a fieldless `repr(u16)` enum.
+///
+/// # Safety
+/// The implementation must map exactly the enum's valid discriminants.
+#[doc(hidden)]
+pub unsafe trait RccU16Enum: Sized {
+    fn __rcc_from_u16(value: u16) -> Option<Self>;
+}
+
+/// Convert a valid discriminant; stop with 0xffe5 for an invalid value.
+pub fn enum_from_u16<E: RccU16Enum>(value: u16) -> E {
+    match E::__rcc_from_u16(value) {
+        Some(value) => value,
+        None => halt(0xffe5),
+    }
+}
+
+/// Reinterpret a discriminant without checking it.
+///
+/// # Safety
+/// `value` must be an actual discriminant of `E`; values in gaps are invalid.
+pub unsafe fn enum_from_u16_unchecked<E: RccU16Enum>(value: u16) -> E {
+    unsafe { E::__rcc_from_u16(value).unwrap_unchecked() }
+}
+
 thread_local! {
     static HOST_RUN_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }

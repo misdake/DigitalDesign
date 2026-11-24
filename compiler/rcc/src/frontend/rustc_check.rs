@@ -247,6 +247,26 @@ fn projection(
             }
             native.visit_item_mut(&mut item);
             projector.visit_item_mut(&mut item);
+            // Bind the intrinsic to actual enum variants in this nominal scope.
+            // A generic transmute would let safe host code create invalid enums.
+            if let Item::Enum(e) = &item {
+                if super::enum_def(e, false).is_ok_and(|def| def.repr_u16) {
+                    let name = &e.ident;
+                    let variants: Vec<_> = e.variants.iter().map(|v| &v.ident).collect();
+                    let mapping: Item = syn::parse2(quote! {
+                        unsafe impl crate::dsl_rt::RccU16Enum for #name {
+                            fn __rcc_from_u16(value:u16)->Option<Self> {
+                                match value {
+                                    #(v if v == #name::#variants as u16 => Some(#name::#variants),)*
+                                    _ => None,
+                                }
+                            }
+                        }
+                    })
+                    .unwrap();
+                    scopes.entry(groups[fi]).or_default().push((fi, mapping));
+                }
+            }
             scopes.entry(groups[fi]).or_default().push((fi, item));
         }
     }

@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn frame_capacity_rejects_unaddressable_offsets_before_lowering() {
+    let (mut builder, _) = FuncBuilder::new("main", 0, 0);
+    builder.alloc_local_slots(32768);
+    let signal = builder.load_imm(1);
+    builder.halt(signal);
+    let error = try_allocate_with_convention(&builder.finish(), true, CPU_V3_REGISTER_CONVENTION)
+        .err()
+        .expect("positive signed offsets must fit the target frame");
+    assert!(matches!(
+        error,
+        AllocationError::FrameCapacity {
+            words: 32768,
+            maximum: 32767,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn heap_realloc_grows_in_place_and_preserves_words() {
     let source = r#"
             fn main() {
