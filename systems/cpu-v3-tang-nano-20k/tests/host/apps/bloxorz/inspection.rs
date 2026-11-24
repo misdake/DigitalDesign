@@ -76,7 +76,7 @@ pub(super) fn expanded565(c: u16) -> [u32; 3] {
 pub(super) fn submitted_shadow_triangles(
     memory: &[u16],
     catalog: &serde_json::Value,
-    command_words: u16,
+    commands: &[u16],
 ) -> Vec<[[f64; 2]; 3]> {
     let sector = catalog["meshes"]
         .as_array()
@@ -86,29 +86,9 @@ pub(super) fn submitted_shadow_triangles(
         .unwrap()["record_sector"]
         .as_u64()
         .unwrap() as usize;
-    let camera = &catalog["cameras"][0];
-    let eye: [f64; 3] = std::array::from_fn(|i| camera["eye"][i].as_f64().unwrap());
-    let target: [f64; 3] = std::array::from_fn(|i| camera["target"][i].as_f64().unwrap());
-    let mut back: [f64; 3] = std::array::from_fn(|i| eye[i] - target[i]);
-    let length = back.iter().map(|v| v * v).sum::<f64>().sqrt();
-    for v in &mut back {
-        *v /= length;
-    }
-    let mut right = [back[2], 0., -back[0]];
-    let length = right.iter().map(|v| v * v).sum::<f64>().sqrt();
-    for v in &mut right {
-        *v /= length;
-    }
-    let up = [
-        back[1] * right[2] - back[2] * right[1],
-        back[2] * right[0] - back[0] * right[2],
-        back[0] * right[1] - back[1] * right[0],
-    ];
-    let k = camera["focal"].as_f64().unwrap() / 256.;
     let mut local = vec![0u16; 2048];
     let mut records = [0usize; 2];
     let mut result = vec![];
-    let commands = &memory[0x9880 * 64..0x9880 * 64 + usize::from(command_words)];
     for words in commands.as_chunks::<2>().0 {
         let c = u32::from(words[0]) | (u32::from(words[1]) << 16);
         match c >> 28 {
@@ -121,8 +101,13 @@ pub(super) fn submitted_shadow_triangles(
             2 => records[(c & 1) as usize] = ((c >> 12) & 65535) as usize,
             3 if records[(c & 1) as usize] == sector => {
                 let uniform = usize::from(memory[sector * 64 + 1] & 63);
+                assert_eq!(c & 6, 2, "shadow uses the ordinary World draw mode");
+                assert!(
+                    (20..=21).contains(&uniform),
+                    "World uniform index {uniform}"
+                );
                 let at = uniform * 64;
-                assert_eq!(&local[at + 44..at + 46], &[0x0d0a, 0x5712]);
+                assert_eq!(&local[at + 60..at + 62], &[0x0d0a, 0x5712]);
                 let p: [[f64; 3]; 3] = std::array::from_fn(|vertex| {
                     std::array::from_fn(|r| {
                         let translation = scene::fixed(&local, at + r * 8 + 6);
@@ -134,20 +119,51 @@ pub(super) fn submitted_shadow_triangles(
                         }
                     })
                 });
-                result.push(std::array::from_fn(|v| {
-                    let w: [f64; 3] = std::array::from_fn(|r| {
-                        eye[r] + right[r] * p[v][0] / k - up[r] * p[v][1] / k - back[r] * p[v][2]
-                    });
-                    assert!(
-                        (w[1] - 393. / 65536.).abs() < 0.004,
-                        "shadow plane y={}",
-                        w[1]
-                    );
-                    [w[0], w[2]]
+                result.push(p.map(|[x, y, z]| {
+                    assert_eq!(y, 393. / 65536., "published shadow plane");
+                    [x, z]
                 }));
             }
             _ => {}
         }
     }
     result
+}
+
+// The SDK retains the arena backing for the next Gpu::init. All descriptors
+// and application heap blocks must have been released by a finite game run.
+pub(super) fn assert_only_gpu_arena_retained(
+    program: &cpu_v3::rcc_backend::CpuV3Program,
+    memory: &[u16],
+) {
+    let begin = usize::from(memory[global(program, "HEAP_BEGIN")]);
+    let end = usize::from(memory[global(program, "HEAP_END")]);
+    let arena = usize::from(memory[global(program, "GPU_OBJECT_CONTROL.storage")]);
+    assert_eq!(memory[global(program, "GPU_OBJECT_CONTROL.live")], 0);
+    let mut cursor = begin;
+    let mut live = 0;
+    let mut previous_free = false;
+    while cursor < end {
+        let tag = memory[cursor];
+        let words = usize::from(tag & 0x7fff);
+        assert!(
+            words >= 2 && words <= end - cursor,
+            "invalid heap block at {cursor:#x}"
+        );
+        assert_eq!(
+            memory[cursor + words - 1],
+            tag,
+            "heap boundary tags disagree"
+        );
+        let free = tag & 0x8000 != 0;
+        if free {
+            assert!(!previous_free, "adjacent released blocks did not coalesce");
+        } else {
+            assert_eq!(cursor + 1, arena, "application leaked a heap block");
+            live += 1;
+        }
+        previous_free = free;
+        cursor += words;
+    }
+    assert_eq!(live, 1, "only the GPU arena backing should survive");
 }

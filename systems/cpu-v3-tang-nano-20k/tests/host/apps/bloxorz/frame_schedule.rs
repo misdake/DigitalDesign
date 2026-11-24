@@ -432,7 +432,6 @@ fn ordinary_batch_slots_publish_after_retirement_and_free_on_finite_exit() {
     let facts = global(&program, "GPU_CB_RESOURCE_FACTS");
     let heap_begin = global(&program, "HEAP_BEGIN");
     let heap_end = global(&program, "HEAP_END");
-    let heads = global(&program, "FREE_HEADS");
     let mut starts = 0;
     let mut dynamic = 0;
     let mut frames = 0;
@@ -454,7 +453,7 @@ fn ordinary_batch_slots_publish_after_retirement_and_free_on_finite_exit() {
                 let base=usize::from(m[batch]);
                 assert_ne!(base,0,"ordinary caller must allocate the batch owner");
                 assert_eq!(base&63,0);
-                if w.value==0x9880 {
+                if w.value==m[records+1] {
                     dynamic+=1;
                     assert_eq!(m[base],2,"two visible split shadows must use distinct slots");
                     let count=usize::from(m[records+15]);
@@ -503,20 +502,13 @@ fn ordinary_batch_slots_publish_after_retirement_and_free_on_finite_exit() {
         }
     }
     assert!(halted, "bounded10M ordinary batch lifetime timeout");
-    assert_eq!((starts, dynamic, frames), (7, 3, 3));
+    assert_eq!((starts, dynamic, frames), (6, 3, 3));
     assert!(sim.gpu().last_error().is_none());
     let m = sim.cpu().physical_memory_slice();
     assert_eq!(m[batch], 0, "release clears original owner registration");
     let begin = usize::from(m[heap_begin]);
     let end = usize::from(m[heap_end]);
     assert!(usize::from(min_sp) >= end, "stack must stay above heap");
-    let whole = 0x8000 | (end - begin) as u16;
-    assert_eq!(
-        m[begin], whole,
-        "all application allocations coalesce after finite exit"
-    );
-    assert_eq!(m[end - 1], whole);
-    assert_eq!(&m[heads..heads + 3], &[0, 0, 0]);
-    assert_eq!(usize::from(m[heads + 3]), begin + 1);
-    std::fs::write(out.join("ordinary-batch-lifetime.json"),serde_json::to_vec_pretty(&serde_json::json!({"frames":frames,"gpu_starts":starts,"dynamic_starts":dynamic,"samples":samples,"heap_begin_word":begin,"heap_end_exclusive_word":end,"minimum_stack_word":min_sp,"peak_observed_stack_bytes":(0xc000-u32::from(min_sp))*2,"whole_heap_released":true,"batch_owner_zero_on_exit":true,"max_steps":10000000,"source_path":"actual ordinary main lifecycle; no normalized/injected batch hooks","mode":"CPU instruction + functional GPU, not CPU timing"})).unwrap()).unwrap();
+    super::assert_only_gpu_arena_retained(&program, m);
+    std::fs::write(out.join("ordinary-batch-lifetime.json"),serde_json::to_vec_pretty(&serde_json::json!({"frames":frames,"gpu_starts":starts,"dynamic_starts":dynamic,"samples":samples,"heap_begin_word":begin,"heap_end_exclusive_word":end,"minimum_stack_word":min_sp,"peak_observed_stack_bytes":(0xc000-u32::from(min_sp))*2,"only_gpu_arena_retained":true,"batch_owner_zero_on_exit":true,"max_steps":10000000,"source_path":"actual ordinary main lifecycle; no normalized/injected batch hooks","mode":"CPU instruction + functional GPU, not CPU timing"})).unwrap()).unwrap();
 }

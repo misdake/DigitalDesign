@@ -46,14 +46,14 @@ fn render_us_uses_last_gpu_wait_excludes_present_and_recovers_after_saturation()
             }
             if let StepOutcome::Signaled(e) = outcome {
                 if e.signal_type == 12 {
+                    // Entering a fade captures static and dynamic geometry, then
+                    // presents the overlay. Subsequent fade frames reuse the capture.
                     let expected_starts = if fade {
                         if frames.is_empty() {
-                            4
+                            3
                         } else {
                             1
                         }
-                    } else if frames.is_empty() {
-                        3
                     } else {
                         2
                     };

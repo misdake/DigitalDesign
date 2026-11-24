@@ -79,10 +79,12 @@ fn web_first_two_stage_play_frames_use_functional_gpu_and_actual_display() {
             // 7107/7247 here and incorrectly rejected these nearer +Z pixels.
             for (x, y, expected) in [(353, 127, 7118), (350, 141, 7260)] {
                 let offset = ((x >> 4) * 16 + (y >> 4)) * 256 + (y & 15) * 16 + (x & 15);
-                assert_eq!(
-                    memory[0x480000 / 2 + offset],
-                    expected,
-                    "back face occluded front at ({x},{y})"
+                let actual = memory[0x480000 / 2 + offset];
+                // GPU-side View × World composition quantizes the coefficients
+                // separately. A one-code variation still excludes the back face.
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "front depth at ({x},{y}): {actual} vs {expected}"
                 );
             }
         }

@@ -24,12 +24,23 @@ fn native_triangle_instances_match_independent_web_shadow_clipping_samples() {
         let mut steps = 0;
         let mut push = 0;
         let mut command_words = 0;
+        let mut submitted_sector = None;
+        let records = global(&program, "GPU_CB_RECORDS");
         for _ in 0..2_000_000 {
             if sim.waiting_for_vblank() {
                 sim.advance_vblank();
             }
             steps += 1;
-            match sim.step().unwrap() {
+            let outcome = sim
+                .step_observing(|write, _| {
+                    if write.device == 4 && write.channel == 1 {
+                        submitted_sector = Some(write.value);
+                    }
+                    true
+                })
+                .unwrap()
+                .unwrap();
+            match outcome {
                 StepOutcome::Halted { signal } => {
                     assert_eq!(signal, 0x600d);
                     halted = true;
@@ -46,6 +57,15 @@ fn native_triangle_instances_match_independent_web_shadow_clipping_samples() {
         assert!(sim.gpu().last_error().is_none());
         assert!(push < 32768);
         let memory = sim.cpu().physical_memory_slice();
+        let sector = submitted_sector.expect("shadow frame submitted");
+        assert_eq!(
+            sector,
+            memory[records + 1],
+            "dynamic CB uses the first slot"
+        );
+        let command_start = usize::from(sector) * 64;
+        let commands = &memory[command_start..command_start + usize::from(command_words)];
+        let push_start = usize::from(memory[records + 3]) * 64;
         let info = global(&program, "SHADOW_WORKSPACE.info");
         let stats = memory[info..info + 3].to_vec();
         assert_eq!(
@@ -79,7 +99,7 @@ fn native_triangle_instances_match_independent_web_shadow_clipping_samples() {
             serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
         std::fs::write(
             out.join("submission-commands.bin"),
-            memory[0x9880 * 64..0x9880 * 64 + usize::from(command_words)]
+            commands
                 .iter()
                 .flat_map(|v| v.to_le_bytes())
                 .collect::<Vec<_>>(),
@@ -87,17 +107,17 @@ fn native_triangle_instances_match_independent_web_shadow_clipping_samples() {
         .unwrap();
         std::fs::write(
             out.join("submission-push.bin"),
-            memory[0x9a00 * 64..0x9a00 * 64 + usize::from(push)]
+            memory[push_start..push_start + usize::from(push)]
                 .iter()
                 .flat_map(|v| v.to_le_bytes())
                 .collect::<Vec<_>>(),
         )
         .unwrap();
-        let triangles = submitted_shadow_triangles(memory, &catalog, command_words);
+        let triangles = submitted_shadow_triangles(memory, &catalog, commands);
         assert_eq!(
             triangles.len(),
             usize::from(stats[2]),
-            "published shadow Instances"
+            "published shadow World packets"
         );
         let mut checked_cells = vec![];
         for cell in case["cells"].as_array().unwrap() {

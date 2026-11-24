@@ -234,21 +234,30 @@ fn words32(words: &[u16]) -> Vec<u32> {
         .map(|p| u32::from(p[0]) | (u32::from(p[1]) << 16))
         .collect()
 }
-fn check_draw(expected: &Draw, global: &[u16], render: &[u16], instance: &[u16]) {
-    let g = words32(global);
-    let r = words32(render);
-    let i = words32(instance);
-    assert_eq!(g[0], expected.far << 16);
+// Compare the posted affine packets against an independent floating-point
+// oracle. The GPU retains one Q16 value per completed dot product.
+fn check_draw(expected: &Draw, scene_words: &[u16], render: &[u16], view: &[u16], world: &[u16]) {
+    let scene_packet = words32(scene_words);
+    let world_packet = words32(world);
+    let view_packet = words32(view);
+    let material = words32(render);
+    assert_eq!(scene_packet[0], expected.far << 16);
+    assert_eq!(scene_packet[4..6], [65536, 65536], "raw light intensities");
     assert_eq!(
-        g[4],
+        view_packet[24..32],
+        scene_packet,
+        "View carries the Scene tail"
+    );
+    assert_eq!(view_packet[21], 65536);
+    assert_eq!(world_packet[12], 65536);
+    assert_eq!(
+        world_packet[13..16],
         if expected.rgba[3] == 128 {
-            128 | (128 << 16)
+            [32768, 32768, 0]
         } else {
-            64 | (192 << 16)
+            [16384, 49152, 0]
         }
     );
-    assert_eq!(g[5], 3 | (expected.shininess << 2));
-    assert!(g[6..].iter().all(|x| *x == 0));
     let rotation = scene::rotation(expected.camera.camera);
     let length = expected.light.iter().map(|v| v * v).sum::<f64>().sqrt();
     for axis in 0..3 {
@@ -258,22 +267,23 @@ fn check_draw(expected: &Draw, global: &[u16], render: &[u16], instance: &[u16])
         if axis == 0 {
             component = -component;
         }
-        let actual = global[2 + axis] as i16;
+        let actual = scene_words[2 + axis] as i16;
         assert!(
             (f64::from(actual) - component * 16384.).abs() < 10.,
             "light {axis}: {actual} vs {component}"
         );
     }
-    assert!((f64::from(global[5] as i16) + 100. / expected.camera.focal * 16384.).abs() < 3.);
-    assert!((f64::from(global[6] as i16) + 60. / expected.camera.focal * 16384.).abs() < 3.);
-    assert_eq!(global[7], 8192);
-    assert_eq!(
-        r[0], 0x9c20,
-        "uniform-color material does not sample a texture"
-    );
-    assert_eq!(r[1], expected.specular);
-    assert_eq!(r[2], if expected.rgba[3] == 255 { 11 } else { 27 });
-    assert!(r[3..].iter().all(|x| *x == 0));
+    assert!((f64::from(scene_words[5] as i16) + 100. / expected.camera.focal * 16384.).abs() < 3.);
+    assert!((f64::from(scene_words[6] as i16) + 60. / expected.camera.focal * 16384.).abs() < 3.);
+    assert_eq!(scene_words[7], 8192);
+    assert_eq!(material[0], 0x9c20, "texture sector and format");
+    assert_eq!(material[1], expected.specular);
+    assert_eq!(material[2], if expected.rgba[3] == 255 { 11 } else { 27 });
+    assert_eq!(material[3], 0);
+    assert_eq!(material[5], 3 | (expected.shininess << 2));
+    assert_eq!(world_packet[26..30], material[..4]);
+    assert_eq!(world_packet[30], u32::from_le_bytes(expected.rgba));
+    assert_eq!(world_packet[31], material[5]);
     let (position, mut normal) = scene::reference(expected.camera);
     for row in &mut normal {
         for (column, value) in row.iter_mut().enumerate() {
@@ -282,23 +292,33 @@ fn check_draw(expected: &Draw, global: &[u16], render: &[u16], instance: &[u16])
     }
     for row in 0..3 {
         for (column, value) in position[row].iter().enumerate() {
-            let actual = scene::fixed(instance, 2 * (row * 4 + column));
+            let mut actual = (0..3)
+                .map(|k| {
+                    scene::fixed(view, 2 * (4 * row + k))
+                        * scene::fixed(world, 2 * (4 * k + column))
+                })
+                .sum::<f64>();
+            if column == 3 {
+                actual += scene::fixed(view, 2 * (4 * row + 3));
+            }
             assert!(
                 (actual - value).abs() < 0.0012,
                 "position {row},{column}: {actual} vs {value}"
             );
         }
         for (column, value) in normal[row].iter().enumerate() {
-            let actual = scene::fixed(instance, 24 + 2 * (row * 3 + column));
+            let actual = (0..3)
+                .map(|k| {
+                    scene::fixed(view, 24 + 2 * (3 * row + k))
+                        * scene::fixed(world, 32 + 2 * (3 * k + column))
+                })
+                .sum::<f64>();
             assert!(
                 (actual - value).abs() < 0.0006,
                 "rotation {row},{column}: {actual} vs {value}"
             );
         }
     }
-    assert_eq!(i[21], 65536);
-    assert_eq!(i[22], u32::from_le_bytes(expected.rgba));
-    assert!(i[23..].iter().all(|x| *x == 0));
 }
 fn check_native_frames(s: &State) {
     assert_eq!((s.starts.len(), s.swaps, s.maintenance), (11, 11, 11));
@@ -335,8 +355,9 @@ fn check_native_frames(s: &State) {
             ]
         );
         assert!(commands.contains(&Command::clear(false, 0x1111 + frame as u16).0));
-        let mut local = vec![0u16; 1536];
-        let mut global = vec![];
+        // Local DMA addresses seven bits of 16 words each.
+        let mut local = [0u16; 128 * 16];
+        let mut scene = vec![];
         let mut render = vec![];
         let mut dma_pending = false;
         let mut render_wait = true;
@@ -357,9 +378,6 @@ fn check_native_frames(s: &State) {
                         assert!((page..page + 1024).contains(&source));
                         &ui[(source - page) / 2..(source - page) / 2 + size as usize]
                     };
-                    if destination == 264 * 4 || destination == 272 * 4 {
-                        assert!(render_wait);
-                    }
                     local[destination..destination + size as usize].copy_from_slice(data);
                     dma_pending = true;
                 }
@@ -370,8 +388,14 @@ fn check_native_frames(s: &State) {
                 }
                 3 => {
                     assert!(!dma_pending && mesh_ready);
-                    assert_eq!(command, Command::draw_meshlet(0).unwrap().0);
-                    check_draw(&expected[draws], &global, &render, &local[1280..1344]);
+                    assert_eq!(command, Command::draw_world_meshlet(0).unwrap().0);
+                    check_draw(
+                        &expected[draws],
+                        &scene,
+                        &render,
+                        &local[92 * 16..96 * 16],
+                        &local[80 * 16..84 * 16],
+                    );
                     draws += 1;
                     render_wait = false;
                 }
@@ -386,10 +410,12 @@ fn check_native_frames(s: &State) {
                 5 | 6 => {
                     assert!(!dma_pending && render_wait);
                     let start = ((command & 127) * 16) as usize;
+                    assert_ne!(command & 128, 0, "compact Scene/Material mode");
                     if command >> 28 == 5 {
-                        global = local[start..start + 32].to_vec();
+                        scene = local[start..start + 16].to_vec();
                     } else {
-                        render = local[start..start + 16].to_vec();
+                        // The last World block starts with one normal coefficient and padding.
+                        render = local[start + 4..start + 16].to_vec();
                     }
                 }
                 11 => {

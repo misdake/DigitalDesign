@@ -226,7 +226,7 @@ fragile_end(owner);
 fn retained_cb_refetches_changed_mesh_indices_and_degenerates_cover_no_pixels() {
     use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
     let body = r#"
-GAME_SESSION.begin();GAME_SESSION.reset_level(3);GAME_SESSION.level.width=1;GAME_SESSION.level.height=1;GAME_SESSION.level.cell_count=1;GAME_SESSION.level.schema=2;GAME_SESSION.level_words()[8]=2;
+GAME_SESSION.begin();GAME_SESSION.reset_level(3);GAME_SESSION.level.width=1;GAME_SESSION.level.height=1;GAME_SESSION.level.cell_count=1;GAME_SESSION.level.schema=2;GAME_SESSION.level_words()[8u16]=2;
 let owner=fragile_begin();fragile_rebuild(owner);
 let mut gpu=Gpu::init(board_gpu_config());let mut commands=gpu.command_buffer();
 let color=board_color_b();let depth=board_depth();let camera=game_camera();let state=game_solid_state();
@@ -840,15 +840,12 @@ fn ordinary_restart_next_stage_shadow_and_finite_heap_lifetimes_close() {
     }
     assert!(halted, "bounded24M ordinary restart/next timeout");
     assert_eq!(frames.len(), 8);
-    // Initial level, crack hide, undo restore and next level each rebuild once.
-    assert_eq!(starts, 20);
+    // Static and dynamic submissions for each actual present.
+    assert_eq!(starts, 2 * frames.len());
     assert!(sim.gpu().last_error().is_none());
     let m = sim.cpu().physical_memory_slice();
-    let begin = usize::from(m[global(&program, "HEAP_BEGIN")]);
-    let end = usize::from(m[global(&program, "HEAP_END")]);
-    assert_eq!(m[begin], 0x8000 | ((end - begin) as u16));
-    assert_eq!(m[end - 1], m[begin]);
-    std::fs::write(out.join("lifetime-qualification.json"),serde_json::to_vec_pretty(&serde_json::json!({"mode":"actual ordinary caller with fixed input and fast-forwarded veil timer endpoints; CPU instruction + functional GPU","frames":frames,"gpu_starts":starts,"whole_heap_released":true,"max_steps":24000000,"restart_and_next_use_real_opaque_present_reset":true})).unwrap()).unwrap();
+    super::assert_only_gpu_arena_retained(&program, m);
+    std::fs::write(out.join("lifetime-qualification.json"),serde_json::to_vec_pretty(&serde_json::json!({"mode":"actual ordinary caller with fixed input and fast-forwarded veil timer endpoints; CPU instruction + functional GPU","frames":frames,"gpu_starts":starts,"only_gpu_arena_retained":true,"max_steps":24000000,"restart_and_next_use_real_opaque_present_reset":true})).unwrap()).unwrap();
 }
 
 #[test]
