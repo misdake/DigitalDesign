@@ -91,7 +91,7 @@ fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
                                 let n = 16 << ((c >> 1) & 3);
                                 local[dst..dst + n].copy_from_slice(&m[src..src + n]);
                             }
-                            6 => render = (c & 127) as usize * 16,
+                            6 => render = (c & 127) as usize * 16 + if c & 128 != 0 { 4 } else { 0 },
                             10 => {
                                 let q = (c & 127) as usize * 16;
                                 let w = u64::from(local[q])
@@ -118,18 +118,8 @@ fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
                             _ => {}
                         }
                     }
-                    assert_eq!(
-                        depth,
-                        if target == 0x500000 {
-                            0x540000
-                        } else {
-                            0x480000
-                        }
-                    );
-                    if target == 0x500000 {
-                        assert_eq!(depth_clear, Some(65535));
-                        assert!(copy || clear == Some(0x2924));
-                    } else if fixed {
+                    assert_eq!(depth, 0x480000);
+                    if fixed {
                         consumers += 1;
                         assert_eq!(
                             invalidate, source_dirty,
@@ -145,10 +135,10 @@ fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
                         assert!(target == 0x400000 || target == 0x440000);
                         consumer_depth = Some(m[0x480000 / 2..0x480000 / 2 + 102400].to_vec());
                     } else if target == 0x600000 {
-                        assert!(clear.is_none());
-                        if copy {
+                        if depth_clear.is_some() {
                             static_replays += 1;
-                            assert!(depth_clear.is_none(), "restoration loads the copied depth");
+                            assert_eq!(depth_clear, Some(65535));
+                            assert!(copy || clear == Some(0x2924));
                         } else {
                             sources += 1;
                             source_dirty = true;
@@ -156,11 +146,12 @@ fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
                         }
                     } else {
                         assert!(target == 0x400000 || target == 0x440000);
-                        if copy {
+                        if depth_clear.is_some() {
                             static_replays += 1;
-                            assert!(depth_clear.is_none() && clear.is_none());
+                            assert_eq!(depth_clear, Some(65535));
+                            assert!(copy || clear == Some(0x2924));
                         } else {
-                            assert!(!copy && clear.is_none());
+                            assert!(!copy && clear.is_none(), "unexpected ordinary submission: target={target:x}, copy={copy}, clear={clear:?}, depth_clear={depth_clear:?}");
                             ordinary[usize::from(target == 0x440000)] = true;
                         }
                     }

@@ -18,6 +18,11 @@ mod time;
 use time::*;
 mod device_abi;
 use device_abi::*;
+mod boot_resources;
+use boot_resources::*;
+
+#[static_buffer]
+const STATIC_SCENE: PreparedMemory = PreparedMemory::allocate(4096, 4096);
 
 static BUTTONS: Buf<u16, 4> = Buf::new([0; 4]);
 static STATS: Buf<u16, 4> = Buf::new([0; 4]);
@@ -121,37 +126,26 @@ fn prepare_ui(grid: &mut UiGrid) -> u16 {
     }
     4 - first
 }
-// Startup-only recording has its own bounded RCC frame. Descriptors are copied
-// into the sealed stream; the caller retains Camera/Model/Material ownership.
+// Record World/material once; each frame supplies its own Pass View and target.
 fn demo_record_static(
-    buffer: &mut CommandBuffer,
-    camera: &Camera,
+    draws: &mut PreparedDraws,
     model: &Model,
     material: &Material,
     view: &TextureView,
     state: &RenderState,
 ) {
-    let color = board_color_b();
-    let depth = board_depth();
     let room = demo_mesh_part(0, 6);
     let rgb = demo_mesh_part(6, 1);
-    {
-        let mut pass = buffer.pass(
-            color.ptr(),
-            depth.ptr(),
-            ColorLoad::clear(Rgb565::from_raw(0)),
-            DepthLoad::clear(65535),
-        );
-        pass.set_camera(camera.ptr());
-        pass.set_state(state.ptr());
-        pass.draw(room.ptr(), model.ptr(), material.ptr(), view.ptr());
-        pass.draw_colored(rgb.ptr(), model.ptr(), material.ptr());
-    }
+    let mut part = draws.record();
+    part.set_state(state.ptr());
+    part.draw(room.ptr(), model.ptr(), material.ptr(), view.ptr());
+    part.draw_colored(rgb.ptr(), model.ptr(), material.ptr());
+    part.finish();
 }
 fn demo_identity_model() -> Model {
     Model::new(demo_pose(demo_zero(), demo_zero(), demo_scale()))
 }
-fn demo_run(limit: u16, budget: u16) {
+fn demo_run(limit: u16, budget: u16, orbit: bool) {
     REPORT[11u16] = 11;
     frame_stats_reset(STATS.as_array());
     let mut gpu = Gpu::init(board_gpu_config());
@@ -204,15 +198,8 @@ fn demo_run(limit: u16, budget: u16) {
     dev_send(7, 1, 9);
     gpu.submit(dynamic_buffer);
     dynamic_buffer = wait_gpu(&mut gpu, budget);
-    demo_record_static(
-        &mut static_buffer,
-        &camera,
-        &box_model,
-        &unlit,
-        &view,
-        &state,
-    );
-    let binding = static_buffer.scene_binding();
+    let mut room_draws = PreparedDraws::new(STATIC_SCENE);
+    demo_record_static(&mut room_draws, &box_model, &unlit, &view, &state);
     gamepad_init();
     demo_buttons_init(
         BUTTONS.as_array(),
@@ -241,37 +228,55 @@ fn demo_run(limit: u16, budget: u16) {
         );
         frame_stats_elapsed_begin(STATS.as_array(), observed, completed);
         completed = false;
-        motion = demo_motion_update(motion, input, now);
-        if motion.changed {
-            camera.set_pose(motion.eye, demo_motion_angles(motion));
-        }
-        // The persistent stream keeps geometry, Render, END and padding.
-        dev_send(7, 1, 10);
-        if frame & 1 == 0 {
-            static_buffer.patch_scene(
-                binding,
-                camera.ptr(),
-                box_model.ptr(),
-                color_b.ptr(),
-                depth.ptr(),
+        if orbit {
+            // A complete, repeatable orbit every512 successful frames.
+            let phase = fix32::from_words(frame << 7, 0);
+            let direction = fsincos(phase * fix32::from_words(18559, 6));
+            let radius = fix32::from_words(52429, 2);
+            camera.set_look_at_y_up(
+                Vec3 {
+                    x: direction.x() * radius,
+                    y: fix32::from_words(14418, 0),
+                    z: direction.y() * radius,
+                },
+                Vec3 {
+                    x: fix32::zero(),
+                    y: fix32::zero(),
+                    z: fix32::zero(),
+                },
             );
         } else {
-            static_buffer.patch_scene(
-                binding,
-                camera.ptr(),
-                box_model.ptr(),
-                color_a.ptr(),
+            motion = demo_motion_update(motion, input, now);
+            if motion.changed {
+                camera.set_pose(motion.eye, demo_motion_angles(motion));
+            }
+        }
+        // The immutable part supplies World/material, the new Pass supplies View.
+        dev_send(7, 1, 10);
+        let mut back = color_b.ptr();
+        if frame & 1 != 0 {
+            back = color_a.ptr();
+        }
+        static_buffer.reset();
+        {
+            let mut pass = static_buffer.pass(
+                back,
                 depth.ptr(),
+                ColorLoad::clear(Rgb565::from_raw(0)),
+                DepthLoad::clear_far(),
             );
+            pass.set_camera(camera.ptr());
+            pass.set_state(state.ptr());
+            pass.draw_prepared(room_draws.ptr());
         }
         gpu.submit(static_buffer);
         dev_send(7, 1, 11);
         // Only dynamic CPU storage is touched while the static GPU work runs.
+        dynamic_buffer.reset();
         let mut glyphs: u16 = 0;
         if visible {
             glyphs = prepare_ui(&mut grid);
         }
-        dynamic_buffer.reset();
         if frame & 1 == 0 {
             let mut pass = dynamic_buffer.pass(
                 color_b.ptr(),
@@ -335,6 +340,7 @@ fn demo_run(limit: u16, budget: u16) {
         completed = true;
         frame += 1;
     }
+    static_buffer.reset();
     demo_report_drain();
     if completed {
         demo_report_queue(1, frame, observed);
@@ -343,8 +349,8 @@ fn demo_run(limit: u16, budget: u16) {
     halt(0x600d);
 }
 fn main() {
-    demo_run(0, 2000);
+    demo_run(0, 2000, GPU_DEMO_AUTO_ORBIT != 0);
 }
 pub fn demo_public_three_frames() {
-    demo_run(3, 2000);
+    demo_run(3, 2000, false);
 }

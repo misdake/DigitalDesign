@@ -12,15 +12,16 @@ module gpu_command_processor(
  input work_busy,dma_idle,dma_fault,mesh_loading,mesh_begin,mesh_done,mesh_slot,mesh_begin_slot,mesh_done_slot,
  input uniform_done,input[1:0]uniform_bank,
  input header_we,header_slot,input[63:0]header_data,
- output reg[31:0]cfg_far_z,output reg[15:0]texture_base,output reg[3:0]texture_n,
+ output reg[31:0]cfg_far_z,output reg[15:0]texture_base,output reg[3:0]texture_n,output billboard_vertical,
  output reg texture_mip,texture_rgba4444,texture_clamp,texture_fb400240,output reg[1:0]texture_filter,
  output reg signed[7:0]cfg_lod_bias,output reg draw_unlit,
- output reg[13:0]color_base,depth_base,output reg[31:0]mesh_color,
+ output reg[13:0]color_base,depth_base,output reg[31:0]mesh_color,output reg world_transform,
  output reg[23:0]specular,
  output reg[2:0]depth_func,output reg depth_write,blend,output texture_invalidate,
  output reg[15:0]context_epoch,output reg[1:0]context_mode,output reg[4:0]context_code,
  output reg signed[15:0]light_x,light_y,light_z,ray_x,ray_y,ray_k,
  output reg[8:0]ambient,directional,output flush_request,input flush_complete,
+ input prepared_light_we,prepared_light_select,input[8:0]prepared_light_data,
  output clear_active,clear_request,output[31:0]clear_address,output[15:0]clear_value,
  input clear_ready,clear_complete,clear_ok,
  output ui_start,input ui_done,output[9:0]ui_first,ui_last,
@@ -44,8 +45,11 @@ module gpu_command_processor(
  reg[1:0]clear_flight;reg clear_offer;
  wire[31:0]read_word=(state==LATCH&&pc[0])?cp_q[63:32]:cp_q[31:0];
  wire[3:0]opcode=command[31:28];
+ assign billboard_vertical=command[2];
  wire[1:0]wait_mask=command[1:0];
  wire apply_render=opcode==SET_RENDER;
+ wire extended_state=command[7];
+ wire[1:0]render_index=object_index-{1'b0,extended_state};
  wire[6:0]destination=command[9:3];wire[1:0]size=command[2:1];
  // Check only the low address window that can cross the physical limit.
  // Size codes describe one, two or four 32-byte blocks.
@@ -54,20 +58,25 @@ module gpu_command_processor(
  wire staging_target=destination[6:4]==3'b100&&destination[3:0]>=2&&
   !(size==1&&(&destination[3:0]))&&
   !(size==2&&destination[3:2]==3&&(|destination[1:0]));
- wire uniform_target=destination[6:4]==3'b101&&destination[1:0]==0&&size==2;
+ wire uniform_target=(destination[6:4]==3'b101&&destination[1:0]==0&&size==2)||
+  (destination==95&&size==0);
  wire local_aligned=(size==0)||(size==1&&!command[10])||(size==2&&command[11:10]==0);
  wire local_legal=!command[0]&&size!=3&&local_aligned&&!local_source_overflow&&(staging_target||uniform_target);
  wire[4:0]mesh_tail={1'b0,command[15:12]}+{2'b0,command[3:1]}+5'd1;
  wire mesh_legal=command[11:4]==0&&(!(&command[27:16])||!mesh_tail[4]);
- wire object_legal=command[27:7]==0&&command[6:4]==3'b100&&command[3:0]>=2&&
-  !(opcode==SET_GLOBAL&&(&command[3:0]));
+ wire object_legal=extended_state?
+  (command[27:8]==0&&((opcode==SET_GLOBAL&&command[6:0]==95)||
+   (apply_render&&(command[6:0]==83||command[6:0]==87||
+    (command[6:4]==3'b100&&command[3:0]>=2))))):
+  (command[27:7]==0&&command[6:4]==3'b100&&command[3:0]>=2&&
+   !(opcode==SET_GLOBAL&&(&command[3:0])));
  assign stop=abort||failed;
  assign submit_ready=!busy&&!failed&&!abort;
  assign cache_valid=busy&&!stop&&state!=ENDING&&state!=UI_WAIT&&
   !(opcode==UI_GRID&&(state==EXEC||state==APPLY_R||state==APPLY_W))&&fetch_left!=0&&!cache_inflight&&!cache_pages[fetch_bank];
  assign cache_source={fetch_line,6'd0};assign cache_bank=fetch_bank;
  assign cp_re=!stop&&((state==FETCH&&cache_pages[pc[5]])||state==APPLY_R||state==COLOR_R);
- assign cp_addr=state==COLOR_R?{3'b101,page_uniform[{command[0],1'b0}+:2],4'b1011}:
+ assign cp_addr=state==COLOR_R?{3'b101,page_uniform[{command[0],1'b0}+:2],command[1]?4'b1111:4'b1011}:
   state==APPLY_R?{command[6:0],object_index}:{4'b1110,pc[5],pc[4:1]};
  assign work_valid=state==EXEC&&!stop&&(opcode==DMA_LOCAL||opcode==DMA_MESHLET);
  assign work_mesh=opcode==DMA_MESHLET;
@@ -107,10 +116,13 @@ module gpu_command_processor(
    !(({1'b0,cp_q[13:0]}+15'd400<={1'b0,cp_q[27:14]})||({1'b0,cp_q[27:14]}+15'd400<={1'b0,cp_q[13:0]}));
   else if(opcode==MEMCPY)object_bad=cp_q[63:39]!=0||copy_source_end>16384||copy_destination_end>16384||
    !((copy_source_end<={1'b0,cp_q[27:14]})||(copy_destination_end<={1'b0,cp_q[13:0]}));
-  else if(apply_render)case(object_index)
+  else if(apply_render)case(render_index)
    0:object_bad=cp_q[63:56]!=0||(cp_q[23]&&(cp_q[19:16]!=9||cp_q[20]||cp_q[22:21]>1||cp_q[31:24]!=0||cp_q[8:0]!=0||cp_q[15:0]>16'd63488)); // Fixed view ABI; ordinary POT fields retain their contract.
-   1:object_bad=cp_q[31:6]!=0||cp_q[63:40]!=0;
-   default:object_bad=cp_q!=0;
+   1:object_bad=extended_state?
+    (cp_q[31:16]!=0||cp_q[7:6]!=0||cp_q[63:32]!=0):
+    (cp_q[31:6]!=0||cp_q[63:40]!=0);
+   2:object_bad=cp_q[47:39]!=0||cp_q[38:34]>16;
+   default:object_bad=1;
   endcase else case(object_index)
    0:object_bad=cp_q[31:0]==0||cp_q[31:0]>=200*65536;
    1:begin end
@@ -135,7 +147,7 @@ module gpu_command_processor(
 `ifndef SYNTHESIS
    diagnostic_pc<=0;limit<=0;count_seen<=0;
 `endif
-   color_base<=0;depth_base<=0;mesh_color<=32'hffffffff;
+   color_base<=0;depth_base<=0;mesh_color<=32'hffffffff;world_transform<=0;
    fetch_line<=0;fetch_left<=0;fetch_bank<=0;cache_inflight<=0;cache_pages<=0;page_valid<=0;
    uniform_valid<=0;page_uniform<=0;object_index<=0;
    cfg_far_z<=0;texture_base<=0;texture_n<=0;texture_mip<=0;texture_rgba4444<=0;texture_clamp<=0;texture_fb400240<=0;texture_filter<=0;cfg_lod_bias<=0;
@@ -175,7 +187,7 @@ module gpu_command_processor(
      DMA_LOCAL,DMA_MESHLET:if(work_ready)advance();
      DRAW:if(draw_inputs)state<=COLOR_R;
      WAIT:state<=WAITING;
-     SET_GLOBAL,SET_RENDER,SET_TARGET:begin object_index<=0;state<=APPLY_R;end
+     SET_GLOBAL,SET_RENDER,SET_TARGET:begin object_index<={1'b0,apply_render&&extended_state};state<=APPLY_R;end
      UI_GRID,MEMCPY:if(dma_idle)begin object_index<=0;state<=APPLY_R;end
      CLEAR:begin clear_flight<=0;clear_offer<=0;state<=CLEAR_REQUEST;end
      FLUSH:state<=FLUSHING;
@@ -184,8 +196,12 @@ module gpu_command_processor(
      default:advance();
     endcase
     COLOR_R:if(cp_ready)state<=COLOR_W;
-    COLOR_W:begin mesh_color<=cp_q[31:0];state<=DRAW_START;end
-    DRAW_START:if(start&&meshlet_ready)begin all_fence<=0;stored<=0;state<=DRAW_WAIT;end
+    COLOR_W:begin mesh_color<=cp_q[31:0];world_transform<=command[1];state<=DRAW_START;end
+    DRAW_START:if(start&&meshlet_ready)begin
+     // World preparation owns block22. A later legacy draw must reload it.
+     if(world_transform)uniform_valid[2]<=0;
+     all_fence<=0;stored<=0;state<=DRAW_WAIT;
+    end
     DRAW_WAIT:if(meshlet_done)advance();
     WAITING:if(waits_done)begin if(wait_mask[1])all_fence<=1;advance();end
     APPLY_R:if(cp_ready)state<=APPLY_W;
@@ -194,11 +210,13 @@ module gpu_command_processor(
     else if(opcode==SET_TARGET)begin
      color_base<={cp_q[13:7],7'd0};depth_base<={cp_q[27:21],7'd0};target_valid<=1;stored<=0;advance();
     end else begin
-     if(apply_render)case(object_index)
+     if(apply_render)case(render_index)
       0:begin texture_base<=cp_q[15:0];texture_n<=cp_q[19:16];texture_mip<=cp_q[20];texture_rgba4444<=cp_q[24];texture_clamp<=cp_q[25];texture_fb400240<=cp_q[23];texture_filter<=cp_q[22:21];
        specular<=cp_q[55:32];end
       1:begin depth_func<=cp_q[2:0];depth_write<=cp_q[3];blend<=cp_q[4];draw_unlit<=cp_q[5];
-       cfg_lod_bias<=cp_q[39:32];end
+       if(extended_state)begin cfg_lod_bias<=cp_q[15:8];end
+       else cfg_lod_bias<=cp_q[39:32];end
+      2:begin context_mode<=cp_q[33:32];context_code<=cp_q[38:34];context_epoch<=cp_q[63:48];end
       default:begin end
      endcase else case(object_index)
       0:begin cfg_far_z<=cp_q[31:0];light_x<=cp_q[47:32];light_y<=cp_q[63:48];end
@@ -206,7 +224,7 @@ module gpu_command_processor(
       2:begin ambient<=cp_q[8:0];directional<=cp_q[24:16];context_mode<=cp_q[33:32];context_code<=cp_q[38:34];context_epoch<=cp_q[63:48];end
       default:begin end
      endcase
-     if(object_index==(apply_render?2'd1:2'd2))begin
+     if(object_index==(apply_render?(extended_state?2'd3:2'd1):(extended_state?2'd1:2'd2)))begin
       if(apply_render)render_valid<=1;else global_valid<=1;advance();
      end else begin object_index<=object_index+1'b1;state<=APPLY_R;end
     end
@@ -247,6 +265,9 @@ module gpu_command_processor(
     end
    end
    if(busy&&abort)fail();
+   if(ce&&!stop&&prepared_light_we)begin
+    if(prepared_light_select)directional<=prepared_light_data;else ambient<=prepared_light_data;
+   end
   end
  end
 `ifndef SYNTHESIS
@@ -258,7 +279,7 @@ module gpu_command_processor(
    NOP:if(command[27:0]!=0)$fatal(1,"CP NOP encoding");
    DMA_LOCAL:if(!local_legal)$fatal(1,"CP local DMA contract");
    DMA_MESHLET:if(!mesh_legal)$fatal(1,"CP mesh DMA contract");
-   DRAW:if(command[27:1]!=0||!draw_bindings||!target_valid)$fatal(1,"CP DRAW contract");
+   DRAW:if(command[27:3]!=0||(command[2]&&!command[1])||!draw_bindings||!target_valid)$fatal(1,"CP DRAW contract");
    WAIT:if(command[27:2]!=0)$fatal(1,"CP WAIT encoding");
    SET_GLOBAL,SET_RENDER:if(!object_legal||!all_fence||!render_idle||work_busy)$fatal(1,"CP state command contract");
    CLEAR:if(command[27:17]!=0||!target_valid||!all_fence||!render_idle||work_busy)$fatal(1,"CP plane CLEAR contract");
@@ -272,7 +293,9 @@ module gpu_command_processor(
   endcase
   if(ce&&!stop&&state==APPLY_W&&opcode!=UI_GRID&&object_bad)$fatal(1,"CP state data contract");
   if(ui_start&&cp_q[63:23]!=0)$fatal(1,"CP UI descriptor");
-  if(ce&&!stop&&state==COLOR_W&&cp_q[63:32]!=0)$fatal(1,"CP mesh color encoding");
+  if(ce&&!stop&&state==COLOR_W&&!command[1]&&cp_q[63:32]!=0)$fatal(1,"CP mesh color encoding");
+  if(ce&&!stop&&state==COLOR_W&&command[1]&&
+    (!uniform_valid[3]||page_uniform[{command[0],1'b0}+:2]>1))$fatal(1,"CP world/view bindings");
   if(clear_active&&clear_complete&&!clear_ok)$fatal(1,"CP CLEAR memory response");
   if(busy&&!abort&&!failed&&(render_fault||dma_fault))$fatal(1,"CP downstream contract");
   if(ce&&start&&meshlet_ready&&work_busy&&(!mesh_loading||mesh_slot==draw_slot))$fatal(1,"DRAW overlaps DMA writer");

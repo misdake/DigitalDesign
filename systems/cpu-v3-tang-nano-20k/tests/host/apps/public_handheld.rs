@@ -49,8 +49,9 @@ fn compile(source: &str, out: &Path, debug: bool) -> rcc_backend::CpuV3Program {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
-    let mut project =
-        String::from("format 2\ngpu-api\napplication examples/demo_box_rabbit/rcc/public_main.rs\n");
+    let mut project = String::from(
+        "format 2\ngpu-api\napplication examples/demo_box_rabbit/rcc/public_main.rs\n",
+    );
     for resource in manifest["resources"].as_array().unwrap() {
         let file = resource["file"].as_str().unwrap();
         project.push_str(&format!(
@@ -66,6 +67,10 @@ fn compile(source: &str, out: &Path, debug: bool) -> rcc_backend::CpuV3Program {
         + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
     let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     options.gpu_debug = debug;
+    // Production's low asset bank, disjoint from the classic fixed payloads.
+    options.asset_banks = vec![rcc::frontend::static_assets::AssetBank {
+        bytes: 0x10_0000..0x11_0000,
+    }];
     let parsed = resolver::compile_explicit_gpu_program_checked(
         "Public classic controller",
         source,
@@ -92,6 +97,7 @@ struct Recorded {
     draws: usize,
     ui: usize,
     matrix: Vec<u16>,
+    world: Vec<u16>,
     global: Vec<u16>,
     rabbit_matrix: Vec<u16>,
     target: u32,
@@ -114,6 +120,7 @@ fn recorded(memory: &[u16], sector: u16, count: u16, role: u16) -> Recorded {
         draws: 0,
         ui: 0,
         matrix: Vec::new(),
+        world: Vec::new(),
         global: Vec::new(),
         rabbit_matrix: Vec::new(),
         target: 0,
@@ -157,31 +164,34 @@ fn recorded(memory: &[u16], sector: u16, count: u16, role: u16) -> Recorded {
                 result.triangles += mesh_triangles[(code & 1) as usize];
                 result.draws += 1;
                 let mut draw = vec![mesh_records[(code & 1) as usize]];
-                draw.extend_from_slice(&local[global_at..global_at + 32]);
-                draw.extend_from_slice(&local[render_at..render_at + 16]);
+                draw.extend_from_slice(&local[global_at..global_at + 8]);
+                draw.extend_from_slice(&local[render_at..render_at + 12]);
+                draw.extend_from_slice(&local[1472..1536]);
                 draw.extend_from_slice(&local[1280..1344]);
                 draw.push((result.target >> 8) as u16);
                 result.trace.push(draw);
                 if result.matrix.is_empty() {
-                    result.matrix.extend_from_slice(&local[1280..1322]);
+                    result.matrix.extend_from_slice(&local[1472..1514]);
+                    result.world.extend_from_slice(&local[1280..1304]);
+                    result.world.extend_from_slice(&local[1312..1330]);
                 }
             }
             5 => {
                 let at = ((code & 127) * 16) as usize;
                 global_at = at;
-                assert_eq!(local[at + 10], 0x33, "shininess exponent32/code12");
-                assert_eq!(
-                    &local[at + 8..at + 10],
-                    &[64, 192],
-                    "original material responses"
-                );
                 if result.global.is_empty() {
-                    result.global.extend_from_slice(&local[at..at + 16]);
+                    result.global.extend_from_slice(&local[at..at + 8]);
                 }
             }
             6 => {
-                let at = ((code & 127) * 16) as usize;
+                let at = ((code & 127) * 16) as usize + if code & 128 != 0 { 4 } else { 0 };
                 render_at = at;
+                assert_eq!(local[at + 10], 0x33, "shininess exponent32/code12");
+                assert_eq!(
+                    &local[1306..1310],
+                    &[16384, 0, 49152, 0],
+                    "raw material responses"
+                );
                 texture_word = local[at + 1];
                 control = local[at + 4] & 63;
             }
@@ -270,7 +280,7 @@ struct State {
     dynamic_prepared_while_busy: Vec<bool>,
     unsplit: bool,
     record_calls: usize,
-    patch_calls: usize,
+    append_calls: usize,
     swaps: Vec<u32>,
     retired: Vec<u64>,
     observed: Vec<u16>,
@@ -387,7 +397,7 @@ impl Device for Peer {
                     s.static_commands = Some(commands);
                     let generation = (memory[s.record_base + 20], memory[s.record_base + 21]);
                     if let Some(old) = s.static_generation {
-                        assert_eq!(generation, old, "static CB never resets");
+                        assert_ne!(generation, old, "each frame records a new Pass");
                     }
                     s.static_generation = Some(generation);
                     s.pending_static = Some(r);
@@ -399,13 +409,13 @@ impl Device for Peer {
                         .expect("dynamic requires completed static prefix");
                     assert_eq!(
                         prefix.global, r.global,
-                        "patched static light matches current dynamic view"
+                        "prepared static light matches current dynamic view"
                     );
                     assert_eq!(prefix.target, r.target, "both streams write the same Back");
                     prefix.draws += r.draws;
                     prefix.triangles += r.triangles;
                     prefix.ui += r.ui;
-                    prefix.rabbit_matrix = r.matrix;
+                    prefix.rabbit_matrix = r.world;
                     prefix.trace.extend(r.trace);
                     prefix.ui_descriptors.extend(r.ui_descriptors);
                     assert_eq!((prefix.draws, prefix.triangles), (24, 1141));
@@ -494,11 +504,11 @@ fn run(program: &rcc_backend::CpuV3Program, assets: &Path, mut state: State, sig
         .iter()
         .find(|f| f.name == "demo_record_static")
         .map(|f| f.addr.0 as u16);
-    let patch_entry = program
+    let append_entry = program
         .debug
         .functions
         .iter()
-        .find(|f| f.name == "gpu_patch_scene")
+        .find(|f| f.name == "gpu_group_part_append")
         .map(|f| f.addr.0 as u16);
     for _ in 0..8_000_000 {
         {
@@ -506,8 +516,8 @@ fn run(program: &rcc_backend::CpuV3Program, assets: &Path, mut state: State, sig
             if Some(cpu.pc()) == static_entry {
                 s.record_calls += 1;
             }
-            if Some(cpu.pc()) == patch_entry {
-                s.patch_calls += 1;
+            if Some(cpu.pc()) == append_entry {
+                s.append_calls += 1;
             }
             if matches!(s.phase, 9 | 13 | 14 | 16) {
                 s.us += 10;
@@ -570,9 +580,11 @@ fn actual_public_classic_input_recording_retirement_and_deadlines_both_profiles(
         .unwrap();
         assert_eq!(result.output, LightingOutput { g: 256, h: 0 });
     }
-    let source = include_str!("../../../examples/demo_box_rabbit/rcc/public_main.rs")
-        .replace("demo_run(0, 2000);", "demo_run(3, 2000);");
-    assert!(source.contains("demo_run(3, 2000);"));
+    let source = include_str!("../../../examples/demo_box_rabbit/rcc/public_main.rs").replace(
+        "demo_run(0, 2000, GPU_DEMO_AUTO_ORBIT != 0);",
+        "demo_run(3, 2000, false);",
+    );
+    assert!(source.contains("demo_run(3, 2000, false);"));
     let source = source.replace(
         "let mut display = Display::open_with_format(DisplayFormat::LinearRgb565);",
         "let mut display = Display::open_with_format(DisplayFormat::LinearRgb565);if !display.try_wait_swap(){halt(0xbad);}",
@@ -602,7 +614,7 @@ fn actual_public_classic_input_recording_retirement_and_deadlines_both_profiles(
         );
         assert_eq!(baseline.dynamic_prepared_while_busy, [true; 3]);
         assert_eq!(baseline.record_calls, 1);
-        assert_eq!(baseline.patch_calls, 3);
+        assert_eq!(baseline.append_calls, 3);
         assert_eq!(
             baseline.frames.iter().map(|f| f.ui).collect::<Vec<_>>(),
             vec![0, 1, 1]
@@ -798,12 +810,16 @@ fn stage2_identity()->Model{Model::new(demo_pose(demo_zero(),demo_zero(),demo_sc
     );
     reference.push_str(helpers);
     let mut candidate = fixed_ui(candidate)
-        .replace("demo_run(0, 2000);", "demo_run(2, 2000);")
+        .replace(
+            "demo_run(0, 2000, GPU_DEMO_AUTO_ORBIT != 0);",
+            "demo_run(2, 2000, false);",
+        )
         .replace(
             "let rabbit_model = demo_identity_model();",
             "let mut rabbit_model = demo_identity_model();",
         );
-    let anchor = "        // The persistent stream keeps geometry, Render, END and padding.";
+    let anchor =
+        "        // The immutable part supplies World/material, the new Pass supplies View.";
     assert_eq!(candidate.matches(anchor).count(), 1);
     candidate = candidate.replace(anchor, &format!("{camera}{anchor}"));
     let anchor = "        // Only dynamic CPU storage is touched while the static GPU work runs.";
@@ -850,7 +866,7 @@ fn stage2_identity()->Model{Model::new(demo_pose(demo_zero(),demo_zero(),demo_sc
         assert_eq!(old.frames.len(), 2);
         assert_eq!(new.frames.len(), 2);
         assert_eq!(new.record_calls, 1);
-        assert_eq!(new.patch_calls, 2);
+        assert_eq!(new.append_calls, 2);
         assert_eq!(new.submissions, 5);
         assert_eq!(old.submissions, 2);
         assert_eq!(new.swaps, old.swaps);
@@ -873,7 +889,7 @@ fn stage2_identity()->Model{Model::new(demo_pose(demo_zero(),demo_zero(),demo_sc
             "frame2 view-space Global light changes"
         );
         assert_ne!(
-            new.frames[1].matrix, new.frames[1].rabbit_matrix,
+            new.frames[1].world, new.frames[1].rabbit_matrix,
             "independent frame2 rabbit Y transform"
         );
         let healthy: Vec<_> = new

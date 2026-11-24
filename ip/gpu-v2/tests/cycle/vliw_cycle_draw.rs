@@ -3,9 +3,10 @@ mod support;
 
 #[test]
 fn selected_cp_reads_object_rows_and_submits_twice() {
-    for view in [false, true] {
+    for (view, extended) in [(false, false), (true, false), (false, true)] {
         let run = support::run(support::Case {
             view,
+            extended,
             ..Default::default()
         });
         assert!(run.error.is_none());
@@ -80,6 +81,13 @@ fn final_profile_and_cp_objects_match_selected_rtl() {
             "view",
             support::Case {
                 view: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "scene-material",
+            support::Case {
+                extended: true,
                 ..Default::default()
             },
         ),

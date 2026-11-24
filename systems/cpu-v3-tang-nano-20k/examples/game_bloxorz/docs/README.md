@@ -11,7 +11,7 @@ application-owned. Numeric HUD fields use the ordinary `ui_text` software layer.
 
 - [Fragile batches](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/docs/fragile-batches.md): per-level heap geometry, immediate fracture visibility, reversible native indices and retirement/cache ownership.
 
-- [Transitions and storage](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/docs/transitions.md): implemented rules/animation clocks, static color/depth caching, bridge command assembly and two-CB scheduling, source/depth lifetime, archive/camera bounds, colored veil arithmetic, compact undo storage and verification boundaries.
+- [Transitions and storage](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/docs/transitions.md): implemented rules/animation clocks, static command replay, bridge command assembly and two-CB scheduling, source/depth lifetime, archive/camera bounds, colored veil arithmetic, compact undo storage and verification boundaries.
 
 - [Ground shadow](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/docs/shadow.md): CPU projection/clipping, receiver dependencies, immutable triangle Instances and cache lifetime.
 

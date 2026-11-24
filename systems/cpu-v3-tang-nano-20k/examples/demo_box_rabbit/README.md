@@ -14,10 +14,24 @@ cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview demo-box-rabbit
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build demo-box-rabbit --out target/handheld
 ```
 
+For unattended board stability tests, `--motion orbit` selects a continuous
+512-frame camera orbit around the same box, rabbit and RGB geometry. It runs
+without controller input and keeps the normal frame timing and UART reports:
+
+```powershell
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build demo-box-rabbit --motion orbit --out target/box-rabbit-orbit
+```
+
 `rcc/public_main.rs` uses the checked GPU API and unified gamepad input.
 `tools/public_assets.py` reuses the classic scene producer and publishes its
-asset descriptors. The room and RGB geometry use a retained command buffer;
+asset descriptors. The room and RGB geometry use an independent prepared part;
 the rabbit and overlay are recorded each frame.
+Public Mesh draws use resident World/View. The room/RGB part retains its World
+data and commands; each frame appends it into a Pass with the current Camera
+and target. No scene packet patching is required. Rabbit draws use the same
+shared encoder.
+Use matching World/View-capable gateware. The low-level fixtures described below
+retain their original precomposed workload for independent comparisons.
 
 ## RGBA4444 example
 

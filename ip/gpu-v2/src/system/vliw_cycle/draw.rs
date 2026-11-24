@@ -146,6 +146,8 @@ impl Gpu {
                         start: p.start,
                         slot: p.draw_slot,
                         mesh_color: c.mesh_color,
+                        world_transform: c.world_transform,
+                        billboard_vertical: c.billboard_vertical,
                         dma_write: d.ram_write,
                         dma_address: d.ram_address,
                         dma_data: d.ram_data,
@@ -216,6 +218,7 @@ impl Gpu {
             let cache = ro.backend.sink.cache;
             ci.ram_ready = f.meshlet.cp_ready;
             ci.ram_q = f.meshlet.cp_q.value;
+            ci.prepared_light = f.meshlet.core.prepared_light;
             ci.draw.meshlet_ready = f.meshlet.ready;
             ci.draw.meshlet_done = f.meshlet.done;
             ci.render_idle = ro.idle;

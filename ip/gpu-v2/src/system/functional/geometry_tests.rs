@@ -2,6 +2,64 @@ use super::*;
 use crate::system::functional::{Effects, Memory};
 
 #[test]
+fn resident_view_world_preserves_affine_order_normal_matrix_and_color() {
+    let mut view = [0u32; 32];
+    let mut world = [0u32; 32];
+    for (i, value) in [
+        (0, 2),
+        (1, 1),
+        (3, 3),
+        (5, 1),
+        (7, 4),
+        (10, -1),
+        (11, 5),
+        (13, 1),
+        (15, 1),
+        (20, -1),
+        (21, 1),
+    ] {
+        view[i] = (value * 65536i32) as u32;
+    }
+    for (i, value) in [(0, 1), (3, 7), (5, 2), (7, 8), (10, 3), (11, 9), (12, 1)] {
+        world[i] = (value * 65536i32) as u32;
+    }
+    world[16] = 32768;
+    world[20] = 16384;
+    world[24] = 131072;
+    world[30] = 0x80a1b2c3;
+    world[13] = 65536;
+    world[14] = 32768;
+    view[28] = 32768;
+    view[29] = 65536;
+    let actual = compose_view_world(&view, &world).unwrap();
+    assert_eq!(
+        &actual[..12],
+        &[2, 2, 0, 25, 0, 2, 0, 12, 0, 0, -3, -4].map(|v| (v * 65536i32) as u32)
+    );
+    assert_eq!(
+        &actual[12..21],
+        &[0, 16384, 0, 32768, 0, 0, 0, 0, (-131072i32) as u32]
+    );
+    assert_eq!(&actual[21..24], &[65536, world[30], 0]);
+    assert_eq!([actual[24] >> 8, actual[25] >> 8], [128, 128]);
+    view[28] = 65536;
+    assert_eq!(compose_view_world(&view, &world).unwrap()[24] >> 8, 256);
+    world[25] = 3;
+    assert!(compose_view_world(&view, &world).is_err());
+}
+
+#[test]
+fn resident_matrix_writeback_uses_the_f16_window_after_the_complete_dot() {
+    let mut view = [0u32; 32];
+    let mut world = [0u32; 32];
+    view[0] = 0x7fffffff;
+    world[0] = 0x7fffffff;
+    view[21] = 65536;
+    world[12] = 65536;
+    assert_eq!(compose_view_world(&view, &world).unwrap()[0], 0xffff0000);
+}
+
+#[test]
 fn billboard_metadata_selects_two_projected_offsets() {
     let header = [1, 2 << 8 | 20, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0];
     let payload = [0, 0, 0x03f8u16, 0x0004, 0x3210, 0x7654, 0, 0];

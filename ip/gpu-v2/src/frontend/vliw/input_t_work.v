@@ -2,6 +2,7 @@
 // Two input BSRAM banks serve DMA; a private16x36 RAM16 pool serves T.
 module rs_static_scratchpad #(parameter COMPACT=1)(input clk,reset,dma_we,input[9:0]dma_addr,
  input[63:0]dma_data,input le,re,work_we,input[9:0]la,ra,work_wa,input[35:0]work_data,
+ input matrix_we,input[4:0]matrix_index,input[31:0]matrix_data,
 `ifdef GPU_V2_COMMAND_PORTS
  output[35:0]source_rq,
 `endif
@@ -12,8 +13,14 @@ module rs_static_scratchpad #(parameter COMPACT=1)(input clk,reset,dma_we,input[
  wire source_read=re&&ra[9:6]!=4'b0110;
  wire[35:0]source_q,work_q;
  reg read_work;reg[3:0]work_address;
- iz_ram36 left_input(clk,reset,1'b1,dma_we,dma_addr[8:0],dl,le,la[8:0],lq);
- iz_ram36 right_input(clk,reset,1'b1,dma_we,dma_addr[8:0],dr,source_read,ra[8:0],source_q);
+// DMA responses cannot wait. The frontend holds a matrix store on a DMA
+ // edge, so both banks share one write address and retain their existing ports.
+ wire[8:0]write_address=dma_we?dma_addr[8:0]:{5'b10110,matrix_index[4:1]};
+ wire[35:0]matrix_word={{4{matrix_data[31]}},matrix_data};
+ iz_ram36 left_input(clk,reset,1'b1,dma_we||(matrix_we&&!matrix_index[0]),write_address,
+  dma_we?dl:matrix_word,le,la[8:0],lq);
+ iz_ram36 right_input(clk,reset,1'b1,dma_we||(matrix_we&&matrix_index[0]),write_address,
+  dma_we?dr:matrix_word,source_read,ra[8:0],source_q);
  iz_params_async #(.WIDTH(36)) triangle_work(clk,reset,1'b1,work_we,work_wa[3:0],work_data,work_address,work_q);
  always @(posedge clk)begin
   if(reset)begin read_work<=0;work_address<=0;end
@@ -36,6 +43,7 @@ module rs_static_scratchpad #(parameter COMPACT=1)(input clk,reset,dma_we,input[
  always @(posedge clk)begin
   if(reset)begin known<=0;for(i=0;i<16;i=i+1)logical_owner[i]<=0;end
   else begin
+   if(dma_we&&matrix_we)$fatal(1,"matrix and DMA share the input write port");
    if(work_read)begin
     if(!known[ra[3:0]]||logical_owner[ra[3:0]]!=ra[5:0])$fatal(1,"T静态槽在最后读取前被覆盖");
     if(work_we&&work_wa[3:0]==ra[3:0])$fatal(1,"T静态槽同沿读写 read%0d write%0d slot%0d",ra[5:0],work_wa[5:0],ra[3:0]);

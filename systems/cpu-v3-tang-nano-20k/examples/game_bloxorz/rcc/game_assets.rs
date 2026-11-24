@@ -8,8 +8,7 @@ mod boot_resources;
 use boot_resources::*;
 
 pub fn game_mesh_part(first: u16, count: u16) -> Mesh {
-    let whole = Mesh::from_native(BLOX_MESH_DESC);
-    whole.subset(first, count)
+    Mesh::from_native(BLOX_MESH_DESC.subset(first, count))
 }
 pub fn game_texture() -> Texture {
     Texture::from_native(BLOX_TEXTURE_DESC)

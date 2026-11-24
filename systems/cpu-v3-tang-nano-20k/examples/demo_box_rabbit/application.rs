@@ -1,5 +1,7 @@
 //! Public API applications using the classic controller scene.
-use crate::applications::{Assets, Definition, DEFAULT, RENDERER_ASSETS};
+use crate::applications::{
+    Assets, BuildOption, Definition, OptionValues, DEFAULT, RENDERER_ASSETS,
+};
 pub const APPLICATIONS: &[Definition] = &[
     Definition {
         name: "demo-rgba4444",
@@ -27,6 +29,11 @@ pub const APPLICATIONS: &[Definition] = &[
         previous_source: Some("examples/gpu_demo/rcc/public_main.rs"),
         gpu_api: true,
         owner: "examples/demo_box_rabbit/application.rs",
+        options: &[BuildOption::environment(
+            "motion",
+            "BOX_RABBIT_MOTION",
+            OptionValues::Choices(&["manual", "orbit"]),
+        )],
         assets: Some(Assets {
             script: "examples/demo_box_rabbit/tools/public_assets.py",
             manifest_sources: true,

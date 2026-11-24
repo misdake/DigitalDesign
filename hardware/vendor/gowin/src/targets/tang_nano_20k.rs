@@ -693,11 +693,15 @@ impl TangNano20K {
             .add_sdc_constraint("set_clock_latency -source -early 3.75 [get_clocks {sdram_clk}]")
             .add_sdc_constraint("set_clock_latency -source -late 6.25 [get_clocks {sdram_clk}]")
             // Keep the physical 54/108 MHz clocks and SDRAM reference intact.
-            // Full-cycle setup budgets target 55/110 MHz, including the tool's
+            // Full-cycle setup budgets target 56/112 MHz, including the tool's
             // existing 35 ps allowance. Hold retains that original allowance.
-            .add_sdc_constraint("set_clock_uncertainty 0.371700 -setup -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {cpu_clk}]")
-            .add_sdc_constraint("set_clock_uncertainty 0.203350 -setup -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {controller_clk}]")
-            .add_sdc_constraint("set_clock_uncertainty 0.035 -hold -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {controller_clk cpu_clk sdram_clk}]");
+            .add_sdc_constraint("set_clock_uncertainty 0.696376 -setup -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {cpu_clk}]")
+            .add_sdc_constraint("set_clock_uncertainty 0.365688 -setup -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {controller_clk}]")
+            .add_sdc_constraint("set_clock_uncertainty 0.035 -hold -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {controller_clk cpu_clk sdram_clk}]")
+            // Keep the SDRAM controller and half-cycle bridge paths visible even
+            // when the global worst-path list is occupied by pad timing.
+            .add_sdc_constraint("\nreport_timing -setup -from [get_clocks {controller_clk}] -to [get_clocks {controller_clk}] -max_paths 20 -max_common_paths 4")
+            .add_sdc_constraint("report_timing -setup -from [get_clocks {cpu_clk}] -to [get_clocks {controller_clk}] -max_paths 12 -max_common_paths 4");
         let mut binding = (if ds2 {
             Self::ds2_user_io_binding()
         } else {

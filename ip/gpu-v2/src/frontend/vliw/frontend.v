@@ -18,13 +18,15 @@
 // Original V/T arithmetic calendar; normals travel once as packed S12F10.
 // 同一ROM、RF与双DSP，V/T分时；所有状态变更均采样旧值。
 module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,parameter SOURCE_READ=0,parameter BOUNDS_CULL=0,
- parameter TRIANGLE_SLOT_BITS=4)(
+ parameter TRIANGLE_SLOT_BITS=4,parameter WORLD_PREPARE=0)(
 `ifdef GPU_V2_COMMAND_PORTS
  input[31:0]mesh_color,
+ output prepared_light_we,prepared_light_select,output[8:0]prepared_light_data,
 `endif
 
  input clk,reset,ce,start_v,start_t,meshlet_reset,vertex_billboard,
  input [6:0] vertex_count,input [5:0] uniform_base,input [8:0] config_base,
+ input world_transform,input billboard_vertical,
  input [9:0] vertex_base,input [31:0] triangle_descriptor,input cull_negative,
  input dma_we,input [9:0] dma_addr,input [63:0] dma_data,input output_ready,
  input packet_ready,word_ready,
@@ -45,6 +47,10 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  reg [17:0] refs;reg cull;reg [31:0] building_desc;
  
  // Pages 256 through 383 cover the bounds prologue and the billboard bootstrap.
+ // Only ROM pages192..255 and448..511 contain matrix preparation.
+ // The phase is already encoded by PC; no separate phase register is needed.
+ wire matrix_active=WORLD_PREPARE&&!triangle_mode&&pc[7]&&pc[6];
+
  wire bounds_run=BOUNDS_CULL&&!triangle_mode&&pc[8]&&!pc[7];reg bounds_safe;
  localparam TRIANGLE_SLOTS=1<<TRIANGLE_SLOT_BITS;
  reg [TRIANGLE_SLOT_BITS:0] produced,consumed;
@@ -84,7 +90,8 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
 `else
  wire compact_invalid=SP_COMPACT&&(uniform_base[5]||config_base[8]||vertex_base[9]||vertex_last_word>1024);
 `endif
- wire [8:0] vertex_start=vertex_billboard?9'd320:(BOUNDS_CULL?9'd256:9'd0);
+ wire [8:0] vertex_resume=vertex_billboard?9'd320:(BOUNDS_CULL?9'd256:9'd0);
+ wire [8:0] vertex_start=WORLD_PREPARE&&world_transform?9'd192:vertex_resume;
  wire launch_v=ce&&start_v&&!busy&&!reset;
  wire launch_t=ce&&start_t&&!busy&&!start_v&&!queue_full&&!reset;
  wire launch=launch_v||(launch_t&&refs_valid);
@@ -102,10 +109,23 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  wire output_room=!export_valid||word_ready;
  wire q_can_retire=result_owner==Q_EMPTY||
    (result_owner==Q_DATA&&output_room);
- wire step=core_base;
+ // Memory responses cannot be backpressured. An arriving DMA word keeps its
+ // write port; only a colliding geometry store waits with its old ACC intact.
+ wire matrix_store=matrix_active&&control[62];
+ wire step=core_base&&!(matrix_store&&dma_we);
  wire core_read=step&&t32_pos_re;
  wire export_read=ce&&!reset&&(import_state==1||packet_take)&&q_can_retire;
-  assign dma_ready=!reset&&!(SP_COMPACT&&dma_addr[9]);
+ wire matrix_write=step&&matrix_active&&control[62];
+ wire matrix_finish=matrix_active&&control[71];
+ wire[31:0]matrix_data=acc[47:16];
+`ifdef GPU_V2_COMMAND_PORTS
+ // These two preparation stores also update the existing CP coefficient FFs.
+ // Only the rounded Q8 window leaves the core; the MAC already added half an ulp.
+ assign prepared_light_we=matrix_write&&!vertex_billboard&&control[67:66]==2'b11;
+ assign prepared_light_select=control[63];
+ assign prepared_light_data=acc[32:24];
+`endif
+ assign dma_ready=!reset&&!(SP_COMPACT&&dma_addr[9]);
  wire publish=step&&t32_publish;
  rp_triangle_descriptors #(.AB(TRIANGLE_SLOT_BITS)) descriptors(.clk(clk),.we(ce&&!reset&&publish),
   .wa(write_slot),.wd({vertex_epoch,building_desc[31:19],t32_negative,building_desc[17:0]}),
@@ -120,11 +140,14 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
 
   default:begin end
  endcase
+ if(matrix_finish)next_pc=vertex_resume;
+ if(matrix_active&&control[68]&&vertex_billboard)next_pc=target|{4'd0,billboard_vertical,4'd0};
  if(t32_active)next_pc=t32_next;
  end
  shared_control_rom #(.SP_COMPACT(SP_COMPACT)) rom(.clk(clk),.reset(reset),.en(launch||step),.addr(launch?(launch_v?vertex_start:9'd128):next_pc),.q(control));
- wire [9:0] la=l_src==1?{ub,u_off[4:1]}:l_src==3?{cb,cfg_off[1]}:vp[10:1];
- wire [9:0] ra=(work_en||work_we)?{(SP_COMPACT?4'b0110:4'b1000),work_addr}:r_src==1?{ub,u_off[4:1]}:r_src==3?{cb,cfg_off[1]}:vp[10:1];
+ wire[5:0]read_uniform=control[61]?6'd23:ub;
+ wire [9:0] la=l_src==1?{read_uniform,u_off[4:1]}:l_src==3?{cb,cfg_off[1]}:vp[10:1];
+ wire [9:0] ra=(work_en||work_we)?{(SP_COMPACT?4'b0110:4'b1000),work_addr}:r_src==1?{read_uniform,u_off[4:1]}:r_src==3?{cb,cfg_off[1]}:vp[10:1];
  
 `ifdef GPU_V2_COMMAND_PORTS
  wire[35:0]source_rq;
@@ -141,6 +164,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  .source_rq(source_rq),
 `endif
  .clk(clk),.reset(reset),.dma_we(dma_we&&dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),
+ .matrix_we(matrix_write),.matrix_index(control[67:63]),.matrix_data(matrix_data),
  .le(source_take||(step&&!t32_active&&l_src!=0)),.re(source_take||(step&&(t32_active?t32_re:(r_src!=0||work_en)))),.work_we(step&&(t32_active?t32_we:work_we)),.la(sp_la),.ra(sp_ra),.work_wa(work_wa),.work_data(t32_active?t32_wd:emit_data),.lq(lq),.rq(rq));
  wire [35:0] left=swap?rq:lq;wire [35:0] right=(swap&&!triangle_mode)?lq:rq;
  reg [31:0] origin_x,origin_y,origin_z;reg [4:0] quant_shift;reg normal18;
@@ -168,7 +192,9 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  wire [31:0] mac_value,pack_value;
  shared_rf rf(.clk(clk),.we(step&&rf_wsrc!=0),.wa(rf_dst),.wd(rf_write),.aa(rf_mac),.ba(rf_pack),.aq(mac_value),.bq(pack_value));
  wire acc_clear=acc_op==1;
- wire [53:0] acc_input=acc_clear?54'd0:acc;wire [53:0] acc_next;
+ // Matrix response products seed half an output-Q8 ulp through the existing
+ // clear mux. Only bit23 differs from the ordinary zero seed.
+ wire [53:0] acc_input=acc_clear?{30'd0,(matrix_active&&control[70]),23'd0}:acc;wire [53:0] acc_next;
  shared_mac mac(.clk(clk),.reset(reset),.en(ce&&step&&(t32_active?t32_mul:mul_en)),.a(t32_constant?t32_a:mac_value),.b(t32_active&&control[3]?t32_b:((triangle_mode)?{{6{rq[29]}},rq[29:0]}:right)),.c(t32_active&&control[70]?t32_c:acc_input),.y(acc_next));
  wire [17:0] normal16_pack={{2{pack_value[17]}},pack_value[17:2]};
  wire [17:0] packed_normal=normal18?pack_value[17:0]:normal16_pack;
@@ -280,6 +306,7 @@ if(meshlet_reset)begin published_vertices<=0;
  else if(`FRONTEND_CAPACITY_INVALID)begin busy<=0;done_v<=1;`FRONTEND_WRITE_ERROR(3) end
  else begin
  busy<=vertex_count!=0;done_v<=vertex_count==0;pc<=vertex_start;bounds_safe<=!vertex_billboard;remaining<=vertex_count;ub<=uniform_base;cb<=config_base;
+ 
  vp<={vertex_base,1'b0};op<=0;vid<=published_vertices[5:0];vfield<=0;
 
  end
@@ -295,6 +322,7 @@ if(meshlet_reset)begin published_vertices<=0;
  if(t32_done)begin busy<=0;done_t<=1;end
  end else if(step)begin
  pc<=next_pc;
+ if(matrix_finish)ub<=6'd22;
  if(bounds_run)begin
  if(control[51])bounds_safe<=bounds_safe&&quant_shift<=14&&!
   ((control[43]&&(unpacked[31]?negative_over[2]:positive_over[2]))||

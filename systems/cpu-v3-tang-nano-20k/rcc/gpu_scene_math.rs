@@ -78,29 +78,24 @@ pub fn gpu_scene_cross(a: vec3, b: vec3) -> vec3 {
 }
 
 // Called by native draw preparation after selecting its material and state.
-// Preserve fix32 until the product; quantize exactly once to native Q8.
-// Both-profile range checks are the minimum native encoding prerequisite.
-pub fn gpu_scene_light_response(
-    state: Array<u16>,
-    material: Array<u16>,
-    mut native: Array<u16>,
-) -> bool {
-    let ambient = gpu_scene_fix_read(state, GPU_STATE_AMBIENT)
-        * gpu_scene_fix_read(material, GPU_MATERIAL_AMBIENT);
-    let directional = gpu_scene_fix_read(state, GPU_STATE_DIRECTIONAL)
-        * gpu_scene_fix_read(material, GPU_MATERIAL_DIRECTIONAL);
+// With one nonnegative operand at most one, the Q16.16 product cannot
+// overflow. Reject the both-large case before multiplying, including products
+// that could otherwise wrap back into the representable coefficient range.
+#[cfg(gpu_debug)]
+pub fn gpu_scene_response_product_valid(a: fix32, b: fix32) -> bool {
     let zero = fix32::zero();
     let one = fix32::from_int(1);
-    if ambient < zero || ambient > one || directional < zero || directional > one {
-        return false;
-    }
-    let scale = fix32::from_int(256);
-    native[GPU_SCRATCH_GLOBAL + 8] = (ambient * scale).round().to_int() as u16;
-    native[GPU_SCRATCH_GLOBAL + 9] = (directional * scale).round().to_int() as u16;
-    true
+    a >= zero && b >= zero && !(a > one && b > one) && a * b <= one
 }
-
-pub fn gpu_scene_render_prepare(
+#[cfg(gpu_debug)]
+pub fn gpu_scene_responses_valid(state: Array<u16>, ambient: fix32, directional: fix32) -> bool {
+    gpu_scene_response_product_valid(gpu_scene_fix_read(state, GPU_STATE_AMBIENT), ambient)
+        && gpu_scene_response_product_valid(
+            gpu_scene_fix_read(state, GPU_STATE_DIRECTIONAL),
+            directional,
+        )
+}
+fn gpu_scene_render_values(
     state: Array<u16>,
     material: Array<u16>,
     view: Array<u16>,
@@ -123,11 +118,6 @@ pub fn gpu_scene_render_prepare(
         return false;
     }
     let start = GPU_SCRATCH_RENDER;
-    let mut at: u16 = 5;
-    while at < 16 {
-        native[start + at] = 0;
-        at += 1;
-    }
     native[start] = base;
     native[start + 1] = exponent
         | ((texture_flags & 1) << 4)
@@ -257,174 +247,109 @@ pub fn gpu_scene_encode_view_light(
     gpu_scene_light_encode(view_light, native)
 }
 
-// Build final native fields; the coefficient producer owns Instance0..41.
-pub fn gpu_scene_draw_header(
-    desired: Array<u16>,
+// Material owns texture/raster/color and the uncombined response. No Camera or
+// light direction is retained in a prepared part.
+pub fn gpu_scene_material_prepare(
+    state: Array<u16>,
     material: Array<u16>,
     view: Array<u16>,
     textured: bool,
     mut native: Array<u16>,
 ) -> bool {
+    if !gpu_scene_render_values(state, material, view, textured, native) {
+        return false;
+    }
+    let render = GPU_SCRATCH_RENDER;
+    native[render + 5] = 0;
+    native[render + 6] = 0;
+    native[render + 7] = 0;
+    native[render + 8] = material[GPU_MATERIAL_RGBA];
+    native[render + 9] = material[GPU_MATERIAL_RGBA + 1];
+    native[render + 10] = 3 | (material[GPU_MATERIAL_SHININESS] << 2);
+    native[render + 11] = 0;
+    let instance = GPU_SCRATCH_INSTANCE;
+    // Every other word has exactly one producer: World, normal, response or
+    // Material. Only these four reserved words need explicit initialization.
+    native[instance + 30] = 0;
+    native[instance + 31] = 0;
+    native[instance + 50] = 0;
+    native[instance + 51] = 0;
+    native[instance + 26] = material[GPU_MATERIAL_AMBIENT];
+    native[instance + 27] = material[GPU_MATERIAL_AMBIENT + 1];
+    native[instance + 28] = material[GPU_MATERIAL_DIRECTIONAL];
+    native[instance + 29] = material[GPU_MATERIAL_DIRECTIONAL + 1];
+    true
+}
+
+pub fn gpu_scene_pass_fields(desired: Array<u16>, mut native: Array<u16>) {
     let state = unsafe {
         desired
             .as_ptr()
             .add(GPU_DESIRED_STATE as i16)
             .as_u16_array()
     };
-    let mut padding: u16 = 11;
-    while padding < 32 {
-        native[padding] = 0;
-        padding += 1;
-    }
-    if !gpu_scene_encode_view_light(desired, state, native) {
-        return false;
-    }
-    if !gpu_scene_light_response(state, material, native) {
-        return false;
-    }
-    if !gpu_scene_render_prepare(state, material, view, textured, native) {
-        return false;
-    }
     native[0u16] = desired[GPU_CAMERA_FAR];
     native[1u16] = desired[GPU_CAMERA_FAR + 1];
     native[5u16] = desired[GPU_CAMERA_RAY];
     native[6u16] = desired[GPU_CAMERA_RAY + 1];
     native[7u16] = desired[GPU_CAMERA_RAY + 2];
-    native[10u16] = 3 | (material[GPU_MATERIAL_SHININESS] << 2);
-    let instance = GPU_SCRATCH_INSTANCE;
-    let mut at: u16 = 42;
-    while at < 64 {
-        native[instance + at] = 0;
-        at += 1;
+    let mut i: u16 = 0;
+    while i < 4 {
+        native[8 + i] = state[GPU_STATE_AMBIENT + i];
+        i += 1;
     }
-    true
 }
-// Writes exactly 42 coefficient words. Inputs and output must be disjoint.
-// Transpose packed rows in F registers. Finish normals before loading world rows
-// and form one camera basis at a time to bound live vectors and allocator spills.
-pub fn gpu_scene_matrix_prepare(desired: Array<u16>, model: Array<u16>, out: Array<u16>) {
+// View owns camera projection conventions once; World remains camera-independent.
+pub fn gpu_scene_view_prepare(desired: Array<u16>, native: Array<u16>) {
     let camera = desired.as_ptr();
-    let source = model.as_ptr();
-    let target = out.as_ptr();
+    let output = native.as_ptr().add(GPU_SCRATCH_VIEW as i16);
     let a = vec4::import(camera);
     let b = vec4::import(camera.add(8));
     let c = vec4::import(camera.add(16));
-    // The final overlapping load ends at word 41, never at cache word 42.
-    let nx = vec4::import(source.add(24));
-    let ny = vec4::import(source.add(30));
-    let nz = vec4::import(source.add(34));
-    let n0 = vec3::new(nx.x(), ny.x(), nz.y());
-    let n1 = vec3::new(nx.y(), ny.y(), nz.z());
-    let n2 = vec3::new(nx.z(), ny.z(), nz.w());
-    let r0 = vec3::new(a.x(), a.y(), a.z());
-    let n00 = -fdot(r0, n0);
-    let n01 = -fdot(r0, n1);
-    let n02 = -fdot(r0, n2);
-    let r1 = vec3::new(b.x(), b.y(), b.z());
-    let n10 = fdot(r1, n0);
-    vec4::export(vec4::new(n00, n01, n02, n10), target.add(24));
-    let n11 = fdot(r1, n1);
-    let n12 = fdot(r1, n2);
-    let r2 = vec3::new(c.x(), c.y(), c.z());
-    let n20 = fdot(r2, n0);
-    let n21 = fdot(r2, n1);
-    vec4::export(vec4::new(n11, n12, n20, n21), target.add(32));
-    gpu_scene_fix_write(out, 40, fdot(r2, n2));
     let k = -(gpu_scene_fix_read(desired, GPU_CAMERA_FOCAL) * fix32::from_words(256, 0));
-    let x = vec4::import(source);
-    let y = vec4::import(source.add(8));
-    let z = vec4::import(source.add(16));
-    let w0 = vec3::new(x.x(), y.x(), z.x());
-    let w1 = vec3::new(x.y(), y.y(), z.y());
-    let w2 = vec3::new(x.z(), y.z(), z.z());
-    let w3 = vec3::new(x.w(), y.w(), z.w());
-    let p0 = vec3::new(a.x(), a.y(), a.z());
     vec4::export(
-        vec4::new(
-            fdot(p0, w0) * k,
-            fdot(p0, w1) * k,
-            fdot(p0, w2) * k,
-            (fdot(p0, w3) + a.w()) * k,
-        ),
-        target.add(0),
+        vec4::new(a.x() * k, a.y() * k, a.z() * k, a.w() * k),
+        output,
     );
-    let p1 = vec3::new(b.x(), b.y(), b.z());
     vec4::export(
-        vec4::new(
-            fdot(p1, w0) * k,
-            fdot(p1, w1) * k,
-            fdot(p1, w2) * k,
-            (fdot(p1, w3) + b.w()) * k,
-        ),
-        target.add(8),
+        vec4::new(b.x() * k, b.y() * k, b.z() * k, b.w() * k),
+        output.add(8),
     );
-    let p2 = vec3::new(c.x(), c.y(), c.z());
-    vec4::export(
-        vec4::new(
-            fdot(p2, w0) * -fix32::from_int(1),
-            fdot(p2, w1) * -fix32::from_int(1),
-            fdot(p2, w2) * -fix32::from_int(1),
-            (fdot(p2, w3) + c.w()) * -fix32::from_int(1),
-        ),
-        target.add(16),
-    );
-}
-pub fn gpu_scene_draw_finish(material: Array<u16>, mut native: Array<u16>) {
-    let instance = GPU_SCRATCH_INSTANCE;
-    native[instance + 43] = 1;
-    native[instance + 44] = material[GPU_MATERIAL_RGBA];
-    native[instance + 45] = material[GPU_MATERIAL_RGBA + 1];
-}
-
-pub fn gpu_scene_billboard_directions(desired: Array<u16>, native: Array<u16>, vertical: bool) {
-    let k = -(gpu_scene_fix_read(desired, GPU_CAMERA_FOCAL) * fix32::from_words(256, 0));
-    let directions = GPU_SCRATCH_INSTANCE + 48;
-    if vertical {
-        let camera = desired.as_ptr();
-        let right = vec4::import(camera);
-        let up = vec4::import(camera.add(8));
-        let back = vec4::import(camera.add(16));
-        let horizontal = vec3::new(right.x(), fix32::zero(), right.z());
-        gpu_scene_fix_write(
-            native,
-            directions,
-            fdot(horizontal, vec3::new(right.x(), right.y(), right.z())) * k,
-        );
-        gpu_scene_fix_write(
-            native,
-            directions + 4,
-            fdot(horizontal, vec3::new(up.x(), up.y(), up.z())) * k,
-        );
-        gpu_scene_fix_write(
-            native,
-            directions + 8,
-            -fdot(horizontal, vec3::new(back.x(), back.y(), back.z())),
-        );
-    } else {
-        // Camera right/up become the X/Y basis before projection.
-        gpu_scene_fix_write(native, directions, k);
-        gpu_scene_fix_write(native, directions + 6, k);
+    vec4::export(vec4::new(-c.x(), -c.y(), -c.z(), -c.w()), output.add(16));
+    vec4::export(vec4::new(-a.x(), -a.y(), -a.z(), b.x()), output.add(24));
+    vec4::export(vec4::new(b.y(), b.z(), c.x(), c.y()), output.add(32));
+    let mut view = unsafe { output.as_u16_array() };
+    gpu_scene_fix_write(view, 40, c.z());
+    view[42u16] = 0;
+    view[43u16] = 1;
+    let mut i: u16 = 44;
+    while i < 64 {
+        view[i] = 0;
+        i += 1;
     }
-}
-// The pure six-argument path retains no cache or object identity.
-pub fn gpu_scene_draw_prepare(
-    desired: Array<u16>,
-    model: Array<u16>,
-    material: Array<u16>,
-    view: Array<u16>,
-    textured: bool,
-    native: Array<u16>,
-) -> bool {
-    if !gpu_scene_draw_header(desired, material, view, textured, native) {
-        return false;
+    // Billboard basis belongs to View, shared by every model and static part.
+    // Keep the established horizontal-right rule without renormalizing XZ.
+    let horizontal = vec3::new(a.x(), fix32::zero(), a.z());
+    gpu_scene_fix_write(
+        view,
+        44,
+        fdot(horizontal, vec3::new(a.x(), a.y(), a.z())) * k,
+    );
+    gpu_scene_fix_write(
+        view,
+        46,
+        fdot(horizontal, vec3::new(b.x(), b.y(), b.z())) * k,
+    );
+    gpu_scene_fix_write(view, 60, -fdot(horizontal, vec3::new(c.x(), c.y(), c.z())));
+    gpu_scene_fix_write(view, 62, k);
+    let mut native = native;
+    native[12u16] = view[60u16];
+    native[13u16] = view[61u16];
+    native[14u16] = view[62u16];
+    native[15u16] = view[63u16];
+    i = 0;
+    while i < 12 {
+        view[48 + i] = native[i];
+        i += 1;
     }
-    let instance = unsafe {
-        native
-            .as_ptr()
-            .add(GPU_SCRATCH_INSTANCE as i16)
-            .as_u16_array()
-    };
-    gpu_scene_matrix_prepare(desired, model, instance);
-    gpu_scene_draw_finish(material, native);
-    true
 }

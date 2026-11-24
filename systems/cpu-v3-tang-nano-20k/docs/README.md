@@ -6,8 +6,9 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 ## Documents
 
+- [Using the GPU resource API](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-guide.md): reading route, one frame and startup, sampling/lifetimes, costs and reuse choices. Start here when reading GPU applications.
 - [Application quickstart](/systems/cpu-v3-tang-nano-20k/docs/application-quickstart.md): first build/frame, target language restrictions and application/static-content integration.
-- [Constructing SDK values](/systems/cpu-v3-tang-nano-20k/docs/sdk-values.md): readable numbers/colors, source-value builders and derived asset/framebuffer descriptions.
+- [Constructing SDK values](/systems/cpu-v3-tang-nano-20k/docs/sdk-values.md): readable numbers/colors, asset/framebuffer descriptions and the small dynamic Billboard writer.
 - [Static assets](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md): constant descriptions, source includes, external placement and loader-owned CPU data images.
 
 - [UI text helpers](/systems/cpu-v3-tang-nano-20k/docs/ui-text.md): stateless ASCII number formatting over the public GPU UI, separate from menu layout and driver ownership.
@@ -25,8 +26,9 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 - [Host time and input](/systems/cpu-v3-tang-nano-20k/docs/host-simulation.md): explicit elapsed events, Device5 latest snapshots, Windows XInput adaptation and the preloaded native-edge CPU composition.
 
-- [Explicit GPU API internal core](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md): public resources, native recording, submission, unique retirement and Display handoff.
-- [Prepared scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md): source-world transforms, six-argument native conversion, material/state, independent texture views and persistent external UI updates.
+- [How a GPU command buffer works](/systems/cpu-v3-tang-nano-20k/docs/gpu-command-recording.md): required transfers, concrete native bytes and GPU consumption.
+- [GPU resource and recording internals](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md): resource storage, native recording, submission, unique retirement and Display handoff; lookup after the public guide.
+- [Prepared scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md): source-world transforms, resident World/View conversion, material/state, independent texture views and persistent external UI updates.
 
 - [Explicit GPU application callers](/systems/cpu-v3-tang-nano-20k/docs/gpu-explicit-examples.md): migrated examples, application-owned completion, RTT, input and bounded caller qualification.
 - [GPU board throughput suite](/systems/cpu-v3-tang-nano-20k/examples/bench_gpu/README.md): static native workloads, headless timing, UART sample statistics and HDMI validation.
@@ -42,7 +44,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 - [Resource renderer](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md): retained test-only Renderer/Frame contract; current callers use the explicit API.
 - [Borrowed render targets](/systems/cpu-v3-tang-nano-20k/docs/gpu-render-targets.md): retained legacy target-registry regression contract.
 - [GPU input pipeline](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md): retained test-only double-slot scheduler and UI mirror contract.
-- [`gpu-driver.md`](gpu-driver.md): native single-CB diagnostic interface, encoding, DSEG3 and submission/fault semantics.
+- [Legacy native diagnostic driver](gpu-driver.md): separate single-CB diagnostic interface, encoding, DSEG3 and submission/fault semantics; not the resource-API tutorial.
 - [GPU profiler](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md): sim/emu collection, cold GPU/MC replay, passive trace identities and offline viewing.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   cold-loader LED and application reporting.

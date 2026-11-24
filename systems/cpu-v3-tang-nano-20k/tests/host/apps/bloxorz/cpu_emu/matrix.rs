@@ -51,10 +51,18 @@ fn compile(arm: &str, level: u16) {
         automatic_inline: Some(automatic_inline),
         local_memory: Some(local_memory),
         edit: Box::new(|source| {
-            source.required_replace(
-                "session_tick(buttons, held, elapsed);",
-                "session_tick(buttons, held, if number==7 {17u16}else{0u16});",
-            )
+            // Gameplay now has its own function; capture the caller's frame
+            // before entering it instead of referring to an out-of-scope local.
+            source
+                .required_replace(
+                    "session_tick(buttons, held, elapsed);",
+                    "session_tick(buttons, held, CPU_MATRIX_DT[0u16]);",
+                )
+                .required_replace(
+                    "signal(4, number);",
+                    "CPU_MATRIX_DT[0u16]=if number==7 {17u16}else{0u16};signal(4, number);",
+                )
+                + "\nstatic CPU_MATRIX_DT: Buf<u16,1> = Buf::new([0;1]);\n"
         }),
         ..ApplicationCase::default()
     };

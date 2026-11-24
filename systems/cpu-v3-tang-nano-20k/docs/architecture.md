@@ -222,6 +222,11 @@ four-sector group is a separate protocol and remains disabled in the CPU V3 syst
 - HDMI scanout uses separate pixel and serialization clocks. The display path owns the explicit
   crossings and line buffering; CPU IP does not depend on video clocks.
 
+Internal setup uncertainty budgets the unchanged54/108MHz domains as56/112MHz;
+hold retains35ps uncertainty. SDRAM pad constraints and the forwarded-clock
+envelope remain independent of that internal margin. Dedicated controller and
+bridge timing lists accompany the global report so pad paths cannot hide them.
+
 The production cold-start target selects CL3/RCD3/RP3, capture latency 3,
 RFC9/WR2, routing option 2 and registered 64-bit read return. DQM and each DQ
 enable have physical output registers driven by local owner state without an

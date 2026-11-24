@@ -103,6 +103,7 @@ reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
    if(leading_any[need_bit]||low_carry[need_bit])need=need_bit+1;
  end
  wire [3:0] next_exp=need>edge_exp ? need : edge_exp;
+ wire[5:0]edge_final_exp={2'd0,next_exp}+raw_exponent;
  wire[53:0]quant_result;
  wire[27:0]canonical28=quant_result[34:7];
  // Only PA's N coefficients need an unsigned magnitude; PB/R use signed Q.
@@ -362,13 +363,13 @@ tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;bias<=cfg_bias;
       if(is_c)begin
        if(next_exp>11)`PREPARE_WRITE_ERROR(1)
        case(edge_no)
-        0:exp0<={2'd0,next_exp}+raw_exponent;1:exp1<={2'd0,next_exp}+raw_exponent;
-        default:begin
-         exp2<={2'd0,next_exp}+raw_exponent;
-         if(exp0>=exp1&&exp0>=({2'd0,next_exp}+raw_exponent))common_e<=exp0;
-         else if(exp1>=({2'd0,next_exp}+raw_exponent))common_e<=exp1;else common_e<={2'd0,next_exp}+raw_exponent;
-        end
+        0:exp0<=edge_final_exp;
+        1:exp1<=edge_final_exp;
+        default:exp2<=edge_final_exp;
        endcase
+       // No consumer uses common_e until all three edge records arrive.
+       // Preserve six-bit modular exponents while reducing one max layer.
+       if(edge_no==0||edge_final_exp>common_e)common_e<=edge_final_exp;
        edge_exp<=0;edge_no<=edge_no+1'b1;
       end
      end else if(expected==9)begin

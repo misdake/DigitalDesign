@@ -58,8 +58,8 @@ pub(in super::super) fn rerecord() -> ApplicationCase {
         source = stage_source(source, 0, false, false, true);
 
         source = source.required_replace(
-            "if scene_generation != LEVEL_GENERATION[0u16]",
-            "if true || scene_generation != LEVEL_GENERATION[0u16]",
+            "if cache.generation != LEVEL_GENERATION[0u16]",
+            "if true || cache.generation != LEVEL_GENERATION[0u16]",
         );
 
         source

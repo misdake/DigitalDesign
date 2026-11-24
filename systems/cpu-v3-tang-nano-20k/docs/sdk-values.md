@@ -107,6 +107,9 @@ value types for stored scene descriptions.
 
 ## Materials and state
 
+For when these values are captured and how long external data must remain live,
+see [sampling and lifetime](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-guide.md#sampling-and-lifetime).
+
 ```rust
 let material = MaterialDesc::lit(Rgba8::white(), Rgb8::white(), Shininess::S16)
     .with_response(fix32::from_ratio(1, 2), fix32::from_ratio(1, 2));
@@ -165,6 +168,41 @@ does not replace that promise.
 and `double` supply the 8192-byte default object arena; use the raw struct for a
 different arena budget. Application-owned storage uses `CommandMemory::allocate` under `#[static_buffer]`.
 The optional board factories retain the normal fixed slots.
+
+Prepared commands declare their own capacity, without consuming a frame CB:
+
+```rust
+#[static_buffer]
+const LEVEL_MEMORY: PreparedMemory = PreparedMemory::allocate(4096, 16384);
+let mut level = PreparedDraws::new(LEVEL_MEMORY);
+let mut recording = level.record();
+// recording.set_state(...); recording.draw(...);
+recording.finish();
+// pass.draw_prepared(level.ptr());
+```
+
+For runtime allocation, reserve an external StaticBuffer, construct a
+`PreparedPool` from its GpuMemory, then call `pool.allocate(command_bytes,
+push_bytes)`. The returned Copy Ptr can record and replay; `pool.free(ptr)`
+recycles its storage. Pool Drop releases its children. Both modes reject
+release or replacement during an open recording. CB references are not tracked:
+the caller retires executions and discards every referring CB before changing,
+releasing or reusing recorded external inputs. The CPU registration does not own the external
+StaticBuffer. There is no implicit GPU wait or global external heap.
+
+For a temporary selection from a live Mesh, use a Copy range instead of creating
+an independent directory every frame:
+
+```rust
+let whole = mesh.ptr();
+let panel = whole.slice(first_meshlet, 1);
+pass.draw_billboard(panel, model.ptr(), material.ptr(), view.ptr(), facing);
+```
+
+`slice` allocates nothing. Keep the Mesh body alive through recording; encoded
+external geometry stays unchanged and allocated until executions retire and
+referring CBs are discarded. `Mesh::subset`
+still creates an independent owning child when that different lifetime is needed.
 
 `Rgb565Surface` describes a shared physical framebuffer span once. The unsafe
 `from_sectors` constructor checks 64-KiB base alignment, the padded physical

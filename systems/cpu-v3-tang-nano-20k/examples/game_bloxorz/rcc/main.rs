@@ -1,4 +1,4 @@
-//! All-stage Bloxorz with static color/depth restoration and cached RTT transitions.
+//! All-stage Bloxorz with reusable static geometry commands and cached RTT transitions.
 use crate::dsl_rt::*;
 mod device_abi;
 use device_abi::*;
@@ -10,6 +10,10 @@ mod ui_text;
 use ui_text::*;
 mod game_assets;
 use game_assets::*;
+mod static_buffer;
+use static_buffer::StaticBuffer;
+#[static_buffer]
+const PREPARED_STORAGE: StaticBuffer = StaticBuffer::new(65536, 128);
 mod gpu_board;
 use gpu_board::*;
 mod time;
@@ -40,10 +44,10 @@ static BLOCK_POSE_KEY: Buf<u16, 3> = Buf::new([0; 3]);
 fn scene_color_load(
     commands: &mut CommandBuffer,
     source: &ColorBuffer,
-    target: &ColorBuffer,
+    target: ColorBufferPtr,
 ) -> ColorLoad {
     if BACKGROUND[0u16] != 0 {
-        commands.copy_color(source.ptr(), target.ptr());
+        commands.copy_color(source.ptr(), target);
         return ColorLoad::load();
     }
     ColorLoad::clear(Rgb565::from_raw(0x2924))
@@ -278,28 +282,34 @@ fn button_cache_rebuild() {
     }
     cache[0u16] = count;
 }
-fn sync_bridge_group(commands: &mut CommandBuffer) {
+fn sync_bridge_group(parts: Array<PreparedDrawsPtr>) {
     if BRIDGE_COMMANDS[0u16] != LEVEL_GENERATION[0u16] {
-        commands.clear_prepared_parts();
+        let mut i: u16 = 0;
+        while i < 16 {
+            let part = parts[i];
+            part.invalidate();
+            i += 1;
+        }
         button_cache_rebuild();
         BRIDGE_COMMANDS[0u16] = LEVEL_GENERATION[0u16];
         BRIDGE_COMMANDS[1u16] = visual_mask();
     } else if BRIDGE_COMMANDS[1u16] != visual_mask() {
-        commands.invalidate_prepared_part(0);
-        commands.invalidate_prepared_part(15);
+        let opaque = parts[0u16];
+        opaque.invalidate();
+        let hints = parts[15u16];
+        hints.invalidate();
         BRIDGE_COMMANDS[1u16] = visual_mask();
     }
 }
 // The stage owns the mapping: opaque bridges0, up to thirteen switches,
 // pads14 and translucent bridge hints15.
-fn prepare_bridges(commands: &mut CommandBuffer, scene: &mut SceneResources, transparent: bool) {
+fn prepare_bridges(parts: Array<PreparedDrawsPtr>, scene: &mut SceneResources, transparent: bool) {
     let part = if transparent { 15u16 } else { 0u16 };
-    if commands.prepared_part_ready(part) {
+    if parts[part].ready() {
         return;
     }
     let before = DRAW_CALLS[0u16];
-    let mut recording = commands.prepare_part(part);
-    recording.set_camera(scene.camera.ptr());
+    let mut recording = parts[part].record();
     if transparent {
         recording.set_state(scene.hint_state.ptr());
     } else {
@@ -449,7 +459,7 @@ fn draw_switch_tile(
     }
 }
 fn prepare_switches(
-    commands: &mut CommandBuffer,
+    parts: Array<PreparedDrawsPtr>,
     scene: &mut SceneResources,
     material: &mut Material,
 ) {
@@ -467,10 +477,9 @@ fn prepare_switches(
             0u16
         };
         let part = j + 1;
-        if !commands.prepared_part_ready(part) || cache[2 + j * 3] != key {
+        if !parts[part].ready() || cache[2 + j * 3] != key {
             let before = DRAW_CALLS[0u16];
-            let mut recording = commands.prepare_part(part);
-            recording.set_camera(scene.camera.ptr());
+            let mut recording = parts[part].record();
             recording.set_state(scene.state.ptr());
             draw_switch_tile(
                 &mut recording,
@@ -489,11 +498,11 @@ fn prepare_switches(
     }
 }
 
-fn draw_switches(pass: &mut Pass) {
+fn draw_switches(pass: &mut Pass, parts: Array<PreparedDrawsPtr>) {
     let cache = button_cache_data();
     let mut j: u16 = 0;
     while j < cache[0u16] {
-        pass.draw_prepared(j + 1);
+        pass.draw_prepared(parts[j + 1]);
         DRAW_CALLS[0u16] += cache[3 + j * 3];
         j += 1;
     }
@@ -627,10 +636,13 @@ fn finish_frame(gpu: &mut Gpu, commands: CommandBuffer, started: bool) -> Comman
     render_time_complete(elapsed, started);
     completed
 }
+struct SceneTarget {
+    color: ColorBufferPtr,
+    depth: DepthBufferPtr,
+}
 fn record_static_scene(
     commands: &mut CommandBuffer,
-    color: &ColorBuffer,
-    depth: &DepthBuffer,
+    target: &SceneTarget,
     background: &ColorBuffer,
     camera: &Camera,
     fragile: Ptr,
@@ -640,8 +652,8 @@ fn record_static_scene(
     let mut floor_material = game_material(Rgba8::white(), false);
     let mut pad_model = game_plain_model();
     let mut pad_material = game_material(Rgba8::white(), false);
-    let load = scene_color_load(commands, background, color);
-    let mut pass = commands.pass(color.ptr(), depth.ptr(), load, DepthLoad::clear(65535));
+    let load = scene_color_load(commands, background, target.color);
+    let mut pass = commands.pass(target.color, target.depth, load, DepthLoad::clear(65535));
     pass.set_camera(camera.ptr());
     pass.set_state(state.ptr());
     draw_floor(&mut pass, &mut floor_model, &mut floor_material);
@@ -762,47 +774,39 @@ fn advance_gameplay(
 }
 
 struct StaticScene {
-    color: ColorBuffer,
-    depth: DepthBuffer,
     background: ColorBuffer,
+    valid: bool,
     generation: u16,
     background_mode: u16,
     hidden: u16,
-    valid: bool,
+    draws: u16,
 }
 impl StaticScene {
     fn new() -> Self {
         let background = ColorBuffer::from_memory(unsafe {
             GpuMemory::from_sectors(BLOX_BACKGROUND_SECTOR, 1600)
         });
-        let color = ColorBuffer::from_memory(unsafe {
-            GpuMemory::from_sectors(BLOX_STATIC_COLOR_SECTOR, 2048)
-        });
-        let depth = DepthBuffer::from_memory(unsafe {
-            GpuMemory::from_sectors(BLOX_STATIC_DEPTH_SECTOR, 2048)
-        });
         Self {
-            color: color,
-            depth: depth,
             background: background,
+            valid: false,
             generation: 0,
             background_mode: 2,
             hidden: 65535,
-            valid: false,
+            draws: 0,
         }
     }
 }
 fn refresh_static_scene(
     cache: &mut StaticScene,
-    gpu: &mut Gpu,
     mut commands: CommandBuffer,
     dynamic_commands: &mut CommandBuffer,
     camera: &Camera,
     fragile_owner: Ptr,
+    target: &SceneTarget,
 ) -> CommandBuffer {
     if cache.generation != LEVEL_GENERATION[0u16] {
-        cache.valid = false;
         commands.reset();
+        cache.valid = false;
         if ground_enabled() && !ground_matches_level() {
             dynamic_commands.reset();
             ground_rebuild();
@@ -812,58 +816,43 @@ fn refresh_static_scene(
             fragile_rebuild(fragile_owner);
         }
     }
-    // Source indices can change only after both preceding CBs retired.
-    // Their changed coverage invalidates pixels as well as geometry.
+    // Geometry changes only after both preceding CBs retired. Visible fragile
+    // coverage is part of the recording key, not a per-frame command patch.
     fragile_sync(fragile_owner);
-    if !cache.valid
-        || cache.background_mode != BACKGROUND[0u16]
-        || cache.hidden != fragile_hidden(fragile_owner)
-    {
+    if cache.background_mode != BACKGROUND[0u16] || cache.hidden != fragile_hidden(fragile_owner) {
         cache.valid = false;
+    }
+    if cache.valid {
+        let binding = commands.target_binding();
+        commands.retarget_target(binding, target.color, target.depth);
+        DRAW_CALLS[0u16] += cache.draws;
+    } else {
         commands.reset();
+        let previous_draws = DRAW_CALLS[0u16];
         record_static_scene(
             &mut commands,
-            &cache.color,
-            &cache.depth,
+            target,
             &cache.background,
             camera,
             fragile_owner,
         );
-
-        gpu.submit(commands);
-        commands = gpu.wait();
+        cache.valid = true;
+        cache.draws = DRAW_CALLS[0u16] - previous_draws;
         cache.generation = LEVEL_GENERATION[0u16];
         cache.background_mode = BACKGROUND[0u16];
         cache.hidden = fragile_hidden(fragile_owner);
-        cache.valid = true;
     }
     commands
 }
-fn record_static_copy(
-    commands: &mut CommandBuffer,
-    cache: &StaticScene,
-    target: &ColorBuffer,
-    depth: &DepthBuffer,
-) {
-    commands.reset();
-    commands.copy_color(cache.color.ptr(), target.ptr());
-    commands.copy_depth(cache.depth.ptr(), depth.ptr());
-    let pass = commands.pass(
-        target.ptr(),
-        depth.ptr(),
-        ColorLoad::load(),
-        DepthLoad::load(),
-    );
-}
 
 fn prepare_pads(
-    commands: &mut CommandBuffer,
+    parts: Array<PreparedDrawsPtr>,
     scene: &mut SceneResources,
     mut pad_cache: Array<u16>,
     pad_view: &TextureView,
     carrier_view: &TextureView,
 ) {
-    if commands.prepared_part_ready(14)
+    if parts[14u16].ready()
         && pad_cache[11u16] == pad_cache[1u16]
         && pad_cache[12u16] == pad_cache[2u16]
         && pad_cache[13u16] == pad_cache[5u16]
@@ -871,8 +860,7 @@ fn prepare_pads(
         return;
     }
     let before = DRAW_CALLS[0u16];
-    let mut recording = commands.prepare_part(14);
-    recording.set_camera(scene.camera.ptr());
+    let mut recording = parts[14u16].record();
     recording.set_state(scene.state.ptr());
     draw_pad_part(
         &mut recording,
@@ -1003,15 +991,21 @@ fn prepare_pads(
     DRAW_CALLS[0u16] = before;
 }
 
-fn record_dynamic_scene(pass: &mut Pass, scene: &mut SceneResources, pad_cache: Array<u16>) {
+fn record_dynamic_scene(
+    pass: &mut Pass,
+    scene: &mut SceneResources,
+    pad_cache: Array<u16>,
+    parts: Array<PreparedDrawsPtr>,
+) {
+    pass.set_camera(scene.camera.ptr());
+    pass.set_state(scene.state.ptr());
     prepare_block(&mut scene.block_model);
-    pass.draw_prepared(0);
+    pass.draw_prepared(parts[0u16]);
     DRAW_CALLS[0u16] += BRIDGE_COMMANDS[2u16];
-    draw_switches(pass);
-    pass.draw_prepared(14);
+    draw_switches(pass, parts);
+    pass.draw_prepared(parts[14u16]);
     DRAW_CALLS[0u16] += pad_cache[14u16];
 
-    pass.set_camera(scene.camera.ptr());
     pass.set_state(scene.shadow_state.ptr());
     draw_shadow(
         pass,
@@ -1042,7 +1036,7 @@ fn record_dynamic_scene(pass: &mut Pass, scene: &mut SceneResources, pad_cache: 
     }
     // Opaque geometry and receiver shadows are complete. Inactive
     // bridge hints now test opaque depth without writing it.
-    pass.draw_prepared(15);
+    pass.draw_prepared(parts[15u16]);
     DRAW_CALLS[0u16] += BRIDGE_COMMANDS[4u16];
 }
 
@@ -1113,7 +1107,18 @@ fn record_overlay(
 fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     let mut gpu = Gpu::init(board_gpu_config());
     let mut commands = gpu.command_buffer();
-    commands.enable_prepared_parts(PreparedPartsLayout::SplitWide);
+    let mut prepared_pool = PreparedPool::new(GpuMemory::from_buffer(PREPARED_STORAGE));
+    let first = prepared_pool.allocate(1024, 8192);
+    let mut parts: Buf<PreparedDrawsPtr, 16> = Buf::new([first; 16]);
+    let mut index: u16 = 1;
+    while index < 16 {
+        let mut push_bytes: u16 = 2048;
+        if index == 15 {
+            push_bytes = 8192;
+        }
+        parts[index] = prepared_pool.allocate(1024, push_bytes);
+        index += 1;
+    }
     let mut scene_commands = gpu.command_buffer();
     button_cache_begin();
     BRIDGE_COMMANDS[0u16] = 0;
@@ -1195,7 +1200,8 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
             text_u16_field(&mut grid, 6, 0, 1, connected);
         }
         if prepare_scene {
-            sync_bridge_group(&mut commands);
+            commands.reset();
+            sync_bridge_group(parts.as_array());
             if pad_cache[0u16] != LEVEL_GENERATION[0u16] {
                 drop(carrier_view);
                 drop(carrier_texture);
@@ -1203,30 +1209,33 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 carrier_view = clamped_texture_view(&carrier_texture);
             }
             pad_cache_update(pad_cache);
+            let scene_target = SceneTarget {
+                color: target.ptr(),
+                depth: depth.ptr(),
+            };
             scene_commands = refresh_static_scene(
                 &mut static_scene,
-                &mut gpu,
                 scene_commands,
                 &mut commands,
                 &scene.camera,
                 fragile_owner,
+                &scene_target,
             );
-            record_static_copy(&mut scene_commands, &static_scene, target, &depth);
             gpu.submit(scene_commands);
             if automatic_capture && fade {
                 capture_report(66, number);
             }
             commands.reset();
-            prepare_bridges(&mut commands, &mut scene, false);
-            prepare_switches(&mut commands, &mut scene, &mut hatch_material);
+            prepare_bridges(parts.as_array(), &mut scene, false);
+            prepare_switches(parts.as_array(), &mut scene, &mut hatch_material);
             prepare_pads(
-                &mut commands,
+                parts.as_array(),
                 &mut scene,
                 pad_cache,
                 &pad_view,
                 &carrier_view,
             );
-            prepare_bridges(&mut commands, &mut scene, true);
+            prepare_bridges(parts.as_array(), &mut scene, true);
             {
                 let mut pass = commands.pass(
                     target.ptr(),
@@ -1234,7 +1243,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     ColorLoad::load(),
                     DepthLoad::load(),
                 );
-                record_dynamic_scene(&mut pass, &mut scene, pad_cache);
+                record_dynamic_scene(&mut pass, &mut scene, pad_cache, parts.as_array());
                 if automatic_capture {
                     counted_ui(
                         &mut pass,

@@ -33,6 +33,14 @@ Application names use `demo-` for showcases, `sample-` for starter code,
 `game-` for complete games and `bench-` for benchmarks. Source directories
 use the same prefixes with underscores.
 
+Public GPU examples use the shared resident World/View path: `Model` supplies
+world-space transforms and `Pass::set_camera` selects the view. Applications do
+not calculate MV themselves. Prepared parts retain World and inherit the Pass
+camera when appended. Rebuild these applications with matching World/View-capable
+gateware; see [scene conversion](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md).
+Billboard draws and explicit low-level benchmark/replay fixtures retain their
+precomposed entry and formats.
+
 ## Preview and run
 
 ```powershell

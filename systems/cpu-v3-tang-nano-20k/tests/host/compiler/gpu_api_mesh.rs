@@ -4,44 +4,47 @@ use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 const SOURCE: &str = r#"mod gpu_mesh;
-static STEP:u16=0;static MESH:Buf<u16,16>=Buf::new([0;16]);
+static MODEL:Buf<u16,48>=Buf::new([0;48]);static STEP:u16=0;static MESH:Buf<u16,16>=Buf::new([0;16]);
 static SUB:Buf<u16,16>=Buf::new([0;16]);static ROW:Buf<u16,64>=Buf::new([0;64]);
 fn check(ok:bool){if !ok{halt(0xd000+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
 fn main(){gpu_record_init();let saved=read_dseg_page(3);
  let memory:GpuMemory=GpuMemory{first_sector:0xa000,sector_count:512};
  let desc:MeshDesc=MeshDesc{directory_sector:0xa0ff,directory_word:63,meshlet_count:9,storage:memory};
- check(gpu_mesh_init(MESH.as_array(),desc));
- check(!gpu_mesh_subset(SUB.as_array(),MESH.as_array(),10,0));
- check(!gpu_mesh_subset(SUB.as_array(),MESH.as_array(),8,2));
  let mut i:u16=0;while i<9{ROW[i*2]=0xa010+i*4;ROW[i*2+1]=i%3+1;i+=1;}
- check(gpu_window_write_words(0xa0ff,63,ROW.as_array(),18));
- let mut native=gpu_native_scratch();native[1u16]=199;native[3u16]=16384;
+ check(gpu_window_write_words(0xa0ff,63,ROW.as_array(),18));check(gpu_mesh_init(MESH.as_array(),desc));
+ let mut native=gpu_native_scratch();native[31u16]=1;MODEL[44u16]=1;native[1u16]=199;native[3u16]=16384;
  native[5u16]=57344;native[6u16]=60621;native[7u16]=8192;native[8u16]=128;native[9u16]=128;native[10u16]=33;
- native[36u16]=9;native[65u16]=1;native[75u16]=1;native[85u16]=1;native[89u16]=1;native[97u16]=1;
+ native[32u16]=9;native[65u16]=1;native[75u16]=1;native[85u16]=1;native[89u16]=1;native[97u16]=1;
  native[105u16]=1;native[107u16]=1;native[108u16]=65535;native[109u16]=65535;
- let mut case:u16=0;while case<5{
+ let mut case:u16=0;while case<10{
  check(gpu_record_configure(0,0x9800+case*8,8,0x9a00+case*16,16));
  check(gpu_packet_begin(0,0x8000,0x9000,0,0,0));
  let mut first:u16=0;let mut count:u16=9;
- if case==0{count=1;}if case==1{first=3;count=2;}if case==2{count=8;}if case==4{first=9;count=0;}
+ let shape=case%5;
+ if shape==0{count=1;}if shape==1{first=3;count=2;}if shape==2{count=8;}if shape==4{first=9;count=0;}
+ if case<5{
  check(gpu_mesh_subset(SUB.as_array(),MESH.as_array(),first,count));
- check(gpu_mesh_draw(0,SUB.as_array(),native));
+ check(gpu_mesh_draw(0,SUB.as_array(),MODEL.as_array(),native));gpu_mesh_release_directory(SUB.as_array());
+ }else{check(gpu_mesh_draw_range(0,MESH.as_array(),MODEL.as_array(),native,first,count));}
  check(gpu_record_close_pass(0));check(gpu_record_seal(0));case+=1;
  }
- // The ninth entry fails only after the first batch; no bind bytes may be written.
+ // A bad refresh preserves the previous owned snapshot and all CB bytes.
  ROW[17u16]=0;check(gpu_window_write_words(0xa0ff,63,ROW.as_array(),18));
  check(gpu_record_configure(0,0x9900,8,0x9b00,16));check(gpu_packet_begin(0,0x8000,0x9000,0,0,0));
- check(!gpu_mesh_draw(0,MESH.as_array(),native));let c=gpu_record_data(0);
+ check(!gpu_mesh_refresh_directory(MESH.as_array()));
+ let cached=unsafe{Ptr::from_addr(MESH[GPU_MESH_DIRECTORY_CACHE]).as_u16_array()};check(cached[17u16]==3);
+ ROW[17u16]=2;check(gpu_window_write_words(0xa0ff,63,ROW.as_array(),18));check(gpu_mesh_refresh_directory(MESH.as_array()));
+ let refreshed=unsafe{Ptr::from_addr(MESH[GPU_MESH_DIRECTORY_CACHE]).as_u16_array()};check(refreshed[17u16]==2);let c=gpu_record_data(0);
  check(c[GPU_RECORD_COMMAND_USED]==10&&c[GPU_RECORD_PUSH_USED]==16&&c[GPU_RECORD_VALID]==0);
  check(gpu_window_read_words(0x9900,10,ROW.as_array(),1));check(ROW[0u16]==0);
  check(gpu_window_read_words(0x9b00,32,ROW.as_array(),1));check(ROW[0u16]==0);
  // Complete-draw capacity is rejected before even a valid first binding can commit.
  check(gpu_record_configure(0,0x9910,1,0x9b10,16));check(gpu_packet_begin(0,0x8000,0x9000,0,0,0));
- check(!gpu_mesh_draw(0,MESH.as_array(),native));check(c[GPU_RECORD_COMMAND_USED]==10&&c[GPU_RECORD_PUSH_USED]==16);
+ check(!gpu_mesh_draw(0,MESH.as_array(),MODEL.as_array(),native));check(c[GPU_RECORD_COMMAND_USED]==10&&c[GPU_RECORD_PUSH_USED]==16);
  // An empty subset at the physical endpoint retains a representable directory pointer.
  let edge:GpuMemory=GpuMemory{first_sector:65535,sector_count:1};
  let empty:MeshDesc=MeshDesc{directory_sector:65535,directory_word:63,meshlet_count:0,storage:edge};
- check(gpu_mesh_init(MESH.as_array(),empty));check(gpu_mesh_subset(SUB.as_array(),MESH.as_array(),0,0));
+ gpu_mesh_release_directory(MESH.as_array());check(gpu_mesh_init(MESH.as_array(),empty));check(gpu_mesh_subset(SUB.as_array(),MESH.as_array(),0,0));
  check(SUB[GPU_MESH_DIRECTORY]==65535&&SUB[GPU_MESH_COUNT]==0);
  check(read_dseg_page(3)==saved);halt(0x600d);}"#;
 
@@ -75,7 +78,10 @@ fn mesh_directory_expands_with_pingpong_prefetch_and_whole_draw_preflight() {
             RunOutcome::Halted { signal: 0x600d, .. }
         ));
         let memory = cpu.physical_memory_mut();
-        for (case, first, count) in [(0, 0, 1), (1, 3, 2), (2, 0, 8), (3, 0, 9), (4, 9, 0)] {
+        for (case, first, count) in [(0, 0, 1), (1, 3, 2), (2, 0, 8), (3, 0, 9), (4, 9, 0)]
+            .into_iter()
+            .flat_map(|(case, first, count)| [(case, first, count), (case + 5, first, count)])
+        {
             let push = 0x9a00 + case * 16;
             let mut code = vec![
                 0x40000003u32,
@@ -87,25 +93,22 @@ fn mesh_directory_expands_with_pingpong_prefetch_and_whole_draw_preflight() {
             if count != 0 {
                 code.extend([
                     0x40000003,
-                    dma(push, 64, 66, 1),
-                    0x40000001,
-                    0x50000042,
-                    dma(push, 96, 68, 0),
-                    0x40000001,
-                    0x60000044,
+                    dma(push, 64, 92, 2),
                     dma(push, 128, 80, 2),
                     0x40000001,
+                    0x500000df,
+                    0x600000d3,
                 ]);
                 for i in 0..count {
                     let record = 0xa010 + (first + i) * 4;
                     let payload = (first + i) % 3 + 1;
                     code.push(0x20000000 | (record << 12) | ((payload - 1) << 1) | (i & 1));
                     if i != 0 {
-                        code.push(0x30000000 | ((i - 1) & 1));
+                        code.push(0x30000002 | ((i - 1) & 1));
                     }
                     code.push(0x40000001);
                 }
-                code.push(0x30000000 | ((count - 1) & 1));
+                code.push(0x30000002 | ((count - 1) & 1));
             }
             code.extend([0x40000003, 0x70000000, 0xf0000000]);
             let mut expected = code

@@ -45,6 +45,9 @@ pub(super) fn parse(
         .unwrap_or_else(|| root.join("../../../target/graphics-api-g0"));
     let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     options.gpu_debug = enabled;
+    options.asset_banks = vec![rcc::frontend::static_assets::AssetBank {
+        bytes: 0x4e0000..0x7df800,
+    }];
     let directory = output.join(format!("resources-{label}-{enabled}"));
     let local = directory.join("application");
     std::fs::create_dir_all(&local).map_err(|error| error.to_string())?;
@@ -61,6 +64,141 @@ pub(super) fn parse(
         &RustcCheck::new(directory),
         &mut |_| {},
     )
+}
+
+#[test]
+fn prepared_storage_declares_independent_capacities() {
+    let source = r#"mod gpu_api;use gpu_api::*;
+#[static_buffer] const STORAGE:PreparedMemory=PreparedMemory::allocate(1024,4096);
+fn main(){let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});
+let gpu=Gpu::init(GpuConfig::single(memory));let draws=PreparedDraws::new(STORAGE);drop(draws);drop(gpu);halt(0x600d);}"#;
+    for enabled in [false, true] {
+        let parsed = parse(source, "prepared-storage", enabled).unwrap();
+        assert_eq!(parsed.assets.buffers.len(), 2);
+        assert_eq!(parsed.assets.buffers[0].bytes, 1024);
+        assert_eq!(parsed.assets.buffers[0].address % 128, 0);
+        assert_eq!(parsed.assets.buffers[0].alignment, 128);
+        assert_eq!(parsed.assets.buffers[1].bytes, 4096);
+        let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        options.gpu_debug = enabled;
+        let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        cpu.attach_device(4, Box::new(IdleGpu));
+        assert!(matches!(
+            cpu.run(500_000).unwrap(),
+            cpu_v3::RunOutcome::Halted { signal: 0x600d, .. }
+        ));
+    }
+}
+
+#[test]
+fn public_external_word_transfers_preserve_extent_edges_and_dseg() {
+    let source = r#"mod gpu_api;use gpu_api::*;
+fn main(){let memory=unsafe{GpuMemory::from_sectors(0xc0ff,2)};
+let mut values:Buf<u16,68>=Buf::new([0;68]);let mut output:Buf<u16,68>=Buf::new([0;68]);
+let saved=read_dseg_page(3);let mut n:u16=0;while n<68{values[n]=n+17;n+=1;}
+unsafe{memory.write_words(60,values.as_array(),68);memory.read_words(60,output.as_array(),68);memory.write_words(65535,values.as_array(),0);}
+assert!(read_dseg_page(3)==saved);n=0;while n<68{assert!(values[n]==output[n]);n+=1;}halt(0x600d);}"#;
+    for enabled in [false, true] {
+        let parsed = parse(source, "external-words", enabled).unwrap();
+        let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        options.gpu_debug = enabled;
+        let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        cpu.physical_memory_mut()[0xc0ff * 64 + 59] = 0x4321;
+        assert!(matches!(
+            cpu.run(500_000).unwrap(),
+            cpu_v3::RunOutcome::Halted { signal: 0x600d, .. }
+        ));
+        assert_eq!(cpu.physical_memory_mut()[0xc0ff * 64 + 59], 0x4321);
+    }
+}
+
+#[test]
+fn mesh_pointer_slices_select_cached_entries_without_new_owners() {
+    let source = r#"mod gpu_api;use gpu_api::*;
+fn main(){
+ let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});
+ let mut gpu=Gpu::init(GpuConfig::single(memory));let mut cb=gpu.command_buffer();
+ let mesh=Mesh::from_native(MeshDesc::from_memory(unsafe{GpuMemory::from_sectors(0xa000,128)},0,3));
+ let all=mesh.ptr();let window=all.slice(1,2);let span=window.slice(1,1);assert!(span.meshlet_count()==1);
+ let empty=span.slice(1,0);assert!(empty.meshlet_count()==0);
+ let model=Model::new(Transform::identity());let material=Material::new(MaterialDesc::unlit(Rgba8::white()));
+ let camera=Camera::new(CameraDesc::new(Vec3::zero(),Vec3::zero(),Projection::from_focal_pixels(fix!(200),fix!(80))));
+ let state=RenderState::new(RenderStateDesc::opaque(Lighting::ambient(fix!(1))));
+ let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});
+ let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
+ {let mut pass=cb.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());pass.set_camera(camera.ptr());pass.set_state(state.ptr());
+ pass.draw_colored(empty,model.ptr(),material.ptr());pass.draw_colored(span,model.ptr(),material.ptr());}
+ drop(mesh);halt(0x600d);
+}"#;
+    for enabled in [false, true] {
+        let parsed = parse(source, "mesh-slice", enabled).unwrap();
+        let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        options.gpu_debug = enabled;
+        let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        cpu.attach_device(4, Box::new(IdleGpu));
+        cpu.physical_memory_mut()[0xa000 * 64..0xa000 * 64 + 6]
+            .copy_from_slice(&[0xa010, 1, 0xa020, 1, 0xa030, 1]);
+        assert!(matches!(
+            cpu.run(500_000).unwrap(),
+            cpu_v3::RunOutcome::Halted { signal: 0x600d, .. }
+        ));
+        let commands = &cpu.physical_memory_mut()[0x9800 * 64..0x9800 * 64 + 64];
+        let loads: Vec<_> = commands
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|p| p[1] >> 12 == 2)
+            .collect();
+        assert_eq!(loads.len(), 1);
+        assert_eq!(((loads[0][1] & 4095) << 4) | (loads[0][0] >> 12), 0xa030);
+    }
+}
+
+#[test]
+fn public_display_can_reopen_only_after_previous_owner_exits() {
+    use super::gpu_api_present::{peer_state, Peer};
+    let source = r#"mod gpu_api;use gpu_api::*;
+fn main(){
+ let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});
+ let gpu=Gpu::init(GpuConfig::single(memory));let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});
+ let mut first=Display::open_with_format(DisplayFormat::LinearRgb565);first.set_next_swap(color.ptr());first.wait_vblank();drop(first);
+ let mut second=Display::open();second.set_next_swap(color.ptr());second.wait_vblank();drop(second);halt(0x600d);
+}"#;
+    for enabled in [false, true] {
+        let parsed = parse(source, "display-owner-reopen", enabled).unwrap();
+        let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        options.gpu_debug = enabled;
+        let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+        let shared = peer_state(false);
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        cpu.attach_device(
+            3,
+            Box::new(Peer {
+                kind: 3,
+                state: shared.clone(),
+            }),
+        );
+        cpu.attach_device(4, Box::new(IdleGpu));
+        assert!(matches!(
+            cpu.run(500_000).unwrap(),
+            cpu_v3::RunOutcome::Halted { signal: 0x600d, .. }
+        ));
+        let formats: Vec<_> = shared
+            .borrow()
+            .events
+            .iter()
+            .filter(|(channel, _)| *channel == 4)
+            .map(|(_, value)| *value)
+            .collect();
+        assert_eq!(formats, [1, 0]);
+    }
 }
 
 #[test]
@@ -103,12 +241,12 @@ fn stale_handle_faults_after_release_reuse_and_gpu_reinitialization() {
             (
                 "reused",
                 "let replacement=Model::new(Transform::identity());let pointer=replacement.ptr();let world=pointer.world();assert!(world.row0.w==fix!(0));",
-                3,
+                2,
             ),
             (
                 "reinitialized",
                 "drop(gpu);let fresh=Gpu::init(GpuConfig::single(memory));let replacement=Model::new(Transform::identity());let pointer=replacement.ptr();let world=pointer.world();assert!(world.row0.w==fix!(0));",
-                3,
+                2,
             ),
             (
                 "above-resized-capacity",
@@ -256,6 +394,12 @@ fn public_constructors_fail_stop_before_gpu_send_in_both_profiles() {
             ("extent-overflow", "let memory:GpuMemory=unsafe{GpuMemory::from_sectors(65535,2)};", [1, 1, 65535, 2]),
             ("extent-empty", "let memory:GpuMemory=unsafe{GpuMemory::from_sectors(0,0)};", [1, 1, 0, 0]),
             ("config-overlap", "let memory:GpuMemory=unsafe{GpuMemory::from_sectors(0x9800,512)};let a:CommandMemory=CommandMemory{commands:memory,push:memory};let absent:Option<CommandMemory>=None;let gpu:Gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:a,command_b:absent});", [2, 1, 0, 0]),
+            ("duplicate-controller", "let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});let first=Gpu::init(GpuConfig::single(memory));let second=Gpu::init(GpuConfig::single(memory));", [2, 1, 0, 0]),
+            ("live-cb-reinit", "let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});let mut first=Gpu::init(GpuConfig::single(memory));let cb=first.command_buffer();drop(first);let second=Gpu::init(GpuConfig::single(memory));", [2, 1, 0, 0]),
+            ("duplicate-display", "let first=Display::open_with_format(DisplayFormat::LinearRgb565);let second=Display::open();", [5, 1, 0, 0]),
+            ("transfer-bounds", "let memory=unsafe{GpuMemory::from_sectors(0xc000,2)};let values:Buf<u16,2>=Buf::new([1,2]);unsafe{memory.write_words(127,values.as_array(),2);}", [1, 2, 127, 2]),
+            ("drop-recording-part", "let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,8)},unsafe{GpuMemory::from_sectors(0x9a00,32)});let gpu=Gpu::init(GpuConfig::single(memory));let mut draws=PreparedDraws::new(PreparedMemory::new(unsafe{GpuMemory::from_sectors(0xb800,8)},unsafe{GpuMemory::from_sectors(0xb900,32)}));let recording=draws.record();drop(draws);", [7, 2, 15, 0]),
+            ("drop-recording-pool", "let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,8)},unsafe{GpuMemory::from_sectors(0x9a00,32)});let gpu=Gpu::init(GpuConfig::single(memory));let mut pool=PreparedPool::new(unsafe{GpuMemory::from_sectors(0xb800,64)});let part=pool.allocate(1024,2048);let recording=part.record();drop(pool);", [7, 2, 15, 0]),
         ] {
             let source = format!("mod gpu_api;use gpu_api::*;fn main(){{{body}halt(0xbad);}}");
             let parsed = parse(&source, label, enabled).unwrap_or_else(|error| panic!("{error}"));
@@ -267,6 +411,7 @@ fn public_constructors_fail_stop_before_gpu_send_in_both_profiles() {
             cpu.set_boot_window(&program.words);
             cpu.attach_device(0, Box::new(Peer(shared.clone())));
             cpu.attach_device(4, Box::new(IdleGpu));
+            cpu.attach_device(3, Box::new(super::gpu_api_present::Peer { kind: 3, state: super::gpu_api_present::peer_state(false) }));
             let mut halted = false;
             for _ in 0..500_000 {
                 if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
@@ -469,7 +614,15 @@ fn main(){
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&program.words);
         cpu.attach_device(4, Box::new(IdleGpu));
-        cpu.physical_memory_mut()[0xc000 * 64..0xc000 * 64 + 256 * 64].fill(0x5eed);
+        let mut assets = vec![0x5eed; 256 * 64];
+        for directory in [0usize, 3 * 64 + 63] {
+            let count = if directory == 0 { 2 } else { 65 };
+            for entry in 0..count {
+                assets[directory + entry * 2] = 0xc010;
+                assets[directory + entry * 2 + 1] = 1;
+            }
+        }
+        cpu.physical_memory_mut()[0xc000 * 64..0xc000 * 64 + assets.len()].copy_from_slice(&assets);
         let mut halted = false;
         for _ in 0..500_000 {
             if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
@@ -479,10 +632,10 @@ fn main(){
             }
         }
         assert!(halted, "bounded public Mesh/{enabled}");
-        assert!(
-            cpu.physical_memory_mut()[0xc000 * 64..0xc000 * 64 + 256 * 64]
-                .iter()
-                .all(|&word| word == 0x5eed)
+        assert_eq!(
+            &cpu.physical_memory_mut()[0xc000 * 64..0xc000 * 64 + assets.len()],
+            assets,
+            "registration/subsets never write the external directory or payload"
         );
     }
 }
@@ -535,7 +688,14 @@ fn main(){
         assert!(halted, "bounded public target facts/{enabled}");
         let memory = cpu.physical_memory_mut();
         assert_eq!(memory[records + 15], 3);
-        assert_eq!(memory[records + 208 + 15], 0);
+        let record_words = program
+            .debug
+            .consts
+            .iter()
+            .find(|x| x.0 == "GPU_API_CB_WORDS")
+            .unwrap()
+            .2 as usize;
+        assert_eq!(memory[records + record_words + 15], 0);
         assert_eq!(
             &memory[facts..facts + 12],
             &[0x8000, 2048, 5, 3, 0x9000, 1600, 6, 3, 0x8800, 1600, 5, 3]
@@ -666,5 +826,75 @@ fn main(){
             }
         }
         assert!(halted, "bounded builder timeout");
+    }
+}
+
+#[test]
+fn debug_light_products_validate_the_current_pass_for_draws_and_prepared_parts() {
+    use super::gpu_api_fault::{Peer, Uart};
+    let source = r#"mod gpu_api;use gpu_api::*;
+fn v(x:i16,y:i16,z:i16)->Vec3{Vec3::new(fix32::from_int(x),fix32::from_int(y),fix32::from_int(z))}
+fn light(ambient:fix32)->Lighting{Lighting{direction:v(0,0,1),ambient:ambient,directional:fix!(0.5)}}
+fn main(){
+ let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});
+ let mut gpu=Gpu::init(GpuConfig::single(memory));let mut cb=gpu.command_buffer();
+ let camera=Camera::new(CameraDesc{eye:v(0,0,0),angles:v(0,0,0),projection:Projection::from_focal_pixels(fix!(200),fix!(100))});
+ let model=Model::new(Transform::identity());
+ let material=Material::new(MaterialDesc{uniform_color:Rgba8::white(),specular:Rgb8{r:0,g:0,b:0},ambient_response:fix!(2),directional_response:fix!(1),shininess:Shininess::S16,unlit:false});
+ let mut state=RenderState::new(RenderStateDesc{depth:DepthFunc::Less,depth_write:true,blend:BlendMode::Replace,filter:TextureFilter::Nearest,lighting:light(fix!(0.25))});
+ let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
+ let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
+ let mesh=Mesh::from_native(MeshDesc{directory_sector:0xa000,directory_word:0,meshlet_count:1,storage:unsafe{GpuMemory::from_sectors(0xa000,16)}});
+ PREPARE
+ state.set_lighting(light(fix!(0.5)));
+ {let mut p=cb.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());p.set_camera(camera.ptr());p.set_state(state.ptr());DRAW}
+ signal(7,1);cb.reset();state.set_lighting(light(fix!(1)));
+ {let mut p=cb.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());p.set_camera(camera.ptr());p.set_state(state.ptr());DRAW}
+ halt(0xbad);
+}"#;
+    for (prepared, overflow) in [(false, false), (true, false), (false, true)] {
+        let source = source
+            .replace("PREPARE", if prepared {
+                "let mut prepared=PreparedDraws::new(PreparedMemory::new(unsafe{GpuMemory::from_sectors(0xb800,8)},unsafe{GpuMemory::from_sectors(0xb900,32)}));{let mut part=prepared.record();part.set_state(state.ptr());part.draw_colored(mesh.ptr(),model.ptr(),material.ptr());part.finish();}"
+            } else { "" })
+            .replace("DRAW", if prepared { "p.draw_prepared(prepared.ptr());" } else { "p.draw_colored(mesh.ptr(),model.ptr(),material.ptr());" });
+        let source = if overflow {
+            source
+                .replace("ambient_response:fix!(2)", "ambient_response:fix!(32767)")
+                .replace("light(fix!(0.5))", "light(fix32::from_words(1,0))")
+                .replace("light(fix!(1))", "light(fix!(32767))")
+        } else {
+            source
+        };
+        let parsed = parse(
+            &source,
+            &format!("light-response-{prepared}-{overflow}"),
+            true,
+        )
+        .unwrap();
+        let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        options.gpu_debug = true;
+        let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+        let uart = Rc::new(RefCell::new(Uart::default()));
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        cpu.physical_memory_mut()[0xa000 * 64..0xa000 * 64 + 2].copy_from_slice(&[0xa001, 1]);
+        cpu.attach_device(0, Box::new(Peer(uart.clone())));
+        cpu.attach_device(4, Box::new(IdleGpu));
+        let mut valid_draw_completed = false;
+        let halted = (0..1_000_000).find_map(|_| match cpu.step().unwrap() {
+            StepOutcome::Signaled(e) if e.signal_type == 7 => {
+                valid_draw_completed = e.value == 1;
+                None
+            }
+            StepOutcome::Halted { signal } => Some(signal),
+            _ => None,
+        });
+        assert!(
+            valid_draw_completed,
+            "valid light/response pair must record, prepared={prepared}, halt={halted:?}, uart={:?}", uart.borrow().bytes
+        );
+        assert_eq!(halted, Some(0xe001), "prepared={prepared}");
+        assert!(!uart.borrow().bytes.is_empty());
     }
 }

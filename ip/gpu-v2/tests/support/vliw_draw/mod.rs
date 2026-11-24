@@ -9,6 +9,7 @@ use std::{collections::VecDeque, fmt::Write as _};
 #[derive(Clone, Copy, Default)]
 pub struct Case {
     pub view: bool,
+    pub extended: bool,
     pub bad: Option<&'static str>,
 }
 pub struct Pin {
@@ -67,6 +68,17 @@ pub fn run(case: Case) -> Run {
         Command::FLUSH.0,
         Command::END.0,
     ];
+    if case.extended {
+        cells[380] = cells[272];
+        cells[381] = cells[273];
+        cells[333] = cells[280];
+        cells[334] = Some(3 | 8 | 16 | (0xfbu64 << 8));
+        cells[335] = Some(0xc0507090 | (1u64 << 32) | (12u64 << 34) | (0x789au64 << 48));
+        code[1] = Command::dma_local(0x11000, 368, 128).unwrap().0;
+        code[5] = Command::set_scene().0;
+        code[6] = Command::set_material(332).unwrap().0;
+        code[10] = Command::draw_world_billboard(1, true).unwrap().0;
+    }
     match case.bad {
         Some("missing_stored") => code[3] = 0,
         Some("global_code") => cells[274] = Some(129 | (17u64 << 34)),
@@ -94,6 +106,7 @@ pub fn run(case: Case) -> Run {
         completions: 0,
     };
     let mut prior_busy = false;
+    let mut response = 2;
     for wall in 0..100000 {
         let phase = cp.phase();
         flush_age = if phase == Phase::Flushing {
@@ -137,6 +150,10 @@ pub fn run(case: Case) -> Run {
         if d.uniform_done {
             i.ce = false;
         }
+        if case.extended && phase == Phase::DrawWait && i.ce && response < 2 {
+            i.prepared_light = Some((response != 0, if response == 0 { 129 } else { 200 }));
+            response += 1;
+        }
         if pending_cache == Some(wall) {
             i.cache_done = true;
             pending_cache = None;
@@ -161,7 +178,7 @@ pub fn run(case: Case) -> Run {
                 i.draw.mesh_begin_slot = w.slot;
                 i.draw.header_write = true;
                 i.draw.header_slot = w.slot;
-                i.draw.header_data = 2 << 16;
+                i.draw.header_data = if case.extended { 0 } else { 2 << 16 };
             }
         }
         let o = cp.outputs(i);
@@ -191,10 +208,16 @@ pub fn run(case: Case) -> Run {
             assert_eq!(o.bindings.far_z, 100 << 16);
             assert_eq!(o.bindings.light, [0x1234, -21555, 0x4000]);
             assert_eq!(o.bindings.ray, [0x1111, -4369, 0x2800]);
-            assert_eq!(
-                (o.bindings.ambient, o.bindings.directional, o.bindings.code),
-                (129, 200, 12)
-            );
+            if !case.extended {
+                assert_eq!(
+                    (o.bindings.ambient, o.bindings.directional, o.bindings.code),
+                    (129, 200, 12)
+                );
+            } else {
+                assert_eq!(o.bindings.code, 12);
+                assert!(o.bindings.world_transform && o.bindings.billboard_vertical);
+                response = 0;
+            }
             assert_eq!((o.bindings.color_base, o.bindings.depth_base), (2048, 2560));
             assert_eq!(o.bindings.lod_bias, -5);
             assert_eq!(o.bindings.texture_framebuffer, case.view);
@@ -258,6 +281,19 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     pin!("dma_fault", 1, i.dma_fault, false);
     pin!("cp_ready", 1, i.ram_ready, false);
     pin!("cp_q", 64, i.ram_q, false);
+    pin!("prepared_light_we", 1, i.prepared_light.is_some(), false);
+    pin!(
+        "prepared_light_select",
+        1,
+        i.prepared_light.is_some_and(|p| p.0),
+        false
+    );
+    pin!(
+        "prepared_light_data",
+        9,
+        i.prepared_light.map_or(0, |p| p.1),
+        false
+    );
     pin!("flush_complete", 1, i.flush_complete, false);
     pin!("cache_ready", 1, i.cache_ready, false);
     pin!("cache_done", 1, i.cache_done, false);
@@ -308,6 +344,8 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     pin!("color_base", 14, c.color_base, true);
     pin!("depth_base", 14, c.depth_base, true);
     pin!("mesh_color", 32, c.mesh_color, true);
+    pin!("world_transform", 1, c.world_transform, true);
+    pin!("billboard_vertical", 1, c.billboard_vertical, true);
     pin!("specular", 24, c.specular, true);
     pin!("depth_func", 3, c.depth_func, true);
     pin!("depth_write", 1, c.depth_write, true);

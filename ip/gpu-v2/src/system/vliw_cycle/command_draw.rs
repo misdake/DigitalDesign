@@ -19,6 +19,8 @@ pub struct Bindings {
     pub color_base: u16,
     pub depth_base: u16,
     pub mesh_color: u32,
+    pub world_transform: bool,
+    pub billboard_vertical: bool,
     pub specular: u32,
     pub depth_func: u8,
     pub depth_write: bool,
@@ -47,6 +49,8 @@ impl Default for Bindings {
             color_base: 0,
             depth_base: 0,
             mesh_color: u32::MAX,
+            world_transform: false,
+            billboard_vertical: false,
             specular: 0,
             depth_func: 0,
             depth_write: false,
@@ -126,6 +130,7 @@ impl Draw {
     pub fn outputs(&self, p: &Processor, i: ProcessorInput, o: &mut ProcessorOutput) {
         let op = p.command >> 28;
         o.bindings = self.config;
+        o.bindings.billboard_vertical = p.command & 4 != 0;
         o.draw_slot = p.command & 1 != 0;
         o.start = p.phase == Phase::DrawStart && self.inputs(p, i) && !o.stop;
         o.texture_invalidate = i.ce && !o.stop && p.phase == Phase::Exec && op == 9;
@@ -145,7 +150,8 @@ impl Draw {
         if matches!(p.phase, Phase::ApplyRead | Phase::ColorRead) {
             o.ram_read = !o.stop;
             o.ram_address = if p.phase == Phase::ColorRead {
-                320 + 16 * u16::from(self.uniform(p.command)) + 11
+                320 + 16 * u16::from(self.uniform(p.command))
+                    + if p.command & 2 != 0 { 15 } else { 11 }
             } else {
                 ((p.command & 127) << 2) as u16 | u16::from(self.object_index)
             };
@@ -162,14 +168,20 @@ impl Draw {
             let d = (p.command >> 3) & 127;
             let size = (p.command >> 1) & 3;
             let state_d = p.command & 127;
-            let object_legal =
-                payload >> 7 == 0 && (66..=79).contains(&state_d) && !(op == 5 && state_d == 79);
+            let object_legal = if payload & 128 != 0 {
+                payload >> 8 == 0
+                    && ((op == 5 && state_d == 95)
+                        || (op == 6 && ((66..80).contains(&state_d) || matches!(state_d, 83 | 87))))
+            } else {
+                payload >> 7 == 0 && (66..=79).contains(&state_d) && !(op == 5 && state_d == 79)
+            };
             match op {
                 1 => {
                     let source = ((p.command >> 10) & 0x3ffff) << 5;
                     let bytes = 32u32 << size;
                     let staging = (66..80).contains(&d) && d * 32 + bytes <= 80 * 32;
-                    let uniform = (80..=92).contains(&d) && d.is_multiple_of(4) && size == 2;
+                    let uniform = ((80..=92).contains(&d) && d.is_multiple_of(4) && size == 2)
+                        || (d == 95 && size == 0);
                     check(
                         payload & 1 == 0
                             && size != 3
@@ -185,7 +197,8 @@ impl Draw {
                     "CP mesh DMA contract",
                 )?,
                 3 => check(
-                    payload >> 1 == 0
+                    payload >> 3 == 0
+                        && (payload & 4 == 0 || payload & 2 != 0)
                         && self.global_valid
                         && self.render_valid
                         && self.uniforms & (1 << self.uniform(p.command)) != 0
@@ -208,10 +221,22 @@ impl Draw {
             }
         }
         if p.phase == Phase::ApplyWrite && !matches!(op, 11 | 12) {
-            check(!self.object_bad(op, i.ram_q), "CP state data contract")?;
+            check(
+                !self.object_bad(p.command, i.ram_q),
+                "CP state data contract",
+            )?;
         }
         if p.phase == Phase::ColorWrite {
-            check(i.ram_q >> 32 == 0, "CP mesh color encoding")?;
+            check(
+                p.command & 2 != 0 || i.ram_q >> 32 == 0,
+                "CP mesh color encoding",
+            )?;
+        }
+        if p.phase == Phase::DrawStart && self.config.world_transform {
+            check(
+                self.uniforms & 8 != 0 && self.uniform(p.command) <= 1,
+                "CP world/view bindings",
+            )?;
         }
         if p.phase == Phase::DrawStart && self.inputs(p, i) && i.draw.meshlet_ready && i.work_busy {
             check(
@@ -221,7 +246,9 @@ impl Draw {
         }
         Ok(())
     }
-    fn object_bad(&self, op: u32, q: u64) -> bool {
+    fn object_bad(&self, command: u32, q: u64) -> bool {
+        let op = command >> 28;
+        let extended = command & 128 != 0;
         if op == 10 {
             let c = q & 0x3fff;
             let d = (q >> 14) & 0x3fff;
@@ -232,7 +259,7 @@ impl Draw {
                 || d > 15984
                 || !(c + 400 <= d || d + 400 <= c)
         } else if op == 6 {
-            match self.object_index {
+            match self.object_index.wrapping_sub(u8::from(extended)) & 3 {
                 0 => {
                     q >> 56 != 0
                         || (q & (1 << 23) != 0
@@ -243,7 +270,9 @@ impl Draw {
                                 || q & 511 != 0
                                 || q & 65535 > 63488))
                 }
+                1 if extended => q & 0xffff_00c0 != 0 || q >> 32 != 0,
                 1 => q & 0xffff_ffc0 != 0 || q >> 40 != 0,
+                2 => (q >> 39) & 511 != 0 || (q >> 34) & 31 > 16,
                 _ => q != 0,
             }
         } else {
@@ -261,9 +290,16 @@ impl Draw {
             }
         }
     }
-    pub fn apply(&mut self, op: u32, index: u8, q: u64) -> bool {
+    pub fn apply(&mut self, command: u32, index: u8, q: u64) -> bool {
+        let op = command >> 28;
+        let extended = command & 128 != 0;
+        let row = if op == 6 {
+            index.wrapping_sub(u8::from(extended)) & 3
+        } else {
+            index
+        };
         let c = &mut self.config;
-        match (op, index) {
+        match (op, row) {
             (10, _) => {
                 c.color_base = q as u16 & 0x3f80;
                 c.depth_base = (q >> 14) as u16 & 0x3f80;
@@ -285,9 +321,12 @@ impl Draw {
                 c.depth_write = q & 8 != 0;
                 c.blend = q & 16 != 0;
                 c.unlit = q & 32 != 0;
-                c.lod_bias = (q >> 32) as i8;
-                self.render_valid = true;
-                return true;
+                c.lod_bias = (q >> if extended { 8 } else { 32 }) as i8;
+            }
+            (6, 2) => {
+                c.mode = (q >> 32) as u8 & 3;
+                c.code = (q >> 34) as u8 & 31;
+                c.epoch = (q >> 48) as u16;
             }
             (5, 0) => {
                 c.far_z = q as u32;
@@ -304,10 +343,18 @@ impl Draw {
                 c.mode = (q >> 32) as u8 & 3;
                 c.code = (q >> 34) as u8 & 31;
                 c.epoch = (q >> 48) as u16;
-                self.global_valid = true;
-                return true;
             }
             _ => unreachable!(),
+        }
+        if (op == 6 && index == if extended { 3 } else { 1 })
+            || (op == 5 && index == if extended { 1 } else { 2 })
+        {
+            if op == 6 {
+                self.render_valid = true;
+            } else {
+                self.global_valid = true;
+            }
+            return true;
         }
         self.object_index = (index + 1) & 3;
         false

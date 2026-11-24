@@ -34,6 +34,9 @@ File modules load from their normal directories, without listing subdirectories
 in `ordinary_sources`.
 
 The default source-world camera looks along -Z; the triangle model sits at z=-4.
+`Scene::draw` selects that camera and passes the Model's World transform; the
+shared driver and Geometry ROM compose the effective matrix. No application-side
+MV construction is needed. Use matching World/View-capable gateware.
 
 The build places and loads assets/workspace storage. The GPU API keeps capacity,
 ownership and submission explicit; this example adds no renderer framework.

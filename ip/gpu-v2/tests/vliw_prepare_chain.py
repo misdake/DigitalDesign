@@ -112,7 +112,7 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     snapshot = out/'source'
     snapshot.mkdir()
-    files = [Path(__file__), HERE/'vliw_prepare_chain_tb.v', HERE/'vliw_prepare_chain.rs']
+    files = [Path(__file__), HERE/'vliw_prepare_chain_tb.v', HERE/'geometry/vliw_prepare_chain.rs']
     if args.operand_table:
         files.append(HERE/'vliw_operand_table_tb.v')
     files += [args.export_root/f'frontend-{m}.v' for m in ('portable', 'native')]

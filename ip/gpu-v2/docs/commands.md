@@ -57,10 +57,10 @@ ABI separately and must not insert their metadata into executable command bytes.
 | 0 | NOP | Zero |
 | 1 | DMA_LOCAL | 27:10 source byte address/32; 9:3 destination byte address/32; 2:1 size code; bit0 zero |
 | 2 | DMA_MESHLET | 27:12 record byte address/128; 11:4 zero; 3:1 payload sectors minus1; bit0 input slot |
-| 3 | DRAW_MESHLET | Bit0 input slot; 27:1 zero |
+| 3 | DRAW_MESHLET | Bit0 input slot; bit1 World/View preparation; bit2 vertical Billboard (requires bit1); 27:3 zero |
 | 4 | WAIT | Bit0 data DMA; bit1 complete rendering; 27:2 zero |
-| 5 | SET_GLOBAL | 6:0 source local byte address/32; 27:7 zero |
-| 6 | SET_RENDER | Same slot encoding |
+| 5 | SET_GLOBAL | 6:0 source local byte address/32; bit7 Scene16 format; 27:8 zero |
+| 6 | SET_RENDER | Same slot encoding; bit7 selects Material24 |
 | 7 | FLUSH | Zero |
 | 8 | CLEAR | 16 selects depth (1) or color (0); 15:0 repeated value; 27:17 zero |
 | 9 | TEX_INVALIDATE | Zero; explicit WAIT(all) required |
@@ -70,7 +70,9 @@ ABI separately and must not insert their metadata into executable command bytes.
 | 15 | END | Zero; must be the last valid instruction |
 
 DMA_LOCAL size codes0/1/2 mean32/64/128 B. Code3 is invalid. Local destinations
-are staging qwords264..319, or one whole128 B uniform block at320/336/352/368.
+are staging qwords264..319, one whole128 B uniform block at320/336/352/368,
+or exactly32 B at View tail qword380 (slot95). The tail update does not establish
+full View validity; an initial full View upload remains mandatory.
 The complete copy must stay in its selected region. Each source is aligned to
 its selected32/64/128 B length, so a local copy is exactly one physical burst.
 Local destinations retain32 B alignment; only meshlet payloads advance between
@@ -109,20 +111,19 @@ A state instruction retires after its final object row is consumed.
 DRAW clears that permission. Different material/global state therefore has an
 explicit full-render boundary; compatible meshlets do not.
 
-DRAW reads Instance128 words22/23 through the existing synchronous CP port before
-starting V/T. It pays three enabled edges (read, consume, start), without changing
-Vertex arithmetic or the pixel initiation interval. Mesh uniform RGB modulates
-the selected vertex/texture color; mesh uniform alpha is the sole runtime alpha.
-The driver encodes no modulation as white/opaque RGBA; there is no enable bit
-or hardware fallback selector. Render has no alpha field.
-The color follows the retained attribute epoch and T export into the active I
-context, then is copied on quad allocation. A later mesh may replace its uniform
-while old quads still shade. Final reuses its existing tint-times-texture product;
-no additional per-pixel multiply or DSP is introduced. Uniform RGB is always one
-Final operand; only the vertex/texture source is selected for the other operand.
-A24-bit distributed-RAM issue view holds uniform RGB. Alpha shares the existing
-depth BSRAM with D16 and reaches ROP on its paired D edge, without another RAM,
-port, alpha FIFO or C-row alpha register.
+DRAW reads the selected precomposed Instance's words22/23, or World's
+words30/31, through the existing synchronous CP port before launch. World mode
+comes from DRAW bit1, independently of matrix data. World requires20/21 and a
+fully loaded View23. The header still chooses the World uniform and Billboard
+vertex format. The World preparation invalidates externally supplied block22.
+
+SET_GLOBAL bit7=0 retains NativeGlobal64 at staging slots66..78. Bit7=1 reads
+only Scene16 at View tail slot95 and preserves installed material/response FFs.
+SET_RENDER bit7=0 retains NativeRender32. Bit7=1 reads Material24 from qword1..3
+of a32-byte block, either staging66..79 or World tail83/87. It skips qword0,
+which may contain the last World normal coefficient. Material response products
+arrive later from geometry's existing MAC; no multiplier is added to the CP.
+Both formats retain the explicit WAIT(all) and completed-data-DMA prerequisites.
 
 Texture fields are driver-validated data, not a hardware validation protocol.
 Their [native encoding](/ip/gpu-v2/docs/formats.md#native-command-objects) has one
@@ -240,7 +241,12 @@ END
 | 448..463 / 464..479 | Two128 B command pages |
 | 480..511 | Reserved |
 
-DMA owns both input-RAM write lanes. The decoder owns their read ports between
+DMA normally owns both input-RAM write lanes. Resident World/View preparation
+may write one lane of uniform22, yielding to every DMA return and holding a
+colliding store without backpressuring memory. Starting that draw invalidates
+block22's external Instance binding; precomposed reuse requires a new DMA load.
+See the [matrix calendar](/ip/gpu-v2/docs/execution.md#resident-matrix-preparation).
+The decoder owns the read ports between
 DRAWs, and yields them to the meshlet controller/V/T through meshlet_done. CP
 source reads use the raw input Q, bypassing the unrelated private T-work mux.
 Normal V/T operand reads retain their existing path. Commands use a32-bit
@@ -251,7 +257,7 @@ RAM-Q-to-command-decode-to-V/T-control path. CE0 holds decoder work while DMA
 and accepted memory returns continue at wall speed.
 
 The held instruction supplies WAIT's mask and SET's object address/type until
-that instruction retires. SET_GLOBAL consumes three64-bit qwords, SET_RENDER
+that instruction retires. Legacy SET_GLOBAL consumes three64-bit qwords, SET_RENDER
 two, and SET_TARGET one. The allocated Global64/Render32/Target32 object formats
 are unchanged; their remaining padding is not read by the decoder. The qword
 address concatenates the instruction's32-byte block address and a two-bit row

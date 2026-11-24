@@ -56,6 +56,9 @@ pub struct RamPorts {
     pub dma_write: bool,
     pub dma_address: u16,
     pub dma_data: u64,
+    pub matrix_write: bool,
+    pub matrix_index: u8,
+    pub matrix_data: Bits,
     pub left_read: bool,
     pub right_read: bool,
     pub left_address: u16,
@@ -126,6 +129,24 @@ impl InputRam {
         let wa = (p.dma_address & 511) as usize;
         let la = (p.left_address & 511) as usize;
         let ra = (p.right_address & 511) as usize;
+        let matrix_address = 352 + usize::from((p.matrix_index & 31) >> 1);
+        check(
+            !p.matrix_write || !p.dma_write,
+            "matrix and DMA write collision",
+        )?;
+        check(
+            !p.matrix_write || p.matrix_index <= 21 || (24..=29).contains(&p.matrix_index),
+            "matrix write outside derived uniform",
+        )?;
+        check(
+            !p.matrix_write
+                || if p.matrix_index & 1 == 0 {
+                    !p.left_read || matrix_address != la
+                } else {
+                    !source_read || matrix_address != ra
+                },
+            "matrix cross-port same-address collision",
+        )?;
         check(
             !p.dma_write || !(p.left_read && wa == la || source_read && wa == ra),
             "iz_ram36 cross-port same-address collision",
@@ -159,6 +180,14 @@ impl InputRam {
         if p.dma_write {
             self.left[wa] = Bits::new(p.dma_data as u32 as u64, 32).extend(32, 36);
             self.right[wa] = Bits::new(p.dma_data >> 32, 32).extend(32, 36);
+        }
+        if p.matrix_write {
+            let value = p.matrix_data.slice(0, 32).extend(32, 36);
+            if p.matrix_index & 1 == 0 {
+                self.left[matrix_address] = value;
+            } else {
+                self.right[matrix_address] = value;
+            }
         }
         if p.work_write {
             self.work[(p.work_address & 15) as usize] = p.work_data.slice(0, 36);

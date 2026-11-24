@@ -21,6 +21,54 @@ one live version even though several identity fields travel with work.
 No implicit equality or shared fence is defined between these identities.
 [Overview](/ip/gpu-v2/docs/overview.md#completion-is-tied-to-an-owner) maps completion to reuse.
 
+## Resident matrix preparation
+
+The command Mesh profile can enter matrix preparation at ROM192. The calendar
+occupies192..255 and448..479 and uses the existing RF, MAC and input RAM. Its
+phase is encoded by PC, with no separate phase register. The original Vertex,
+Triangle, bounds and Billboard ROM words remain unchanged.
+
+`vertex/world_program.py` owns compact192..255 and448..511. The Triangle
+generator owns compact128..191 and preserves those World pages; its standalone
+image retains128..255. All generators support read-only `--check`, including
+native INIT data as well as the portable image.
+
+| Storage | Preparation owner | Following consumer |
+| --- | --- | --- |
+| Uniform20/21 | Read-only World position3x4 and normal3x3 | Retained for later draws |
+| Uniform23 | Read-only View position3x4 and normal3x3 | Retained for the view |
+| Uniform22 words0..21 | MAC results, then homogeneous one | Original bounds and Vertex operand reads |
+
+Each complete position dot includes the View translation; normal dots multiply
+the two3x3 matrices. Results take ACC47:16 with the existing32-bit wrap.
+Ordinary Mesh uses97 enabled edges:22 matrix/one writes and two response writes.
+The latter reuse the same MAC for `scene_intensity * material_response`.
+Their loads occupy the final normal dot's drain; two products follow the
+homogeneous-one product at consecutive edges. ACC clear supplies only bit23
+for positive half-up Q8 rounding. No extra multiplier or rounding adder is used.
+
+A World Billboard branches after the last position result, skips normal/response
+work and copies the shared View basis into derived direction pairs. Its two
+10-edge continuations occupy482..491 and498..507; facing selects address bit4.
+Total preparation is65 enabled edges and19 stores. It then enters the unchanged
+Billboard bootstrap. Ordinary Mesh resumes conservative bounds and Vertex.
+There is no added per-vertex calendar.
+
+Only ordinary response stores return9-bit coefficients to the existing CP FFs.
+Changing their value requires the previous shading backend to be drained. The
+SDK emits WAIT(all) before changing scene lighting or material. Repeated
+meshlets may rewrite identical coefficients while older quads finish; simulation
+monitors reject a differing value before backend drain.
+
+DMA returns cannot be backpressured. A returning64-bit word writes both original
+input banks; a matrix store writes one32-bit bank at the fixed block22 address.
+DMA wins any write-port collision. Only a colliding matrix-store instruction
+holds: PC, RF, unpacker, MAC and ACC retain their old values, while DMA continues
+at wall speed. Non-store arithmetic can overlap DMA. These enabled-edge counts exclude CE and
+DMA-conflict stalls. Both source blocks stay immutable until the meshlet ends;
+the existing inactive-page prefetch rules remain in force. No RAM, DSP or
+64-bit assembly buffer is added.
+
 ## Shared V/T bounds prologue
 
 Only the compact meshlet ROM uses words256..310 for a fixed 55-word bounds

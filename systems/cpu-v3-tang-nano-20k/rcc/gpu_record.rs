@@ -5,13 +5,16 @@ use gpu_schema::*;
 mod gpu_storage;
 use gpu_storage::*;
 
-static GPU_CB_RECORDS: Buf<u16, 448> = Buf::new([0; 448]);
+// Two records of GPU_API_CB_WORDS; checked by the recording-layout fixtures.
+static GPU_CB_RECORDS: Buf<u16, 320> = Buf::new([0; 320]);
 // The logical 256-word span stays line-aligned independently of static layout.
 static GPU_NATIVE_SCRATCH: Buf<u16, 271> = Buf::new([0; 271]);
 // Allocation facts survive descriptor Drop and execution until this CB resets.
 static GPU_CB_RESOURCE_FACTS: Buf<u16, 512> = Buf::new([0; 512]);
 // Never reset with a context: copied binding locations cannot regain an epoch.
 static GPU_RECORD_GENERATION: Buf<u16, 2> = Buf::new([0; 2]);
+// Transient record and facts are acquired only while recording a prepared part.
+static GPU_PREPARED_CONTEXT: Buf<u16, 1> = Buf::new([0]);
 
 fn gpu_native_scratch() -> Array<u16> {
     unsafe { Ptr::from_addr((GPU_NATIVE_SCRATCH.as_ptr().addr() + 15) & 65520).as_u16_array() }
@@ -26,7 +29,7 @@ const GPU_RECORD_COMMAND_USED: u16 = 5;
 const GPU_RECORD_PUSH_USED: u16 = 6;
 const GPU_RECORD_PADDED: u16 = 7;
 const GPU_RECORD_VALID: u16 = 8;
-// Copy targets are fixed commands, outside the single-scene patch contract.
+// Copy-bearing target streams retain this proof flag through sealing.
 const GPU_RECORD_HAS_COPY: u16 = 32768;
 const GPU_RECORD_COLOR: u16 = 9;
 const GPU_RECORD_DEPTH: u16 = 10;
@@ -50,9 +53,9 @@ const GPU_RECORD_GLOBAL_BLOCKS: u16 = 25;
 const GPU_RECORD_INSTANCE_BLOCKS: u16 = 26;
 const GPU_RECORD_COLOR_FACT: u16 = 27;
 const GPU_RECORD_DEPTH_FACT: u16 = 28;
-const GPU_RECORD_SCENE_MODEL: u16 = 29;
-const GPU_RECORD_SCENE_MATERIAL: u16 = 30;
-const GPU_RECORD_SCENE_CAMERA: u16 = 31;
+// Recording captures resource-plan positions; sealing turns them into a proof.
+const GPU_RECORD_TARGET_PROVEN: u16 = 1024;
+const GPU_RECORD_COPY_FACT: u16 = 104;
 const GPU_RECORD_FACT_LIMIT: u16 = 64;
 const GPU_FACT_MESH: u16 = 1;
 const GPU_FACT_TEXTURE: u16 = 2;
@@ -69,6 +72,9 @@ const GPU_RECORD_SEALED: u16 = 3;
 const GPU_RECORD_POISON: u16 = 4;
 
 fn gpu_record_data(slot: u16) -> Array<u16> {
+    if slot == GPU_PREPARED_RECORD {
+        return unsafe { Ptr::from_addr(GPU_PREPARED_CONTEXT[0u16]).as_u16_array() };
+    }
     unsafe {
         GPU_CB_RECORDS
             .as_ptr()
@@ -93,6 +99,11 @@ fn gpu_record_new_generation(mut c: Array<u16>) -> bool {
 }
 // Caller has validated slot; C reads exactly record.fact_count * 4 words.
 fn gpu_record_resource_facts(slot: u16) -> Array<u16> {
+    if slot == GPU_PREPARED_RECORD {
+        return unsafe {
+            Ptr::from_addr(GPU_PREPARED_CONTEXT[0u16] + GPU_API_CB_WORDS).as_u16_array()
+        };
+    }
     unsafe {
         GPU_CB_RESOURCE_FACTS
             .as_ptr()
@@ -108,7 +119,7 @@ fn gpu_record_resource_room(
     count: u16,
     mut plan: Array<u16>,
 ) -> bool {
-    if slot >= 2 || count > GPU_RECORD_FACT_LIMIT {
+    if slot >= GPU_RECORD_COUNT || count > GPU_RECORD_FACT_LIMIT {
         return false;
     }
     let c = gpu_record_data(slot);
@@ -187,7 +198,7 @@ fn gpu_record_resource_commit(slot: u16, input: Array<u16>, count: u16, plan: Ar
 }
 fn gpu_record_init() {
     let mut i: u16 = 0;
-    while i < 448 {
+    while i < GPU_API_CB_WORDS * 2 {
         GPU_CB_RECORDS[i] = 0;
         i += 1;
     }
@@ -206,7 +217,8 @@ fn gpu_record_configure(
     push: u16,
     push_sectors: u16,
 ) -> bool {
-    if slot >= 2
+    if slot >= GPU_RECORD_COUNT
+        || (slot == GPU_PREPARED_RECORD && GPU_PREPARED_CONTEXT[0u16] == 0)
         || !gpu_record_extent(command, command_sectors)
         || !gpu_record_extent(push, push_sectors)
         || gpu_record_overlap(command, command_sectors, push, push_sectors)
@@ -253,7 +265,7 @@ fn gpu_record_align_push(used: u16, count: u16, alignment: u16, capacity: u16) -
     start
 }
 fn gpu_record_push_offset(slot: u16, count: u16, alignment: u16) -> u16 {
-    if slot >= 2 {
+    if slot >= GPU_RECORD_COUNT {
         return 65535;
     }
     let c = gpu_record_data(slot);
@@ -267,7 +279,7 @@ fn gpu_record_push_offset(slot: u16, count: u16, alignment: u16) -> u16 {
 // The caller computes its complete aligned payload layout before its first store.
 // This accepts a whole multi-batch operation, not just a 64-word transfer.
 fn gpu_record_preflight(slot: u16, command_words: u16, push_end: u16) -> bool {
-    if slot >= 2 {
+    if slot >= GPU_RECORD_COUNT {
         return false;
     }
     let c = gpu_record_data(slot);
@@ -450,10 +462,11 @@ fn gpu_record_reset(slot: u16) -> bool {
     }
     c[GPU_RECORD_PHASE] = GPU_RECORD_READY;
     let mut i: u16 = GPU_RECORD_COMMAND_USED;
-    while i < GPU_GROUP_BASE {
+    while i < GPU_API_CB_WORDS {
         c[i] = 0;
         i += 1;
     }
-    c[GPU_RECORD_PUSH_USED] = c[GPU_GROUP_PUSH_END];
+    c[GPU_CB_VIEW_WORD] = 0;
+    c[GPU_CB_VIEW_BLOCKS] = 0;
     gpu_record_new_generation(c)
 }

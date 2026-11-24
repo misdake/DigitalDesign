@@ -113,9 +113,11 @@ excludes physical GPU execution, shared contention and scanout; its numbers are
 CPU-only comparisons within this fixture, not whole-system frame time or FPS.
 The test source loader normalizes CRLF before exact multiline fixture edits.
 
-`gpu_prepared_group` runs the real RCC core in both GPU debug modes. It checks fixed-part snapshots, independent replacement, complete
-entry-state prefix omission, command capacity, reference/rebuild exclusion,
-resource facts, reset and dirty-line same-page LCOPY behavior.
+`gpu_prepared_group` runs the real RCC core in both GPU debug modes. It checks
+independent prepared snapshots, runtime pool allocation/reuse, abandoned recording,
+two frame consumers sharing immutable inputs and independent resets. Cross-page
+LCOPY staging is checked across physical window boundaries. Public constructor
+tests separately verify fail-stop Drop while a part or pool is recording.
 
 `host gpu_pipeline::bloxorz::buttons::` compares18 controlled session frames
 against forced full re-recording. It checks complete physical color/depth and
@@ -133,7 +135,7 @@ identical. The default retains the complete journal; timing-only runs do not
 claim a GPU report. A same-image comparison qualifies identical event ticks,
 CPU call intervals and complete color/depth with either setting.
 
-## Bloxorz static pixel cache
+## Bloxorz static command replay
 
 `host gpu_pipeline::bloxorz::static_cache::warm_second_frame_system_timing`
 is an explicitly invoked, bounded production full-system cycle measurement.
@@ -155,9 +157,9 @@ from real SPI-loader or board qualification. CPU issue intervals can include
 producer waits and must not be described as pure active CPU execution.
 
 `retained_static_scene_matches_fresh_recording_and_reuses_immutable_commands`
-compares warm restoration with forced full static rebuilds, including complete
-color/depth/Display, immutable cache allocations/tails and3/2/2 versus3/3/3
-submission counts. Typed depth-copy tests preserve distinct patterns, physical
+compares retained command replay with forced fresh recordings, including complete
+color/depth/Display, identical command words across Back targets and two
+submissions on every scene frame. Typed depth-copy tests preserve distinct patterns, physical
 padding and allocation tails, and reject overlap. The existing52-scene gallery
 covers all33 stages and representative animation states. `cache_compare.py`
 exports full RGB, raw and8x difference images, contact sheets and timing JSON;
@@ -353,15 +355,18 @@ or qualify new device execution or board timing.
 
 ## Graphics API helpers
 
-`host::gpu_api_scene_patch` uses the checked public API and bounded CPU execution
-in both profiles. It compares the full patched push span and retargeted facts
-with a fresh ordinary recording, preserves the sealed command stream through
-actual control-peer retirement, and alternates targets without reset. Negative
-cases cover foreign/stale/context/reset bindings, projection/light rejection,
-generation carry/exhaustion, mixed equal-valued Models, invalid spans and driver
-ownership. Its storage-failure fixture preserves the production patch source
+The nested `target_patch` cases compare immutable replay with a fresh recording,
+including a leading background copy. Release checks cover stale/reset/held
+bindings, extent changes, command/asset/source aliases, overlapping planes and
+Display Front/pending status. Debug alone injects private sealed-span, copy and
+fact-index corruption; ordinary debug replay is also checked. Both profiles keep
+partial-write poisoning. Nonrelocatable stream shapes reject in release before
+submission.
+
+`host::gpu_api_replay::target_patch` retains the sealed-target coverage above.
+Its storage-failure fixture preserves the production target relocation source
 and injects failure into the storage callee after one real copy; this qualifies
-poison/shadow/START boundaries, not a physical transport failure or GPU pixels.
+poison/shadow/START boundaries, not physical transport failure or GPU pixels.
 
 `host::gpu_api_submit_modes` checks the shared public driver in both profiles:
 ordinary/unarmed submissions skip the hook, pending requests survive ordinary
@@ -382,21 +387,12 @@ three-axis Model/Euler camera rotations, negative/nonuniform scaling and a
 non-axis look-at. It compares source world/normal/view and final native
 position/normal/light, with fixed Q16/Q14 tolerances, exact padding/scratch gaps
 and byte-identical healthy output across profiles.
-The binding case feeds the actual B preparation into A's actual arena, record,
-bind, mesh and UI packet modules. Its existing fixture also checks six-word
-vector I/O with extreme bit patterns, odd/line-crossing and wrapping offsets,
-unchanged input and complete neighboring-word guards.
-Independent complete command/push oracles
-check two CBs, six live Models, equal-value reuse, RGBA-only changes, 3D/UI/3D
-and freeing/reusing a Model after recording. It includes actual A execution,
-Display and fault storage. These helper fixtures carry no hypothetical C capture
-allocation and do not qualify the final A/B/C budget, public owners, capture or
-GPU pixels. The public fixture below measures actual composed globals instead.
-Both profiles must emit the same
-healthy command/push bytes. A sources are frozen per case across both profiles.
-During parallel
-G0 development, `GRAPHICS_API_A_RCC` selects A's actual dependency directory;
-after integration it defaults to this system's `rcc/`. Captured source inputs
+These numeric helper fixtures do not qualify command binding, public owners or
+GPU pixels. The public `host::gpu_api_bind` byte oracle, scene-binding tests and
+application previews cover the composed World/View path instead of maintaining
+a second manual command encoder here. Both profiles must produce the same
+healthy numeric bytes. `GRAPHICS_API_A_RCC` optionally selects the actual
+dependency directory and defaults to this system's `rcc/`. Captured source inputs
 and reports stay in `target/graphics-api-b-modules`. Set `GRAPHICS_API_B_OUTPUT`
 to a fresh directory in this tree target to retain earlier qualification evidence;
 helper cases use its `modules/` and the value gate its `values/` subdirectory. These tests do not qualify
@@ -800,3 +796,6 @@ The actual display CLI is checked with and without `--no-vblank-fast-forward`,
 including step/sample bounds. A native fixture verifies that both real clock
 counts keep advancing during a watch while CPU retirement remains held. This is
 host wait-overhead qualification, not physical vblank latency or whole-system FPS.
+
+`support/rcc/gpu_scene_legacy.rs` belongs only to the
+legacy numeric fixtures; it is absent from the public SDK.

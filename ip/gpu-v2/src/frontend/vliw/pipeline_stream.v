@@ -3,7 +3,8 @@
 // may overlap that tail; samples wait for the context switch.
 module gpu_v2_vliw_frontend(
 `ifdef GPU_V2_COMMAND_PORTS
- input[31:0]mesh_color,output[31:0]quad_color,
+ input[31:0]mesh_color,output[31:0]quad_color,input world_transform,billboard_vertical,
+ output prepared_light_we,prepared_light_select,output[8:0]prepared_light_data,
 `endif
 
  input clk,reset,ce,start,slot,
@@ -53,7 +54,9 @@ module gpu_v2_vliw_frontend(
  assign raster_error=core_error|bridge_error;
  shared_meshlet meshlet(
 `ifdef GPU_V2_COMMAND_PORTS
-.mesh_color(mesh_color),
+.mesh_color(mesh_color),.world_transform(world_transform),
+ .billboard_vertical(billboard_vertical),
+ .prepared_light_we(prepared_light_we),.prepared_light_select(prepared_light_select),.prepared_light_data(prepared_light_data),
 `endif
 
 `ifdef GPU_V2_COMMAND_PORTS

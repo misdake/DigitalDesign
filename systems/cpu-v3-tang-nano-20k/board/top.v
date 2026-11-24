@@ -326,50 +326,6 @@ wire [1:0] memory_chain_class = gpu_slot_valid[0] && gpu_slot_ready[0] ? 2'd1 :
 
 
 
-__GPU__ u_gpu (
-    .clk(clk),
-    // GPU state uses synchronous initialization, unlike declaration-initialized CPU state.
-    // Reuse the monotonic cold gate; buttons/lock loss never reassert this reset.
-    .reset(!cold_ready),
-    .device_index(device_query_index),
-    .device_channel(device_query_channel),
-    .device_read_enable(device_query_read_enable),
-    .device_write_enable(device_query_write_enable),
-    .device_write_data(device_write_data),
-    .gpu_ro_request_ready(gpu_ro_memory_request_ready),
-    .gpu_ro_write_data_ready(gpu_ro_memory_write_data_ready),
-    .gpu_ro_response_valid(gpu_ro_memory_response_valid),
-    .gpu_ro_read_data(gpu_ro_memory_read_data),
-    .gpu_ro_response_last(gpu_ro_memory_response_last),
-    .gpu_ro_error(gpu_ro_memory_error),
-    .gpu_fb_w_request_ready(gpu_fb_w_memory_request_ready),
-    .gpu_fb_w_write_data_ready(gpu_fb_w_memory_write_data_ready),
-    .gpu_fb_w_response_valid(gpu_fb_w_memory_response_valid),
-    .gpu_fb_w_response_last(gpu_fb_w_memory_response_last),
-    .gpu_fb_w_error(gpu_fb_w_memory_error),
-    .gpu_fb_r_request_ready(gpu_fb_r_memory_request_ready),
-    .gpu_fb_r_write_data_ready(gpu_fb_r_memory_write_data_ready),
-    .gpu_fb_r_response_valid(gpu_fb_r_memory_response_valid),
-    .gpu_fb_r_read_data(gpu_fb_r_memory_read_data),
-    .gpu_fb_r_response_last(gpu_fb_r_memory_response_last),
-    .gpu_fb_r_error(gpu_fb_r_memory_error),
-    .device_read_data(gpu_read_data),
-    .gpu_ro_request_valid(gpu_ro_memory_request_valid),
-    .gpu_ro_write(gpu_ro_memory_write),
-    .gpu_ro_address(gpu_ro_memory_address),
-    .gpu_ro_line_count_minus_1(gpu_ro_memory_line_count_minus_1),
-    .gpu_ro_write_data(gpu_ro_memory_write_data),
-    .gpu_fb_w_request_valid(gpu_fb_w_memory_request_valid),
-    .gpu_fb_w_write(gpu_fb_w_memory_write),
-    .gpu_fb_w_address(gpu_fb_w_memory_address),
-    .gpu_fb_w_line_count_minus_1(gpu_fb_w_memory_line_count_minus_1),
-    .gpu_fb_w_write_data(gpu_fb_w_memory_write_data),
-    .gpu_fb_r_request_valid(gpu_fb_r_memory_request_valid),
-    .gpu_fb_r_write(gpu_fb_r_memory_write),
-    .gpu_fb_r_address(gpu_fb_r_memory_address),
-    .gpu_fb_r_line_count_minus_1(gpu_fb_r_memory_line_count_minus_1),
-    .gpu_fb_r_write_data(gpu_fb_r_memory_write_data)
-);
 __FETCH_QUEUE__ u_instruction_fetch_queue (
     .clk(clk),
     .reset(reset),
@@ -408,6 +364,11 @@ __CACHE__ u_instruction_cache (
     .memory_address(icache_memory_address),
     .memory_response_ready(icache_memory_response_ready)
 );
+__DS2__ u_ds2(.clk(clk),.reset(reset),.frame_event(display_frame_event),
+ .device_index(device_query_index),.device_channel(device_query_channel),
+ .device_read_enable(device_query_read_enable),.device_write_enable(device_query_write_enable),
+ .device_write_data(device_write_data),.device_read_data(ds2_read_data),
+ .dat(ds2_dat),.ds2_clk(ds2_clk),.cmd(ds2_cmd),.att(ds2_att));
 __SYSTEM_CONTROL__ u_sysctl (
     .clk(clk),
     .reset(reset),
@@ -431,11 +392,6 @@ __SYSTEM_CONTROL__ u_sysctl (
     .leds(software_leds),
     .uart_tx(uart_tx)
 );
-__DS2__ u_ds2(.clk(clk),.reset(reset),.frame_event(display_frame_event),
- .device_index(device_query_index),.device_channel(device_query_channel),
- .device_read_enable(device_query_read_enable),.device_write_enable(device_query_write_enable),
- .device_write_data(device_write_data),.device_read_data(ds2_read_data),
- .dat(ds2_dat),.ds2_clk(ds2_clk),.cmd(ds2_cmd),.att(ds2_att));
 __SINGLE_BOOT_LOADER__ u_boot_loader (
     .clk(clk),.ready_to_start(cold_ready),
     .flash_ready(flash_ready),.flash_data_valid(flash_data_valid),.flash_data(flash_data),
@@ -700,6 +656,50 @@ __FRAMEBUFFER_HDMI__ u_display (
     .tmds_clk_n(tmds_clk_n),
     .tmds_data_p(tmds_data_p),
     .tmds_data_n(tmds_data_n)
+);
+__GPU__ u_gpu (
+    .clk(clk),
+    // GPU state uses synchronous initialization, unlike declaration-initialized CPU state.
+    // Reuse the monotonic cold gate; buttons/lock loss never reassert this reset.
+    .reset(!cold_ready),
+    .device_index(device_query_index),
+    .device_channel(device_query_channel),
+    .device_read_enable(device_query_read_enable),
+    .device_write_enable(device_query_write_enable),
+    .device_write_data(device_write_data),
+    .gpu_ro_request_ready(gpu_ro_memory_request_ready),
+    .gpu_ro_write_data_ready(gpu_ro_memory_write_data_ready),
+    .gpu_ro_response_valid(gpu_ro_memory_response_valid),
+    .gpu_ro_read_data(gpu_ro_memory_read_data),
+    .gpu_ro_response_last(gpu_ro_memory_response_last),
+    .gpu_ro_error(gpu_ro_memory_error),
+    .gpu_fb_w_request_ready(gpu_fb_w_memory_request_ready),
+    .gpu_fb_w_write_data_ready(gpu_fb_w_memory_write_data_ready),
+    .gpu_fb_w_response_valid(gpu_fb_w_memory_response_valid),
+    .gpu_fb_w_response_last(gpu_fb_w_memory_response_last),
+    .gpu_fb_w_error(gpu_fb_w_memory_error),
+    .gpu_fb_r_request_ready(gpu_fb_r_memory_request_ready),
+    .gpu_fb_r_write_data_ready(gpu_fb_r_memory_write_data_ready),
+    .gpu_fb_r_response_valid(gpu_fb_r_memory_response_valid),
+    .gpu_fb_r_read_data(gpu_fb_r_memory_read_data),
+    .gpu_fb_r_response_last(gpu_fb_r_memory_response_last),
+    .gpu_fb_r_error(gpu_fb_r_memory_error),
+    .device_read_data(gpu_read_data),
+    .gpu_ro_request_valid(gpu_ro_memory_request_valid),
+    .gpu_ro_write(gpu_ro_memory_write),
+    .gpu_ro_address(gpu_ro_memory_address),
+    .gpu_ro_line_count_minus_1(gpu_ro_memory_line_count_minus_1),
+    .gpu_ro_write_data(gpu_ro_memory_write_data),
+    .gpu_fb_w_request_valid(gpu_fb_w_memory_request_valid),
+    .gpu_fb_w_write(gpu_fb_w_memory_write),
+    .gpu_fb_w_address(gpu_fb_w_memory_address),
+    .gpu_fb_w_line_count_minus_1(gpu_fb_w_memory_line_count_minus_1),
+    .gpu_fb_w_write_data(gpu_fb_w_memory_write_data),
+    .gpu_fb_r_request_valid(gpu_fb_r_memory_request_valid),
+    .gpu_fb_r_write(gpu_fb_r_memory_write),
+    .gpu_fb_r_address(gpu_fb_r_memory_address),
+    .gpu_fb_r_line_count_minus_1(gpu_fb_r_memory_line_count_minus_1),
+    .gpu_fb_r_write_data(gpu_fb_r_memory_write_data)
 );
 endmodule
 

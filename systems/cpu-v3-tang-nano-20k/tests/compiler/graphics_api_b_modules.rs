@@ -1,7 +1,10 @@
 //! Execute B production helpers through checked RCC and the CPU V3 backend.
 use cpu_v3::{rcc_backend, CpuV3Sim, StepOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::{Path, PathBuf};
+#[allow(dead_code)]
+#[path = "../support/checked_flat_fixture.rs"]
+mod checked_flat_fixture;
 #[path = "graphics_api_b/oblique.rs"]
 mod oblique;
 
@@ -33,16 +36,6 @@ fn source_camera_model_and_six_argument_native_draw() {
         include_str!("../fixtures/graphics_api_b_draw.rs")
     );
     run_fixture("draw", &source);
-}
-
-#[test]
-fn scene_values_feed_real_a_binding_mesh_and_ui_recording() {
-    let source = format!(
-        "{}\n{}",
-        include_str!("../fixtures/graphics_api_b_draw.rs"),
-        include_str!("../fixtures/graphics_api_b_binding.rs")
-    );
-    run_fixture("binding", &source);
 }
 
 fn evidence_root() -> PathBuf {
@@ -95,13 +88,13 @@ fn run_fixture_with_check(
         std::fs::write(folder.join("input-fixture.rs"), source).unwrap();
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = gpu_debug;
-        let ir = compile_program_named_checked(
+        let ir = checked_flat_fixture::compile(
             label,
             source,
             &options,
             &RustcCheck::new(folder.join("checked")),
             &mut |name| {
-                let contents = if a_names.contains(&name) {
+                let mut contents = if a_names.contains(&name) {
                     if let Some(text) = a_sources.get(name) {
                         Ok(text.clone())
                     } else {
@@ -114,6 +107,9 @@ fn run_fixture_with_check(
                     std::fs::read_to_string(source_root.join(format!("{name}.rs")))
                         .map_err(|e| e.to_string())
                 }?;
+                if name == "gpu_scene_math" {
+                    contents.push_str(include_str!("../support/rcc/gpu_scene_legacy.rs"));
+                }
                 std::fs::write(folder.join(format!("input-{name}.rs")), &contents)
                     .map_err(|e| e.to_string())?;
                 Ok(contents)
@@ -122,7 +118,7 @@ fn run_fixture_with_check(
         .unwrap_or_else(|error| panic!("{profile}: {error}"));
         let static_words = ir.debug.static_data_end;
         let code = rcc_backend::try_compile(ir, &options, "main").unwrap();
-        if label == "budget" || label == "binding" {
+        if label == "budget" {
             assert!(
                 static_words <= 8192,
                 "{profile}: static budget exceeded: {} bytes",
@@ -166,7 +162,7 @@ fn run_fixture_with_check(
         }
         assert!(halted, "{profile}: exceeded 250000 target instructions");
         assert!((0x8000..=0xc000).contains(&min_sp));
-        if label == "draw" || label == "budget" || label == "binding" {
+        if label == "draw" || label == "budget" {
             for (name, expected) in [("Vec3", 6), ("Mat3x4", 24), ("Mat3x3", 18)] {
                 assert_eq!(
                     code.debug
@@ -291,11 +287,6 @@ fn run_fixture_with_check(
                 );
             }
             assert!(rotated[42..].iter().all(|&word| word == 0));
-            if label == "binding" {
-                let a = read("DRAW_A", 256);
-                let b = read("DRAW_B", 256);
-                check_binding_output(&mut cpu, &a, &b, &folder, profile);
-            }
         }
         if label == "ui" {
             let mut expected = vec![0u8; 768];
@@ -329,11 +320,8 @@ fn run_fixture_with_check(
             "maximum_steps": 250000, "schema_source": a_root.join("gpu_schema.rs"),
             "max_frame_words": code.debug.functions.iter().map(|f| f.frame_size).max().unwrap_or(0),
             "fixture": label,
-            "qualification": if label == "binding" {
-                "Actual B preparation and A arena/record/bind/mesh/UI; helper fixture only, no capture or composed-budget qualification"
-            } else {
-                "B production helpers; no A resource factory, GPU execution, or integrated budget qualification"
-            }
+            "qualification": "B production numeric helpers; command binding and public resources are covered by host GPU API tests"
+
         });
         std::fs::write(
             folder.join("result.json"),
@@ -341,136 +329,5 @@ fn run_fixture_with_check(
         )
         .unwrap();
         println!("{report}");
-    }
-}
-
-// Independent native encoding: byte source /32, local qword /4, length code.
-fn combo_dma(base: u32, word: u32, local: u32, size: u32) -> u32 {
-    0x1000_0000 | (((base * 128 + word * 2) / 32) << 10) | (local << 3) | (size << 1)
-}
-fn combo_prefix(base: u32) -> Vec<u32> {
-    vec![
-        0x4000_0003,
-        0x7000_0000,
-        combo_dma(base, 0, 69, 0),
-        0x4000_0001,
-        0xa000_0045,
-    ]
-}
-fn combo_first_binding(base: u32) -> Vec<u32> {
-    vec![
-        0x4000_0003,
-        combo_dma(base, 32, 66, 1),
-        0x4000_0001,
-        0x5000_0042,
-        combo_dma(base, 64, 68, 0),
-        0x4000_0001,
-        0x6000_0044,
-        combo_dma(base, 128, 80, 2),
-        0x4000_0001,
-    ]
-}
-fn combo_mesh(base: u32, instance: u32) -> Vec<u32> {
-    vec![
-        combo_dma(base, instance, 80, 2),
-        0x4000_0001,
-        0x2a00_2000,
-        0x4000_0001,
-        0x3000_0000,
-    ]
-}
-fn combo_range(first: u32, end: u32) -> u32 {
-    0xb800_0045 | (first << 7) | ((end - 1) << 17)
-}
-fn check_binding_output(cpu: &mut CpuV3Sim, a: &[u16], b: &[u16], folder: &Path, profile: &str) {
-    // First bind + draw, equal Model in another slot, RGBA-only, UI, 3D, UI,
-    // and a freed/reused Model. Only the first binding changes Global/Render.
-    let mut commands_a = combo_prefix(0x9a00);
-    commands_a.extend(combo_first_binding(0x9a00));
-    commands_a.extend([0x2a00_2000, 0x4000_0001, 0x3000_0000]);
-    commands_a.extend(combo_mesh(0x9a00, 128));
-    commands_a.extend(combo_mesh(0x9a00, 192));
-    commands_a.extend([
-        0x4000_0003,
-        0x7000_0000,
-        combo_dma(0x9a00, 256, 69, 0),
-        0x4000_0001,
-        combo_range(52, 55),
-        combo_range(102, 105),
-    ]);
-    commands_a.extend(combo_mesh(0x9a00, 192));
-    commands_a.extend([0x4000_0003, 0x7000_0000, combo_range(749, 750)]);
-    commands_a.extend(combo_mesh(0x9a00, 320));
-    commands_a.extend([0x4000_0003, 0x7000_0000, 0xf000_0000]);
-    let mut commands_b = combo_prefix(0xfe00);
-    commands_b.extend(combo_first_binding(0xfe00));
-    commands_b.extend([
-        0x2a00_2000,
-        0x4000_0001,
-        0x3000_0000,
-        0x4000_0003,
-        0x7000_0000,
-        0xf000_0000,
-    ]);
-    let memory = cpu.physical_memory_mut();
-    for (name, base, commands, padded) in [
-        ("a", 0x9800usize, commands_a, 128usize),
-        ("b", 0xfc00usize, commands_b, 64usize),
-    ] {
-        let mut expected: Vec<u16> = commands
-            .iter()
-            .flat_map(|word| [*word as u16, (*word >> 16) as u16])
-            .collect();
-        expected.resize(padded, 0);
-        assert_eq!(
-            &memory[base * 64..base * 64 + padded],
-            expected,
-            "{profile}: complete CB {name}, including WAIT and staging restoration"
-        );
-        std::fs::write(
-            folder.join(format!("commands-{name}.bin")),
-            expected
-                .iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-    }
-    for (name, base, native, count, color) in [
-        ("a", 0x9a00usize, a, 384usize, 0x1000u16),
-        ("b", 0xfe00usize, b, 192usize, 0x1400u16),
-    ] {
-        let mut expected = vec![0u16; count];
-        expected[0] = color;
-        expected[1] = 0x600;
-        expected[32..64].copy_from_slice(&native[0..32]);
-        expected[64..80].copy_from_slice(&native[32..48]);
-        expected[128..192].copy_from_slice(&native[64..128]);
-        if name == "a" {
-            expected[192..256].copy_from_slice(&native[64..128]);
-            expected[236] = 0x0201;
-            expected[237] = 0x0403;
-            expected[256] = 0xb006;
-            expected[257] = 0xb000 >> 9;
-            expected[320..384].copy_from_slice(&native[64..128]);
-            expected[321] = (-4i16) as u16; // Changed world scale X, reflected once.
-            expected[344] = 0xc000; // Normal X = -1/4, Q16.16.
-            expected[345] = 0xffff;
-            expected[364] = 0x0201;
-            expected[365] = 0x0403;
-        }
-        assert_eq!(
-            &memory[base * 64..base * 64 + count],
-            expected,
-            "{profile}: complete push {name}; previous snapshots survive source mutation/reuse"
-        );
-        std::fs::write(
-            folder.join(format!("push-{name}.bin")),
-            expected
-                .iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
     }
 }

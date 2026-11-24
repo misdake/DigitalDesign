@@ -7,7 +7,8 @@ module gpu_v2_vliw_three_port(
  input[13:0]color_base,depth_base,
 `endif
 `ifdef GPU_V2_COMMAND_PORTS
- input[31:0]mesh_color,
+ input[31:0]mesh_color,input world_transform,billboard_vertical,
+ output prepared_light_we,prepared_light_select,output[8:0]prepared_light_data,
 `endif
 
  input clk,reset,ce,abort,start,slot,
@@ -122,7 +123,9 @@ blend,draw_rebind,
  .framebuffer_write_ready(framebuffer_write_ready),.framebuffer_complete(framebuffer_complete),.framebuffer_ok(framebuffer_ok));
  gpu_v2_vliw_frontend front(
 `ifdef GPU_V2_COMMAND_PORTS
-.mesh_color(mesh_color),.quad_color(quad_color),
+.mesh_color(mesh_color),.quad_color(quad_color),.world_transform(world_transform),
+ .billboard_vertical(billboard_vertical),
+ .prepared_light_we(prepared_light_we),.prepared_light_select(prepared_light_select),.prepared_light_data(prepared_light_data),
 `endif
 
 `ifdef GPU_V2_COMMAND_PORTS
@@ -157,9 +160,16 @@ depth_func,depth_write,blend,
  always @(posedge clk)begin
   if(reset)begin was_active<=0;held_config<=0;end
   else begin
-   if(was_active&&!pipeline_idle&&live_config!==held_config)$fatal(1,"global configuration changed before whole GPU drain");
+   if(was_active&&!pipeline_idle&&live_config!==held_config&&
+    !(backend_idle&&live_config[256:18]===held_config[256:18]))
+    $fatal(1,"global configuration changed before whole GPU drain");
    was_active<=!pipeline_idle||(front_ce&&start&&meshlet_ready);
    held_config<=live_config;
+
+`ifdef GPU_V2_COMMAND_PORTS
+   if(prepared_light_we&&!backend_idle&&prepared_light_data!==(prepared_light_select?directional:ambient))
+    $fatal(1,"prepared light changed before backend drain");
+`endif
 
 `ifndef GPU_V2_LIVE_GLOBALS
    if(draw_rebind&&!pipeline_idle)$fatal(1,"draw rebind before whole GPU drain");

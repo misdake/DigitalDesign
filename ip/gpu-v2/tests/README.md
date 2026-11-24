@@ -36,6 +36,14 @@ functional run does not imply an ignored RTL qualification ran.
 
 ## Qualification contracts
 
+`world_matrix_prepare.py --output target/world-matrix` checks resident View/World
+preparation against an independent integer reference. Add `--native` with
+`GOWIN_HOME`, `IVERILOG_EXE` and `VVP_EXE` configured to use manufacturer RAM,
+ROM and DSP primitives. Both backends check matrix/light preparation (24 stores,
+97 enabled edges), both Billboard bases (19 stores,65 edges), CE holds and
+concurrent DMA returns. The four ROM generators provide
+read-only `--check`; Triangle regeneration preserves the compact World pages.
+
 The ignored `common_profiling_collectors_observe_the_same_draw_edges` and
 `common_profiling_reset_preserves_the_same_stop_boundary` in
 `vliw_cycle_gpu` and `common_profiling_uv_and_abort_collectors_use_identical_points`

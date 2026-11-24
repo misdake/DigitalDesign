@@ -1,167 +1,93 @@
-# Explicit GPU application callers
+---
+id: gpu-explicit-examples
+status: active
+last-verified: 2026-11-24
+---
 
-The member, semantic-change, RTT, profiler and Bloxorz callers use public
-`Gpu`, `CommandBuffer`, scene resources and `Display` directly.
-`applications/rendering/rcc/gpu_demo_api.rs` is an ordinary application module: it constructs values,
-formats UI digits and imports the boot package's fixed asset extents. It has
-no driver state, frame owner, hidden submission or retirement loop.
-`rcc/gpu_board.rs` separately constructs the System's fixed command slots,
-color/depth planes and UI page allocations. Application support uses those
-public values; the GPU driver has no demo assets, glyphs or Bloxorz rules.
+# GPU resource API callers
 
-Each application owns one command buffer, two display color planes and a depth
-plane. It records into Back B first, submits by value, gets the buffer back from
-`Gpu::wait`, queues that completed color plane and confirms the swap with
-`Display::wait_vblank`. It resets only the returned buffer and alternates the
-back plane. These examples deliberately use serial completion; no caller writes
-a plane still being scanned or mutates a UI grid still used by its GPU work.
+Read the [public GPU guide](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-guide.md)
+before the larger callers. Applications own draw order, Camera/Model/Material,
+input/time, external working allocations, GPU completion and Display handoff.
+The driver owns resource registration, native encoding and device protocols;
+it contains no demo asset selection, Bloxorz rules or transparency sorter.
 
-| Caller | Recording and ownership behavior |
-| --- | --- |
-| `tests/fixtures/gpu_renderer/rcc/members.rs` | Two draws snapshot one mutable Model; three-frame entry confirms B/A/B. |
-| `tests/fixtures/gpu_renderer/rcc/changes.rs` | Eleven phases edit Camera, Model, Material and lighting; a live Pass retains its installed Camera, then a successor installs the edit. Alpha drawing uses explicit SrcOver state. |
-| `demo_render_to_texture/rcc/scene.rs` | A producer completes into caller-owned RTT planes before a consumer records their TextureView. The view may be dropped after recording. Texture invalidation is explicit between stages. |
-| `gpu_profiler_board/rcc/main.rs` | Static minimal diagnostic, bounded UART progress markers and explicit UI grid. |
-| `gpu_profiler_board/rcc/full_scene.rs` | Six box meshlets, one RGB meshlet and seventeen rabbit meshlets; the RGB draw uses `draw_colored`. |
-| `demo_box_rabbit/rcc/public_main.rs` | The complete classic scene with continuous unified gamepad input, first-person camera, timing UI and explicit GPU/swap polling. |
-| `game_bloxorz/rcc/main.rs` | Explicit input/time sampling, offscreen transition snapshots, ordinary/fade consumers and confirmed presentation before session advancement. |
+## Which example answers which question?
 
-The full box/RGB/rabbit scene explicitly preserves the original controller
-`gpu_demo` scene contract: trilinear filtering (native code2), LESS with depth
-write (code1), rabbit shininess exponent32 (native code12), and linear-light
-RGB565 presentation (Device3 format1). The corresponding native Render word1
-is `0x0056` for the 64x64 full-mip texture; Render word4 low six bits are41 for
-unlit room/RGB and9 for the lit rabbit. The rabbit's Global word10 is `0x0033`
-for mode3 and shininess code12. The static profiler's unlit material retains
-S16/code8 (`0x0023`); the controller explicitly retains the native caller's S32
-and 64/192 material responses even for unlit draws. Unlit Final bypasses lighting
-with g=256/h=0, so the shininess field contributes no specular term there.
-`Shininess::S12` means exponent12/code6, so the lit rabbit uses
-`Shininess::S32`. Other demo factories retain their own defaults. The full
-profiler entry has a fixed camera. `CPU_V3_BOOT_EXAMPLE=gpu_demo_api_column16`
-selects `examples/demo_box_rabbit/rcc/public_main.rs` for the complete public-API
-controller scene. The native caller in `examples/demo_box_rabbit/rcc/main.rs`
-is exercised by the low-level regression suite.
+| Caller | Focus | Command-buffer organization |
+| --- | --- | --- |
+| [Hello GPU](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/rcc/main.rs) and [Scene](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/rcc/scene.rs) | First triangle plus UI; split frame orchestration from owned scene resources. | One CB, reset/record/submit/wait each frame, then swap/confirm. |
+| [Showcase](/systems/cpu-v3-tang-nano-20k/examples/demo_showcase/rcc/main.rs) | Geometry, Camera, lighting, material and input pages; CPU framebuffer work has explicit GPU ordering. | One CB; CPU pages also complete a GPU clear before CPU drawing and the UI pass. |
+| [RTT](/systems/cpu-v3-tang-nano-20k/examples/demo_render_to_texture/rcc/scene.rs) | Render offscreen, then sample its fixed framebuffer view. | One CB reused for two serial submissions; texture invalidation between producer and consumer. |
+| [Billboard](/systems/cpu-v3-tang-nano-20k/examples/demo_billboard/rcc/main.rs) | Vertical trees, camera-plane effects, layer sorting and explicit transparent state. | One per-frame CB; sorting and effect selection belong to the application. |
+| [Box/rabbit controller](/systems/cpu-v3-tang-nano-20k/examples/demo_box_rabbit/rcc/public_main.rs) | Moving camera, persistent room/RGB stream, ordinary rabbit/UI and input/timing. | Two CPU slots with fixed roles; prepared room/RGB appended with the current Pass Camera, dynamic CPU recording during static execution, then serial GPU submission. |
+| [Bloxorz](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/rcc/main.rs) | Whole-stream static replay plus prepared dynamic components, shadows, fades and HUD. | Two CPU slots: static level stream with target-only rebinding, dynamic CB with application-allocated prepared parts. |
 
-The public controller caller consumes one `gamepad` frame before preparing any
-previous-frame UART report. It retains both-stick movement/look, L1/R1 vertical
-motion, the classic initial pose and bounded wall-time integration. It clears
-the rendering timer before input/preparation and locks it after GPU retirement,
-before presentation. `Gpu::try_wait` and `Display::try_wait_swap` let it service
-nonblocking telemetry and enforce the existing 2000ms wait budgets. UI shows
-only the previous successfully presented valid interval at row1,column2; the
-debounced board button toggles visibility. Its native asset producer is reused
-without the profiler wrapper's OBS atlas substitution. The default boot and
-fixed profiler selections are unchanged.
+Each application preserves a writable Back and confirms presentation before
+reusing the former Front. This is application scheduling, not an implicit wait
+inside `set_next_swap`. Two CPU CBs allow preparation/execution overlap; the
+hardware still executes only one submitted CB at a time.
 
-The public controller uses fixed CPU command-buffer roles: slot0 retains the
-room/RGB stream and slot1 records rabbit/UI work. Startup invalidates textures
-with one separate ordinary maintenance submission, then records slot0's clear,
-six room meshlets and RGB meshlet once. Each frame starts after the previous
-dynamic submission and Display swap retire. Input updates the Camera; the
-typed scene binding patches slot0's Target/Global/Instance for the current Back
-without resetting its commands, and ordinary submit starts that static work.
-While it runs, the CPU records slot1 with Load color/depth, a separate rabbit
-Model and the UI. It waits for static retirement, submits slot1 through
-`submit_capturable`, waits for dynamic retirement, then presents and confirms
-the swap. Back A/B alternates; CPU slot roles do not. The default rabbit Model
-remains stationary. Waits retain the existing deadline and telemetry handling.
+## Resource generation is application input
 
-An armed dynamic capture stops after static retirement and dynamic publication,
-before dynamic START. Ordinary static and unarmed eligible work bypass the
-capture gate. The existing explicit-v2 wire format omits Front; a functional
-system qualification can observe Front separately without adding a wire range.
-The controlled two-frame test moves/turns Camera and independently rotates the
-rabbit only in its test source. Its full frame color/depth and guard comparison
-is functional evidence, not native CPU/GPU timing or board qualification.
+Each example's `application.rs` selects its source and asset producer. Producers
+write native meshlet/texture/font payloads and descriptions; the build allocates
+external addresses and packages the result. They do not record a frame CB.
+Start with [Hello's producer](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/tools/assets.py),
+then its [build recipe](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/application.rs).
+The [static asset contract](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md)
+explains includes, relocation, alignment and loader-owned bytes.
 
-RTT planes occupy sector ranges `0xc000..0xc800` and `0xc800..0xd000`, each with
-2048 sectors of caller-owned capacity. The current packers exclude these ranges
-from assets. Display uses the ordinary demo planes. No CPU pixel conversion or
-readback is used. Initial texture use and changed RTT content receive explicit
-invalidation. Continuous `renderer_rtt_profiler` and bounded nearest/bilinear
-entry points use the same recording implementation.
+Hello/Showcase use the public source-asset path. Older RTT/Billboard/Bloxorz
+producers retain hand-packed native fields and shared reference helpers. These
+are existing implementations, not prerequisites for a new application.
+`applications/rendering/rcc/gpu_demo_api.rs` is ordinary application support,
+not a driver service. `rcc/gpu_board.rs` constructs fixed board working extents;
+new applications may declare their own static buffers instead.
 
-Profiler timing digits are application-observed submit-to-wait microseconds,
-including CPU control overhead. Value65535 denotes an unavailable/saturated
-observation. They are not a measurement of pure GPU execution or physical timing.
+## Larger examples: read only the relevant boundary first
 
-The ordinary `profiler_clock` module exposes a resume sequence and active
-milliseconds. The shared diagnostic consumer adds the paused wall-clock interval
-before returning Resumed, then increments the sequence. Both values use 16-bit
-modulo arithmetic; a complete wall-clock wrap still increments the sequence.
-The physical clock and input devices are unchanged. The changing-scene and full
-profiler callers sample the sequence around submit/wait and mark that observation
-unavailable if it changes. Bloxorz integrates active milliseconds and explicitly
-captures/discards stale input edges after its own resumed wait. This is an
-application decision, separate from GPU ownership and completion.
+In RTT, the `0xc000` and `0xc800` sector reservations are application placement
+choices excluded by its packer, not universal GPU addresses. The producer's
+completion precedes sampling, and changed content gets explicit texture-cache
+invalidation. The consumer uses Nearest/Bilinear: fixed framebuffer views reject
+the generic Trilinear default. The offscreen TextureView is created once and retained across frames; updating
+its backing pixels does not require re-registering the view.
 
-The capture consumer reads external ranges into its bounded low-memory cache.
-Header snapshots, UART staging and RLE/CRC work also use low-memory arrays;
-these are not destination DRAM line copies. The seven callers and ordinary
-demo helper issue no CPU `dcache_line_copy` or resident-copy intrinsic. GPU
-MEMCPY records retain their independent GPU meaning. The shared
-window helper supplies the actual mapped read; its DWAIT, DSEG restoration and
-submit publication boundaries remain necessary regardless of the CPU copy ISA.
+In Billboard, facing controls expansion; blend/depth-write choices and sorted
+draw order remain explicit. Stage/layer selection uses `MeshPtr::slice`, without
+per-frame arena allocations or directory copies. The package stores 199 updates
+as compact sprite parameters, not baked per-frame meshlets. Nine static meshlets
+and ten reusable sprite slots cover the scene. CPU update writes the selected
+centers, rotated corners and UVs after prior GPU retirement; material color and
+texture selection remain ordinary draw inputs. Paused frames retain the slots.
 
-The Bloxorz presentation accepts direction, restart and fixture-selection keys;
-it exposes no undo command. Its unchanged rule engine still supports a general
-256-entry undo ring. This caller instead resets the private ring cursor before
-each move and reuses one six-word scratch snapshot. Visible game/session/motion
-states remain identical; no rule, key or fixture is removed.
+In Bloxorz, read `refresh_static_scene`, `record_dynamic_scene` and the submission
+loop separately. The static CB stores commands and World/material snapshots;
+it is not a cached framebuffer of all static geometry. The fixed background
+image and offscreen fade snapshot are separate pixel resources. Level/geometry
+changes invalidate the stream, while A/B changes retarget it. Prepared parts
+store bridges/switches/pads and inherit the enclosing Pass camera/light; their
+selection and capacity choices are Bloxorz policy, declared in its PreparedPool.
 
-## Bounded caller qualification
+The controller preserves native scene choices: trilinear texture filtering,
+Less with depth write, rabbit shininess S32, and linear-light RGB565 presentation.
+Its static room/RGB and dynamic rabbit/UI streams both use ordinary `submit`.
+There is no `submit_capturable`, pause gate or board capture producer in the
+current public submission API. Application timing includes CPU control/wait
+overhead and must not be described as pure GPU execution time.
 
-`tools/qualify_api_callers.py` consumes an external A stage containing
-`manifest.json` and its exact `sources/` files. It verifies every supplied hash
-and invokes that stage's actual checked System loader and approved root. Local
-application sources gain no private-helper privilege. Generated crates and
-ordinary source copies remain under this worktree's `target/`.
+## Regression fixtures are not application tutorials
 
-Provide a migrated source, its bounded entry, constants from the ordinary asset
-packer and the matching `assets.json`. Optional `--extra-dir` supplies ordinary
-game modules. Both check profiles execute the actual CPU program with a finite
-step limit and verify actual draw counts, confirmed Front order, frame sizes and
-static plus observed stack against the16-KiB budget. GPU/Display peers model
-control completion only: they do not render, scan out or model physical cache
-publication. This qualification does not establish captured G3.
+The small members/changes fixtures under `tests/fixtures/gpu_renderer/rcc/`
+exercise mutable-source snapshots and explicit ownership. Host tests under
+`tests/host/compiler/` cover resource construction, privacy, generations, native
+recording, prepared allocations, target-only relocation and bounded device peers.
+Their completion peers need not render pixels or model physical cache timing.
+Historical capture/qualification adapters are separate test infrastructure;
+their old loader names and capture protocols do not describe today's public API.
 
-The `tests/fixtures/api_c_session.rs` scenario has3600 ticks, including more than
-256 alternating move attempts, fixture selection and restart. `--session`
-compares both profiles'27 visible state words per tick against the frozen
-pre-migration CPU trace identity in `api_c_session_reference.json`. The fixture
-records source and scenario hashes; it contains no second hand-maintained
-instruction array. This checks the scratch-history change independently of GPU
-rendering.
-
-`--capture-build-dir` and `--capture-gate` enable the actual capture hooks using
-per-profile build manifests. A gate can call the shared UART consumer or select
-a controlled action; the driver verifies exactly one additional publication for
-each Resumed action. It saves the actual frozen header, ranges and payloads before
-GPU START and observes the executed dump path's stack. Each manifest must bind
-the actual source inputs; adding `--native-rtl` also requires the selected RTL
-export to be bound.
-
-With `--native-rtl`, START runs the existing production GPU/stream-MC replay and
-imports every writable output range before the CPU may observe GPU completion
-or present. The native helper has finite cycle and process limits. This connects
-actual recorded CPU data to rendered results; it remains a cold replay per
-submission and does not model physical CPU caches, Display scanout or warm
-cross-submission contention. Reference envelope encoding in that helper is a
-transport adapter; actual UART encoding is checked separately.
-
-`tests/support/api_c_native_pixels.py ui|rtt <result-directory>` checks the
-completed public fixture outputs in both profiles. UI uses an independent
-RGBA5551 atlas decoder and checks both entire physical planes. RTT checks all
-targets, the small consumer viewport, retained producer colors, padding,
-representative nearest samples and identical output bytes across profiles.
-Detailed sampler arithmetic remains in the GPU's independent numerical tests.
-The small viewport keeps the functional dependency check bounded while both
-physical targets and their clears remain complete.
-
-Generated qualification crates use distinct package names while sharing
-dependency caches. The default CPU step bound is20million; full UART dump paths
-can explicitly select a bound up to1billion. Native replays retain their own
-500000-cycle/300-second limits, with a720-second outer limit for both profiles
-and report generation. A timeout saves partial CPU progress where available;
-it does not imply that the hardware stalled.
+For rendering/performance qualification use the current
+[application workflow](/systems/cpu-v3-tang-nano-20k/docs/application-workflow.md),
+[profiling guide](/systems/cpu-v3-tang-nano-20k/docs/application-profiling.md) and
+[same-build diagnostics](/systems/cpu-v3-tang-nano-20k/docs/application-build-artifact.md).

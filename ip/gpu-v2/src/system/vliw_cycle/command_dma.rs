@@ -320,7 +320,7 @@ impl Dma {
                         if j.mesh {
                             n.pulses.mesh_done = true;
                             n.pulses.mesh_done_slot = j.page;
-                        } else if j.destination >> 4 == 5 {
+                        } else if j.destination >> 4 == 5 && j.destination & 3 == 0 {
                             n.pulses.uniform_done = true;
                             n.pulses.uniform_bank = (j.destination >> 2) & 3;
                         }

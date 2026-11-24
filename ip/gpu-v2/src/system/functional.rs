@@ -369,13 +369,21 @@ impl State {
 
     fn object<const N: usize>(&self, word: u32, ranged_ui: bool) -> Result<[u8; N], String> {
         let slot = (word & 127) as usize;
-        if !(66..80).contains(&slot)
-            || slot + N / 32 > 80
-            || (!ranged_ui && word & 0x0fff_ff80 != 0)
+        let extended = !ranged_ui && word & 128 != 0;
+        let extended_valid = match word >> 28 {
+            5 => word == Command::set_scene().0,
+            6 => Command::set_material((slot * 4) as u16).is_ok_and(|c| c.0 == word),
+            _ => false,
+        };
+        if (extended && !extended_valid)
+            || (!extended
+                && (!(66..80).contains(&slot)
+                    || slot + N.div_ceil(32) > 80
+                    || (!ranged_ui && word & 0x0fff_ff80 != 0)))
         {
             return Err("object instruction encoding/range".into());
         }
-        if !self.loaded[slot..slot + N / 32]
+        if !self.loaded[slot..slot + N.div_ceil(32)]
             .iter()
             .all(|&loaded| loaded)
         {
@@ -419,7 +427,7 @@ impl State {
                 self.charge(count, maximum)?;
                 self.local[slot * 16..slot * 16 + count].copy_from_slice(memory.read(range)?);
                 self.loaded[slot..slot + size as usize / 32].fill(true);
-                if slot >= 80 {
+                if slot >= 80 && slot.is_multiple_of(4) && size == 128 {
                     self.uniforms[(slot - 80) / 4] = true;
                 }
             }
@@ -440,7 +448,14 @@ impl State {
             }
             3 => {
                 let slot = (word & 1) as usize;
-                if Command::draw_meshlet(slot as u8)?.0 != word {
+                let world = word & 2 != 0;
+                if (if world {
+                    Command::draw_world_billboard(slot as u8, word & 4 != 0)?
+                } else {
+                    Command::draw_meshlet(slot as u8)?
+                })
+                .0 != word
+                {
                     return Err("DRAW_MESHLET reserved bits".into());
                 }
                 let mesh = self.pages[slot]
@@ -451,10 +466,48 @@ impl State {
                     return Err("DRAW_MESHLET needs a loaded Instance128".into());
                 }
                 let start = (80 + mesh.uniform * 4) * 16;
-                let uniform = std::array::from_fn(|i| {
+                let mut uniform: [u32; 32] = std::array::from_fn(|i| {
                     u32::from(self.local[start + 2 * i])
                         | (u32::from(self.local[start + 2 * i + 1]) << 16)
                 });
+                if world {
+                    if mesh.uniform > 1 || !self.uniforms[3] {
+                        return Err("World draw needs World20/21 and a loaded View23".into());
+                    }
+                    let view_start = 368 * 4;
+                    let view = std::array::from_fn(|i| {
+                        u32::from(self.local[view_start + 2 * i])
+                            | (u32::from(self.local[view_start + 2 * i + 1]) << 16)
+                    });
+                    uniform = geometry::compose_view_world(&view, &uniform)?;
+                    if mesh.is_billboard() {
+                        uniform[24..30].copy_from_slice(&if word & 4 != 0 {
+                            [view[22], 0, view[23], 0, view[30], 0]
+                        } else {
+                            [view[31], 0, 0, view[31], 0, 0]
+                        });
+                    } else {
+                        self.global
+                            .as_mut()
+                            .ok_or("World needs Scene")?
+                            .set_response((uniform[24] >> 8) as u16, (uniform[25] >> 8) as u16);
+                    }
+                    self.uniforms[2] = false;
+                    if mesh.vertex_count() != 0 {
+                        self.charge(70, maximum)?;
+                        for (i, value) in uniform[..22].iter().copied().enumerate() {
+                            let address = 352 * 4 + 2 * i;
+                            self.local[address] = value as u16;
+                            self.local[address + 1] = (value >> 16) as u16;
+                        }
+                    }
+                    // Response stores are preparation scratch, not legacy
+                    // Vertex inputs. Keep its reserved-word contract intact.
+                    if !mesh.is_billboard() {
+                        uniform[24] = 0;
+                        uniform[25] = 0;
+                    }
+                }
                 let global = self.global.ok_or("DRAW_MESHLET needs SET_GLOBAL")?;
                 let render = self.render.ok_or("DRAW_MESHLET needs SET_RENDER")?;
                 let target = self.target.ok_or("DRAW_MESHLET needs SET_TARGET")?;
@@ -487,13 +540,31 @@ impl State {
             }
             5 => {
                 self.fenced(false)?;
-                let object = self.object::<64>(word, false)?;
-                self.global = Some(shading::Global::decode(object)?);
+                self.global = Some(if word & 128 != 0 {
+                    shading::Global::decode_scene(self.object::<16>(word, false)?, self.global)?
+                } else {
+                    shading::Global::decode(self.object::<64>(word, false)?)?
+                });
             }
             6 => {
                 self.fenced(false)?;
                 let object = self.object::<32>(word, false)?;
-                self.render = Some(shading::RenderState::decode(object)?);
+                if word & 128 != 0 {
+                    let mut legacy = [0u8; 32];
+                    legacy[..8].copy_from_slice(&object[8..16]);
+                    legacy[8] = object[16];
+                    legacy[12] = object[17];
+                    if object[16] & 192 != 0 || object[18..24].iter().any(|&v| v != 0) {
+                        return Err("Material24 raster reserved fields".into());
+                    }
+                    self.global
+                        .as_mut()
+                        .ok_or("Material needs Scene")?
+                        .set_material(u32::from_le_bytes(object[28..32].try_into().unwrap()))?;
+                    self.render = Some(shading::RenderState::decode(legacy)?);
+                } else {
+                    self.render = Some(shading::RenderState::decode(object)?);
+                }
             }
             7 if word == Command::FLUSH.0 => {
                 self.fenced(false)?;

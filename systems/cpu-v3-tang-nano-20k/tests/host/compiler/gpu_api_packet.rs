@@ -4,8 +4,8 @@ use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
 
 #[test]
-fn plane_copy_preflights_ranges_capacity_phase_and_disables_partial_scene_patch() {
-    let source = r#"mod gpu_packet;mod gpu_scene_patch;
+fn plane_copy_preflights_ranges_capacity_phase_and_retains_target_metadata() {
+    let source = r#"mod gpu_packet;mod gpu_target;
 static STEP:u16=0;
 fn check(ok:bool){if !ok{halt(0xd000+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
 fn main(){
@@ -31,11 +31,7 @@ fn main(){
  check(c[GPU_RECORD_VALID]&GPU_RECORD_HAS_COPY!=0);
  check(gpu_packet_begin(0,0x8000,0x9000,2,0,65535));
  check(gpu_record_close_pass(0));check(gpu_record_seal(0));
- // A copied fixed target cannot be silently left behind by patch_scene.
- c[GPU_RECORD_PUSH_USED]=128;c[GPU_RECORD_GLOBAL_WORD]=33;c[GPU_RECORD_INSTANCE_WORD]=65;
- c[GPU_RECORD_GLOBAL_BLOCKS]=1;c[GPU_RECORD_INSTANCE_BLOCKS]=1;
- c[GPU_RECORD_SCENE_MODEL]=1;c[GPU_RECORD_SCENE_MATERIAL]=2;c[GPU_RECORD_SCENE_CAMERA]=3;c[GPU_RECORD_GENERATION_LOW]=1;
- check(!gpu_patch_group(c));c[GPU_RECORD_VALID]&=32767;check(gpu_patch_group(c));
+ check(c[GPU_RECORD_COPY_COUNT]==1&&c[GPU_RECORD_COPY_DESTINATION]==0x8000);
  check(gpu_record_reset(0));check(c[GPU_RECORD_VALID]&GPU_RECORD_HAS_COPY==0);
  halt(0x600d);
 }"#;

@@ -202,7 +202,7 @@ pub(super) fn retained_static_scene_regression() {
         let mut starts = 0;
         let mut count = 0;
         let mut draws = 0;
-        let mut original_cache = None;
+        let mut original_commands = None;
         let mut halted = false;
         for _ in 0..8_000_000 {
             if sim.waiting_for_vblank() {
@@ -216,6 +216,17 @@ pub(super) fn retained_static_scene_regression() {
                     if w.device == 4 && w.channel == 1 {
                         starts += 1;
                         let at = usize::from(w.value) * 64;
+                        if starts == 1 && !fresh {
+                            let words = m[at..at + (usize::from(count) + 1) * 2].to_vec();
+                            if let Some(previous) = &original_commands {
+                                assert_eq!(
+                                    previous, &words,
+                                    "static commands remain immutable across Back targets"
+                                );
+                            } else {
+                                original_commands = Some(words);
+                            }
+                        }
                         draws += m[at..at + (usize::from(count) + 1) * 2]
                             .as_chunks::<2>()
                             .0
@@ -237,18 +248,6 @@ pub(super) fn retained_static_scene_regression() {
                         memory[0x480000 / 2..0x480000 / 2 + 102400].to_vec(),
                         sim.render_active_framebuffer(),
                     ));
-                    let cache = (
-                        memory[0x500000 / 2..0x500000 / 2 + 131072].to_vec(),
-                        memory[0x540000 / 2..0x540000 / 2 + 131072].to_vec(),
-                    );
-                    if let Some(old) = &original_cache {
-                        assert_eq!(
-                            old, &cache,
-                            "dynamic frame must leave static planes and their tails unchanged"
-                        );
-                    } else {
-                        original_cache = Some(cache);
-                    }
                     counts.push(starts);
                     starts = 0;
                     draws = 0;
@@ -263,12 +262,12 @@ pub(super) fn retained_static_scene_regression() {
         assert!(halted, "bounded cached/fresh application");
         assert!(sim.gpu().last_error().is_none());
         assert_eq!(frames.len(), 3);
-        assert_eq!(counts, if fresh { vec![3, 3, 3] } else { vec![3, 2, 2] });
-        std::fs::write(out.join("static-scene.json"),serde_json::to_vec_pretty(&json!({"submissions_by_frame":counts,"static_planes_immutable":true,"max_steps":8000000,"mode":"instruction CPU plus functional GPU; no cycle timing claim"})).unwrap()).unwrap();
+        assert_eq!(counts, vec![2, 2, 2]);
+        std::fs::write(out.join("static-scene.json"),serde_json::to_vec_pretty(&json!({"submissions_by_frame":counts,"static_commands_immutable":!fresh,"max_steps":8000000,"mode":"instruction CPU plus functional GPU; no cycle timing claim"})).unwrap()).unwrap();
         outputs.push(frames);
     }
     assert_eq!(
         outputs[0], outputs[1],
-        "warm restore must match full static redraw color/depth/Display"
+        "replayed static commands must match fresh recording color/depth/Display"
     );
 }

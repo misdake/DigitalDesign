@@ -8,6 +8,17 @@ pub struct CommandMemory {
     pub commands: GpuMemory,
     pub push: GpuMemory,
 }
+/// Immutable prepared commands and their persistent snapshots, sized by the caller.
+#[derive(Copy, Clone)]
+pub struct PreparedMemory {
+    pub commands: GpuMemory,
+    pub push: GpuMemory,
+}
+impl PreparedMemory {
+    pub const fn new(commands: GpuMemory, push: GpuMemory) -> Self {
+        Self { commands, push }
+    }
+}
 #[derive(Copy, Clone)]
 pub struct GpuConfig {
     pub object_arena_bytes: u16,

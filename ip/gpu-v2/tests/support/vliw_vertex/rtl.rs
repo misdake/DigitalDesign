@@ -54,6 +54,7 @@ pub(crate) fn schema(e: &Edge) -> Vec<Pin> {
     pin!("dma_addr", 10, i.dma_address, false);
     pin!("dma_data", 64, i.dma_data, false);
     pin!("mesh_color", 32, i.mesh_color, false);
+    pin!("world_transform", 1, i.world_transform, false);
     pin!("cp_addr", 9, i.cp_address, false);
     for (name, v) in [
         ("ready", o.ready),
@@ -117,7 +118,7 @@ pub(crate) fn wrapper(p: &[Pin]) -> String {
         )
         .unwrap();
     }
-    s.push_str(");\nshared_meshlet dut(.clk(clk),.reset(reset),.ce(ce),.start(start),.slot(slot),.mesh_color(mesh_color),.dma_we(dma_we),.dma_addr(dma_addr),.dma_data(dma_data),.output_ready(output_ready),.packet_ready(1'b0),.word_ready(1'b0),.cp_re(cp_re),.cp_addr(cp_addr),.cp_ready(cp_ready),.cp_q(cp_q),.ready(ready),.busy(busy),.done(done),.drained(drained),.dma_ready(dma_ready),.published_vertices(published_vertices),.emit_valid(emit_valid),.emit_addr(emit_addr),.emit_data(emit_data));\n");
+    s.push_str(");\nshared_meshlet dut(.clk(clk),.reset(reset),.ce(ce),.start(start),.slot(slot),.mesh_color(mesh_color),.world_transform(world_transform),.dma_we(dma_we),.dma_addr(dma_addr),.dma_data(dma_data),.output_ready(output_ready),.packet_ready(1'b0),.word_ready(1'b0),.cp_re(cp_re),.cp_addr(cp_addr),.cp_ready(cp_ready),.cp_q(cp_q),.ready(ready),.busy(busy),.done(done),.drained(drained),.dma_ready(dma_ready),.published_vertices(published_vertices),.emit_valid(emit_valid),.emit_addr(emit_addr),.emit_data(emit_data));\n");
     for (name, net) in [
         ("core_busy", "dut.core.busy"),
         ("done_v", "dut.core.done_v"),

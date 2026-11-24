@@ -139,15 +139,28 @@ def render_image(source,pairs):
     assert bank==1
     return source
 
-def update():
-    path=Path(__file__).with_name('control_rom.v')
-    source=path.read_text()
+def render(source):
     pairs=read_image(source)
     scheduled=assemble()
+    assert all(address < 192 for address in scheduled), 'Compact Triangle overlaps World preparation'
     for address in range(128,256):
         value=scheduled.get(address,0)
-        pairs[address]=(value,value)
-    path.write_text(render_image(source,pairs))
-    print(f'Bounded-F16 T calendar: {len(scheduled)} slots at128..{127+len(scheduled)}')
+        # Compact192..255 belongs to World preparation. The standalone image
+        # retains the complete original Triangle page, including its zero tail.
+        compact = value if address < 192 else pairs[address][0]
+        pairs[address]=(compact,value)
+    return render_image(source,pairs)
 
-if __name__=='__main__':update()
+if __name__=='__main__':
+    import argparse
+    parser=argparse.ArgumentParser(__doc__)
+    parser.add_argument('--check',action='store_true')
+    args=parser.parse_args()
+    path=Path(__file__).with_name('control_rom.v')
+    source=path.read_text()
+    result=render(source)
+    if args.check:
+        assert result==source, 'Regenerate both ROM views with t32_program.py'
+    else:
+        path.write_text(result)
+    print(f'Bounded-F16 T calendar: {len(assemble())} slots; World preparation preserved')

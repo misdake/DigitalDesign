@@ -63,7 +63,8 @@ impl Command {
             || end > 0x800000
             || !destination_qword.is_multiple_of(4)
             || !((dst >= 66 && dst + bytes / 32 <= 80)
-                || ((80..=92).contains(&dst) && dst.is_multiple_of(4) && bytes == 128))
+                || ((80..=92).contains(&dst) && dst.is_multiple_of(4) && bytes == 128)
+                || (dst == 95 && bytes == 32))
         {
             return Err("copy range");
         }
@@ -93,6 +94,15 @@ impl Command {
         }
         Ok(Self((3 << 28) | slot as u32))
     }
+    /// Compose View23 and World20/21 before the unchanged Vertex program.
+    pub fn draw_world_meshlet(slot: u8) -> Result<Self, &'static str> {
+        Ok(Self(Self::draw_meshlet(slot)?.0 | 2))
+    }
+    pub fn draw_world_billboard(slot: u8, vertical: bool) -> Result<Self, &'static str> {
+        Ok(Self(
+            Self::draw_world_meshlet(slot)?.0 | (u32::from(vertical) << 2),
+        ))
+    }
     pub const fn wait(dma: bool, all: bool) -> Self {
         Self((4 << 28) | (dma as u32) | ((all as u32) << 1))
     }
@@ -101,6 +111,18 @@ impl Command {
     }
     pub fn set_render(qword: u16) -> Result<Self, &'static str> {
         Self::set(6, qword, 32)
+    }
+    /// Scene16 at View23 byte96; preserves the installed material response.
+    pub const fn set_scene() -> Self {
+        Self((5 << 28) | 128 | 95)
+    }
+    /// Material24 at byte8 of a 32-byte block. The leading qword is skipped.
+    pub fn set_material(qword: u16) -> Result<Self, &'static str> {
+        let slot = qword / 4;
+        if !qword.is_multiple_of(4) || !((66..80).contains(&slot) || matches!(slot, 83 | 87)) {
+            return Err("material slot");
+        }
+        Ok(Self((6 << 28) | 128 | u32::from(slot)))
     }
     fn set(op: u32, qword: u16, bytes: u32) -> Result<Self, &'static str> {
         let dst = qword as u32 / 4;

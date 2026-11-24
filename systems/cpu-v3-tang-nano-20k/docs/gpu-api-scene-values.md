@@ -1,5 +1,9 @@
 # Explicit GPU API: prepared scene values and native conversion
 
+Application reading, state sampling and ownership are covered by the
+[public GPU guide](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-guide.md).
+This chapter describes the numeric preparation behind that API.
+
 The preparation helpers write caller-owned CPU spans. They allocate no arena
 slots, retain no object handles, submit no commands and perform no GPU waits.
 The resource adapters own allocation, failure reporting and external-memory
@@ -29,6 +33,12 @@ containing focal, far and the cached two ray components. Camera projection
 updates copy these values and set ray_k to 8192; they do not repeat reciprocal
 or quantization work. Error reporting belongs to the public adapter.
 
+Focal preparation first requires focal >= 100 and 0 < far < 200, then requires
+both quantized Q14 rays in [-12288,12288] ([-0.75,0.75]). Approximately,
+rayX=-100/focal and rayY=-60/focal. The first focal bound alone is insufficient;
+FOV constructors must pass the same final ray test. For example, 90-degree
+vertical FOV gives focal around 120 and exceeds the horizontal ray limit.
+
 Camera preparation stores an unreflected source-world affine view. Euler pose
 uses Rz*Ry*Rx and the inverse rigid view R-transpose with translation
 -R-transpose*eye. Look-to/look-at normalize the backward and reference-up
@@ -43,14 +53,48 @@ only in world. It computes the three inverse scales once. Zero scale fails
 before writing; input values and intermediate arithmetic must fit the native
 fixed-point domain. Explicit matrix input uses the caller's supplied normal
 matrix. The normal matrix is tightly packed at words 24..41. Pure preparation
-zeros words 42..47. A public Model uses private word 42 to own a second48-word
-arena allocation; words 43..47 remain zero. Its setters preserve that owned handle
-across pure preparation and mark its derived data dirty. There is no retained
-Euler copy. `Model::world()` and `Model::normal()` return the exact current
-source matrices without modifying source or derived-cache state. The normal
-getter reads all nine tightly packed Q16 coefficients.
+zeros words42..47. The public adapter stamps its source revision at44..47.
+A public Model owns one48-word slot with no derived allocation. Getters return the exact source matrices; view changes cannot
+modify them. Explicit matrices and TRS setters both update only source-world data.
 
-## Six-argument draw conversion
+## Resident World/View draw conversion
+
+Public Mesh and unlit Billboard draws pack the same static World128, including
+raw material responses and Material24. Camera revision prepares one View128 with
+position `K*H*view`, normal `H*view_rotation`, scene light intensities and Billboard
+basis. H=diag(-1,+1,+1); K=diag(focal/256,-focal/256,-1).
+
+Geometry uses its existing MAC to compose World with View. Ordinary preparation
+is97 enabled edges, including two light-response products and half-up Q8 rounding.
+Billboard branches after position composition and copies direction pairs from
+View, for65 edges total. Normal and Billboard per-vertex programs are unchanged.
+No CPU MV or per-Model derived cache participates in this path.
+
+The horizontal Billboard basis retains camera right's XZ components without
+renormalization; full-facing basis uses projected right/up. The CPU computes the
+shared basis only when View changes, independently of Model count. Source light
+normalization stays at RenderState construction; Q14 view-light conversion is
+reused until a captured Camera view/focal or light direction changes. Snapshot
+setters invalidate that encoding directly; there is no second source-key mirror. Shader ray/far data remains a
+scene input, with projection reciprocals prepared at Camera mutation time.
+
+Geometry combines full Q16.16 scene intensity and material response before Q8
+rounding. Raw inputs must produce representable0..256 coefficients. Debug checks
+ordinary draws directly; prepared parts retain maximum material responses and
+check them against the current Pass light on append, including overflow cases.
+Release omits these arithmetic checks; the same numeric precondition applies.
+Replaying a part therefore responds to scene light-strength changes without re-recording it.
+World, normal and material resources stay independently owned on the CPU.
+
+View coefficients are quantized before GPU composition; the legacy helper below
+quantizes camera/world dots before projection scale. Small coefficient/pixel
+changes are possible and are not a bit-exact arithmetic identity.
+
+## Legacy six-argument draw conversion
+
+This numerical reference lives only in `tests/support/rcc/gpu_scene_legacy.rs`.
+The bounded numeric fixtures append it explicitly. Public SDK module loading
+never includes it or selects its old binding layout.
 
 `gpu_scene_draw_prepare(desired, model, material, view, textured, native)` reads
 the 48-word desired Camera/State snapshot, independent of the original arena
@@ -84,46 +128,16 @@ projection multiplication or the row-zero normal negation; arithmetic precision
 and wrapping remain unchanged. Scalar and six-word vector helpers carry explicit
 best-effort inline hints. No compiler policy or cache dependency changes.
 
-## Model-owned derived matrices
+## Camera and Model source identity
 
-Every public Model owns a source allocation and a derived allocation, each 48
-CPU words. Its affine resource remains one private 16-bit handle. The derived
-allocation contains final position coefficients 0..23, final normal coefficients
-24..41, dirty 42, the captured four-word Camera revision 43..46 and zero padding 47.
-This is one result per Model, not a global last-result cache: drawing another
-Model cannot evict it. Multiple views of the same Model require recomputation
-when their view revisions differ.
-
-New Models start dirty. Successful `set_pose` marks only that Model dirty.
-`set_matrices` compares all24 world and18 normal source words, including both
-halves of each Q16.16 value. An exact match preserves the current dirty/cache
-state; any changed word marks that Model dirty. The plain matrix aggregates use
-the same canonical row layout as those source spans. Camera construction and successful view setters assign a fresh
-nonzero 64-bit revision in private Camera words 32..35. Projection changes assign
-one only when the focal value changes; far/ray changes leave matrix dependencies
-unchanged. `Pass::set_camera` copies the revision into reserved record control
-words 16..19 alongside the existing numeric Camera snapshot. Later Camera changes
-cannot change that Pass's inputs. At draw time a different snapshot revision
-marks that Model dirty; no full Model/Camera value comparison is performed.
-
-The light/material/render validation and Instance initialization run for every
-draw. A dirty Model then computes the 42 coefficients directly into its own
-allocation using the same scalar expression order as the pure conversion. The
-revision is captured and dirty clears only after the calculation completes.
-Clean Models skip that calculation. Every draw copies the coefficients into the
-current native Instance and writes its current material and fixed fields.
-Global/Render data, padding, binding comparison and push publication are unchanged.
-Empty draws and failed preparation do not compute or clear dirty; a later mesh
-or CB failure does not undo already calculated CPU values.
-
-The revision counter is never reset by arena/context reuse and fails before
-wrapping, so Camera Drop/reuse cannot revive an earlier snapshot identity. Model
-Drop frees both allocations; construction releases its source allocation if the
-second allocation cannot fit. A Model now consumes 96 arena words (192 bytes),
-96 bytes more than its source descriptor alone. The existing arena reservation
-and slot classes do not grow. Camera/CB revisions use their existing reserved
-space, and the global revision counter adds eight bytes. GPU commands retain
-only immutable push copies, not pointers or borrows into a Model's derived data.
+Every successful Camera view setter allocates a fresh nonzero64-bit revision.
+Projection changes allocate one when focal changes; far/ray changes are separate
+scene dependencies. Pass copies the revision into record words16..19 along with
+numeric Camera data. The counter never resets on arena/context reuse and rejects
+wrap before changing any token. Model creation/updates use the same monotonic
+source counter and stamp their own revision at44..47; Models never track a Camera
+revision. Far/ray changes retain the matrix revision but Pass setters separately
+capture their numeric tail and mark Scene dirty.
 
 ## Material and render state
 
@@ -147,13 +161,13 @@ powers of two before the square length, including signed-minimum and very
 small nonzero directions. Debug builds additionally reject negative
 intensities. Depth, blend and filter setters preserve the other controls.
 
-`gpu_scene_light_response` multiplies each light intensity by its material
+The test-only legacy `gpu_scene_light_response` multiplies each light intensity by its material
 response in Q16.16, then rounds once to native Q8. The resulting coefficients
 must lie in 0..256 in both profiles. Both products are checked before either
 native output word changes. The directional coefficient scales both diffuse
 and specular response; there is no separate specular intensity.
 
-## Texture descriptions and final Render32
+## Texture descriptions and final material fields
 
 `TextureDesc` references A's shared `GpuMemory` value. Physical registration
 owns endpoint validation; texture construction checks the texture-specific
@@ -178,7 +192,9 @@ view's copied POT description; `Repeat` is the default and can be restored with
 the same setter. Addressing is independent of format, mip and filter. Fixed
 color views reject this setter and retain their implicit framebuffer clamp.
 
-`gpu_scene_render_prepare` writes only scratch words 32..47. Fixed400 shape
+`gpu_scene_material_prepare` writes Material24 directly at scratch116..127
+(World tail), plus raw responses and required padding in that same World packet.
+The test-only legacy `gpu_scene_render_prepare` writes scratch32..47. Fixed400 shape
 occupies Render word 1 bit 7, equivalently bit 23 of its first 32-bit word.
 RGBA4444 occupies that first32-bit word's bit24, alongside existing mip/filter
 bits; POT ClampToEdge occupies bit25. Recording equality includes format and
@@ -187,8 +203,8 @@ drain boundary without invalidating immutable cache data.
 Trilinear filtering of that shape fails before modifying output. The RGB
 bypass branch reads no view or texture payload and installs a deterministic
 base-zero, exponent-zero, nearest-filter description. Specular color and
-explicit depth/blend/unlit controls retain the native encoding. All unused
-Render words are zero; other scratch regions remain untouched.
+explicit depth/blend/unlit controls retain the native encoding. Reserved Material fields and required World padding are zero. The legacy
+reference leaves other scratch regions untouched.
 
 ## Persistent UI grids
 

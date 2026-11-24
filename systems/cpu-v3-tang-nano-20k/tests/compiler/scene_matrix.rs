@@ -3,7 +3,10 @@ use super::*;
 use std::path::Path;
 
 const BEFORE: &str = include_str!("../fixtures/scene_matrix_before.rs");
-const AFTER: &str = include_str!("../../rcc/gpu_scene_math.rs");
+const AFTER: &str = concat!(
+    include_str!("../../rcc/gpu_scene_math.rs"),
+    include_str!("../support/rcc/gpu_scene_legacy.rs")
+);
 const SOURCE: &str = r#"
 mod scene;
 static CAMERA:Buf<u16,32>=Buf::new([0;32]);

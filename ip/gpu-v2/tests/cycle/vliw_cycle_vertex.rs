@@ -3,6 +3,24 @@ mod support;
 #[allow(dead_code)]
 #[path = "../support/vliw_cycle/mod.rs"]
 mod transport_support;
+
+#[test]
+#[ignore = "short exact World/View preparation RTL differential"]
+fn world_preparation_keeps_legacy_vertex_results_with_dma_and_stalls() {
+    let root = support::rtl::root();
+    for (name, vertices, slot) in [("world-three", 3, false), ("world-full", 64, true)] {
+        let r = support::run(support::Case {
+            world: true,
+            vertices,
+            slot,
+            normal18: slot,
+            rgb: slot,
+            ..Default::default()
+        });
+        assert_eq!(r.stats.writes, vertices * 5);
+        support::rtl::compare(&root, name, &r);
+    }
+}
 #[test]
 fn production_three_vertices_are_fifteen_writes_from_real_input_storage() {
     let r = support::run(support::Case::default());

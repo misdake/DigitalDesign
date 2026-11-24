@@ -7,6 +7,52 @@ use std::sync::OnceLock;
 #[path = "geometry/batch.rs"]
 pub(super) mod batch;
 
+/// The matrix calendar retains the low F16 window after each complete dot.
+/// The derived uniform keeps material color separate from its matrix storage.
+pub(super) fn compose_view_world(view: &[u32; 32], world: &[u32; 32]) -> Result<[u32; 32], String> {
+    if view[21] != 65536 {
+        return Err("View128 constant/reserved words".into());
+    }
+    if world[12] != 65536 || world[15] != 0 || world[25] != 0 {
+        return Err("World128 constant/reserved words".into());
+    }
+    let mut result = [0u32; 32];
+    for row in 0..3 {
+        for column in 0..4 {
+            let mut dot = (0..3)
+                .map(|k| {
+                    i128::from(view[4 * row + k] as i32) * i128::from(world[4 * k + column] as i32)
+                })
+                .sum::<i128>();
+            if column == 3 {
+                dot += i128::from(view[4 * row + 3] as i32) * 65536;
+            }
+            result[4 * row + column] = (dot >> 16) as u32;
+        }
+        for column in 0..3 {
+            let dot = (0..3)
+                .map(|k| {
+                    i128::from(view[12 + 3 * row + k] as i32)
+                        * i128::from(world[16 + 3 * k + column] as i32)
+                })
+                .sum::<i128>();
+            result[12 + 3 * row + column] = (dot >> 16) as u32;
+        }
+    }
+    result[21] = 65536;
+    result[22] = world[30];
+    for i in 0..2 {
+        let product = i128::from(view[28 + i] as i32) * i128::from(world[13 + i] as i32);
+        // Match fix32 multiply followed by positive half-up Q8 quantization.
+        let q8 = (product + (1 << 23)) >> 24;
+        if !(0..=256).contains(&q8) {
+            return Err("World light response outside Q8 range".into());
+        }
+        result[24 + i] = ((product + (1 << 23)) >> 16) as u32;
+    }
+    Ok(result)
+}
+
 pub(super) fn signed(value: i128, bits: u32) -> i128 {
     let shift = 128 - bits;
     (value << shift) >> shift
@@ -65,6 +111,14 @@ pub(super) struct Meshlet {
     cull: bool,
 }
 impl Meshlet {
+    pub(super) fn is_billboard(&self) -> bool {
+        self.billboard
+    }
+
+    pub(super) fn vertex_count(&self) -> usize {
+        self.vertices.len()
+    }
+
     pub fn decode(header: &[u16], payload: &[u16]) -> Result<Self, String> {
         let h: [u32; 8] = std::array::from_fn(|i| word(header, i));
         let vertices = (h[0] & 127) as usize;

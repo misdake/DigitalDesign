@@ -18,6 +18,30 @@ pub(super) struct Global {
     code: u8,
 }
 impl Global {
+    pub fn decode_scene(bytes: [u8; 16], previous: Option<Self>) -> Result<Self, String> {
+        let mut legacy = [0u8; 64];
+        legacy[..16].copy_from_slice(&bytes);
+        let mut scene = Self::decode(legacy)?;
+        if let Some(old) = previous {
+            scene.light.ambient = old.light.ambient;
+            scene.light.directional = old.light.directional;
+            scene.mode = old.mode;
+            scene.code = old.code;
+        }
+        Ok(scene)
+    }
+    pub fn set_response(&mut self, ambient: u16, directional: u16) {
+        self.light.ambient = ambient;
+        self.light.directional = directional;
+    }
+    pub fn set_material(&mut self, word: u32) -> Result<(), String> {
+        if word & 0xff80 != 0 || (word >> 2) & 31 > 16 {
+            return Err("Material24 lighting reserved fields".into());
+        }
+        self.mode = (word & 3) as u8;
+        self.code = ((word >> 2) & 31) as u8;
+        Ok(())
+    }
     pub fn decode(bytes: [u8; 64]) -> Result<Self, String> {
         let w = words::<16>(&bytes);
         if w[0] == 0

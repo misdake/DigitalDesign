@@ -101,7 +101,7 @@ module gpu_command_dma(
       else if(rl[rh[0]])begin
        work_done<=1;retired<=retired+1'b1;
        if(jm[retired[0]])begin mesh_done<=1;mesh_done_slot<=jpage[retired[0]];end
-       else if(jd[retired[0]][6:4]==3'b101)begin uniform_done<=1;uniform_bank<=jd[retired[0]][3:2];end
+       else if(jd[retired[0]][6:4]==3'b101&&jd[retired[0]][1:0]==0)begin uniform_done<=1;uniform_bank<=jd[retired[0]][3:2];end
       end
      end
     end

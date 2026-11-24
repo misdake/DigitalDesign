@@ -30,6 +30,12 @@ and Shell-sorts the layer indices back to front. Layers at the same depth keep
 their input order. The GPU expands the tree along the horizontal camera-right
 vector and expands the effect in the camera plane.
 
+Opaque geometry, tree and effects use static World with a shared View. Geometry
+ROM prepares position and the selected Billboard basis before entering the
+unchanged expansion program. Camera changes update only View; no per-Billboard
+CPU MV cache or demo-specific scratchpad patch is needed. Rebuild with matching
+World/View and Material24-capable gateware.
+
 The scene is uniformly scaled to one eighth of the source units to fit the
 Billboard offset representation. The RGB565 stage writes depth first. The
 RGBA4444 layers use bilinear sampling and depth-tested SrcOver. The effect

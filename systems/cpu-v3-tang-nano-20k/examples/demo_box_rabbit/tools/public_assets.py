@@ -3,13 +3,15 @@ import argparse
 import importlib.util
 import json
 import hashlib
+import os
 from pathlib import Path
 import sys
 
 sys.dont_write_bytecode = True
 
 
-def pack(output):
+def pack(output, motion='manual'):
+    assert motion in ('manual', 'orbit')
     output = Path(output)
     source = Path(__file__).with_name('assets.py')
     spec = importlib.util.spec_from_file_location('classic_native_assets', source)
@@ -19,6 +21,7 @@ def pack(output):
     manifest = json.loads((output / 'assets.json').read_text())
     mesh, texture = manifest['mesh'], manifest['texture']
     constants = dict(
+        GPU_DEMO_AUTO_ORBIT=int(motion == 'orbit'),
         GPU_RENDERER_MESH_DIRECTORY=mesh['directory_sector'],
         GPU_RENDERER_MESH_DIRECTORY_WORD=mesh['directory_word'],
         GPU_RENDERER_MESH_COUNT=mesh['count'],
@@ -38,4 +41,4 @@ def pack(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('--output', type=Path, required=True)
-    pack(parser.parse_args().output)
+    pack(parser.parse_args().output, os.environ.get('BOX_RABBIT_MOTION', 'manual'))

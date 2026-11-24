@@ -113,6 +113,8 @@ pub struct CoreInput {
     pub ce: bool,
     pub start_v: bool,
     pub vertex_billboard: bool,
+    pub world_transform: bool,
+    pub billboard_vertical: bool,
     pub start_t: bool,
     pub triangle_descriptor: u32,
     pub cull_negative: bool,
@@ -133,6 +135,7 @@ pub struct CoreInput {
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CoreOutput {
+    pub prepared_light: Option<(bool, u16)>,
     pub busy: bool,
     pub done_v: bool,
     pub done_t: bool,
@@ -364,7 +367,14 @@ impl Core {
                     54,
                 )
             } else if c.field("acc_op") == 1 {
-                Bits::new(0, 54)
+                Bits::new(
+                    if !self.regs.triangle_mode && self.regs.pc & 192 == 192 && c.bit(70) {
+                        1 << 23
+                    } else {
+                        0
+                    },
+                    54,
+                )
             } else {
                 self.regs.acc
             },
@@ -377,13 +387,22 @@ impl Core {
         let rr = c.field("r_src");
         let emit = c.field("emit");
         let vertex_emit = !r.triangle_mode && emit != 0 && !(r.field == 3 && emit == 1);
-        let step = i.ce && r.busy && !i.reset && (!vertex_emit || i.output_ready);
+        let matrix_active = !r.triangle_mode && r.pc & 192 == 192;
+        let matrix_store = matrix_active && c.bit(62);
+        let step = i.ce
+            && r.busy
+            && !i.reset
+            && (!vertex_emit || i.output_ready)
+            && !(matrix_store && i.dma_write);
         let source_ready =
             !r.busy && !i.reset && !i.start_v && !i.start_t && i.source_address & 512 == 0;
         let source_take = i.ce && i.source_read && source_ready;
         let work = c.field("work_en") != 0 || c.field("work_we") != 0;
         let address = |src| match src {
-            1 => (u16::from(r.uniform_base) << 4) | u16::from(c.field("u_off") >> 1),
+            1 => {
+                (u16::from(if c.bit(61) { 23 } else { r.uniform_base }) << 4)
+                    | u16::from(c.field("u_off") >> 1)
+            }
             3 => (r.config_base << 1) | u16::from(c.field("cfg_off") >> 1),
             _ => r.vertex_pointer >> 1,
         };
@@ -482,10 +501,20 @@ impl Core {
         }
         if r.triangle_mode {
             next_pc = t.next_pc;
+        } else if matrix_active && c.bit(71) {
+            next_pc = if i.vertex_billboard { 320 } else { 256 };
+        }
+        if matrix_active && c.bit(68) && i.vertex_billboard {
+            next_pc = c.target() | (u16::from(i.billboard_vertical) << 4);
         }
         let write = step && vertex_emit;
         Comb {
             o: CoreOutput {
+                prepared_light: (step
+                    && matrix_store
+                    && !i.vertex_billboard
+                    && ((r.control >> 66) & 3) == 3)
+                    .then_some((c.bit(63), r.acc.slice(24, 9).value as u16)),
                 busy: r.busy,
                 done_v: r.done_v,
                 done_t: r.done_t,
@@ -537,6 +566,9 @@ impl Core {
                 dma_write: i.dma_write && !i.reset && i.dma_address & 512 == 0,
                 dma_address: i.dma_address,
                 dma_data: i.dma_data,
+                matrix_write: step && matrix_store,
+                matrix_index: ((r.control >> 63) & 31) as u8,
+                matrix_data: r.acc.slice(16, 32),
                 left_read: source_take || step && !r.triangle_mode && l != 0,
                 right_read: source_take
                     || step
@@ -687,7 +719,13 @@ impl Core {
         if x.o.position_write || x.o.attribute_write {
             x.o.emit_data.get(36, "valid Vertex result")?;
         }
-        let vertex_start = if i.vertex_billboard { 320 } else { 256 };
+        let vertex_start = if i.world_transform {
+            192
+        } else if i.vertex_billboard {
+            320
+        } else {
+            256
+        };
         let mut n = r.clone();
         if x.launch || x.launch_t || x.step {
             n.control = Self::rom_word(if x.launch {
@@ -753,6 +791,9 @@ impl Core {
                 }
             } else if x.step {
                 n.pc = x.next_pc;
+                if r.pc & 192 == 192 && c.bit(71) {
+                    n.uniform_base = 22;
+                }
                 if r.pc & 384 == 256 {
                     if c.bit(51) {
                         let value = r.unpacked.get(32, "bounds eligibility operand")?;

@@ -1,6 +1,6 @@
-//! Model-owned derivation, dependency snapshots and descriptor reuse.
+//! Static World packets, view dependencies and descriptor reuse.
 use cpu_v3::{rcc_backend, CpuV3Sim, Device, StepOutcome};
-use std::{any::Any, cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{any::Any, cell::RefCell, rc::Rc};
 const SOURCE: &str = r#"mod gpu_api;use gpu_api::*;
 fn v(x:i16,y:i16,z:i16)->Vec3{Vec3{x:fix32::from_int(x),y:fix32::from_int(y),z:fix32::from_int(z)}}
 fn pose(x:i16)->Transform{Transform{position:v(x,0,-3),angles:v(0,0,0),scale:v(1,1,1)}}
@@ -57,7 +57,6 @@ fn main(){let first:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_
 struct Seen {
     calls: usize,
     markers: Vec<usize>,
-    per_output: BTreeMap<u16, usize>,
 }
 struct Peer {
     kind: u8,
@@ -87,9 +86,25 @@ impl Device for Peer {
     }
 }
 #[test]
-fn models_own_dirty_matrices_and_camera_snapshot_dependencies() {
-    for debug in [false, true] {
-        let parsed = super::gpu_api_resources::parse(SOURCE, "model-owned-dirty", debug).unwrap();
+fn mesh_and_billboard_keep_world_independent_of_camera_changes() {
+    for (debug, legacy) in [(false, false), (false, true), (true, true)] {
+        let source = if legacy {
+            SOURCE.replace("unlit:false", "unlit:true")
+                .replace("let mesh=", "let legacy_texture=Texture::from_native(TextureDesc{format:TextureFormat::Rgb565,memory:unsafe{GpuMemory::from_sectors(0xa200,128)},size_log2:6,full_mip:false});let legacy_texture_view=legacy_texture.view();let mesh=")
+                .replace(".draw_colored(", ".draw_billboard(")
+                .replace("material.ptr());", "material.ptr(),legacy_texture_view.ptr(),BillboardFacing::CameraPlane);")
+                .replace("drop(replacement);", "drop(legacy_texture_view);drop(legacy_texture);drop(replacement);")
+        } else {
+            SOURCE.to_owned()
+        };
+        let parsed = super::gpu_api_resources::parse(&source, "model-owned-dirty", debug).unwrap();
+        let record_words = parsed
+            .debug
+            .consts
+            .iter()
+            .find(|x| x.0 == "GPU_API_CB_WORDS")
+            .unwrap()
+            .2 as usize;
         let record = match parsed
             .debug
             .globals
@@ -106,24 +121,17 @@ fn models_own_dirty_matrices_and_camera_snapshot_dependencies() {
             ..rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0)
         };
         let code = rcc_backend::try_compile(parsed, &options, "main").unwrap();
-        let matrix = code
-            .debug
-            .functions
-            .iter()
-            .find(|f| f.name == "gpu_scene_matrix_prepare")
-            .unwrap()
-            .addr
-            .0;
-        let owned = code
-            .debug
-            .functions
-            .iter()
-            .find(|f| f.name == "gpu_model_matrix_prepare")
-            .unwrap()
-            .addr
-            .0;
-        let mut gold = None;
-        for force in [true, false] {
+        for old in [
+            "gpu_scene_matrix_prepare",
+            "gpu_model_matrix_prepare",
+            "gpu_model_cache_init",
+        ] {
+            assert!(
+                !code.debug.functions.iter().any(|f| f.name == old),
+                "no per-model CPU view derivation: {old}"
+            );
+        }
+        {
             let state = Rc::new(RefCell::new(Seen::default()));
             let mut cpu = CpuV3Sim::default();
             cpu.set_boot_window(&code.words);
@@ -134,22 +142,12 @@ fn models_own_dirty_matrices_and_camera_snapshot_dependencies() {
                     Box::new(Peer {
                         kind,
                         state: state.clone(),
-                        force,
+                        force: true,
                     }),
                 );
             }
             let mut halted = false;
             for _ in 0..2_000_000 {
-                if force && usize::from(cpu.pc()) == owned {
-                    let cache = usize::from(cpu.registers()[5]);
-                    cpu.physical_memory_mut()[cache + 42] = 1;
-                }
-                if usize::from(cpu.pc()) == matrix {
-                    let output = cpu.registers()[4];
-                    let mut s = state.borrow_mut();
-                    s.calls += 1;
-                    *s.per_output.entry(output).or_default() += 1;
-                }
                 if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
                     assert_eq!(signal, 0x600d);
                     halted = true;
@@ -161,7 +159,8 @@ fn models_own_dirty_matrices_and_camera_snapshot_dependencies() {
             let memory = cpu.physical_memory_mut();
             let snapshots: Vec<Vec<u16>> = (0..2)
                 .map(|slot| {
-                    let c = &memory[record + slot * 208..record + slot * 208 + 16];
+                    let c =
+                        &memory[record + slot * record_words..record + slot * record_words + 16];
                     let command = usize::from(c[1]) * 64;
                     let push = usize::from(c[3]) * 64;
                     let mut out = memory[command..command + usize::from(c[5])].to_vec();
@@ -169,16 +168,12 @@ fn models_own_dirty_matrices_and_camera_snapshot_dependencies() {
                     out
                 })
                 .collect();
-            if force {
-                gold = Some(snapshots);
-            } else {
-                assert_eq!(state.borrow().calls, 17);
-                assert_eq!(
-                    &snapshots,
-                    gold.as_ref().unwrap(),
-                    "cache vs forced recompute complete commands/push"
-                );
-            }
+            assert_eq!(
+                state.borrow().calls,
+                0,
+                "Mesh and Billboard never compose MV on CPU"
+            );
+            assert!(snapshots.iter().all(|s| !s.is_empty()));
         }
     }
 }
@@ -186,7 +181,7 @@ fn models_own_dirty_matrices_and_camera_snapshot_dependencies() {
 #[test]
 fn model_storage_failure_and_camera_revision_carry_preserve_boundaries() {
     for debug in [false, true] {
-        for (bytes, signal) in [(128, 0xe001), (192, 0x600d)] {
+        for (bytes, signal) in [(64, 0xe001), (128, 0x600d)] {
             let source = format!(
                 r#"mod gpu_api;use gpu_api::*;
 fn main(){{let memory:CommandMemory=CommandMemory{{commands:unsafe{{GpuMemory::from_sectors(0x9800,512)}},push:unsafe{{GpuMemory::from_sectors(0x9a00,512)}}}};
@@ -235,22 +230,26 @@ let model=Model::new(Transform{{position:z,angles:z,scale:one}});drop(model);dro
             }
             assert!(halted, "model allocation250K step bound");
             let m = cpu.physical_memory_mut();
-            assert_ne!(m[control + 5], 0, "source allocation must be released");
-            if bytes == 128 {
+            if bytes == 64 {
                 assert_eq!(&m[fault..fault + 5], &[0xfa17, 7, 1, 2, 0]);
-                assert_eq!(m[control + 3], 1);
+                assert_eq!(m[control + 3], 0);
             } else {
                 assert_eq!(m[fault], 0);
-                assert_eq!(m[control + 3], 2);
+                assert_eq!(m[control + 3], 1);
+                assert_ne!(
+                    m[control + 5],
+                    0,
+                    "the single source allocation is released"
+                );
             }
         }
-        let source = r#"mod gpu_model_cache;static CAMERA:Buf<u16,48>=Buf::new([0;48]);
+        let source = r#"mod gpu_source_revision;static CAMERA:Buf<u16,48>=Buf::new([0;48]);
 fn check(ok:bool){if !ok{halt(0xbad);}}
-fn main(){GPU_CAMERA_REVISION_COUNTER[0u16]=65535;GPU_CAMERA_REVISION_COUNTER[1u16]=65535;
+fn main(){GPU_SOURCE_REVISION_COUNTER[0u16]=65535;GPU_SOURCE_REVISION_COUNTER[1u16]=65535;
 check(gpu_camera_revision(CAMERA.as_array()));check(CAMERA[32u16]==0&&CAMERA[33u16]==0&&CAMERA[34u16]==1&&CAMERA[35u16]==0);
-let mut i:u16=0;while i<4{GPU_CAMERA_REVISION_COUNTER[i]=65535;i+=1;}
+let mut i:u16=0;while i<4{GPU_SOURCE_REVISION_COUNTER[i]=65535;i+=1;}
 check(!gpu_camera_revision(CAMERA.as_array()));check(CAMERA[32u16]==0&&CAMERA[33u16]==0&&CAMERA[34u16]==1&&CAMERA[35u16]==0);
-i=0;while i<4{check(GPU_CAMERA_REVISION_COUNTER[i]==65535);i+=1;}halt(0x600d);}"#;
+i=0;while i<4{check(GPU_SOURCE_REVISION_COUNTER[i]==65535);i+=1;}halt(0x600d);}"#;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let out = std::env::var_os("RCC_RUSTC_TEST_DIR")
             .map(std::path::PathBuf::from)

@@ -7,6 +7,10 @@ source. After successful retirement, another job samples it:
 - main.rs: fullscreen nearest, matching all400x240 logical pixels.
 - bilinear.rs: an ordinary translated/rotated/scaled mesh using bilinear.
 
+Both stages use the shared resident World/View path. Each Pass selects its
+camera and each Model supplies World; producer retirement and texture ownership
+remain explicit. Use World/View-capable gateware for these rebuilt applications.
+
 Shared scene.rs uses member finish, explicit submit and wait. There is no
 animation, CPU pixel copying/reordering, UI/postprocess unit, Bloxorz or gradient.
 Each demo presents once and halts, leaving its image visible. The bounded

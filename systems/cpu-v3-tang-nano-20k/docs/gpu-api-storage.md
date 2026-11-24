@@ -1,10 +1,14 @@
 ---
 id: gpu-api-storage
 status: active
-last-verified: 2026-11-12
+last-verified: 2026-11-24
 ---
 
-# Explicit GPU API internal core
+# GPU resource and recording internals
+
+For the application-facing reading route, startup/frame boundaries, sampling,
+lifetimes and reuse choices, start with [Using the GPU resource API](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-guide.md).
+This chapter specifies the backing representation and private implementation.
 
 The approved `gpu_api` root connects resource preparation, recording, submission,
 retirement and Display to the CPU V3 storage core. Prepared scene adapters call
@@ -25,6 +29,7 @@ runtime registration is not a Rust static initializer.
 
 Each body exposes `ptr()` returning its matching `*Ptr`, an opaque
 `Copy`/`Clone` handle with a slot and a 32-bit generation (three target words).
+`MeshPtr` additionally carries a first/count range (five target words total).
 These nonowning references support object reads and updates. Draw, pass-target
 and Display methods accept them by value. Resource bodies access their owned
 slot directly and share the implementation with the handle methods. Creating
@@ -60,6 +65,11 @@ Validation precedes driver/arena mutation. Initialization checks GPU idle and
 does not read Display, wait for work, or recover from an active/faulted context.
 Normal reinitialization requires the caller to finish prior use. Initialization
 rejects a context with live object registrations before resetting driver state.
+It also rejects a live public Gpu controller, a driver-held CB, or any issued CB
+whose record has not been dropped. These checks precede arena/record mutation.
+Dropping Gpu releases only controller admission, not an outstanding CB. Once
+all old owners exit, normal reinitialization may reuse the configured slots;
+no context check is added to individual draw calls.
 
 `Gpu::command_buffer` hands out each configured slot once, in A/B order. Drop or
 completion does not make it an unissued slot. A CPU-owned CB Drop disables its
@@ -74,15 +84,26 @@ plane. Descriptor Drop returns only its arena slot; it does not release pixels.
 their target addresses into immutable push storage. The returned `Pass` retains
 the exclusive CB parent. Pass Drop records the already-reserved closing fence.
 Descriptor reuse therefore cannot change an earlier recording. Reset clears
-CPU cursors/cache metadata and leaves external backing bytes untouched. An enabled
-immutable draw group additionally preserves its private metadata and push prefix.
+CPU cursors/cache metadata and leaves external backing bytes untouched. Independent
+prepared allocations keep their own metadata and push data across frame resets.
 
-`Mesh::from_native`, `subset` and `meshlet_count` wrap the trusted directory
-descriptor core in small arena slots of kind5. A subset is an independent
-descriptor, without a retained parent borrow or copied package bytes. Dropping
-and reusing the parent descriptor does not change its subsets. Construction
-checks the directory's shape/range only; it does not traverse native metadata,
-vertices or indices. Public draw consumption uses the prepared scene adapters below.
+`Mesh::from_native` captures and validates the compact directory into CPU heap
+storage. `MeshDesc::subset` selects a range before registration; `Mesh::subset`
+copies the selected entries into a separately owned directory. Each live Mesh
+uses two u16 words per meshlet plus allocator overhead, with a small kind5 arena
+descriptor. Child subsets survive parent Drop. `refresh_directory` replaces the
+snapshot only after all new entries validate, preserving the old one on failure.
+Registration/refresh never traverses vertex/index payload. Mesh Drop frees its
+CPU directory and arena slot; it does not free external package storage.
+
+`let all = mesh.ptr(); let part = all.slice(first, count);` selects a nonowning range of the cached
+directory, without allocation, directory copy or an additional arena slot.
+Bind intermediate Ptr values to locals when making nested calls in RCC.
+Nested slices are relative to the current range. Their owner must remain live
+until recording; both profiles validate generation and range before reading
+entries. Draw and prepared recording accept the same MeshPtr and emit the same
+native stream as an owning subset. Empty ranges emit nothing. `Mesh::subset`
+remains the independent-owning option when the child must survive parent Drop.
 
 `ColorLoad` and `DepthLoad` carry `LoadOp` and a scalar clear value. The target
 `Rgb565` value has one named `raw: u16` field and `from_raw`, rather than tuple
@@ -102,61 +123,63 @@ ordinary grid/glyph debug checks and external-memory publication contract.
 
 ### Prepared command parts
 
-`CommandBuffer::enable_prepared_parts(layout)` partitions a nonzero,
-32-KiB-aligned 64-KiB command reservation. The first 16 KiB holds sixteen
-1-KiB command templates. The next 16 KiB is the active stream, in the same
-physical DSEG3 page. The upper 32 KiB is private CPU backing for metadata
-that cannot fit in the heap.
+| Representation | Target storage |
+| --- | --- |
+| `PreparedMemory` | Four Copy words: command first sector/count, push first sector/count |
+| `PreparedDraws` / `PreparedPool` owner | One word holding an arena registration |
+| `PreparedDrawsPtr` | Three Copy words: slot plus two generation words |
+| Prepared arena payload | 16 words: command base/capacity0..1, push base/capacity2..3, metadata pointer4, state5 (empty0/recording1/ready2), pool owner/next6..7; remaining words reserved |
+| Pool arena payload | 16 words: external first sector0, capacity1, sorted child head2; remaining words reserved |
+| Transient recorder | 160 record words plus 256 fact words, heap-owned only during recording |
 
-An enabled CB also requires 64 KiB of push backing. `SingleWide` reserves
-16 KiB for part0 and 2 KiB for each other part. `SplitWide` assigns 8 KiB
-each to part0 and part15 in the original wide area. Parts1..14 keep their
-2-KiB partitions. Both layouts leave an 18-KiB active push tail after the
-46-KiB prefix.
+Payload capacities above use CPU u16 words; external bases/counts use 128-byte
+sectors. Each small arena registration also has the ordinary generation/type
+metadata. No persistent per-part record or duplicated matrices are retained.
 
-On an empty, CPU-owned CB, `prepare_part(id)` borrows the CB and returns
-a mesh-only recorder. IDs range from 0 through 15. The recorder has its own
-camera and state selection. Its draw methods use the same native encoder
-as Pass draws, with cursors directed into the selected template and push
-partition. The empty CB lends its recorder and fact table for this operation.
-The resource invariant prevents use of the CB while its recorder is live.
-`finish()` publishes the part and restores the empty CB. Dropping an
-unfinished recorder abandons the replacement without publishing it.
+Prepared storage belongs to the application, independently of either frame CB.
+`PreparedMemory::allocate(command_bytes, push_bytes)` under `#[static_buffer]`
+requests two 128-byte-aligned allocations. `PreparedDraws::new(memory)` owns
+the CPU registration; `record()` returns a mesh-only recorder. There is no fixed
+part count, special part ID, layout enum or reservation inside a frame CB.
+Each command and push extent may contain 1..512 sectors (up to 64 KiB).
 
-A nonempty template starts with a complete binding. The initial Global and
-Render commands occupy one 32-byte line. A NOP supplies the final padding.
-Templates include whole 32-byte lines and store immutable Instance data in
-their push partition. The recorder writes the template directly. The
-result contains mesh draw commands and state uploads; target and final
-fences belong to the enclosing Pass. Source descriptors can be dropped
-after recording. Referenced mesh and texture backing must stay valid and
-stable through execution.
+`PreparedPool::new(memory)` supports runtime allocation from an application-owned
+external span. `allocate(command_bytes, push_bytes)` rounds each nonzero u16 byte
+request up to 128 bytes; 65535 requests the full 64 KiB. First-fit walks a sorted
+CPU list of live allocations. `free(ptr)` recycles the span and registration;
+stale Ptrs fail the release/debug generation check. The pool owns its children
+and releases them on Drop. Exhaustion fail-stops without implicit waits or a
+global GPU heap. The application preserves the supplied backing allocation.
 
-`CommandBuffer::prepared_part_ready(id)` tests whether a part is published.
-`Pass::draw_prepared(id)` preflights command and resource-table capacity,
-aligns the active cursor, and LCOPYs the template into the active stream.
-The first use follows this same path. If current Global and Render match
-the part's entry snapshot, the copy skips the initial 32-byte binding line.
-The exit snapshot becomes the recorded Global and Render state. Instance
-residency, UI continuity and source identities are cleared. The Pass keeps
-its selected camera and RenderState for subsequent ordinary draws. An empty
-part has no effect on state, commands or resources.
+`PreparedDrawsPtr` is a three-word generational reference. `record()` enters the
+recording state and uses one transient CPU recorder/fact table allocated from the
+ordinary heap, sharing the normal draw encoder. Only one prepared recorder may
+be open at a time. `finish()` publishes aligned commands and immutable push data;
+Drop of an unfinished recorder leaves the part invalid. Both release the
+transient context. `ready()` observes completion; `invalidate()` discards it.
 
-Each part's CPU metadata begins with two words for command length and fact
-count. A nonempty part stores two 48-word binding snapshots followed by
-its deduplicated four-word Mesh/Texture facts. During part recording the
-fact table receives only resources used by that part. Append merges these
-records into the active table after preflight. The heap and the bounded
-SDRAM fallback use the same metadata header validation. Empty parts require
-zero facts. The external fallback uses a 384-word stride starting 256
-sectors after the original command base. Failed transport poisons the CB.
+Part commands capture World, material, raster/filter and asset addresses. They
+contain no View upload or scene install. `Pass::draw_prepared(ptr)` installs the
+current Pass View/light if needed and copies the aligned commands. The same-page
+route uses direct LCOPY; cross-page sources use bounded aligned CPU staging.
+World/texture backing is not copied on append. Desired Pass Camera/state remains
+unchanged. Both ordinary Mesh and unlit Billboard use the same encoder here.
 
-An appended nonempty part is immutable until the CB retires and resets.
-`reset()` keeps finished parts and clears references from the active stream.
-`invalidate_prepared_part(id)` discards one part between recordings.
-`clear_prepared_parts()` discards the entire bank and resets the CB.
-Both keep the configured partitions. Single-scene patches require an
-ordinary draw sequence and reject nonempty prepared parts.
+The caller keeps recorded external inputs unchanged and allocated until all
+consuming executions finish and every referring CB is reset, dropped or otherwise
+permanently discarded. Completion alone does not end this obligation if the CB
+will replay. Multiple CBs may read the same immutable part. There are no CB
+occupancy bits, reference lists or unlock walks; append and reset do not update
+the part's state. Generation checks validate CPU Ptr uses, not recorded addresses.
+Re-record, invalidate, free or owner Drop during an open recording fail before
+mutation; Pool Drop preflights recording state for every child. These state
+checks do not detect a violation of the caller's external-input lifetime contract.
+
+Heap metadata stores command length, fact count, the 12-word final material
+snapshot and four-word resource facts; debug adds response maxima for validating
+the current Pass light. Nonempty append includes the part's persistent push
+extent in the frame facts, so target-only relocation cannot overlap it. Commands
+contain no END. A failed transport poisons the destination before submission.
 
 Standalone appends compute one aligned payload offset and preflight their extent.
 Mesh/binding operations preflight their complete layout once. They write one
@@ -166,29 +189,40 @@ writes commit canonical CPU bindings; any partial transport failure poisons the 
 Private reserved appends consume the complete reservation without intervening
 external appends. Target debug builds recheck each reserved span.
 
-Mixed changes including Instance reserve one128-word span aligned to64 words:
-Global occupies0..31, Render32..47 and Instance64..127, matching native scratch.
-The16-word gap and unchanged blocks may be copied but are not referenced by new
-commands. Instance-only changes use64 words; Global/Render-only changes use their
-32/16/48-word contiguous spans. These layouts trade bounded push padding for one
-upload and window save/restore, without changing the native GPU objects or ABI.
-A zero-payload command append advances to the operation's preflighted push end.
+World and View are separate immutable128-byte push allocations, each aligned
+to64 CPU words. Their DMA commands share a final WAIT(data). Material is included
+in World's final24 bytes; SET_RENDER's extended form reads it there. The public encoder has no precomposed-layout branch.
+Scene16 and raw light intensities live in View's final32 bytes. Camera changes
+publish a fresh complete View; light/far/ray-only changes publish only its tail,
+including unchanged Billboard basis values. Earlier A/B/A payloads are never
+rewritten. Changed scene/material state retains the whole-render WAIT boundary.
 
-Instance equality also proves residency in uniform block320 while VALID bit2 is
-set. Equal subsequent draws omit both its DMA and WAIT. Target, UI, Global and
-Render commands do not overwrite that block. Reset/configuration and a nonempty prepared-part append invalidate this proof.
-The next ordinary draw emits a complete Instance load. This is recorded-stream state, not residency across CB
-submissions.
+A matching Model revision, Material24 and raw material responses prove World
+residency while valid bit2 is set. A prepared append clears this proof.
+Camera/State setters compare their captured source values and invalidate the
+affected encoding directly: matrix/focal changes mark View and Scene dirty and
+invalidate Q14 light; far/ray changes mark only Scene dirty; light-direction
+changes invalidate Q14 light, while intensity-only changes reuse it. Raster and
+filter changes do not invalidate Scene. No second light/source-revision mirror
+is retained. View needs upload if no View allocation exists or bit7 is dirty.
+Successful publication clears dirty flags and establishes the encoded-light
+proof. Several changed Camera setters without a draw coalesce to one fresh View,
+even when the final Camera returns to an earlier value; avoiding a separate
+resident revision history trades that uncommon extra upload for simpler state.
 
-A mesh directory of at most eight entries remains in scratch144..159 after its
-whole-operation validation. Binding payload covers scratch0..127 and commands
-start at160, so emission reuses that validated snapshot without another read.
-Larger directories retain bounded rereads after complete validation. There is no
-cache across draws; source updates between CPU-owned operations remain visible.
+Every public Mesh and Billboard uses World/View preparation. Ordinary geometry
+composes matrices and material/light responses in97 enabled edges; Billboard
+skips normal/response work and copies a shared View basis in65. The original
+per-vertex arithmetic is unchanged. See [formats](/ip/gpu-v2/docs/formats.md#resident-viewworld-blocks).
+
+The draw encoder reads only the owned validated CPU directory. It plans the
+complete operation, publishes changed bindings once, then emits meshlet commands
+in bounded chunks. No per-draw external-directory read or second validation pass
+is performed. Directory mutation becomes visible only after explicit refresh.
 
 ```mermaid
 flowchart LR
-    A["Native fields and draw layout"] --> B["Whole-operation capacity and directory validation"]
+    A["Native fields and draw layout"] --> B["Whole-operation capacity and fact preflight"]
     B --> C["One immutable payload upload"]
     C --> D["Binding and meshlet command chunks"]
     D --> E["Commit CPU bindings and resource facts"]
@@ -204,26 +238,24 @@ chunks through vector registers as raw bits. A scalar tail handles shorter
 ranges, and copies with a destination inside the source at a higher address
 keep forward word order.
 
-Native scene preparation initializes only padding and fixed fields before
-writing the final numerical fields. In particular Instance0..41 are written
-exactly by matrix generation or the Model coefficient cache; they are not first
-cleared. Instance42..63 retain the homogeneous constant, RGBA and zero-padding
-contract. Global/Render reserved fields are still explicitly zeroed.
+Native World preparation writes each coefficient only when the Model binding
+changes. Material fields are encoded directly at native scratch116..127, the
+final World tail, rather than copied from a separate Render span. Only defined
+padding and the homogeneous constant are explicitly initialized.
 
 Public matrix operations retain value arguments and their isolated snapshots.
 Scene scalar and three-component reads and writes use exact two- and six-word
 FPU transfers for the existing low-word-first layout.
 Euler rotation prepares three padded Q16.16 rows using vector stores. Camera
 pose reads the columns of that scratch matrix; Model pose reads the rows.
-Draw header preparation and scene patches share the view-light encoder. It
+Ordinary and prepared draw headers share the view-light encoder. It
 reads each complete camera row with a vector load and transforms the light
-direction with its first three components. A patch uses the supplied Camera
-and the stored RenderState directly.
+direction with its first three components, using the Pass Camera and State.
 Internal camera/model writers borrow those snapshots through typed CPU views:
 three vec4 imports/exports copy a 24-word world/view matrix, and two vec4 pairs
 plus two scalar word copies write exactly eighteen normal-matrix words. No row
 value snapshots, arithmetic, rounding or overread are introduced. Model padding
-initialization and derived-cache invalidation remain part of the operation.
+initialization and source validation remain part of the operation.
 
 The private same-page copy helper rejects misalignment, overlap and window overflow
 before remapping. It saves/restores DSEG3 and waits around LCOPY and mapping changes,
@@ -234,16 +266,16 @@ start and valid length differ.
 
 ### Color and depth plane copies
 
-`CommandBuffer::copy_color(&source, &destination)` records the existing native
-MEMCPY between two `ColorBuffer` allocations, only between Passes. It copies
+`CommandBuffer::copy_color(source: ColorBufferPtr, destination: ColorBufferPtr)`
+records native MEMCPY between two color allocations, only between Passes. It copies
 exactly the 1,600-sector physical 400x256 RGB565 plane, including the 16 padded
 rows, without copying allocation tails. Source and destination keep the surface
 alignment/capacity contract above; their registered allocations must not overlap.
 Neither copied span may overlap this CB's command or push storage. Invalid
 phase, range or capacity is rejected before record/fact/backing mutation.
 
-`CommandBuffer::copy_depth(&source, &destination)` accepts two `DepthBuffer`
-descriptors and copies the same physical extent without converting stored depth
+`CommandBuffer::copy_depth(source: DepthBufferPtr, destination: DepthBufferPtr)`
+copies the same physical extent without converting stored depth
 values. Both typed calls share the allocation preflight and native plane-copy
 encoder. Depth copies declare Depth source-read/destination-write facts; color
 copies declare Color facts. A depth allocation is never cast to a color surface.
@@ -251,7 +283,7 @@ Callers retain completed, compatible source contents until the recorded reads
 retire. Copying does not create an implicit clear or a separate validity owner.
 
 The CB retains a source-read and destination-write allocation fact. The normal
-prepare/submit publication, Display write protection and retirement pins apply;
+submit publication and application-owned Display/retirement ordering apply;
 the call neither submits nor releases ownership. The source must remain stable
 until retirement. Native WAIT/FLUSH precedes the source read, then DMA_LOCAL,
 transfer wait and MEMCPY use one shared descriptor encoder with the raw native
@@ -261,9 +293,8 @@ Texture invalidation remains explicit when a copied destination is sampled.
 
 For background restoration, copy into the actual chosen Back or offscreen color,
 then begin its Pass with `ColorLoad::load()` and an independent depth clear.
-Both alternating Back allocations require their own copy. Copy-bearing CBs
-reject scene binding and patching, including a binding obtained before the copy;
-the separate target-only binding below changes a single color copy and its
+Both alternating Back allocations require their own copy. The target-only
+binding below changes a single color copy and its
 target together. Multiple copies, or a depth copy aimed at the depth target,
 remain outside that binding's contract; callers can reset and record a short
 restoration CB instead.
@@ -276,15 +307,31 @@ capture MEMCPY dependency discovery and replay formats are unchanged.
 Material identity. It accepts immutable draw groups and at most one leading
 full-plane color copy, but no UI commands. `retarget_target(binding, color, depth)`
 changes Target32 and that copy's destination together; its source remains fixed.
-`SceneBinding` / `patch_scene` retain their single-group, no-copy contract.
+Scene/Model packet patching is not a public operation; use prepared draws for
+a moving Camera and target-only rebinding for an unchanged sealed scene.
 
-The binding stores the slot and full generation. Only a CPU-owned Ready/Sealed
-CB accepts it; reset/reissue, an active execution owner, invalid payload spans,
-multiple copies or a copy aimed at another target reject. Color/depth allocation
-extents must match their recorded facts. Existing target alignment, depth-format
-provenance, plane/command/push/read-source alias guards apply. Display observation
-rejects a pending/torn/faulted swap or a new plane overlapping Front; it neither
-waits nor retires Display. Callers explicitly complete presentation first.
+Recording saves the color/depth resource-plan indices when a Pass succeeds, and
+saves the source index of a color copy. These indices remain stable because the
+fact table only appends entries or merges access bits. Sealing checks eligibility
+once: exactly one target, no UI, and at most one preceding color copy aimed at
+that target. It establishes an explicit target-proof bit, shared with scene
+binding. Obtaining a binding again does not scan the fact table. Reset clears
+both the indices and proof and advances the full generation.
+
+The binding stores the slot and full generation. Rebinding checks CPU ownership,
+sealed proof and generation at one internal entry. Both target profiles require
+unchanged allocation sizes and reject color/depth overlap, aliases with either
+configured command/push allocation, and aliases with other recorded resources.
+Public surface handles already validate alignment/extents and retain generation
+checks in release. Display observation rejects a pending/torn/faulted swap or a
+new plane overlapping Front; it neither waits nor retires Display. Callers
+explicitly complete presentation first.
+
+`gpu_debug` additionally rechecks sealed payload spans, copy metadata, fact-index
+bounds, resource kinds, old addresses and access bits. Release trusts those
+private recorder invariants; it does not repeat the immutable structure proof.
+Stream eligibility, stale/foreign bindings, dynamic aliases, Display checks and
+partial-write poisoning remain enforced in release.
 
 All logical guards run before external stores. Target32 and optional MEMCPY
 payload are written before committing their color/depth allocation facts and
@@ -293,7 +340,7 @@ it never commits replacement facts or permits submission. Camera/model/material
 payloads, command words and native opcodes stay fixed. Ordinary submission still
 publishes stores and checks execution ownership.
 
-The original 208-word fields retain their offsets. Non-UI streams use inactive UI-cache
+The control prefix retains its offsets. Non-UI streams use inactive UI-cache
 words128..131 for copy payload offset-plus-one, source, destination and count.
 Camera revision retains words16..19. Recording UI makes target-only binding
 ineligible; reset clears both caches. No command, capture or replay ABI changes:
@@ -301,23 +348,20 @@ parsers consume the same published Target32/MEMCPY bytes and updated facts.
 
 ## Public prepared scene adapters
 
-Camera occupies one 48-word slot; Model owns two 48-word slots (source and derived).
-Material, RenderState, Texture,
-TextureView, UiAtlas and UiGrid occupy 16-word slots. Their kinds are 1, 2, 3,
-4, 6, 7, 10 and 11 respectively; Model derived data uses private kind 12.
-Model Drop releases both owned slots; other descriptor Drops release their slot.
-Projection construction uses B's six-word temporary, bool validation and value
-getter. Shininess's two public convenience methods live in the approved root;
-raw conversion helpers remain private. Named matrix rows and the numerical
-contracts are specified in [scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md).
+Camera and Model each occupy one48-word slot. Model contains only its source
+World/normal matrices and a private64-bit source revision; no per-Model Camera
+cache or persistent native World packet is allocated.
+Material, RenderState, Texture, TextureView, UiAtlas and UiGrid occupy16-word
+slots, with kinds1,2,3,4,6,7,10,11 across these resource classes. Each Drop releases
+its one owning slot. Projection's prepared values and transform conventions are
+specified in [scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md).
 
-Pass set_camera/set_state copy prepared values into the CB desired snapshot.
-Later source-object changes do not alter that snapshot. A nonempty draw validates current light/material/render fields and obtains the
-Model-owned derived matrices for that Camera snapshot, computing them only while
-dirty. It writes the one shared native scratch, then uses the existing whole-Mesh
-preflight and canonical binding emitter. The Model cache is specified in
-[scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md#model-owned-derived-matrices).
-Colored draw reads no View. Texture/View and Grid/Atlas descriptions are copied
+Pass setters copy Camera and RenderState values into desired snapshots; later
+source-object changes cannot alter them. Draw preparation reads Model, Material
+and texture descriptions, creates static World/material bytes and prepares the
+shared View only when its revision changes. The same whole-Mesh preflight and
+binding encoder serves ordinary draws, Billboard and prepared recording.
+Colored draw reads no texture-view descriptor. Texture/View and Grid/Atlas descriptions are copied
 by value; descriptor Drop/reuse does not rewrite recorded descriptions or retain
 external allocations. Applications still own external-memory lifetime and ordering.
 
@@ -361,6 +405,16 @@ checks remain in release.
 
 ## External word transfers
 
+The public unsafe `GpuMemory::read_words(offset, destination, count)` and
+`write_words(offset, source, count)` expose bounded transfers for dynamic data.
+Offsets/counts are CPU u16 words, count is at most 128, and the complete span
+must fit the memory extent. Zero count is a no-op. The caller supplies a stable
+low-memory `Array<u16>` of at least count words and owns both sides of the
+transfer; acquire GPU-written data or retire GPU/Display readers before access.
+The calls do not establish rendering completion, invalidate GPU textures or
+globally publish every scalar write. The ordinary submit publication remains
+required. Range faults use API site1/code2 and transport faults site1/code3.
+
 `gpu_window_read_words(sector, offset, destination, count)` and
 `gpu_window_write_words(sector, offset, source, count)` are the only new chunk
 entry points. Sector units are 128 bytes; offset/count units are 16-bit words.
@@ -387,63 +441,29 @@ the publication boundary for CPU stores.
 
 ## Command records
 
-### Persistent scene binding
-
-`CommandBuffer::scene_binding` seals a CPU-owned recording and returns an opaque,
-copyable three-word `SceneBinding` (slot and a two-word generation). This minimal
-mode accepts one Target, Global and Instance allocation, no UI, and one shared
-Camera/Model/Material identity during recording. Distinct resources with equal
-native bytes do not establish a shared group. Dropping/reusing those descriptors
-before seal invalidates the group; after seal the recording retains snapshots,
-not descriptor references. Retirement preserves the binding. Reset and context
-reuse invalidate it. A non-resetting two-word counter rejects exhaustion instead
-of reissuing an old generation; it adds four static bytes without arena objects.
-
-`cb.patch_scene(binding, &camera, &model, &color, &depth)` updates that whole
-group while the CPU owns the CB. It rejects stale/foreign bindings, fixed
-projection changes, invalid spans, overlapping target allocations and any
-driver-held owner, including prepared, running and fault-retained states.
-The target allocations must retain the recorded sizes and remain disjoint
-from both command/push pairs and other registered asset extents. Display
-retirement and choosing the current Back remain the application's responsibility.
-
-The update preserves commands, mesh packets, Render blocks, word counts,
-END/padding and Instance words42..63. It replaces Target's16-word push block,
-recomputes Global view-light with the existing numerical order, and writes the
-42 position/normal coefficients using the Model-owned dependency cache. Five
-vector transfers and two scalar word copies move exactly those coefficients
-into the native staging span. All preflight and light validation precede
-external writes. Successful writes commit
-Camera/revision, Global/Instance shadows and replace the existing color/depth
-fact addresses. It neither adds stale target facts nor submits work. The normal
-submission publication remains required for scalar stores.
-
-Preflight rejection leaves backing unchanged. A backing-helper failure after a
-partial copy poisons the CB and commits no record shadows or target facts; the
-computed Model cache may remain updated. Partial physical writes are not rolled
-back. Native object fields and public snapshot/alias behavior are unchanged.
-
 ### Record layout
 
-There are two independent 224-word records and one sequential 256-word native
-scratch. Its private backing reserves 271 words; `gpu_native_scratch` rounds the
-backing address upward to a 16-word boundary. The full logical span remains
-inside that backing for any static layout, using at most 15 words of slack.
-Global, Render, Target, Instance, directory and code staging retain their existing
-offsets. Their complete aligned lines can use the existing owned-transfer path;
-partial spans still use scalar transfers. This alignment does not publish a CB
-or permit mutation of GPU-owned storage. Each record has control words 0..31 (including the four-word Camera snapshot
-revision at 16..19), Camera 32..63, State 64..79,
+There are two persistent160-word frame records and one transient heap record
+while recording a prepared allocation. Each contains control0..31,
+desired Camera32..63, desired State64..79, Scene80..95, debug response maxima96..99,
+Model revision100..103, color-copy source fact104, spare105, View location/count106..107,
+reserved108..111, Material24 at112..123, raw responses124..127 and UI128..143.
+Word149 identifies the open allocation in the transient prepared recorder; it
+is zero in frame CBs. Words29..31 are reserved. There is no duplicate World matrix,
+light-direction source key or resident Camera revision.
 
-last Global 80..111, last Render 112..127, last UI 128..143 and last Instance
-144..207. The last values are CPU snapshots, not persistent object references.
-Words208..223 are private group management, adding 64 bytes across both CBs.
-Canonical CPU copies and comparisons advance bounded pointers eight words at
-a time, with a scalar tail. Copies keep forward store order; comparisons retain
-every native word, including padding. This reduces scalar address/control work
-without changing push bytes, binding decisions or the command ABI.
-The scratch is not a binding cache. Prepared scene helpers write the canonical
-Global, Render and Instance spans before the recorder compares and appends them.
+One sequential256-word native scratch has271 words of backing for16-word
+alignment slack. Scene0..15, mode31, Target48..63, World64..127, UI128..143,
+commands160..223 and View192..255 have explicit lifetimes. Scratch30 records
+the CPU-only Billboard classification;31 selects the DRAW facing bits. Material preparation
+writes World's final12 words116..127 directly. View is published before command
+encoding reuses192..223. A directory no longer occupies scratch. Complete
+aligned transfer lines can use LCOPY; partial spans retain scalar stores.
+
+CPU-owned copies and comparisons advance pointers in eight-word chunks with a
+scalar tail. The scratch is temporary output, not a binding cache. Only a changed
+World needs to assemble its compact source matrices; small revision/material
+proofs determine that before copying.
 
 The implemented control words are:
 
@@ -454,7 +474,7 @@ The implemented control words are:
 | 3 / 4 | Push first sector / word capacity |
 | 5 / 6 | Command / push words used |
 | 7 | Padded command fetch words, valid after seal |
-| 8 | Valid bits: Global1, Render2, Instance4, Camera8, State16, resident UI32 |
+| 8 | Valid bits: Global1, Render2, Instance4, Camera8, State16, resident UI32, encoded-light proof64, View dirty128, Scene dirty256, known response512, sealed target proof1024 |
 | 9 / 10 | Current Pass color / depth first sector |
 | 11 | Last immutable Instance push word offset plus one |
 | 12 / 13 | UI-clean proof / last immutable UI descriptor push offset plus one |
@@ -464,18 +484,15 @@ The implemented control words are:
 | 20 / 21 | Binding generation low / high word |
 | 22 / 23 | Target / Global push word offset plus one |
 | 24..26 | Target / Global / Instance allocation counts |
-| 27 / 28 | Color / depth fact index plus one after binding |
-| 29..31 | Recording Model / Material / Camera identity; 65535 rejects a mixed/reused group |
-| 208 | Template first sector, zero when disabled |
-| 209 | Valid-part bit mask |
-| 211 | Fixed persistent push end |
-| 213 | Open part ID plus one |
-| 217 | First part Global push offset plus one |
-| 219 | Prepared push layout:0 original single-wide,1 split-wide |
-| 210, 212, 214..216, 218, 220..223 | Reserved |
+| 27 / 28 | Color / depth fact index plus one captured by the latest successful Pass |
+| 29..31 | Reserved |
+| 104 | Color-copy source fact index plus one; zero for a depth copy |
+| 106 / 107 | Last View push word offset plus one / View allocation count |
+| 149 | Transient prepared owner arena slot; zero in frame CBs |
+| 144..148,150..159 | Reserved |
 
 Each configured extent has 1..512 sectors, fits physical memory, and is disjoint
-from the other extent in that record. Configuration is init-time only; Gpu's
+from the other extent in that record. Frame configuration is init-time only; Gpu's
 configuration layer remains responsible for cross-record/asset overlap and
 external lifetime. The record phase is not evidence of GPU retirement.
 
@@ -485,7 +502,7 @@ alignment gaps. The final push cursor cannot move backward or exceed capacity.
 An open Pass reserves four words for `WAIT(all), FLUSH`. An outside-Pass stream
 without a known terminal fence reserves the same four words. Active recordings
 also reserve two words for END and round the resulting span to 128-byte fetch
-alignment. Prepared templates use their fixed command limit without the
+alignment. Prepared templates use their application-supplied command limit without the
 terminal tail. Word counts represent the full 64-KiB capacity without truncation.
 
 Individual append batches contain at most64 command words and128 push words.
@@ -529,10 +546,12 @@ TextureView extent. Nonempty UI draw records the Grid and Atlas extents. Fact
 capacity is checked before native emission and committed only after success.
 Empty mesh subsets and empty UI rectangles record no facts or commands.
 
-C reads these facts as bounds and decodes the ordered native stream for actual
-accesses and every Target/Load/Clear. The last target pair is not the complete
-target set. Allocation tails are read/preimage data, never framebuffer writes
-or full-clear regions.
+The target recorder uses these facts for prepared-part merging and restricted
+target rebinding. Ordinary submission does not traverse them to establish a
+complete external-memory hazard proof. Host tooling can decode the ordered
+native stream for actual accesses and every Target/Load/Clear; the last target
+pair alone is not the complete target set. Allocation tails are not automatically
+framebuffer-write or full-clear regions.
 
 The device layer and affine public ownership must prevent access while a record
 is held for submission or execution. This CPU core does not SEND, publish, poll
@@ -540,14 +559,22 @@ completion, or transfer public ownership.
 
 ## Device4 execution handoff
 
-`gpu_execute` owns one eight-word driver record: phase, owned slot plus one,
+`gpu_execute` owns one nine-word driver record: phase, owned slot plus one,
 command first sector, instruction count minus one, expected DSEG3, first error,
-and configuration handout state. Phases are idle=1, held=2, running=4 and fault=5.
+configuration handout state and live public-controller flag. Phases are idle=1,
+held=2, running=4 and fault=5.
 Zero means uninitialized. Ownership is acquired before sealing and retained on
 failure. Submission checks Device4 idle/error status, seals the recording,
 validates its command count and restored DSEG3, then publishes CPU cache stores.
 It marks running before the sole COUNT/START pair. Poll retains ownership while
 busy and on errors; only normal completion returns the slot once.
+
+This path does not query Display or validate ordinary targets against Front.
+It also does not use the fact table to reject all read/write aliases with assets
+or another CB. Recording validates selected native shapes and overlaps with its
+own active command/push spans; applications retain the full backing-layout and
+producer/consumer-ordering obligation. Restricted target rebinding performs
+additional alias/Front checks at its own entry point.
 
 `Gpu::submit` consumes and disarms the application CB owner. `try_wait` returns
 `Option<CommandBuffer>`; `wait` requires a running owner and waits for retirement.
@@ -580,6 +607,13 @@ retirement checks the actual active format against the saved selection. A color
 base is a 64-KiB-aligned sector address whose 1,600-sector effective span fits
 physical memory. Allocation/lifetime and GPU producer completion remain the
 application's explicit responsibility.
+
+Only one public Display controller may be live. A duplicate open returns failure
+before changing its state or default format. Drop clears controller admission
+without waiting or erasing pending metadata. Reopen rejects hardware Pending;
+if a previous dropped controller left a request, its retired address/format
+must match before the new record is initialized. No new GPU or Display wait is
+hidden in open/Drop.
 
 Snapshots read pending before and after active base/format. A transition retries;
 invalid status/address/format fails. With no pending request, set stages low/high
@@ -615,48 +649,61 @@ resources nor executes those commands itself.
 `gpu_bind_desired` copies a Camera's first 32 words or all 16 State words into
 that CB's desired storage. It retains no arena pointer. Changing or dropping
 the producer descriptor cannot change the saved values. Desired flags and
-last-bound flags are independent: updating desired values does not blindly
-invalidate equal final encodings.
+last-bound flags are independent: equal source snapshots preserve their proofs;
+changed snapshots invalidate only the dependent encodings.
 
-`gpu_bind_plan` compares all canonical Global32/Render16/Instance64 halfwords
-against that CB's saved values. Its six-word caller-local plan contains changes,
-three push offsets, final push words, and command words. It is consumed in the
-same synchronous operation before another append; it is not a persistent
-reservation or an asynchronous grant. Alignments are 32/16/64 CPU words. A draw
-preflights this plan plus its complete meshlet command count before emitting.
+`gpu_bind_plan` receives the source Model and final material fields. Its seven-word
+local plan stores changes, the borrowed Model pointer, one View-or-Scene offset,
+World offset, final push cursor, command count and DRAW mode (zero for scene-only).
+Change bit16 selects a full View128 upload; otherwise a Scene update uses32 bytes
+at the same plan field. Allocation, DMA encoding and payload writing each share
+one path for these mutually exclusive transfers.
+The plan is consumed synchronously by the same operation; it is not an
+asynchronous reservation. The complete Mesh command count and final push cursor
+are checked before the first external write.
 
-Global and Render changes share one `WAIT(all)` and each receive an aligned
-DMA, `WAIT(data)` and SET. Their local slots are 66 and 68. Instance changes
-do not add a render drain. Equal Instance values reuse the existing immutable
-push block; every draw still DMA-loads that block into uniform slot80/local
-qword320 and waits for data. CPU equality is not treated as input-page residency.
-Only complete group success updates canonical snapshots and the cached address.
+Scene dirty state, Model revision and Material24/raw-response comparisons decide
+which snapshots are necessary. View and World are128-byte aligned and share the
+final WAIT(data). A light-only update uses the32-byte View tail. Material is
+already in World, so there is no independent material DMA. Only CP-consumed
+texture/specular/raster fields and lighting kind trigger SET_RENDER. Uniform RGBA
+is read by DRAW; a color-only change publishes World without a state drain.
+Raw material responses are a separate lifetime: geometry writes their products
+into live CP lighting registers. Changed or unknown response data requires
+WAIT(all), even without SET_RENDER. A Billboard skips these writes; World/Scene
+changes before it invalidate the response proof. Prepared append also invalidates
+that proof. A matrix-only change retains known response values and needs no drain.
+Equal consecutive source bindings omit both World assembly and uniform DMA.
+Every DRAW still performs hardware matrix preparation and loads its meshlet input.
+Only a fully published operation commits the small CPU binding proofs.
 
 ## Trusted Mesh directory expansion
 
-`MeshDesc` is a value containing directory sector/word/count and `GpuMemory`.
-Initialization checks directory bounds and the representable count, writes the
-five prepared fields and zero tail, and never scans vertex/index payloads.
-Subset creates another description without copying payload. An empty subset
-keeps a representable in-allocation directory pointer, including at 8 MiB.
+`MeshDesc` holds directory sector/word/count and the containing `GpuMemory`.
+Initialization validates bounds, representable count and every entry: record
+metadata plus1..8 payload sectors must fit storage and avoid the directory.
+The retained CPU directory contains only `{record_sector, payload_sectors}`
+(two u16 per entry), never full headers or vertex/index bytes. Snapshot refresh
+allocates/validates a replacement before freeing the old directory.
 
-This CPU wrapper follows the existing uniform20 native-package profile and
-local320 binding contract. Package metadata must select uniform_base20. Native
-hardware supports additional uniform blocks, but this wrapper neither infers
-those choices from unscanned headers nor loads all four blocks unnecessarily.
-Counts/indices/metadata content remain the trusted producer's responsibility.
+`MeshDesc::subset(first,count)` performs checked const address arithmetic without
+registering an unused parent Mesh. A runtime Mesh subset copies only its selected
+CPU entries into independent ownership. An empty subset retains a representable
+in-allocation directory pointer, including the physical8-MiB endpoint.
 
-A nonempty draw plans all bindings and `6 * meshlet_count` command words,
-including the normal terminal reservation. It validates the entire immutable
-directory before writing: each record plus 1..8 payload sectors must fit storage
-and avoid its directory. Then it streams eight entries at a time through existing
-native scratch words144..159 and emits at most48 command words through160..207.
-No persistent directory or command buffer is added. The schedule is
-`DMA(next), DRAW(previous), WAIT(data)`, with an initial data wait and final DRAW.
-Transport failure after emission starts poisons the partial recording; it does
-not promise rollback. An empty mesh emits no bindings or commands. The directory
-is needed only during recording; recorded metadata/payload addresses keep their
-external lifetime contract.
+The native package must select World uniform20. Its vertex format must match
+the draw method: Billboard packages use `draw_billboard`, ordinary mesh packages
+use the ordinary draw methods. The producer owns this trusted format contract. Header contents, vertex formats,
+indices and counts remain the trusted producer's responsibility. This CPU wrapper
+does not inspect each meshlet header or infer other uniform-block choices.
+
+A nonempty draw plans bindings plus `6 * meshlet_count` CPU command words. It
+iterates the validated local entries and emits bounded command chunks. The
+schedule remains `DMA(next), DRAW(previous), WAIT(data)`, with the initial wait
+and final DRAW. An empty Mesh emits neither bindings nor facts. Previously
+recorded commands are independent of later directory refresh or descriptor Drop;
+external metadata/payload storage must still remain valid through execution.
+Transport failure poisons partial recording; it does not promise rollback.
 
 ## UI descriptor and range recording
 
@@ -677,8 +724,9 @@ invalid again. An empty mesh or binding without DRAW does not dirty it.
 Consecutive UI calls therefore contain only range commands, or descriptor
 DMA/data wait when the description changes. A 3D draw followed by the same UI
 description restores the fence without redundantly reloading the descriptor.
-Each hardware UI call reads its live external grid, and Global/Render/uniform
-bindings survive UI. The caller owns grid/atlas mutation and retirement ordering.
+Each hardware UI call reads the recorded grid address, and Global/Render/uniform
+bindings survive UI. The caller keeps grid/atlas inputs unchanged until executions
+retire and referring CBs are discarded; no reference locks track this obligation.
 
 Explicit texture invalidation appends `WAIT(all), TEX_INVALIDATE`; it does not
 alter binding snapshots or automatically invalidate on a texture switch.
@@ -689,19 +737,18 @@ above; normal Pass closure is not duplicated.
 flowchart LR
     Prepared["Prepared spans / desired snapshots"] --> Native["Caller-provided canonical native blocks"]
     Native --> Bind["Local binding plan / complete-draw preflight"]
-    Directory["Immutable Mesh directory"] --> Mesh["Validate then eight-entry expansion"]
+    Directory["Owned validated CPU directory"] --> Mesh["Emit meshlet command chunks"]
     Bind --> Stored["CPU-owned command + immutable push backing"]
     Mesh --> Stored
     UI["UI descriptor + cell ranges"] --> Stored
     Stored --> Seal["One-time terminal fence if needed / END / padding"]
-    Seal --> Publish["execute_prepare: ownership + publication"]
+    Seal --> Publish["execute_publish: CB ownership + cache publication"]
     Publish --> Start["COUNT / START"]
-    PreparedOwner --> Send["execute_start: COUNT then START"]
-    Send --> Poll["Normal idle retires once; faults retain owner"]
+    Start --> Poll["Normal idle retires once; faults retain owner"]
 ```
 
-These are implemented private entry points; the public resource facade and
-capture adaptation are not connected by this diagram.
+These are private recording/execution stages behind the public resource facade.
+There is no runtime capture gate in the submission path.
 
 ## Extent values and first fault
 
@@ -711,11 +758,11 @@ The shared schema defines one ordinary `GpuMemory` value with two u16 fields,
 resource semantics impose their own alignment/shape requirements. The public
 `GpuMemory::from_sectors` unsafe method lives in `gpu_api`; its checked call
 requires an unsafe block and validates that extent once. Descriptors do not
-own allocation or establish physical alias/lifetime safety. The current target
-frontend still accepts an application literal naming ordinary-value private
-fields, so this root has not qualified the intended registration boundary.
-An explicit required regression exposes that bypass rather than treating
-ordinary-field privacy as enforced.
+own allocation or establish physical alias/lifetime safety. The checked frontend
+runs rustc privacy checks and rejects application construction, reads and writes
+of those private fields. The required private-field-construction regression
+verifies that rejection; it is not an accepted bypass. Approved-library code can
+still construct the representation internally.
 
 `gpu_api_fault` reserves 16 low-memory words independently of the arena. Its
 first snapshot is magic `0xfa17`, site, code, two detail words, DSEG3, and ten
@@ -752,10 +799,10 @@ u32 oracle for all four color/depth Load/Clear combinations. It verifies command
 bytes, not executed pixels. `host/gpu_api_fault.rs` tests the internal validator
 and first-fault path with an offline backpressured UART peer in both profiles;
 the actual public constructors have separate approved-root tests.
-`host/gpu_api_bind.rs` covers per-CB snapshots, equal values from distinct spans,
+`host/gpu_api_bind.rs` covers per-CB snapshots, source revisions,
 state drain coalescing, immutable Instance reuse and group preflight.
 `host/gpu_api_mesh.rs` checks directory/subset, cross-page/batch expansion and
-late-entry rejection against an independent command oracle. Its directory-only
+registration/refresh rejection against an independent command oracle. Its directory-only
 fixture does not render metadata or payload pixels.
 `host/gpu_api_ui_packet.rs` checks rectangle commands, consecutive UI and actual
 staging overlaps across bindings, DRAW and Target changes.

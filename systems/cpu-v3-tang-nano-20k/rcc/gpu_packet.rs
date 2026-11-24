@@ -59,9 +59,25 @@ fn gpu_packet_invalidate_textures(slot: u16) -> bool {
 }
 
 // Native DMA_LOCAL; all callers use legal aligned staging blocks and lengths.
+const GPU_PACKET_WORLD_LOCAL: u16 = 80;
+// Local destinations are 32-byte qwords: World uniform20 starts at qword80.
+// The native size code2 transfers the complete 128-byte World matrix packet.
+const GPU_PACKET_MATRIX_SIZE: u16 = 2;
+fn gpu_packet_dma_fields(local: u16, size: u16) -> u16 {
+    (local << 3) | (size << 1)
+}
+fn gpu_packet_dma_matches(low: u16, high: u16, local: u16, size: u16) -> bool {
+    high >> 12 == 1 && low & 1023 == gpu_packet_dma_fields(local, size)
+}
+fn gpu_packet_dma_sector(low: u16, high: u16) -> u16 {
+    ((high & 4095) << 4) | (low >> 12)
+}
+fn gpu_packet_dma_word(low: u16) -> u16 {
+    ((low >> 10) & 3) << 4
+}
 fn gpu_packet_dma(mut code: Array<u16>, at: u16, c: Array<u16>, word: u16, local: u16, size: u16) {
     let source = c[GPU_RECORD_PUSH_BASE] + (word >> 6);
-    code[at] = (source << 12) | ((word & 63) << 6) | (local << 3) | (size << 1);
+    code[at] = (source << 12) | ((word & 63) << 6) | gpu_packet_dma_fields(local, size);
     code[at + 1] = 0x1000 | (source >> 4);
 }
 

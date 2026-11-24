@@ -93,7 +93,7 @@ def replay(name, cp, mutation=None, expected=None):
     if mutation:
         old, new = {
             'ignore_object_ready': ('APPLY_R:if(cp_ready)', "APPLY_R:if(1'b1)"),
-            'wrong_uniform_bank': ("{3'b101,page_uniform[{command[0],1'b0}+:2],4'b1011}", "{3'b101,2'd0,4'b1011}"),
+            'wrong_uniform_bank': ("{3'b101,page_uniform[{command[0],1'b0}+:2],command[1]?4'b1111:4'b1011}", "{3'b101,2'd0,command[1]?4'b1111:4'b1011}"),
             'early_flush': ('FLUSHING:if(flush_complete)', "FLUSHING:if(1'b1)"),
             'wrong_depth_field': ('depth_func<=cp_q[2:0]', 'depth_func<=cp_q[3:1]'),
         }[mutation]
@@ -147,7 +147,7 @@ def replay(name, cp, mutation=None, expected=None):
 
 freeze()
 cp = module((ROOT / 'command-portable.v').read_text(), 'gpu_command_processor')
-for name in ['pot', 'view']:
+for name in ['pot', 'view', 'scene-material']:
     replay(name, cp)
 for mutant in ['ignore_object_ready', 'wrong_uniform_bank', 'early_flush', 'wrong_depth_field']:
     replay('pot', cp, mutation=mutant)

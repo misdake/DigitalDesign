@@ -169,7 +169,6 @@ def pack(output,main_log2=8,marker_log2=8):
                 key=f'GPU_RENDERER_{label}_{axis}_{part}'
                 constants=re.sub(rf'(pub const {key}:u16=)\d+;',rf'\g<1>{n};',constants)
     constants += 'pub const BLOX_BACKGROUND_SECTOR:u16=45056;\npub const BLOX_MARKER_SECTOR:u16=59392;\n'
-    constants += 'pub const BLOX_STATIC_COLOR_SECTOR:u16=40960;\npub const BLOX_STATIC_DEPTH_SECTOR:u16=43008;\n'
     constants+=f'pub const BLOX_MARKER_LOG2:u16={marker_log2};\npub const BLOX_MARKER_SECTORS:u16={M.SIZE*M.SIZE//64};\n'
     for c in catalog:
         constants+=f"pub const {c['name']}_FIRST:u16={c['first']};\n"+f"pub const {c['name']}_COUNT:u16={c['count']};\n"
@@ -297,13 +296,7 @@ pub const BLOX_UI_DESC:UiAtlasDesc=unsafe{UiAtlasDesc::from_asset(BLOX_UI_BYTES)
         data=(output/r['file']).read_bytes();r.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
         assert r['address']+len(data)<=0x600000 or 0x680000<=r['address']<r['address']+len(data)<=0x7df800
     extents=sorted((r['address'],r['address']+r['bytes'],r['file']) for r in manifest['resources'])
-    reservations=[dict(kind='static_color',address=0x500000,bytes=262144),dict(kind='static_depth',address=0x540000,bytes=262144)]
-    manifest['runtime_reservations']=reservations
-    for reservation in reservations:
-        first=reservation['address'];end=first+reservation['bytes']
-        R.validate_asset_range(first,reservation['bytes'])
-        assert first%65536==0 and all(end<=a or b<=first for a,b,_ in extents)
-        assert end<=0x600000 or first>=0x640000
+    manifest['runtime_reservations']=[]
     assert all(a[1] <= b[0] for a,b in zip(extents,extents[1:]))
     manifest.update(profile='production',surface='column-major-16x16-pad16',
         borrowed=dict(color=0x600000,depth=0x480000,plane_capacity=262144),catalog=catalog,meshes=meshes,levels=chosen,

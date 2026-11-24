@@ -9,6 +9,9 @@ exact camera readout in GPU Lab.
 The geometry page owns its registered scene resources in `GeometryPage`.
 Drawing passes their copyable `*Ptr` values; resource bodies retain allocation
 and destruction, while the main loop owns the page for the application's run.
+Geometry and GPU Lab use the shared World/View draw path. Static, animated and
+nonuniform models keep their world-space matrices while each page selects its
+camera; Geometry ROM composes the effective position and normal matrices.
 
 Start with the [application quickstart](/systems/cpu-v3-tang-nano-20k/docs/application-quickstart.md)
 for prerequisites, build, simulation and the source/asset recipe.

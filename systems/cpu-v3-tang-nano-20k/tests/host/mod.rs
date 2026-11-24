@@ -104,8 +104,8 @@ mod xinput_inverse;
 #[path = "compiler/gpu_api_model_cache.rs"]
 mod gpu_api_model_cache;
 
-#[path = "compiler/gpu_api_scene_patch.rs"]
-mod gpu_api_scene_patch;
+#[path = "compiler/gpu_api_replay.rs"]
+mod gpu_api_replay;
 
 #[path = "platform/fixed_depth.rs"]
 mod fixed_depth;

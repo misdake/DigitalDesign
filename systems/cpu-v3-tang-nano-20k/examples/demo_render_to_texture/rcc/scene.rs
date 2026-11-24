@@ -61,6 +61,7 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
     let material = demo_material(demo_white(), true);
     let texture = demo_texture();
     let ordinary_view = texture.view();
+    let offscreen_view = offscreen.texture_view();
     let mut state = demo_state();
     let mut update = first;
     while end == 0 || update < end {
@@ -92,7 +93,6 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
             state.set_filter(TextureFilter::Bilinear);
         }
         {
-            let view = offscreen.texture_view();
             if (update - first) & 1 == 0 {
                 let mut pass = buffer.pass(
                     color_b.ptr(),
@@ -101,7 +101,14 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
                     DepthLoad::clear(65535),
                 );
                 pass.set_state(state.ptr());
-                consume(&mut pass, &camera, &screen, &consumer, &material, &view);
+                consume(
+                    &mut pass,
+                    &camera,
+                    &screen,
+                    &consumer,
+                    &material,
+                    &offscreen_view,
+                );
             } else {
                 let mut pass = buffer.pass(
                     color_a.ptr(),
@@ -110,9 +117,16 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
                     DepthLoad::clear(65535),
                 );
                 pass.set_state(state.ptr());
-                consume(&mut pass, &camera, &screen, &consumer, &material, &view);
+                consume(
+                    &mut pass,
+                    &camera,
+                    &screen,
+                    &consumer,
+                    &material,
+                    &offscreen_view,
+                );
             }
-            // The recorded descriptor outlives this CPU TextureView.
+            // The sampling view is persistent; only its backing pixels change.
         }
 
         gpu.submit(buffer);

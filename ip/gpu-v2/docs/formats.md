@@ -76,7 +76,7 @@ origins use signed 32-bit F16 values.
 | 12..20 | Normal 3 × 3 matrix, row-major |
 | 21 | F16 homogeneous constant 1 (`65536`), read by the Vertex bootstrap |
 | 22 | Command profile: mesh uniform RGBA8888; R low8, A high8; white/opaque is `0xffffffff` |
-| 23 | Command profile: reserved zero |
+| 23 | Reserved zero in the precomposed format |
 | 24..29 | Billboard mode: direction pairs `(Ax, Bx, Ay, By, Az, Bz)` in projected coordinates. Written zero in a normal Mesh block |
 | 30..31 | Reserved zero. The Billboard bootstrap reads word30 for its zero normal |
 
@@ -86,6 +86,61 @@ multiplied by filtered texture alpha in ROP; RGB vertices supply opaque alpha. N
 is encoded by the driver as white RGB and opaque alpha, with no enable
 flag or hardware default selection. Non-command component APIs retain their
 independent uniform contracts. `mesh_color_words` encodes words22/23.
+
+### Resident View/World blocks
+
+DRAW bit1 selects World20/21 plus the shared View23. These are distinct from
+precomposed Instance128. DRAW bit2 selects the vertical Billboard basis; bit2
+requires bit1. Ordinary Mesh ignores the facing selector.
+
+| World u32 words | Contents |
+| --- | --- |
+| 0..11 | Source-world affine position3x4 |
+| 12 | Q16.16 one (`65536`) |
+| 13..14 | Q16.16 material ambient/directional responses, not multiplied by light |
+| 15 | Zero |
+| 16..24 | Source-world inverse-transpose normal3x3 |
+| 25 | Zero |
+| 26..31 | Material24 below |
+
+World is two64-byte sections. Normal and Material share the second section;
+its final32-byte block begins with the last normal coefficient and zero padding.
+SET_RENDER's extended format skips those first8 bytes. A 128-byte World upload
+uses four32-byte CPU LCOPY operations.
+
+| View u32 words | Contents |
+| --- | --- |
+| 0..11 | Projected camera affine position3x4 |
+| 12..20 | Reflected camera normal3x3 |
+| 21 | Q16.16 one |
+| 22..23 | Projected horizontal camera-right X/Y for vertical Billboard |
+| 24..27 | Scene16: far, view-light XYZ and projection rays; same first16 bytes as NativeGlobal64 |
+| 28..29 | Q16.16 ambient/directional scene intensities |
+| 30 | Projected horizontal camera-right Z |
+| 31 | Billboard camera-plane focal scale |
+
+View's tail32 bytes can be refreshed independently. Its two Billboard coefficients
+at words30/31 must survive a lighting-only update.
+
+| Material u32 word (World index) | Encoding |
+| --- | --- |
+| 0 (26) | Texture descriptor, identical to NativeRender32 word0 |
+| 1 (27) | Specular RGB low24, high8 zero |
+| 2 (28) | Depth func2:0, depth-write3, blend4, unlit5, signed LOD bias15:8; other bits zero |
+| 3 (29) | Reserved zero |
+| 4 (30) | Uniform RGBA8888 |
+| 5 (31) | Lighting mode1:0, shininess code6:2, epoch31:16; other bits zero |
+
+Geometry composes into uniform22 and leaves World/View immutable. Ordinary
+Mesh writes derived position0..11, normal12..20, one21 and biased light-response
+scratch24/25. The rounded Q8 windows update the existing CP lighting registers.
+Billboard writes position, one and expanded direction pairs24..29; it is unlit.
+The original Vertex/bounds/Billboard consumers keep their old coefficient layout.
+Other derived words are not initialized. A later precomposed draw selecting22
+must first reload the complete block, whose validity is cleared by a World draw.
+
+The [preparation calendar](/ip/gpu-v2/docs/execution.md#resident-matrix-preparation)
+defines DMA priority, ownership and the transition back to ordinary Vertex.
 
 ## Native command objects
 

@@ -72,6 +72,9 @@ runtime failures resolve source lines through the snapshot's debug metadata.
 
 ## Follow the source before creating a new application
 
+Use the [GPU reading route and frame/lifetime/reuse contracts](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-guide.md)
+alongside the example. Native layout tables are reference material, not startup prerequisites.
+
 Open `examples/sample_hello_gpu/rcc/main.rs`, then `rcc/scene.rs`,
 `tools/assets.py` and `application.rs`. This standalone sample contains only a
 triangle and UI label, without the capability demo's menus. Main records Back,

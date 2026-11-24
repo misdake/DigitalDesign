@@ -20,6 +20,8 @@ fn main(){
  let background=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0xb000,2048)});
  let asset_alias=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0xa000,2048)});
  let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
+ let extent_mismatch=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0xd000,1600)});
+ let command_alias=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9800,2048)});
  let depth_alias=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});
  let mesh=Mesh::from_native(MeshDesc{directory_sector:0xa000,directory_word:0,meshlet_count:1,storage:unsafe{GpuMemory::from_sectors(0xa000,16)}});
 "#;
@@ -35,7 +37,7 @@ fn source(copy: bool) -> String {
         )
     };
     format!(
-        "{PREFIX}{} let binding=a.target_binding();dev_send(7,1,0);gpu.submit(a);a=gpu.wait();let choice=dev_recv(7,2);dev_send(7,1,9);\nif choice==1 {{a.retarget_target(binding, background.ptr(), depth.ptr());}}else if choice==2 {{a.retarget_target(binding, asset_alias.ptr(), depth.ptr());}}else if choice==3 {{a.retarget_target(binding, color_b.ptr(), depth_alias.ptr());}}else{{a.retarget_target(binding, color_b.ptr(), depth.ptr());}}\ndev_send(7,1,1);gpu.submit(a);a=gpu.wait();{} let fresh=b.target_binding();dev_send(7,1,2);\ndrop(model);drop(model2);drop(material);drop(material2);display.set_next_swap(color_b.ptr());display.wait_vblank();a.retarget_target(binding, color_a.ptr(), depth.ptr());dev_send(7,1,3);drop(a);drop(b);halt(0x600d);}}",
+        "{PREFIX}{} let binding=a.target_binding();dev_send(7,1,0);gpu.submit(a);a=gpu.wait();let choice=dev_recv(7,2);if choice==6 {{a.reset();}}dev_send(7,1,9);\nif choice==1 {{a.retarget_target(binding, background.ptr(), depth.ptr());}}else if choice==2 {{a.retarget_target(binding, asset_alias.ptr(), depth.ptr());}}else if choice==3 {{a.retarget_target(binding, color_b.ptr(), depth_alias.ptr());}}else if choice==4 {{a.retarget_target(binding, extent_mismatch.ptr(), depth.ptr());}}else if choice==5 {{a.retarget_target(binding, command_alias.ptr(), depth.ptr());}}else{{a.retarget_target(binding, color_b.ptr(), depth.ptr());}}\ndev_send(7,1,1);gpu.submit(a);a=gpu.wait();{} let fresh=b.target_binding();dev_send(7,1,2);\ndrop(model);drop(model2);drop(material);drop(material2);display.set_next_swap(color_b.ptr());display.wait_vblank();a.retarget_target(binding, color_a.ptr(), depth.ptr());dev_send(7,1,3);drop(a);drop(b);halt(0x600d);}}",
         record("a", "color_a"),
         record("b", "color_b")
     )
@@ -51,6 +53,10 @@ struct Snapshot {
 enum Fault {
     None,
     Generation,
+    Reset,
+    ExtentMismatch,
+    CommandAlias,
+    FactIndex,
     Span,
     CopySpan,
     CopyDestination,
@@ -90,6 +96,7 @@ impl Default for Seen {
 struct Peer {
     kind: u8,
     records: usize,
+    record_words: usize,
     facts: usize,
     execution: usize,
     present: usize,
@@ -126,6 +133,9 @@ impl Device for Peer {
                 Fault::SourceAlias => 1,
                 Fault::AssetAlias => 2,
                 Fault::SamePlanes => 3,
+                Fault::ExtentMismatch => 4,
+                Fault::CommandAlias => 5,
+                Fault::Reset => 6,
                 Fault::Transport if s.patch => 1,
                 _ => 0,
             };
@@ -161,6 +171,7 @@ impl Device for Peer {
             s.patch = true;
             match self.fault {
                 Fault::Generation => m[self.records + 20] ^= 2,
+                Fault::FactIndex => m[self.records + 27] = 65,
                 Fault::Span => m[self.records + 22] = m[self.records + 6] + 1,
                 Fault::CopySpan => m[self.records + 128] = m[self.records + 22],
                 Fault::CopyDestination => m[self.records + 130] ^= 512,
@@ -181,7 +192,8 @@ impl Device for Peer {
             }
         }
         let slot = usize::from(value == 2);
-        let c = m[self.records + slot * 224..self.records + slot * 224 + 224].to_vec();
+        let at = self.records + slot * self.record_words;
+        let c = m[at..at + self.record_words].to_vec();
         let cb = usize::from(c[1]) * 64;
         let pb = usize::from(c[3]) * 64;
         s.snapshots.push((
@@ -213,6 +225,13 @@ fn run(
             Box::new(Peer {
                 kind,
                 records: global(program, "GPU_CB_RECORDS"),
+                record_words: program
+                    .debug
+                    .consts
+                    .iter()
+                    .find(|x| x.0 == "GPU_API_CB_WORDS")
+                    .unwrap()
+                    .2 as usize,
                 facts: global(program, "GPU_CB_RESOURCE_FACTS"),
                 execution: global(program, "GPU_EXECUTION"),
                 present: global(program, "GPU_PRESENT"),
@@ -298,10 +317,9 @@ fn target_only_rejections_preserve_all_command_payload_and_fact_bytes() {
     let program = compile(&source(true), false, "target-guards");
     for fault in [
         Fault::Generation,
-        Fault::Span,
-        Fault::CopySpan,
-        Fault::CopyDestination,
-        Fault::CopyCount,
+        Fault::Reset,
+        Fault::ExtentMismatch,
+        Fault::CommandAlias,
         Fault::Owner(1),
         Fault::Owner(2),
         Fault::Owner(3),
@@ -328,6 +346,64 @@ fn target_only_rejections_preserve_all_command_payload_and_fact_bytes() {
             &m[facts..facts + old.facts.len()],
             old.facts,
             "{fault:?} facts"
+        );
+    }
+}
+#[test]
+fn target_only_debug_rechecks_sealed_internal_proof() {
+    let program = compile(&source(true), true, "target-debug-proof");
+    for fault in [
+        Fault::Span,
+        Fault::CopySpan,
+        Fault::CopyDestination,
+        Fault::CopyCount,
+        Fault::FactIndex,
+    ] {
+        let (signal, seen, cpu) = run(&program, fault);
+        assert_ne!(signal, 0x600d, "{fault:?}");
+        let s = seen.borrow();
+        assert_eq!(s.starts, 1);
+        let old = &s.snapshots.iter().find(|x| x.0 == 9).unwrap().1;
+        let memory = cpu.physical_memory_slice();
+        let push = usize::from(old.control[3]) * 64;
+        assert_eq!(&memory[push..push + old.push.len()], old.push);
+        let facts = global(&program, "GPU_CB_RESOURCE_FACTS");
+        assert_eq!(&memory[facts..facts + old.facts.len()], old.facts);
+    }
+    let (signal, _, _) = run(&program, Fault::None);
+    assert_eq!(
+        signal, 0x600d,
+        "debug and release accept the same ordinary replay"
+    );
+}
+#[test]
+fn target_only_release_rejects_nonrelocatable_stream_shapes() {
+    let ordinary = source(false);
+    for (label, prefix) in [
+        (
+            "two-targets",
+            "{let p=a.pass(color_a.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::load());}",
+        ),
+        (
+            "trailing-copy",
+            "a.copy_color(background.ptr(),color_a.ptr());",
+        ),
+        (
+            "wrong-copy-target",
+            "a.copy_color(background.ptr(),color_b.ptr());",
+        ),
+    ] {
+        let text = ordinary.replace(
+            "let binding=a.target_binding();",
+            &format!("{prefix}let binding=a.target_binding();"),
+        );
+        let program = compile(&text, false, label);
+        let (signal, seen, _) = run(&program, Fault::None);
+        assert_ne!(signal, 0x600d, "{label}");
+        assert_eq!(
+            seen.borrow().starts,
+            0,
+            "{label} rejected before submission"
         );
     }
 }

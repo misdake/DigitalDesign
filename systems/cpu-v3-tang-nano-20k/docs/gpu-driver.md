@@ -1,4 +1,7 @@
-# RCC GPU driver
+# Legacy native diagnostic GPU driver
+
+For ordinary applications, start with [Using the GPU resource API](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-guide.md).
+This chapter describes the separate legacy snapshot interface retained by diagnostics.
 
 The native snapshot interface is owned by `rcc/gpu_legacy.rs`. The low-level
 regressions, including the DS2 UI fixture, use this interface. `rcc/gpu.rs`

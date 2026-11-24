@@ -85,6 +85,14 @@ P[j] = signed_32((sum(p[k]*M[4*j+k]) + 65536*M[4*j+3]) >> 16)
 v[j] = signed_32(sum(n[k]*A[3*j+k]) >> 16)
 ```
 
+For a resident World draw, the preparation calendar first computes
+`M = View.position * World.position` (affine composition) and
+`A = View.normal * World.normal`, retaining ACC47:16 after each complete dot.
+It writes the ordinary matrix layout to uniform22; all position decode, bounds,
+normal packing and subsequent Vertex steps above are unchanged. The
+[block format](/ip/gpu-v2/docs/formats.md#resident-viewworld-blocks) defines the
+source bindings and their reserved words.
+
 Normal packing starts from v, after the MAC/register boundary:
 
 ```text

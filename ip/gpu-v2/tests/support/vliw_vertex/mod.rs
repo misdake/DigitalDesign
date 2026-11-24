@@ -8,6 +8,7 @@ pub struct Case {
     pub normal18: bool,
     pub rgb: bool,
     pub billboard: bool,
+    pub world: bool,
     pub slot: bool,
     pub cull: u8,
     pub uniform: u8,
@@ -19,6 +20,7 @@ impl Default for Case {
             normal18: false,
             rgb: false,
             billboard: false,
+            world: false,
             slot: false,
             cull: 0,
             uniform: 20,
@@ -150,7 +152,37 @@ pub fn data(case: Case) -> Data {
         payload.push(0);
     }
     let mut rows = Vec::new();
-    for (n, q) in uniform.as_chunks::<2>().0.iter().enumerate() {
+    let mut uploaded = uniform;
+    if case.world {
+        assert!(!case.billboard && case.uniform <= 21);
+        uploaded[0] /= 2;
+        uploaded[5] /= 4;
+        uploaded[12] *= 2;
+        uploaded[16] *= 4;
+        uploaded[16..25].copy_from_slice(&uniform[12..21]);
+        uploaded[16] *= 2;
+        uploaded[20] *= 4;
+        uploaded[12] = 65536;
+        uploaded[13..16].fill(0);
+        uploaded[25..].fill(0);
+        uploaded[30] = uniform[22];
+        let mut view = [0u32; 32];
+        for (index, value) in [
+            (0, 131072),
+            (5, 262144),
+            (10, 65536),
+            (12, 32768),
+            (16, 16384),
+            (20, 65536),
+            (21, 65536),
+        ] {
+            view[index] = value;
+        }
+        for (n, q) in view.as_chunks::<2>().0.iter().enumerate() {
+            rows.push((368 + n as u16, u64::from(q[0]) | (u64::from(q[1]) << 32)));
+        }
+    }
+    for (n, q) in uploaded.as_chunks::<2>().0.iter().enumerate() {
         rows.push((
             u16::from(case.uniform) * 16 + n as u16,
             u64::from(q[0]) | (u64::from(q[1]) << 32),
@@ -256,6 +288,7 @@ fn drive(case: Case, fault: Option<&str>, repeats: usize) -> Run {
             ce: wall % 9 > 2,
             slot: case.slot,
             mesh_color: 0xffa1_b2c3,
+            world_transform: case.world,
             output_ready: wall % 13 > 3,
             ..Default::default()
         };

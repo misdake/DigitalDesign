@@ -16,16 +16,15 @@ It no longer renders a shaking or falling tile. Player crack/fall timing and
 other animations remain unchanged. Undo cancels the fracture; restart and stage
 replacement restore every cell through the normal presentation-owned reset.
 
-The application records fragile geometry when rebuilding its static pixel cache. This
-opaque Less/depth-write/Replace group precedes the dynamic bridge/button/pad,
-shadow and player path. It is separate from colored bridge materials, alpha
-hints, shadow blending and UI. No transparent material or depth state is merged
-into this group. Stable frames restore cached color and depth rather than
-executing this group's vertices and triangles. A changed hidden-cell identity
-invalidates both cached planes: patching the indices alone cannot erase an
-already cached pixel or its depth. Rebuild completes before the new pair is
-restored; undo similarly rebuilds the restored geometry. There is no local
-color eraser, depth repair or per-frame index patch.
+The application includes fragile geometry in its static command recording. This
+opaque Less/depth-write/Replace group precedes dynamic bridges/buttons/pads,
+shadow and players. It is separate from colored bridge materials, alpha hints
+and UI. Stable frames replay the same geometry commands; each replay initializes
+depth and redraws visible coverage directly into the selected target. A changed
+hidden-cell identity invalidates recording, so undo and fracture use fresh
+resource/coverage snapshots. Index mutation and re-recording occur only with
+both preceding CBs retired. No local color eraser, depth repair or per-frame
+command patch is needed.
 
 ## Exact source geometry and storage
 
@@ -80,7 +79,7 @@ recorded CB remains usable. A stable hidden index causes no mesh writes.
 ## Retirement and visibility
 
 At the start of scene preparation, after the preceding GPU work has retired and
-before rebuilding the static cache, the caller applies a visibility change. A busy
+before rebuilding the static recording, the caller applies a visibility change. A busy
 or transport-error Device4 status stops patch/rebuild/free before mutation. Level
 replacement resets both retired CBs before freeing/rebuilding geometry. Finite
 exit drops both CBs after their last wait before freeing geometry and context.

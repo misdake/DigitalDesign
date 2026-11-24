@@ -148,3 +148,48 @@ fn gpu_window_copy_lines(
     }
     read_dseg_page(3) == saved
 }
+
+// Prepared allocations and frame CBs need not share a DSEG3 page. Retain the
+// direct LCOPY path when possible; otherwise bounce bounded aligned CPU lines.
+fn gpu_window_copy_span(
+    source: u16,
+    source_word: u16,
+    target: u16,
+    target_word: u16,
+    count: u16,
+    staging: Array<u16>,
+) -> bool {
+    if count == 0 {
+        return true;
+    }
+    if (source_word | target_word | count) & 15 != 0
+        || source_word > 32768
+        || target_word > 32768
+        || count > 32768 - source_word
+        || count > 32768 - target_word
+    {
+        return false;
+    }
+    if source >> 8 == target >> 8
+        && source_word <= 16384 - ((source & 255) << 6)
+        && target_word <= 16384 - ((target & 255) << 6)
+        && count <= 16384 - ((source & 255) << 6) - source_word
+        && count <= 16384 - ((target & 255) << 6) - target_word
+    {
+        return gpu_window_copy_lines(source, source_word, target, target_word, count);
+    }
+    let mut at: u16 = 0;
+    while at < count {
+        let mut words = count - at;
+        if words > 64 {
+            words = 64;
+        }
+        if !gpu_window_read_words(source, source_word + at, staging, words)
+            || !gpu_window_write_words(target, target_word + at, staging, words)
+        {
+            return false;
+        }
+        at += words;
+    }
+    true
+}

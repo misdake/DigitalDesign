@@ -51,6 +51,8 @@ fn main(){
  check(gpu_config_drop_buffer(1));check(gpu_config_take_buffer()==65535);
  GPU_EXECUTION[0u16]=GPU_EXEC_IDLE;GPU_EXECUTION[1u16]=0;
  let config:GpuConfig=GpuConfig{object_arena_bytes:32,command_a:a,command_b:absent};
+ check(!gpu_config_init(config));GPU_EXECUTION[GPU_EXEC_CONTROLLER]=0;
+ check(!gpu_config_init(config));check(gpu_config_drop_buffer(0));
  check(gpu_config_init(config));check(GPU_EXECUTION[GPU_EXEC_CONFIGURED]==1&&GPU_EXECUTION[GPU_EXEC_TAKEN]==0);
  check(gpu_config_take_buffer()==0&&gpu_config_take_buffer()==65535);check(gpu_record_data(1)[GPU_RECORD_PHASE]==0);
  let memory:GpuMemory=GpuMemory{first_sector:0x8000,sector_count:2048};check(gpu_surface_init(SURFACE.as_array(),memory));

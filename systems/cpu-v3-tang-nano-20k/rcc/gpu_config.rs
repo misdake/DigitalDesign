@@ -6,8 +6,8 @@ mod gpu_arena;
 use gpu_arena::*;
 mod gpu_execute;
 use gpu_execute::*;
-mod gpu_group;
-use gpu_group::*;
+mod gpu_record;
+use gpu_record::*;
 
 fn gpu_config_command_valid(memory: CommandMemory) -> bool {
     let command: GpuMemory = memory.commands;
@@ -63,10 +63,23 @@ fn gpu_config_init(config: GpuConfig) -> bool {
     if config.object_arena_bytes == 0
         || config.object_arena_bytes > GPU_API_ARENA_BYTES
         || config.object_arena_bytes & 31 != 0
+        || GPU_EXECUTION[GPU_EXEC_CONTROLLER] != 0
+        || GPU_EXECUTION[1u16] != 0
         || !gpu_arena_empty()
         || !gpu_config_command_valid(config.command_a)
     {
         return false;
+    }
+    // CBs are not arena objects. A handed-out, undropped record still owns its
+    // slot even after the public Gpu token has been dropped.
+    let mut slot: u16 = 0;
+    while slot < GPU_EXECUTION[GPU_EXEC_CONFIGURED] {
+        if GPU_EXECUTION[GPU_EXEC_TAKEN] & (1u16 << slot) != 0
+            && gpu_record_data(slot)[GPU_RECORD_PHASE] != 0
+        {
+            return false;
+        }
+        slot += 1;
     }
     let second: Option<CommandMemory> = config.command_b;
     if let Some(b) = second {
@@ -90,6 +103,7 @@ fn gpu_config_init(config: GpuConfig) -> bool {
         }
         GPU_EXECUTION[GPU_EXEC_CONFIGURED] = 2;
     }
+    GPU_EXECUTION[GPU_EXEC_CONTROLLER] = 1;
     true
 }
 // 65535 is exhaustion/error; real slot zero is an ordinary successful identity.
@@ -131,9 +145,6 @@ fn gpu_config_drop_buffer(slot: u16) -> bool {
     let mut c = gpu_record_data(slot);
     if c[GPU_RECORD_PHASE] != GPU_RECORD_READY && c[GPU_RECORD_PHASE] != GPU_RECORD_SEALED {
         return false;
-    }
-    if c[GPU_GROUP_TEMPLATE] != 0 {
-        gpu_group_release_all_metadata(slot);
     }
     c[GPU_RECORD_PHASE] = 0;
     // The configured CB is not a pool allocation: Drop does not reissue it.

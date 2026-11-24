@@ -17,7 +17,9 @@ module TangNano20KSdramNativeBridge108M54M #(
  wire transport_reset=COLD_START_ONLY?1'b0:reset;
  reg[20:0]qa;reg[5:0]qn;reg[3:0]qm;reg qw;reg qcontinuation;
  reg request_toggle=0,request_seen_native=0,request_seen_logic=0;
- reg[63:0]pair_head=0,pair_next=0;reg[1:0]pair_count=0;
+ reg[63:0]pair_bank0=0,pair_bank1=0;reg pair_read=0;reg[1:0]pair_count=0;
+ wire pair_write=pair_read^pair_count[0];
+ wire[63:0]pair_head=pair_read?pair_bank1:pair_bank0;
  reg initialized_q=0;reg stream_q=0;
  reg offer_valid=0,hint_valid=0,offer_write=0;reg[20:0]offer_address=0;reg[5:0]offer_words=0;
  reg[3:0]offer_mask=0;reg offer_continuation=0;
@@ -78,7 +80,7 @@ module TangNano20KSdramNativeBridge108M54M #(
  end endgenerate
  always @(posedge logic_clk)begin
   if(transport_reset)begin
-   request_toggle<=0;request_seen_logic<=0;pair_count<=0;pair_head<=0;pair_next<=0;write_done<=0;write_seen<=0;
+   request_toggle<=0;request_seen_logic<=0;pair_count<=0;pair_bank0<=0;pair_bank1<=0;pair_read<=0;write_done<=0;write_seen<=0;
    initialized_q<=0;stream_q<=0;read_seen<=0;cpu_edge<=0;
   end else begin
    cpu_edge<=!cpu_edge;initialized_q<=core_initialized;request_seen_logic<=request_seen_native;
@@ -87,13 +89,13 @@ module TangNano20KSdramNativeBridge108M54M #(
     qa<=address;qn<=words;qm<=write_mask;
     qw<=writing;qcontinuation<=request_continuation;request_toggle<=!request_toggle;
    end
+   if(push)begin
+    if(pair_write)pair_bank1<=write_data;else pair_bank0<=write_data;
+   end
+   if(pop)pair_read<=!pair_read;
    case({push,pop})
-    2'b10:begin if(pair_count==0)pair_head<=write_data;else pair_next<=write_data;pair_count<=pair_count+1'b1;end
-    2'b01:begin pair_head<=pair_next;pair_count<=pair_count-1'b1;end
-    2'b11:begin
-     if(pair_count==2)begin pair_head<=pair_next;pair_next<=write_data;end
-     else pair_head<=write_data;
-    end
+    2'b10:pair_count<=pair_count+1'b1;
+    2'b01:pair_count<=pair_count-1'b1;
    endcase
    if(raw_read_valid)read_seen<=read_visible;
    if(write_seen!=write_visible)begin

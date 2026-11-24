@@ -19,7 +19,8 @@
 // 外部DMA负责把原始字送入SP；不实现SDRAM或Mesh目录的地址遍历。
 module shared_meshlet #(parameter BOUNDS_CULL=1)( 
 `ifdef GPU_V2_COMMAND_PORTS
- input[31:0]mesh_color,
+ input[31:0]mesh_color,input world_transform,billboard_vertical,
+ output prepared_light_we,prepared_light_select,output[8:0]prepared_light_data,
 `endif
 
  input clk,reset,ce,start,slot,
@@ -84,13 +85,30 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  wire invalid_header=vertices>64||triangles>96||uniform_base[5:2]!=4'd5||
                      (triangles!=0&&(vertices==0||index_cursor<vertex_rows));
 `endif
- shared_frontend #(.RESULT_COMPACT(1),.SP_COMPACT(1),.SOURCE_READ(1),.BOUNDS_CULL(BOUNDS_CULL)) core(
+ // The trusted command ABI admits only blocks20..23. Keep validation against
+ // the raw header below, while making its invariant address prefix physical.
+`ifdef GPU_V2_TRUSTED_FRONTEND
+ wire[5:0]core_uniform_base={4'd5,uniform_base[1:0]};
+`else
+ wire[5:0]core_uniform_base=uniform_base;
+`endif
+ shared_frontend #(.RESULT_COMPACT(1),.SP_COMPACT(1),.SOURCE_READ(1),.BOUNDS_CULL(BOUNDS_CULL),
+`ifdef GPU_V2_COMMAND_PORTS
+ .WORLD_PREPARE(1)
+`else
+ .WORLD_PREPARE(0)
+`endif
+ ) core(
 
 `ifdef GPU_V2_COMMAND_PORTS
 .mesh_color(mesh_color),
+ .prepared_light_we(prepared_light_we),.prepared_light_select(prepared_light_select),.prepared_light_data(prepared_light_data),
+ .world_transform(world_transform),.billboard_vertical(billboard_vertical),
+`else
+ .world_transform(1'b0),.billboard_vertical(1'b0),
 `endif
   .clk(clk),.reset(reset),.ce(ce),.start_v(state==VSTART),.start_t(state==TSTART),
-  .meshlet_reset(state==CHECK&&!invalid_header),.vertex_billboard(vertex_billboard),.vertex_count(vertices),.uniform_base(uniform_base),
+  .meshlet_reset(state==CHECK&&!invalid_header),.vertex_billboard(vertex_billboard),.vertex_count(vertices),.uniform_base(core_uniform_base),
   .config_base(config_base),.vertex_base(vertex_base),.triangle_descriptor(triangle_descriptor),
   .cull_negative(cull_negative),.dma_we(dma_we&&write_safe),.dma_addr(dma_addr),.dma_data(dma_data),
   .output_ready(output_ready),.packet_ready(packet_ready),.word_ready(word_ready),

@@ -5,10 +5,11 @@ use device_abi::*;
 mod gpu_record;
 use gpu_record::*;
 
-// phase/owner/base/count/page/error; configured/taken.
-static GPU_EXECUTION: Buf<u16, 8> = Buf::new([0; 8]);
+// phase/owner/base/count/page/error; configured/taken; live public controller.
+static GPU_EXECUTION: Buf<u16, 9> = Buf::new([0; 9]);
 const GPU_EXEC_CONFIGURED: u16 = 6;
 const GPU_EXEC_TAKEN: u16 = 7;
+const GPU_EXEC_CONTROLLER: u16 = 8;
 const GPU_EXEC_IDLE: u16 = 1;
 const GPU_EXEC_HELD: u16 = 2;
 const GPU_EXEC_RUNNING: u16 = 4;
@@ -31,7 +32,7 @@ fn gpu_execute_can_init() -> bool {
 }
 fn gpu_execute_init() {
     let mut i: u16 = 0;
-    while i < 8 {
+    while i < 9 {
         GPU_EXECUTION[i] = 0;
         i += 1;
     }

@@ -36,6 +36,10 @@ fn gpu_present_open() -> bool {
     gpu_present_open_with_format(DISPLAY_RGB565)
 }
 fn gpu_present_open_with_format(format: u16) -> bool {
+    // Reject duplicate controllers without resetting the first owner's state.
+    if GPU_PRESENT[0u16] != 0 {
+        return false;
+    }
     if format > DISPLAY_LINEAR_RGB565 {
         return gpu_present_fail(1);
     }
@@ -46,6 +50,15 @@ fn gpu_present_open_with_format(format: u16) -> bool {
     }
     if status == 2 {
         return gpu_present_fail(1);
+    }
+    if s[0u16] != 0 {
+        return false;
+    }
+    if GPU_PRESENT[1u16] != 0 {
+        let sector = GPU_PRESENT[2u16];
+        if s[1u16] != sector << 6 || s[2u16] != sector >> 10 || s[3u16] != GPU_PRESENT[4u16] {
+            return gpu_present_fail(4);
+        }
     }
     let mut i: u16 = 0;
     while i < 8 {

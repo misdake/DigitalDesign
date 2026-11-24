@@ -76,8 +76,8 @@ pub struct Gear {
     request_toggle: bool,
     request_seen_native: bool,
     request_seen_logic: bool,
-    pair_head: u64,
-    pair_next: u64,
+    pair_banks: [u64; 2],
+    pair_read: u8,
     pair_count: u8,
     initialized_q: bool,
     stream_q: bool,
@@ -126,8 +126,8 @@ impl Gear {
             request_toggle: false,
             request_seen_native: false,
             request_seen_logic: false,
-            pair_head: 0,
-            pair_next: 0,
+            pair_banks: [0; 2],
+            pair_read: 0,
             pair_count: 0,
             initialized_q: false,
             stream_q: false,
@@ -218,8 +218,8 @@ impl Gear {
                 self.request_toggle = false;
                 self.request_seen_logic = false;
                 self.pair_count = 0;
-                self.pair_head = 0;
-                self.pair_next = 0;
+                self.pair_banks = [0; 2];
+                self.pair_read = 0;
                 self.write_done = false;
                 self.write_seen = false;
                 self.initialized_q = false;
@@ -244,28 +244,22 @@ impl Gear {
                     };
                     self.request_toggle = !old.request_toggle;
                 }
-                match (i.write_data_valid && logic.write_data_ready, old.pop) {
+                let push = i.write_data_valid && logic.write_data_ready;
+                if push {
+                    let bank = old.pair_read ^ (old.pair_count & 1);
+                    self.pair_banks[usize::from(bank)] = i.write_data;
+                }
+                if old.pop {
+                    self.pair_read = old.pair_read ^ 1;
+                }
+                match (push, old.pop) {
                     (true, false) => {
-                        if old.pair_count == 0 {
-                            self.pair_head = i.write_data;
-                        } else {
-                            self.pair_next = i.write_data;
-                        }
                         self.pair_count = old.pair_count.wrapping_add(1) & 3;
                     }
                     (false, true) => {
-                        self.pair_head = old.pair_next;
                         self.pair_count = old.pair_count.wrapping_sub(1) & 3;
                     }
-                    (true, true) => {
-                        if old.pair_count == 2 {
-                            self.pair_head = old.pair_next;
-                            self.pair_next = i.write_data;
-                        } else {
-                            self.pair_head = i.write_data;
-                        }
-                    }
-                    (false, false) => {}
+                    _ => {}
                 }
                 if raw_read_valid {
                     self.read_seen = old.read_visible;
@@ -342,10 +336,11 @@ impl Gear {
         if edges.native_fall {
             // These three registers have no transport-reset branch in the RTL.
             self.pop = n.phase & 31 == 15 && n.write_index & 1 != 0 && old.pair_count != 0;
+            let head = old.pair_banks[usize::from(old.pair_read)];
             self.core_write_data = if n.write_index & 1 != 0 {
-                (old.pair_head >> 32) as u32
+                (head >> 32) as u32
             } else {
-                old.pair_head as u32
+                head as u32
             };
             self.stable_read_pair = old.read_pair;
             if reset {

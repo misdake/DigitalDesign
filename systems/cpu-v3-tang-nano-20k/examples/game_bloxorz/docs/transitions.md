@@ -1,7 +1,7 @@
 ---
 id: bloxorz-live-transitions
 status: implemented
-last-verified: 2026-11-06
+last-verified: 2026-11-23
 ---
 
 # Game animation and cached RTT veil
@@ -12,55 +12,53 @@ Animation and transition use independent clocks. Restart can begin the veil whil
 
 ```mermaid
 flowchart LR
-    A[Tick rules and animation] --> B{Ordinary frame or missing boundary snapshot?}
-    B -->|yes| L{Static pixels valid?}
-    L -->|no| M[Build static color and depth; WAIT_ALL; publish pair]
-    M --> C[Submit color and depth restoration to Back or RTT]
-    L -->|yes| C
-    C --> D[CPU records dynamic 3D in other CB while restoration runs]
-    D -->|static WAIT_ALL| E{Veil active?}
-    E -->|yes| F[Submit dynamic source and WAIT_ALL; snapshot ready]
-    E -->|no| G[Append Back UI; submit and WAIT_ALL]
-    B -->|cached fade| H[Record alpha-only RTT consumer and Back HUD]
-    F --> H
-    H --> I[Consumer submit and WAIT_ALL]
-    I --> J[Display retirement]
-    G --> J
-    J --> K[Opaque may reset; transparent may start entry]
+    A[Tick rules and animation] --> B{Scene needed?}
+    B -->|yes| C{Static recording valid?}
+    C -->|no| D[Refresh geometry; record static CB]
+    C -->|yes| E[Retarget sealed static CB]
+    D --> F[Submit static CB to Back or boundary RTT]
+    E --> F
+    F --> G[CPU records dynamic geometry in other CB]
+    G -->|static wait returns ownership| H{Veil active?}
+    H -->|no| I[Append Back HUD; submit dynamic CB; wait]
+    H -->|yes| J[Submit dynamic CB; wait; snapshot ready]
+    B -->|cached fade| K[Record RTT consumer and Back HUD]
+    J --> K
+    K --> L[Submit consumer; wait]
+    I --> M[Display retirement]
+    L --> M
+    M --> N[Opaque may reset; transparent may start entry]
 ```
 
-The application reserves independent static color/depth at0x500000/0x540000,
-each256KiB. A rebuild restores the selected background, clears depth, and draws
-floor, fixed well walls and visible fragile cells. Only normal GPU completion
-publishes the pair. Generation, background, changed fragile visibility or the
-application's per-level camera update invalidate it. Source geometry is patched
-or rebuilt only with both preceding CBs retired. Dynamic bridges, switches,
-opening strips/hatches, goal carrier, shadow and players stay outside the cache.
+The application keeps a sealed static geometry CB with floor, fixed well walls
+and visible fragile cells. It copies the selected immutable dither background
+or clears the solid color, clears work depth, then draws those meshes. Level,
+background, per-level camera and fragile visibility changes invalidate recording.
+Source geometry is refreshed only after both preceding CBs retire. Dynamic
+bridges, switches, opening strips/hatches, goal carrier, shadow and players remain
+outside this static recording.
 
-Every scene frame records a short restoration CB: color copy to the selected
-Back/RTT, depth copy to shared work depth, and an empty Load/Load Pass installing
-the actual target. Both copies cover204800 physical bytes, including padding,
-and leave allocation tails untouched. The static cache stays immutable while
-dynamic work changes the work planes. This dual-copy CB is re-recorded rather
-than using the API's single-color-copy target binding.
+Each scene frame reuses the same static command bytes. A public `TargetBinding`
+updates Target32 and the optional leading background copy's destination together,
+selecting Back or the boundary RTT snapshot. World/material/View payloads remain
+unchanged. Static color/depth cache planes are absent; the former512KiB at
+0x500000..0x580000 is no longer reserved. Static triangles and pixels execute on
+every scene frame, trading GPU work for memory and simpler CPU preparation.
 
-Restoration submit transfers one CB to the driver. CPU dynamic recording uses
-the other exclusively owned CB; restoration WAIT_ALL returns its owner before
-dynamic submission. Load dependencies are consumed only after that producer
-completes. Resume-epoch/input recovery remains immediately after waits. The
-frame's rules/animation state stays consistent across static and dynamic work;
+Submission transfers the static CB to the driver while the CPU records dynamic
+3D in the other exclusively owned CB. Static completion returns that owner
+before the dynamic CB is submitted. Load dependencies are checked at submission,
+after the producer finishes. Resume/input recovery stays immediately after waits;
 input sampled while waiting is consumed by a subsequent application tick.
 
-Warm ordinary frames use two submissions; a cache rebuild adds one. Ordinary
-3D/HUD still target Back directly, without an RTT snapshot-to-Back copy. The
-first fading frame restores static pixels then completes dynamic drawing into
-the outgoing RTT snapshot; later out frames only sample it. Opaque presentation
-retires before level reset. The new generation rebuilds static pixels and
-captures one incoming closed-entry snapshot, reused during Hold/In. A boundary
-capture uses three submissions with a valid static cache, four if it rebuilds;
-later fading frames use one. RTT and static color are independent allocations.
-RTT is never Display Front and remains immutable between captures; texture
-invalidation occurs only after a new snapshot write. Tint changes only with alpha.
+Ordinary frames use two submissions, including frames that rebuild recording;
+3D/HUD target Back directly. A boundary capture uses three: static, dynamic into
+RTT, then veil/HUD into Back. Later fading frames use one consumer submission.
+Opaque presentation retires before level reset. The new generation records its
+static geometry and captures one incoming closed-entry snapshot, reused during
+Hold/In. The RTT snapshot is never Display Front and remains immutable between
+captures; textures invalidate only after a new snapshot write. Tint changes only
+with alpha.
 
 Rules and outgoing animation clocks still advance, while fade visuals deliberately
 freeze at those two boundaries. Ordinary entry/goal/fall animation remains live.
@@ -98,7 +96,7 @@ core's keep/XOR rules. Inactive bridge hints use SrcOver alpha60/255, Less and n
 depth writes; active bridges remain opaque. Hints are drawn after all opaque
 bridges, pads, receiver shadows and both players, before HUD/veil composition.
 They test the completed opaque depth, blending over a player behind them and
-failing over a player in front; the hints never enter the static pixel cache. Shadow alpha87 and idle-cube alpha255
+failing over a player in front; the hints never enter the static recording. Shadow alpha87 and idle-cube alpha255
 are independent. [Marker textures](/systems/cpu-v3-tang-nano-20k/examples/game_bloxorz/docs/markers.md)
 describes the packed surfaces. Native shading approximates reference materials
 and does not reproduce Web PBR emissive response exactly.
@@ -179,8 +177,8 @@ Statistics describe the previous completed frame and show dashes before one is
 available. `DRAW` counts every actual native DRAW plus native UI range: mesh
 calls add their public meshlet count, each partial-width UI row adds one, and a
 full-width UI range adds one. Copy, clear and maintenance are excluded. A static
-cache rebuild contributes its actual draws on that frame; warm restoration
-contributes none. Dynamic source,
+static replay contributes its recorded meshlet draw count on every scene frame,
+including recording rebuilds. Dynamic source,
 optional veil consumer and final UI all contribute. Counts are saved only after
 successful GPU completion. They are checked against actual submitted opcodes.
 
@@ -347,17 +345,17 @@ or using the protected static arena.
 
 ## Bridge and button command assembly
 
-The dynamic CB enables the slot-private bank specified in
+The application allocates prepared parts from its own external pool using
 [GPU API storage](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md).
 Part0 records opaque bridge draws; part15 records alpha60 hints, appended
-after both players. The bank selects SplitWide: each bridge part has4096 push
-words, retaining the original total reservation. Parts1..13 each record one button, retaining soft-tile sink
+after both players. Each bridge part requests4096 push words; every part requests
+512 command words. Parts1..13 each request1024 push words and record one button, retaining soft-tile sink
 and selecting a flat heavy tile by channel/state. Replaying a part
 copies aligned commands and keeps its fixed native parameter snapshots; it
 skips texture/Mesh descriptor creation, pose/matrix work, material updates and
 meshlet expansion. DRAW statistics add the saved actual meshlet count.
 
-Level generation clears the entire bank and rebuilds a compact ascending-cell
+After resetting the referencing frame CB, level generation invalidates the parts and rebuilds a compact ascending-cell
 button list. Generation also covers camera changes. The delayed visual bridge
 mask invalidates both bridge parts0/15. A button key is zero when inactive. An active soft
 button uses32768 plus its channel's clamped0..260ms animation age; a flat heavy

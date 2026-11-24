@@ -92,6 +92,7 @@ pub struct ProcessorInput {
     pub dma_fault: bool,
     pub ram_ready: bool,
     pub ram_q: u64,
+    pub prepared_light: Option<(bool, u16)>,
     pub flush_complete: bool,
     pub cache_ready: bool,
     pub cache_done: bool,
@@ -331,6 +332,15 @@ impl Processor {
         let mut n = self.clone();
         if let Some(d) = &mut n.draw {
             d.wall(i.draw);
+            if i.ce && !o.stop {
+                if let Some((directional, value)) = i.prepared_light {
+                    if directional {
+                        d.config.directional = value;
+                    } else {
+                        d.config.ambient = value;
+                    }
+                }
+            }
         }
         if i.bus.count() && o.submit_ready {
             n.fetch_left = ((i.bus.data & 0x3fff) >> 5) + 1;
@@ -396,7 +406,8 @@ impl Processor {
                     }
                     4 => n.phase = Phase::Waiting,
                     5 | 6 | 10 => {
-                        n.draw.as_mut().unwrap().object_index = 0;
+                        n.draw.as_mut().unwrap().object_index =
+                            u8::from(self.command >> 28 == 6 && self.command & 128 != 0);
                         n.phase = Phase::ApplyRead;
                     }
                     7 => n.phase = Phase::Flushing,
@@ -448,11 +459,7 @@ impl Processor {
                         n.phase = Phase::UiWait;
                     } else {
                         let index = self.draw.as_ref().unwrap().object_index;
-                        if n.draw
-                            .as_mut()
-                            .unwrap()
-                            .apply(self.command >> 28, index, i.ram_q)
-                        {
+                        if n.draw.as_mut().unwrap().apply(self.command, index, i.ram_q) {
                             if self.command >> 28 == 10 {
                                 n.stored = false;
                             }
@@ -466,9 +473,13 @@ impl Processor {
                 Phase::UiWait if i.auxiliary.ui_done => n.advance(self),
                 Phase::ColorWrite => {
                     n.draw.as_mut().unwrap().config.mesh_color = i.ram_q as u32;
+                    n.draw.as_mut().unwrap().config.world_transform = self.command & 2 != 0;
                     n.phase = Phase::DrawStart;
                 }
                 Phase::DrawStart if o.start && i.draw.meshlet_ready => {
+                    if n.draw.as_ref().unwrap().config.world_transform {
+                        n.draw.as_mut().unwrap().uniforms &= !(1 << 2);
+                    }
                     n.all_fence = false;
                     n.stored = false;
                     n.phase = Phase::DrawWait;
@@ -515,6 +526,7 @@ impl Processor {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Input {
+    pub prepared_light: Option<(bool, u16)>,
     pub reset: bool,
     pub ce: bool,
     pub abort: bool,
@@ -579,6 +591,7 @@ impl Control {
     }
     fn connect(&self, i: Input) -> (ProcessorInput, TransportInput) {
         let mut p = ProcessorInput {
+            prepared_light: i.prepared_light,
             reset: i.reset,
             ce: i.ce,
             abort: i.abort,

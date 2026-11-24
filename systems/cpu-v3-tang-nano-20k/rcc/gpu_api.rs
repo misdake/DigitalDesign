@@ -13,8 +13,8 @@
     gpu_present,
     gpu_api_fault,
     gpu_scene_math,
-    gpu_model_cache,
-    gpu_scene_patch,
+    gpu_source_revision,
+    gpu_target,
     gpu_scene_objects,
     gpu_scene_transforms,
     gpu_ui_grid,
@@ -61,16 +61,8 @@ mod gpu_present;
 use gpu_present::*;
 mod gpu_api_fault;
 use gpu_api_fault::*;
-mod gpu_scene_patch;
-use gpu_scene_patch::*;
-
-/// Positions belong to a complete shared scene binding, not an individual draw.
-#[derive(Copy, Clone)]
-pub struct SceneBinding {
-    slot: u16,
-    generation_low: u16,
-    generation_high: u16,
-}
+mod gpu_target;
+use gpu_target::*;
 
 /// A sealed single-frame target, independent of model/material preparation.
 #[derive(Copy, Clone)]
@@ -91,7 +83,6 @@ const GPU_KIND_COLOR: u16 = 8;
 const GPU_KIND_DEPTH: u16 = 9;
 const GPU_KIND_UI_ATLAS: u16 = 10;
 const GPU_KIND_UI_GRID: u16 = 11;
-const GPU_KIND_MODEL_CACHE: u16 = 12;
 
 impl CommandMemory {
     pub const fn allocate(command_bytes: usize, push_bytes: usize) -> Self {
@@ -104,7 +95,112 @@ impl CommandMemory {
         )
     }
 }
+impl PreparedMemory {
+    pub const fn allocate(command_bytes: usize, push_bytes: usize) -> Self {
+        let commands = StaticBuffer::new(command_bytes, 128);
+        let push = StaticBuffer::new(push_bytes, 128);
+        Self::new(
+            GpuMemory::from_buffer(commands),
+            GpuMemory::from_buffer(push),
+        )
+    }
+}
+
+/// Application-owned prepared commands and push data. Keep referenced external
+/// inputs unchanged and allocated until every consuming CB is retired and discarded.
+#[rcc_resource]
+pub struct PreparedDraws {
+    slot: u16,
+}
+impl PreparedDraws {
+    pub fn new(memory: PreparedMemory) -> Self {
+        let slot = gpu_api_object(false, GPU_KIND_PREPARED);
+        gpu_api_checked(gpu_group_new(slot, memory), 15);
+        Self { slot }
+    }
+    pub fn ptr(&self) -> PreparedDrawsPtr {
+        PreparedDrawsPtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn record(&mut self) -> PreparedPart {
+        gpu_api_checked(gpu_group_part_begin(self.slot), 15);
+        PreparedPart {
+            slot: GPU_PREPARED_RECORD,
+        }
+    }
+}
+impl Drop for PreparedDraws {
+    fn drop(&mut self) {
+        gpu_api_checked(gpu_group_free(self.slot), 15);
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct PreparedDrawsPtr {
+    handle: GpuObjectHandle,
+}
+impl PreparedDrawsPtr {
+    fn data(self) -> u16 {
+        gpu_arena_resolve(self.handle, GPU_KIND_PREPARED)
+    }
+    pub fn ready(self) -> bool {
+        gpu_group_part_ready(self.data())
+    }
+    pub fn invalidate(self) {
+        gpu_api_checked(gpu_group_invalidate(self.data()), 15);
+    }
+    /// Caller must retire and discard all CBs that reference this part first.
+    /// References are not tracked; generation and recorder-state checks remain.
+    pub fn record(self) -> PreparedPart {
+        gpu_api_checked(gpu_group_part_begin(self.data()), 15);
+        PreparedPart {
+            slot: GPU_PREPARED_RECORD,
+        }
+    }
+}
+
+/// Runtime allocation from application-reserved external storage. The pool owns
+/// its parts; retire and discard referring CBs before freeing parts or the pool.
+#[rcc_resource]
+pub struct PreparedPool {
+    slot: u16,
+}
+impl PreparedPool {
+    pub fn new(memory: GpuMemory) -> Self {
+        let slot = gpu_api_object(false, GPU_KIND_PREPARED_POOL);
+        gpu_api_checked(gpu_group_pool_init(slot, memory), 15);
+        Self { slot }
+    }
+    /// Byte requests round up to 128; 65535 requests the full 64-KiB extent.
+    pub fn allocate(&mut self, command_bytes: u16, push_bytes: u16) -> PreparedDrawsPtr {
+        let slot = gpu_group_pool_allocate(self.slot, command_bytes, push_bytes);
+        gpu_api_checked(slot != 0, 15);
+        PreparedDrawsPtr {
+            handle: gpu_arena_handle(slot),
+        }
+    }
+    pub fn free(&mut self, part: PreparedDrawsPtr) {
+        gpu_api_checked(gpu_group_pool_free(self.slot, part.data()), 15);
+    }
+}
+impl Drop for PreparedPool {
+    fn drop(&mut self) {
+        gpu_api_checked(gpu_group_pool_drop(self.slot), 15);
+    }
+}
 impl GpuMemory {
+    /// Caller owns both the external bytes and the stable low-memory span for
+    /// this transfer. Retire/discard recorded readers and retire Display use
+    /// before changing their input bytes; no reference locks are maintained.
+    pub unsafe fn write_words(self, offset: u16, source: Array<u16>, count: u16) {
+        gpu_api_transfer(self, offset, source, count, false);
+    }
+    /// Caller has acquired CPU ownership of the source and supplies count words
+    /// of writable low-memory storage. Each transfer is at most 128 CPU words.
+    pub unsafe fn read_words(self, offset: u16, destination: Array<u16>, count: u16) {
+        gpu_api_transfer(self, offset, destination, count, true);
+    }
     pub const fn from_buffer(buffer: StaticBuffer) -> Self {
         Self {
             first_sector: buffer.first_sector(),
@@ -135,6 +231,21 @@ impl GpuMemory {
             first_sector: first_sector,
             sector_count: sector_count,
         }
+    }
+}
+fn gpu_api_transfer(memory: GpuMemory, offset: u16, data: Array<u16>, count: u16, read: bool) {
+    if count == 0 {
+        return;
+    }
+    let relative = offset >> 6;
+    if count > GPU_API_PUSH_CHUNK_WORDS
+        || relative >= memory.sector_count
+        || ((offset & 63) + count - 1) >> 6 >= memory.sector_count - relative
+    {
+        gpu_api_fail(1, 2, offset, count);
+    }
+    if !gpu_storage_copy_owned(data, memory.first_sector, offset, count, read) {
+        gpu_api_fail(1, 3, offset, count);
     }
 }
 impl TextureDesc {
@@ -271,8 +382,8 @@ pub struct CommandBuffer {
 pub struct Pass {
     slot: u16,
 }
-/// Records an immutable mesh-only part in its parent's prepared storage.
-#[rcc_resource(parent=CommandBuffer)]
+/// A transient prepared recorder with an exclusive recording state.
+#[rcc_resource]
 pub struct PreparedPart {
     slot: u16,
 }
@@ -358,7 +469,9 @@ fn gpu_api_submit(slot: u16) {
 }
 impl Drop for Gpu {
     // No implicit wait, context reset or reclamation of a driver-owned CB.
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        GPU_EXECUTION[GPU_EXEC_CONTROLLER] = 0;
+    }
 }
 fn gpu_api_new_surface(memory: GpuMemory, kind: u16) -> u16 {
     let slot = gpu_arena_alloc(false, kind);
@@ -405,6 +518,11 @@ impl Drop for DepthBuffer {
     }
 }
 impl Mesh {
+    /// Refresh only directory descriptors for future recording. Previously
+    /// recorded commands retain their snapshots; retire payload users first.
+    pub fn refresh_directory(&mut self) {
+        gpu_api_checked(gpu_mesh_refresh_directory(gpu_arena_data(self.slot)), 5);
+    }
     pub fn from_native(desc: MeshDesc) -> Self {
         let slot = gpu_arena_alloc(false, GPU_KIND_MESH);
         if slot == 0 {
@@ -437,6 +555,7 @@ impl Mesh {
 }
 impl Drop for Mesh {
     fn drop(&mut self) {
+        gpu_mesh_release_directory(gpu_arena_data(self.slot));
         if !gpu_arena_free(self.slot, false, GPU_KIND_MESH) {
             gpu_api_fail(8, 4, self.slot, 0);
         }
@@ -464,41 +583,18 @@ fn gpu_api_copy_plane(slot: u16, s: Array<u16>, d: Array<u16>, kind: u16) {
         gpu_api_fail(4, 2, slot, 0);
     }
     gpu_record_resource_commit(slot, facts.as_array(), 2, fact_plan.as_array());
-}
-/// Push partition choices; command, metadata and total push budgets are unchanged.
-#[repr(u16)]
-#[derive(Copy, Clone)]
-pub enum PreparedPartsLayout {
-    SingleWide,
-    SplitWide,
+    let mut c = gpu_record_data(slot);
+    c[GPU_RECORD_COPY_FACT] = if kind == GPU_FACT_COLOR {
+        fact_plan[0u16] + 1
+    } else {
+        0
+    };
 }
 impl CommandBuffer {
-    /// SplitWide gives parts0/15 4096 words each; parts1..14 retain1024.
-    /// SingleWide preserves the original8192-word part0 and1024-word tail.
-    pub fn enable_prepared_parts(&mut self, layout: PreparedPartsLayout) {
-        gpu_api_checked(gpu_group_enable_layout(self.slot, layout as u16), 15);
-    }
-    /// Test whether this command buffer has a completed part.
-    pub fn prepared_part_ready(&self, part: u16) -> bool {
-        gpu_group_part_ready(self.slot, part)
-    }
-    /// Build in the part's own command and push storage while this CB is empty.
-    pub fn prepare_part(&mut self, part: u16) -> PreparedPart {
-        gpu_api_checked(gpu_group_part_begin(self.slot, part), 15);
-        PreparedPart { slot: self.slot }
-    }
-    /// Clear all saved parts and reset the active stream, retaining partitions.
-    pub fn clear_prepared_parts(&mut self) {
-        gpu_api_checked(gpu_group_clear(self.slot), 15);
-    }
-    /// Invalidate one part between recordings, retaining every other part.
-    pub fn invalidate_prepared_part(&mut self, part: u16) {
-        gpu_api_checked(gpu_group_invalidate(self.slot, part), 15);
-    }
     /// Copy the 400x256 physical RGB565 plane between nonoverlapping surfaces.
     /// Records source-read/destination-write ownership; allocation tails remain
     /// untouched. Call between passes. Submission publication/leases are shared
-    /// with drawing, and this fixed-target command disables scene patching.
+    /// with drawing. Target-only rebinding can relocate one leading color copy.
     pub fn copy_color(&mut self, source: ColorBufferPtr, destination: ColorBufferPtr) {
         gpu_api_copy_plane(self.slot, source.data(), destination.data(), GPU_FACT_COLOR);
     }
@@ -520,54 +616,23 @@ impl CommandBuffer {
     }
     /// Change a CPU-owned frame's target and optional copy destination together.
     /// A pending Display swap or overlap with its current Front rejects before
-    /// any payload/fact change. Submission still publishes and validates leases.
+    /// any payload/fact change. Submission publishes writes and checks execution ownership.
     pub fn retarget_target(
         &mut self,
         binding: TargetBinding,
         color: ColorBufferPtr,
         depth: DepthBufferPtr,
     ) {
+        gpu_api_checked(self.slot == binding.slot, 14);
         gpu_api_checked(
-            self.slot == binding.slot
-                && gpu_target_matches(self.slot, binding.generation_low, binding.generation_high),
-            14,
-        );
-        gpu_api_checked(
-            gpu_target_retarget(self.slot, color.data(), depth.data()),
-            14,
-        );
-    }
-    pub fn scene_binding(&mut self) -> SceneBinding {
-        gpu_api_checked(gpu_patch_binding(self.slot), 13);
-        let c = gpu_record_data(self.slot);
-        SceneBinding {
-            slot: self.slot,
-            generation_low: c[GPU_RECORD_GENERATION_LOW],
-            generation_high: c[GPU_RECORD_GENERATION_HIGH],
-        }
-    }
-    pub fn patch_scene(
-        &mut self,
-        binding: SceneBinding,
-        camera: CameraPtr,
-        model: ModelPtr,
-        color: ColorBufferPtr,
-        depth: DepthBufferPtr,
-    ) {
-        gpu_api_checked(
-            self.slot == binding.slot
-                && gpu_patch_matches(self.slot, binding.generation_low, binding.generation_high),
-            13,
-        );
-        gpu_api_checked(
-            gpu_patch_scene(
+            gpu_target_retarget(
                 self.slot,
-                camera.data(),
-                model.data(),
+                binding.generation_low,
+                binding.generation_high,
                 color.data(),
                 depth.data(),
             ),
-            13,
+            14,
         );
     }
     pub fn reset(&mut self) {
@@ -616,6 +681,9 @@ impl CommandBuffer {
             gpu_api_fail(4, 2, self.slot, mask);
         }
         gpu_record_resource_commit(self.slot, facts.as_array(), 2, fact_plan.as_array());
+        let mut record = gpu_record_data(self.slot);
+        record[GPU_RECORD_COLOR_FACT] = fact_plan[0u16] + 1;
+        record[GPU_RECORD_DEPTH_FACT] = fact_plan[1u16] + 1;
         Pass { slot: self.slot }
     }
     pub fn invalidate_textures(&mut self) {
@@ -639,8 +707,8 @@ impl Drop for CommandBuffer {
 }
 impl Pass {
     /// Append an immutable part while retaining the next immediate draw's state.
-    pub fn draw_prepared(&mut self, part: u16) {
-        gpu_api_checked(gpu_group_part_append(self.slot, part), 15);
+    pub fn draw_prepared(&mut self, part: PreparedDrawsPtr) {
+        gpu_api_checked(gpu_group_part_append(self.slot, part.data()), 15);
     }
     pub fn invalidate_textures(&mut self) {
         gpu_api_checked(gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0, 15);
@@ -696,7 +764,10 @@ impl Display {
     }
 }
 impl Drop for Display {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        // Keep pending request metadata until hardware retirement is observed.
+        GPU_PRESENT[0u16] = 0;
+    }
 }
 
 // Read-only capture consumer bridge; this never owns or submits a buffer.
@@ -706,8 +777,8 @@ mod gpu_scene_objects;
 use gpu_scene_objects::*;
 mod gpu_scene_transforms;
 use gpu_scene_transforms::*;
-mod gpu_model_cache;
-use gpu_model_cache::*;
+mod gpu_source_revision;
+use gpu_source_revision::*;
 mod gpu_ui_grid;
 use gpu_ui_grid::*;
 mod gpu_ui_packet;
@@ -760,7 +831,6 @@ impl Drop for Camera {
         if !gpu_arena_free(self.slot, true, GPU_KIND_CAMERA) {
             gpu_api_fail(7, 3, 1, self.slot);
         }
-        gpu_patch_drop(GPU_RECORD_SCENE_CAMERA, self.slot);
     }
 }
 
@@ -772,7 +842,8 @@ impl Model {
     pub fn new(transform: Transform) -> Self {
         let slot = gpu_api_object(true, 2);
         gpu_api_checked(gpu_scene_model_init(gpu_arena_data(slot), transform), 2);
-        gpu_api_finish_model(slot)
+        gpu_api_checked(gpu_model_revision(gpu_arena_data(slot)), 2);
+        Model { slot: slot }
     }
     pub fn from_matrices(mut world: Mat3x4, mut normal: Mat3x3) -> Self {
         let slot = gpu_api_object(true, 2);
@@ -784,29 +855,15 @@ impl Model {
             ),
             2,
         );
-        gpu_api_finish_model(slot)
+        gpu_api_checked(gpu_model_revision(gpu_arena_data(slot)), 2);
+        Model { slot: slot }
     }
-}
-fn gpu_api_finish_model(slot: u16) -> Model {
-    let derived = gpu_arena_alloc(true, GPU_KIND_MODEL_CACHE);
-    if derived == 0 {
-        gpu_api_checked(gpu_arena_free(slot, true, 2), 2);
-        gpu_api_fail(7, 1, 2, 0);
-    }
-    gpu_model_cache_init(gpu_arena_data(derived));
-    gpu_arena_data(slot)[GPU_MODEL_DERIVED] = derived;
-    Model { slot: slot }
 }
 impl Drop for Model {
     fn drop(&mut self) {
-        let derived = gpu_arena_data(self.slot)[GPU_MODEL_DERIVED];
-        if !gpu_arena_free(derived, true, GPU_KIND_MODEL_CACHE) {
-            gpu_api_fail(7, 3, GPU_KIND_MODEL_CACHE, derived);
-        }
         if !gpu_arena_free(self.slot, true, GPU_KIND_MODEL) {
             gpu_api_fail(7, 3, 2, self.slot);
         }
-        gpu_patch_drop(GPU_RECORD_SCENE_MODEL, self.slot);
     }
 }
 
@@ -826,7 +883,6 @@ impl Drop for Material {
         if !gpu_arena_free(self.slot, false, GPU_KIND_MATERIAL) {
             gpu_api_fail(7, 3, 3, self.slot);
         }
-        gpu_patch_drop(GPU_RECORD_SCENE_MATERIAL, self.slot);
     }
 }
 
@@ -1139,14 +1195,6 @@ fn gpu_api_set_camera(slot: u16, camera: CameraPtr) {
     let camera_slot = gpu_arena_resolve(camera.handle, GPU_KIND_CAMERA);
     let data = gpu_arena_data(camera_slot);
     gpu_api_checked(gpu_bind_desired(slot, true, data), 1);
-    gpu_patch_note(slot, GPU_RECORD_SCENE_CAMERA, camera_slot);
-    gpu_bind_copy(
-        gpu_record_data(slot),
-        GPU_CB_CAMERA_REVISION,
-        data,
-        GPU_CAMERA_REVISION,
-        4,
-    );
 }
 fn gpu_api_set_state(slot: u16, state: RenderStatePtr) {
     gpu_api_checked(gpu_bind_desired(slot, false, state.data()), 4);
@@ -1167,7 +1215,7 @@ fn gpu_api_draw_textured(
 ) {
     gpu_api_draw(
         slot,
-        gpu_arena_resolve(mesh.handle, GPU_KIND_MESH),
+        mesh,
         gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
         gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
         gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
@@ -1177,7 +1225,7 @@ fn gpu_api_draw_textured(
 fn gpu_api_draw_colored(slot: u16, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
     gpu_api_draw(
         slot,
-        gpu_arena_resolve(mesh.handle, GPU_KIND_MESH),
+        mesh,
         gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
         gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
         0,
@@ -1196,9 +1244,6 @@ impl PreparedPart {
         gpu_api_checked(gpu_group_end(self.slot), 15);
         resource_disarm(self);
     }
-    pub fn set_camera(&mut self, camera: CameraPtr) {
-        gpu_api_set_camera(self.slot, camera);
-    }
     pub fn set_state(&mut self, state: RenderStatePtr) {
         gpu_api_set_state(self.slot, state);
     }
@@ -1213,6 +1258,23 @@ impl PreparedPart {
     }
     pub fn draw_colored(&mut self, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
         gpu_api_draw_colored(self.slot, mesh, model, material);
+    }
+    pub fn draw_billboard(
+        &mut self,
+        mesh: MeshPtr,
+        model: ModelPtr,
+        material: MaterialPtr,
+        view: TextureViewPtr,
+        facing: BillboardFacing,
+    ) {
+        gpu_api_draw(
+            self.slot,
+            mesh,
+            gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
+            gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
+            gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
+            facing as u16 + 1,
+        );
     }
 }
 impl Pass {
@@ -1245,7 +1307,7 @@ impl Pass {
     ) {
         gpu_api_draw(
             self.slot,
-            gpu_arena_resolve(mesh.handle, GPU_KIND_MESH),
+            mesh,
             gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
             gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
             gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
@@ -1289,19 +1351,26 @@ impl Pass {
 }
 fn gpu_api_draw(
     slot: u16,
-    mesh_slot: u16,
+    mesh_ptr: MeshPtr,
     model_slot: u16,
     material_slot: u16,
     view_slot: u16,
     billboard: u16,
 ) {
-    let mesh = gpu_arena_data(mesh_slot);
+    let mesh = mesh_ptr.data();
+    gpu_api_checked(
+        mesh_ptr.first <= mesh[GPU_MESH_COUNT]
+            && mesh_ptr.count <= mesh[GPU_MESH_COUNT] - mesh_ptr.first,
+        5,
+    );
     let textured = view_slot != 0;
-    if mesh[GPU_MESH_COUNT] == 0 {
+    if mesh_ptr.count == 0 {
         return;
     }
     let c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS || c[GPU_RECORD_VALID] & 24 != 24 {
+    let part = c[GPU_GROUP_RECORDING] != 0;
+    let required = if part { 16u16 } else { 24u16 };
+    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS || c[GPU_RECORD_VALID] & required != required {
         gpu_api_fail(9, 1, slot, 0);
     }
     let mut facts: Buf<u16, 8> = Buf::new([
@@ -1332,35 +1401,49 @@ fn gpu_api_draw(
     );
     let desired = unsafe { c.as_ptr().add(GPU_CB_CAMERA as i16).as_u16_array() };
     let material = gpu_arena_data(material_slot);
+    if !part && !gpu_bind_scene_current(slot) {
+        gpu_api_checked(gpu_bind_prepare_scene(slot, native), 5);
+    }
+    let state = unsafe { c.as_ptr().add(GPU_CB_STATE as i16).as_u16_array() };
+    #[cfg(gpu_debug)]
+    {
+        if part {
+            gpu_group_note_responses(slot, material);
+        } else {
+            gpu_api_checked(
+                gpu_scene_responses_valid(
+                    state,
+                    gpu_scene_fix_read(material, GPU_MATERIAL_AMBIENT),
+                    gpu_scene_fix_read(material, GPU_MATERIAL_DIRECTIONAL),
+                ),
+                5,
+            );
+        }
+    }
     gpu_api_checked(
-        gpu_scene_draw_header(desired, material, view, textured, native),
+        gpu_scene_material_prepare(state, material, view, textured, native),
         5,
     );
     let model = gpu_arena_data(model_slot);
-    let revision = unsafe { c.as_ptr().add(GPU_CB_CAMERA_REVISION as i16).as_u16_array() };
-    gpu_model_matrix_prepare(
-        desired,
-        model,
-        native,
-        gpu_arena_data(model[GPU_MODEL_DERIVED]),
-        revision,
-    );
-    gpu_scene_draw_finish(material, native);
+    let mut native = native;
+    native[GPU_SCRATCH_BILLBOARD] = (billboard != 0) as u16;
+    native[GPU_SCRATCH_WORLD_MODE] = 1;
+    if billboard == BillboardFacing::Vertical as u16 + 1 {
+        let mut native = native;
+        native[GPU_SCRATCH_WORLD_MODE] = 3;
+    }
+    if !part && gpu_bind_view_changed(slot) {
+        gpu_scene_view_prepare(desired, native);
+    }
     if billboard != 0 {
         gpu_api_checked(material[GPU_MATERIAL_FLAGS] & 1 != 0, 5);
-        gpu_scene_billboard_directions(
-            desired,
-            native,
-            billboard == BillboardFacing::Vertical as u16 + 1,
-        );
-        // Camera patching owns only the ordinary matrix words.
-        gpu_patch_note(slot, GPU_RECORD_SCENE_MODEL, 65535);
     }
-    gpu_api_checked(gpu_mesh_draw(slot, mesh, native), 5);
+    gpu_api_checked(
+        gpu_mesh_draw_range(slot, mesh, model, native, mesh_ptr.first, mesh_ptr.count),
+        5,
+    );
 
     gpu_record_resource_commit(slot, facts.as_array(), count, fact_plan.as_array());
-    gpu_patch_note(slot, GPU_RECORD_SCENE_MODEL, model_slot);
-    gpu_patch_note(slot, GPU_RECORD_SCENE_MATERIAL, material_slot);
 }
 
 impl Shininess {
@@ -1537,11 +1620,15 @@ fn gpu_api_material_set_unlit(data: Array<u16>, unlit: bool) {
 #[derive(Copy, Clone)]
 pub struct MeshPtr {
     handle: GpuObjectHandle,
+    first: u16,
+    count: u16,
 }
 impl Mesh {
     pub fn ptr(&self) -> MeshPtr {
         MeshPtr {
             handle: gpu_arena_handle(self.slot),
+            first: 0,
+            count: gpu_arena_data(self.slot)[GPU_MESH_COUNT],
         }
     }
     pub fn release(self) {
@@ -1550,11 +1637,26 @@ impl Mesh {
 }
 
 impl MeshPtr {
+    /// Select meshlets without allocating or copying a directory. Retains the
+    /// same nonowning generation; nested slices are relative to this range.
+    pub fn slice(self, first: u16, count: u16) -> Self {
+        gpu_api_checked(first <= self.count && count <= self.count - first, 5);
+        Self {
+            handle: self.handle,
+            first: self.first + first,
+            count: count,
+        }
+    }
     fn data(self) -> Array<u16> {
         gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_MESH))
     }
     pub fn meshlet_count(self) -> u16 {
-        self.data()[GPU_MESH_COUNT]
+        let data = self.data();
+        gpu_api_checked(
+            self.first <= data[GPU_MESH_COUNT] && self.count <= data[GPU_MESH_COUNT] - self.first,
+            5,
+        );
+        self.count
     }
 }
 
@@ -1600,10 +1702,8 @@ fn gpu_api_model_normal(data: Array<u16>) -> Mat3x3 {
 }
 
 fn gpu_api_model_set_pose(mut data: Array<u16>, transform: Transform) {
-    let derived = data[GPU_MODEL_DERIVED];
     gpu_api_checked(gpu_scene_model_init(data, transform), 2);
-    data[GPU_MODEL_DERIVED] = derived;
-    gpu_arena_data(derived)[GPU_MODEL_DIRTY] = 1;
+    gpu_api_checked(gpu_model_revision(data), 2);
 }
 
 fn gpu_api_model_set_matrices(mut data: Array<u16>, mut world: Mat3x4, mut normal: Mat3x3) {
@@ -1614,13 +1714,11 @@ fn gpu_api_model_set_matrices(mut data: Array<u16>, mut world: Mat3x4, mut norma
     {
         return;
     }
-    let derived = data[GPU_MODEL_DERIVED];
     gpu_api_checked(
         gpu_scene_model_matrices(data, view_of(&mut world), view_of(&mut normal)),
         2,
     );
-    data[GPU_MODEL_DERIVED] = derived;
-    gpu_arena_data(derived)[GPU_MODEL_DIRTY] = 1;
+    gpu_api_checked(gpu_model_revision(data), 2);
 }
 
 #[derive(Copy, Clone)]
