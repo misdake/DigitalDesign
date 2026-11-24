@@ -22,10 +22,10 @@ fn main(){
  check(c[GPU_RECORD_COMMAND_USED]==56&&c[GPU_RECORD_PUSH_USED]==0&&c[GPU_RECORD_TERMINAL]==0);
  c[GPU_RECORD_COMMAND_USED]=0;c[GPU_RECORD_PUSH_USED]=256;
  check(!gpu_packet_copy_plane(0,0xb000,0x8000));check(c[GPU_RECORD_COMMAND_USED]==0);
- c[GPU_RECORD_PUSH_USED]=0;c[GPU_RECORD_PHASE]=GPU_RECORD_PASS;
+ c[GPU_RECORD_PUSH_USED]=0;c[GPU_RECORD_PHASE]=RecordPhase::PassOpen as u16;
  check(!gpu_packet_copy_plane(0,0xb000,0x8000));
- c[GPU_RECORD_PHASE]=GPU_RECORD_SEALED;check(!gpu_packet_copy_plane(0,0xb000,0x8000));
- c[GPU_RECORD_PHASE]=GPU_RECORD_READY;
+ c[GPU_RECORD_PHASE]=RecordPhase::Sealed as u16;check(!gpu_packet_copy_plane(0,0xb000,0x8000));
+ c[GPU_RECORD_PHASE]=RecordPhase::Ready as u16;
  check(gpu_packet_copy_plane(0,0xb000,0x8000));
  check(c[GPU_RECORD_COMMAND_USED]==10&&c[GPU_RECORD_PUSH_USED]==16);
  check(c[GPU_RECORD_VALID]&GPU_RECORD_HAS_COPY!=0);
@@ -99,7 +99,7 @@ fn main(){gpu_record_init();check(gpu_record_configure(0,0x9800,1,0x9a00,1));
  check(!gpu_packet_begin(0,0x9800,0x9000,0,0,0));
  check(!gpu_packet_begin(0,0x8000,0x9000,4,0,0));
  c[GPU_RECORD_COMMAND_USED]=56;check(!gpu_packet_begin(0,0x8000,0x9000,0,0,0));
- check(c[GPU_RECORD_COMMAND_USED]==56&&c[GPU_RECORD_PUSH_USED]==0&&c[GPU_RECORD_PHASE]==GPU_RECORD_READY);
+ check(c[GPU_RECORD_COMMAND_USED]==56&&c[GPU_RECORD_PUSH_USED]==0&&c[GPU_RECORD_PHASE]==RecordPhase::Ready as u16);
  c[GPU_RECORD_COMMAND_USED]=0;c[GPU_RECORD_PUSH_USED]=64;
  check(!gpu_packet_begin(0,0x8000,0x9000,0,0,0));check(c[GPU_RECORD_COMMAND_USED]==0);
  let mut mask:u16=0;while mask<4{

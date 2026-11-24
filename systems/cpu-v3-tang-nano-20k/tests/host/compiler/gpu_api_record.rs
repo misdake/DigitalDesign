@@ -58,7 +58,7 @@ fn main(){
  check(gpu_record_begin_pass(1));check(gpu_record_append(1,CODE.as_array(),2,DATA.as_array(),16,16));
  check(gpu_record_close_pass(1));check(gpu_record_seal(1));
  check(b[GPU_RECORD_COMMAND_USED]==8&&b[GPU_RECORD_PADDED]==64);
- check(a[GPU_CB_CAMERA]==0x1111&&b[GPU_CB_CAMERA]==0x2222&&a[GPU_RECORD_PHASE]==GPU_RECORD_PASS);
+ check(a[GPU_CB_CAMERA]==0x1111&&b[GPU_CB_CAMERA]==0x2222&&a[GPU_RECORD_PHASE]==RecordPhase::PassOpen as u16);
  check(gpu_record_append(0,CODE.as_array(),48,DATA.as_array(),0,1));
  check(gpu_record_close_pass(0));check(a[GPU_RECORD_COMMAND_USED]==62);check(gpu_record_seal(0));
  check(a[GPU_RECORD_COMMAND_USED]==64&&a[GPU_RECORD_PADDED]==64);
@@ -80,7 +80,7 @@ fn main(){
  // A transport failure after payload stores poisons the record rather than promising rollback.
  check(gpu_record_begin_pass(1));let invalid=unsafe{Ptr::from_addr(0xc000).as_u16_array()};
  check(!gpu_record_append(1,invalid,2,DATA.as_array(),16,16));
- check(b[GPU_RECORD_PHASE]==GPU_RECORD_POISON&&b[GPU_RECORD_COMMAND_USED]==0&&b[GPU_RECORD_PUSH_USED]==0);
+ check(b[GPU_RECORD_PHASE]==RecordPhase::Poisoned as u16&&b[GPU_RECORD_COMMAND_USED]==0&&b[GPU_RECORD_PUSH_USED]==0);
  check(!gpu_record_seal(1)&&!gpu_record_reset(1));check(read_dseg_page(3)==saved);
  halt(0x600d);
 }"#;

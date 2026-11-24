@@ -1,5 +1,7 @@
 //! All-stage Bloxorz with reusable static geometry commands and cached RTT transitions.
 use crate::dsl_rt::*;
+mod bloxorz_core;
+use bloxorz_core::TileKind;
 mod gpu_api;
 use gpu_api::*;
 mod scene_resources;
@@ -56,9 +58,16 @@ struct BridgeCache {
     transparent_draws: u16,
 }
 
+#[repr(u16)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BackgroundMode {
+    Solid = 0,
+    Dithered = 1,
+}
+
 struct PresentationState {
     hud: HudState,
-    background: u16,
+    background: BackgroundMode,
     resting_block: RestingBlockKey,
     bridges: BridgeCache,
 }
@@ -68,7 +77,7 @@ static RENDER_STATE: PresentationState = PresentationState {
         previous_draws: 0,
         valid: 0,
     },
-    background: 1,
+    background: BackgroundMode::Dithered,
     resting_block: RestingBlockKey {
         cell: 0,
         generation: 0,
@@ -87,7 +96,7 @@ fn scene_color_load(
     source: &ColorBuffer,
     target: ColorBufferPtr,
 ) -> ColorLoad {
-    if RENDER_STATE.background != 0 {
+    if RENDER_STATE.background == BackgroundMode::Dithered {
         commands.copy_color(source.ptr(), target);
         return ColorLoad::load();
     }
@@ -240,7 +249,8 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
             i += 1;
             continue;
         }
-        let top = ((face >> 10) & 7) == 0 && GAME_SESSION.level_field(index, 0) == 7;
+        let top = ((face >> 10) & 7) == 0
+            && GAME_SESSION.level_field(index, 0) == TileKind::Splitter as u16;
         let mesh = game_mesh_part(
             if top {
                 MARKED_SPLIT_FIRST + (face >> 13)
@@ -266,7 +276,7 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
             material.set_uniform_color(Rgba8::white());
             counted_draw(pass, &mesh, model, material, &marker_view);
         } else {
-            if GAME_SESSION.level_field(index, 0) == 7 {
+            if GAME_SESSION.level_field(index, 0) == TileKind::Splitter as u16 {
                 material.set_uniform_color(Rgba8 {
                     r: 139,
                     g: 92,
@@ -312,7 +322,7 @@ fn button_cache_rebuild() {
     let mut i: u16 = 0;
     while i < GAME_SESSION.level.cell_count {
         let kind = GAME_SESSION.level_field(i, 0);
-        if kind == 3 || kind == 4 {
+        if kind == TileKind::SoftSwitch as u16 || kind == TileKind::HeavySwitch as u16 {
             if count >= 13 {
                 halt(0xbad);
             }
@@ -401,7 +411,7 @@ fn draw_bridges(
         } else {
             GAME_SESSION.visual_mask() & GAME_SESSION.level_field(i, 1) != 0
         };
-        if GAME_SESSION.level_field(i, 0) == 5 && selected {
+        if GAME_SESSION.level_field(i, 0) == TileKind::Bridge as u16 && selected {
             let bit = GAME_SESSION.level_field(i, 1);
             let active = GAME_SESSION.visual_mask() & bit != 0;
             let variant =
@@ -462,11 +472,11 @@ fn draw_switch_tile(
     let marked_view = clamped_texture_view(&marked);
     material.set_unlit(false);
     let one = fix32::from_int(1);
-    if kind == 3 || kind == 4 {
+    if kind == TileKind::SoftSwitch as u16 || kind == TileKind::HeavySwitch as u16 {
         let bit = 1u16 << channel;
         let active = GAME_SESSION.visual_mask() & bit != 0;
         let mut sink = fix32::zero();
-        if kind == 3 && active {
+        if kind == TileKind::SoftSwitch as u16 && active {
             sink = fix32::from_words(3277, 0);
             let f = GAME_SESSION.switch_fraction(channel);
             if f < one {
@@ -477,7 +487,7 @@ fn draw_switch_tile(
                     + fix32::from_words(1311, 0) * wave;
             }
         }
-        if kind == 3 {
+        if kind == TileKind::SoftSwitch as u16 {
             let mesh = game_mesh_part(
                 MARKED_SOFT_FIRST
                     + (channel & 7) * 2
@@ -518,7 +528,7 @@ fn prepare_switches(
         let channel = bit_channel(bit);
         let key = if mask & bit != 0 {
             32768
-                + if kind == 4 {
+                + if kind == TileKind::HeavySwitch as u16 {
                     0u16
                 } else {
                     GAME_SESSION.switch_age(channel)
@@ -562,7 +572,8 @@ fn prepare_block(model: &mut Model) {
         RENDER_STATE.resting_block.cell = 0;
         return;
     }
-    let resting = GAME_SESSION.visual_mode() == PLAY && GAME_SESSION.motion.moving == 0;
+    let resting =
+        GAME_SESSION.visual_mode() == AnimationPhase::Play && GAME_SESSION.motion.moving == 0;
     let key = (GAME_SESSION.rules.x & 31)
         | ((GAME_SESSION.rules.z & 31) << 5)
         | ((GAME_SESSION.rules.orientation & 3) << 10)
@@ -737,7 +748,11 @@ fn advance_gameplay(clock: &mut FrameClock) {
         RENDER_STATE.hud.enabled ^= 1;
     }
     if !GAME_SESSION.fading() && input.pressed & 1 != 0 {
-        RENDER_STATE.background ^= 1;
+        RENDER_STATE.background = if RENDER_STATE.background == BackgroundMode::Dithered {
+            BackgroundMode::Solid
+        } else {
+            BackgroundMode::Dithered
+        };
     }
     let now = time_milliseconds();
     let elapsed = now - clock.previous;
@@ -751,7 +766,7 @@ struct StaticScene {
     background: ColorBuffer,
     valid: bool,
     generation: u16,
-    background_mode: u16,
+    background_mode: BackgroundMode,
     hidden: u16,
     draws: u16,
 }
@@ -764,7 +779,7 @@ impl StaticScene {
             background: background,
             valid: false,
             generation: 0,
-            background_mode: 2,
+            background_mode: BackgroundMode::Dithered,
             hidden: 65535,
             draws: 0,
         }
@@ -825,14 +840,14 @@ fn refresh_static_scene(
 fn prepare_pads(
     parts: Array<PreparedDrawsPtr>,
     scene: &mut SceneResources,
-    mut pad_cache: Array<u16>,
+    mut pad_cache: Array<PadCache>,
     pad_view: &TextureView,
     carrier_view: &TextureView,
 ) {
     if parts[14u16].ready()
-        && pad_cache[11u16] == pad_cache[1u16]
-        && pad_cache[12u16] == pad_cache[2u16]
-        && pad_cache[13u16] == pad_cache[5u16]
+        && pad_cache[0u16].recorded_entry_key == pad_cache[0u16].entry_key
+        && pad_cache[0u16].recorded_goal_key == pad_cache[0u16].goal_key
+        && pad_cache[0u16].recorded_visible == pad_cache[0u16].visible_mask
     {
         return;
     }
@@ -961,17 +976,17 @@ fn prepare_pads(
         },
     );
     recording.finish();
-    pad_cache[11u16] = pad_cache[1u16];
-    pad_cache[12u16] = pad_cache[2u16];
-    pad_cache[13u16] = pad_cache[5u16];
-    pad_cache[14u16] = DRAW_STATS.draw_calls - before;
+    pad_cache[0u16].recorded_entry_key = pad_cache[0u16].entry_key;
+    pad_cache[0u16].recorded_goal_key = pad_cache[0u16].goal_key;
+    pad_cache[0u16].recorded_visible = pad_cache[0u16].visible_mask;
+    pad_cache[0u16].recorded_draws = DRAW_STATS.draw_calls - before;
     DRAW_STATS.draw_calls = before;
 }
 
 fn record_dynamic_scene(
     pass: &mut Pass,
     scene: &mut SceneResources,
-    pad_cache: Array<u16>,
+    pad_cache: &PadCache,
     parts: Array<PreparedDrawsPtr>,
 ) {
     pass.set_camera(scene.camera.ptr());
@@ -981,7 +996,7 @@ fn record_dynamic_scene(
     DRAW_STATS.draw_calls += RENDER_STATE.bridges.opaque_draws;
     draw_switches(pass, parts);
     pass.draw_prepared(parts[14u16]);
-    DRAW_STATS.draw_calls += pad_cache[14u16];
+    DRAW_STATS.draw_calls += pad_cache.recorded_draws;
 
     pass.set_state(scene.shadow_state.ptr());
     draw_shadow(
@@ -1087,13 +1102,7 @@ fn run(limit: u16) {
     let camera = game_camera();
     let mut camera_level: u16 = 0;
     let mut scene = SceneResources::new(camera);
-    let pad_owner = malloc(15);
-    let mut pad_cache = unsafe { pad_owner.as_u16_array() };
-    let mut cache_word: u16 = 0;
-    while cache_word < 15 {
-        pad_cache[cache_word] = 0;
-        cache_word += 1;
-    }
+    let mut pad_cache = PadCache::new();
     let pad_texture = game_texture();
     let pad_view = clamped_texture_view(&pad_texture);
     let mut hatch_material = game_material(Rgba8::white(), false);
@@ -1104,7 +1113,7 @@ fn run(limit: u16) {
     };
     let mut grid = game_ui_grid();
     GAME_SESSION.begin();
-    pad_cache_update(pad_cache);
+    pad_cache_update(&mut pad_cache);
     let mut carrier_texture = pad_carrier_texture();
     let mut carrier_view = clamped_texture_view(&carrier_texture);
     shadow_invalidate();
@@ -1144,13 +1153,13 @@ fn run(limit: u16) {
         if prepare_scene {
             commands.reset();
             sync_bridge_group(parts.as_array());
-            if pad_cache[0u16] != GAME_SESSION.generation {
+            if pad_cache.generation != GAME_SESSION.generation {
                 drop(carrier_view);
                 drop(carrier_texture);
                 carrier_texture = pad_carrier_texture();
                 carrier_view = clamped_texture_view(&carrier_texture);
             }
-            pad_cache_update(pad_cache);
+            pad_cache_update(&mut pad_cache);
             let scene_target = SceneTarget {
                 color: target.ptr(),
                 depth: depth.ptr(),
@@ -1170,7 +1179,7 @@ fn run(limit: u16) {
             prepare_pads(
                 parts.as_array(),
                 &mut scene,
-                pad_cache,
+                view_of(&mut pad_cache),
                 &pad_view,
                 &carrier_view,
             );
@@ -1182,7 +1191,7 @@ fn run(limit: u16) {
                     ColorLoad::load(),
                     DepthLoad::load(),
                 );
-                record_dynamic_scene(&mut pass, &mut scene, pad_cache, parts.as_array());
+                record_dynamic_scene(&mut pass, &mut scene, &pad_cache, parts.as_array());
             }
             // The other CB is CPU-owned while the immutable static CB runs.
             // Its Load dependency is checked only after static completion,
@@ -1203,10 +1212,11 @@ fn run(limit: u16) {
                 commands.invalidate_textures();
             }
         }
-        let mut color_load = ColorLoad::load();
-        if fade {
-            color_load = ColorLoad::clear(Rgb565::from_raw(0x1107));
-        }
+        let color_load: ColorLoad = if fade {
+            ColorLoad::clear(Rgb565::from_raw(0x1107))
+        } else {
+            ColorLoad::load()
+        };
         {
             let mut pass = commands.pass(back.ptr(), depth.ptr(), color_load, DepthLoad::load());
             record_overlay(&mut pass, &scene, &mut overlay, &mut grid, fade, color);
@@ -1219,7 +1229,7 @@ fn run(limit: u16) {
         time_clear_microseconds();
         render_started = true;
         gamepad_capture();
-        signal(12, GAME_SESSION.animation.phase);
+        signal(12, GAME_SESSION.animation.phase as u16);
         GAME_SESSION.presented();
         back_b = !back_b;
         number += 1;
@@ -1232,7 +1242,6 @@ fn run(limit: u16) {
     ground_end(ground_owner);
     shadow_batch_end(shadow_owner);
     fragile_end(fragile_owner);
-    free(pad_owner);
     button_cache_end();
     GAME_SESSION.end();
 }

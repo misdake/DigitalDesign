@@ -26,7 +26,7 @@ fn gpu_ui_packet_draw(
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS {
+    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16 {
         return false;
     }
     if width == 0 || height == 0 {

@@ -232,25 +232,25 @@ pub(super) fn check_swap_bridge_failure(level: u16, route: &[u16]) {
         .join(",");
     let body = format!(
         r#"
-GAME_SESSION.begin();GAME_SESSION.reset_level({level});GAME_SESSION.animation.phase=PLAY;GAME_SESSION.transition.phase=0;GAME_SESSION.animation.held_lock=0;
+GAME_SESSION.begin();GAME_SESSION.reset_level({level});GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.transition.phase=TransitionPhase::Idle;GAME_SESSION.animation.held_lock=0;
 let route:Buf<u16,{count}>=Buf::new([{moves}]);
 let mut saved:Buf<u16,10>=Buf::new([0;10]);let mut n:u16=0;
 while n+1<{count} {{
     let mut j:u16=0;while j<10 {{saved[j]=GAME_SESSION.rule_words()[j];j+=1;}}
     check(GAME_SESSION.try_move(route[n]));
     if route[n]==6 {{
-        check(GAME_SESSION.rules.status==0 && GAME_SESSION.animation.phase==PLAY && GAME_SESSION.rules.active_cube==(saved[8u16]^1));
+        check(GAME_SESSION.rules.status==0 && GAME_SESSION.animation.phase==AnimationPhase::Play && GAME_SESSION.rules.active_cube==(saved[8u16]^1));
         GAME_SESSION.tick(32768,0,0);j=0;while j<10 {{check(GAME_SESSION.rule_words()[j]==saved[j]);j+=1;}}
         check(GAME_SESSION.try_move(6));
     }}
-    let mut ticks:u16=0;while GAME_SESSION.animation.phase!=PLAY && ticks<40 {{GAME_SESSION.tick(0,0,50);ticks+=1;}}
-    check(GAME_SESSION.animation.phase==PLAY && GAME_SESSION.rules.status==0);GAME_SESSION.animation.held_lock=0;n+=1;
+    let mut ticks:u16=0;while GAME_SESSION.animation.phase!=AnimationPhase::Play && ticks<40 {{GAME_SESSION.tick(0,0,50);ticks+=1;}}
+    check(GAME_SESSION.animation.phase==AnimationPhase::Play && GAME_SESSION.rules.status==0);GAME_SESSION.animation.held_lock=0;n+=1;
 }}
 let mut j:u16=0;while j<10 {{saved[j]=GAME_SESSION.rule_words()[j];j+=1;}}
 let before=GAME_SESSION.block_transform();let supported=GAME_SESSION.idle_cube_transform();
 let generation=GAME_SESSION.generation;signal(6,1);
 check(route[n]==6 && GAME_SESSION.try_move(6));
-check(GAME_SESSION.rules.status==2 && GAME_SESSION.rules.split==1 && GAME_SESSION.animation.phase==FALL && !GAME_SESSION.fading());signal(6,2);
+check(GAME_SESSION.rules.status==2 && GAME_SESSION.rules.split==1 && GAME_SESSION.animation.phase==AnimationPhase::Fall && !GAME_SESSION.fading());signal(6,2);
 let at=if saved[8u16]==0 {{GAME_SESSION.rules.z*GAME_SESSION.level.width+GAME_SESSION.rules.x}}else{{GAME_SESSION.rules.other_z*GAME_SESSION.level.width+GAME_SESSION.rules.other_x}};
 check(GAME_SESSION.level_field(at,0)==5 && GAME_SESSION.rules.bridge_mask&GAME_SESSION.level_field(at,1)==0);
 check(GAME_SESSION.rules.active_cube==(saved[8u16]^1) && GAME_SESSION.motion.from_active==saved[8u16]);
@@ -264,16 +264,16 @@ check(dropped.position.y<before.position.y && dropped.position.x==before.positio
 check(idle.position.x==supported.position.x && idle.position.y==supported.position.y && idle.position.z==supported.position.z);signal(6,3);
 // Undo before the fade restores both identities, mask and move count exactly.
 GAME_SESSION.tick(32768,0,0);j=0;while j<10 {{check(GAME_SESSION.rule_words()[j]==saved[j]);j+=1;}}
-check(GAME_SESSION.animation.phase==PLAY && !GAME_SESSION.fading());check(GAME_SESSION.try_move(6));
+check(GAME_SESSION.animation.phase==AnimationPhase::Play && !GAME_SESSION.fading());check(GAME_SESSION.try_move(6));
 n=0;while n<12 {{GAME_SESSION.tick(0,0,50);n+=1;}}
-check(GAME_SESSION.animation.phase==FALL && GAME_SESSION.fading() && GAME_SESSION.rules.status==2);signal(6,4);
+check(GAME_SESSION.animation.phase==AnimationPhase::Fall && GAME_SESSION.fading() && GAME_SESSION.rules.status==2);signal(6,4);
 n=0;while GAME_SESSION.transition.elapsed<320 && n<8 {{GAME_SESSION.tick(0,0,50);n+=1;}}
 check(GAME_SESSION.transition.elapsed==320 && GAME_SESSION.generation==generation && GAME_SESSION.rules.status==2);
-GAME_SESSION.presented();check(GAME_SESSION.transition.phase==HOLD && GAME_SESSION.animation.phase==ENTRY_OPEN);
+GAME_SESSION.presented();check(GAME_SESSION.transition.phase==TransitionPhase::Hold && GAME_SESSION.animation.phase==AnimationPhase::EntryOpen);
 check(GAME_SESSION.generation==generation+1 && GAME_SESSION.motion.level=={level} && GAME_SESSION.rules.status==0 && GAME_SESSION.rules.moves==0);
 n=0;while n<10 {{GAME_SESSION.tick(0,0,50);n+=1;}}check(GAME_SESSION.transition.elapsed==380);GAME_SESSION.presented();
 n=0;while n<12 {{GAME_SESSION.tick(0,0,50);n+=1;}}
-check(!GAME_SESSION.fading() && GAME_SESSION.animation.phase==PLAY && GAME_SESSION.try_move(route[0u16]));signal(6,5);
+check(!GAME_SESSION.fading() && GAME_SESSION.animation.phase==AnimationPhase::Play && GAME_SESSION.try_move(route[0u16]));signal(6,5);
 "#,
         count = route.len()
     );

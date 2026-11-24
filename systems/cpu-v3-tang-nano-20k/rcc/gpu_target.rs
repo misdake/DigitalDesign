@@ -30,7 +30,8 @@ fn gpu_target_owned(slot: u16) -> bool {
         return false;
     }
     let c = gpu_record_data(slot);
-    c[GPU_RECORD_PHASE] == GPU_RECORD_READY || c[GPU_RECORD_PHASE] == GPU_RECORD_SEALED
+    c[GPU_RECORD_PHASE] == RecordPhase::Ready as u16
+        || c[GPU_RECORD_PHASE] == RecordPhase::Sealed as u16
 }
 fn gpu_target_targets(slot: u16, color: Array<u16>, depth: Array<u16>) -> bool {
     let c = gpu_record_data(slot);
@@ -131,10 +132,10 @@ fn gpu_target_facts_valid(slot: u16) -> bool {
     let color = (ci - 1) * 4;
     let depth = (di - 1) * 4;
     if facts[color] != c[GPU_RECORD_COLOR]
-        || facts[color + 2] != GPU_FACT_COLOR
+        || facts[color + 2] != ResourceFactKind::Color as u16
         || facts[color + 3] != 3
         || facts[depth] != c[GPU_RECORD_DEPTH]
-        || facts[depth + 2] != GPU_FACT_DEPTH
+        || facts[depth + 2] != ResourceFactKind::Depth as u16
         || facts[depth + 3] != 3
     {
         return false;
@@ -147,7 +148,7 @@ fn gpu_target_facts_valid(slot: u16) -> bool {
         let at = (source - 1) * 4;
         if facts[at] != c[GPU_RECORD_COPY_SOURCE]
             || facts[at + 1] < GPU_API_PLANE_SECTORS
-            || facts[at + 2] != GPU_FACT_COLOR
+            || facts[at + 2] != ResourceFactKind::Color as u16
             || facts[at + 3] != GPU_FACT_READ
         {
             return false;
@@ -156,7 +157,8 @@ fn gpu_target_facts_valid(slot: u16) -> bool {
     true
 }
 fn gpu_target_proven(c: Array<u16>) -> bool {
-    c[GPU_RECORD_PHASE] == GPU_RECORD_SEALED && c[GPU_RECORD_VALID] & GPU_RECORD_TARGET_PROVEN != 0
+    c[GPU_RECORD_PHASE] == RecordPhase::Sealed as u16
+        && c[GPU_RECORD_VALID] & GPU_RECORD_TARGET_PROVEN != 0
 }
 fn gpu_target_binding(slot: u16) -> bool {
     if !gpu_target_owned(slot) {
@@ -196,10 +198,10 @@ fn gpu_target_binding(slot: u16) -> bool {
 fn gpu_target_front_safe(color: Array<u16>, depth: Array<u16>) -> bool {
     let snapshot: Buf<u16, 4> = Buf::new([0; 4]);
     let status = gpu_present_observe(snapshot.as_array());
-    if status == 65535 || status == 1 {
+    if status == PresentObservation::Fault || status == PresentObservation::Retry {
         return false;
     }
-    if status == 2 {
+    if status == PresentObservation::Stable {
         if GPU_PRESENT.pending != 0 || snapshot[0u16] != 0 {
             return false;
         }
@@ -271,7 +273,7 @@ fn gpu_target_retarget(
             16,
         ))
     {
-        c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
+        c[GPU_RECORD_PHASE] = RecordPhase::Poisoned as u16;
         return false;
     }
     let mut facts = gpu_record_resource_facts(slot);

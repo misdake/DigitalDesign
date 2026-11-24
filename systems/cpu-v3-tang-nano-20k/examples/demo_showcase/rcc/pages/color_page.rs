@@ -10,13 +10,25 @@ use gpu_api::*;
 mod boot_resources;
 use boot_resources::*;
 
-pub fn color_page(grid: &mut UiGrid, canvas: CpuCanvas, cursor: u16, mode: u16) {
+pub fn color_page(
+    grid: &mut UiGrid,
+    canvas: CpuCanvas,
+    cursor: DisplayFormat,
+    mode: DisplayFormat,
+) {
     page_start(grid, PageId::Color, false, b"COLOR");
-    canvas_rect(canvas, 32, (3 + cursor * 2) as i16 * 16, 144, 16, SELECTION);
+    canvas_rect(
+        canvas,
+        32,
+        (3 + cursor as u16 * 2) as i16 * 16,
+        144,
+        16,
+        SELECTION,
+    );
     let mut option: u16 = 0;
     while option < 2 {
         let mut icon = ICON_RADIO_OFF;
-        if option == mode {
+        if option == mode as u16 {
             icon = ICON_RADIO_ON;
         }
         grid.write_glyph(5, 3 + option * 2, icon);
@@ -38,12 +50,4 @@ fn color_graphics(canvas: CpuCanvas) {
     canvas_rect(canvas, 160, 160, 56, 16, BLUE);
     canvas_rect(canvas, 224, 160, 56, 16, CYAN);
     canvas_rect(canvas, 288, 160, 56, 16, YELLOW);
-}
-
-pub fn color_display_format(mode: u16) -> DisplayFormat {
-    if mode == 1 {
-        DisplayFormat::LinearRgb565
-    } else {
-        DisplayFormat::Rgb565
-    }
 }

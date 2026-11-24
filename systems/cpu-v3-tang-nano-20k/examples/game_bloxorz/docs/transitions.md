@@ -8,7 +8,18 @@ last-verified: 2026-11-24
 
 The example owns all33 imported stages, integer rules, animation and input. The shared `bloxorz_core` remains timer-free. The reference is the Web 400×240 pixel mode:20-degree vertical field of view,5:3 aspect,512×512 low atlas and MSAA off. Its corner-fit Camera targets(0,.6,0) and fits each stage independently. A local view-axis adapter accounts for the existing native renderer reflection. Native material/lighting and RGB565 quantization remain visible differences from Web PBR.
 
-Animation and transition use independent clocks. Restart can begin the veil while a roll continues. A released block keeps its pose, tangent velocity, spin and gravity throughout fade-out. Goal closing runs visibly for200ms after the landed pause; fade-out starts only after the aperture is closed. Rendering completion, rather than a stale animation callback, authorizes level replacement.
+Animation and transition use independent clocks and independent one-word enums.
+The animation number sent through the diagnostic signal retains its original
+value. The rule engine keeps the packed tile and status codes; named kinds
+identify their values where the game reads or writes these words.
+
+The application owns a `PadCache` value for the lifetime of the run. It contains
+separate entry/goal keys and opening values, three part masks, the goal carrier
+mesh index, and keys for the last recorded draw. The cache is borrowed during
+preparation. Its part masks remain bitfields because several parts may be
+visible or dirty at once.
+
+Restart can begin the veil while a roll continues. A released block keeps its pose, tangent velocity, spin and gravity throughout fade-out. Goal closing runs visibly for200ms after the landed pause; fade-out starts only after the aperture is closed. Rendering completion, rather than a stale animation callback, authorizes level replacement.
 
 ```mermaid
 flowchart LR

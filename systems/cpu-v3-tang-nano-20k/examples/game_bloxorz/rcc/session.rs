@@ -11,21 +11,47 @@ mod gamepad;
 use gamepad::*;
 mod orientation;
 use orientation::*;
-pub const PLAY: u16 = 0;
-pub const ROLL: u16 = 1;
-pub const ENTRY_OPEN: u16 = 2;
-pub const ENTRY_RISE: u16 = 3;
-pub const GOAL_OPEN: u16 = 4;
-pub const GOAL_DROP: u16 = 5;
-pub const GOAL_LAND: u16 = 6;
-pub const GOAL_CLOSE: u16 = 7;
-pub const FALL: u16 = 8;
-pub const FADE_OUT: u16 = 9;
-pub const HOLD: u16 = 10;
-pub const FADE_IN: u16 = 11;
-pub const TIP: u16 = 12;
-pub const SPLIT_POP: u16 = 13;
-pub const CRACK: u16 = 14;
+#[repr(u16)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AnimationPhase {
+    Play = 0,
+    Roll = 1,
+    EntryOpen = 2,
+    EntryRise = 3,
+    GoalOpen = 4,
+    GoalDrop = 5,
+    GoalLand = 6,
+    GoalClose = 7,
+    Fall = 8,
+    Tip = 12,
+    SplitPop = 13,
+    Crack = 14,
+}
+
+#[repr(u16)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TransitionPhase {
+    Idle = 0,
+    FadeOut = 9,
+    Hold = 10,
+    FadeIn = 11,
+}
+
+#[repr(u16)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RollOutcome {
+    Normal = 0,
+    Tip = 1,
+    Crack = 2,
+    Split = 3,
+}
+
+impl AnimationPhase {
+    pub fn goal_aperture_open(self) -> bool {
+        self == Self::GoalDrop || self == Self::GoalLand || self == Self::GoalClose
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct FallState {
     pub position: Vec3,
@@ -46,7 +72,7 @@ pub struct MotionState {
     pub moving: u16,
     pub level: u16,
     pub previous_mask: u16,
-    pub fall_kind: u16,
+    pub roll_outcome: RollOutcome,
     pub release_threshold: u16,
     pub first_support: u16,
     pub from_split: u16,
@@ -58,7 +84,7 @@ pub struct MotionState {
 }
 #[repr(C)]
 pub struct AnimationState {
-    pub phase: u16,
+    pub phase: AnimationPhase,
     pub elapsed: u16,
     pub destination: u16,
     pub held_lock: u16,
@@ -70,7 +96,7 @@ pub struct AnimationState {
 }
 #[repr(C)]
 pub struct TransitionState {
-    pub phase: u16,
+    pub phase: TransitionPhase,
     pub elapsed: u16,
 }
 #[repr(C)]
@@ -143,7 +169,7 @@ pub static GAME_SESSION: BloxorzSession = BloxorzSession {
         z: 0,
         orientation: 0,
         bridge_mask: 0,
-        status: 0,
+        status: RuleStatus::Ongoing as u16,
         moves: 0,
         other_x: 0,
         other_z: 0,
@@ -166,7 +192,7 @@ pub static GAME_SESSION: BloxorzSession = BloxorzSession {
         moving: 0,
         level: 0,
         previous_mask: 0,
-        fall_kind: 0,
+        roll_outcome: RollOutcome::Normal,
         release_threshold: 0,
         first_support: 0,
         from_split: 0,
@@ -178,7 +204,7 @@ pub static GAME_SESSION: BloxorzSession = BloxorzSession {
     },
     fracture_cell: 65535,
     animation: AnimationState {
-        phase: 0,
+        phase: AnimationPhase::Play,
         elapsed: 0,
         destination: 0,
         held_lock: 0,
@@ -193,7 +219,7 @@ pub static GAME_SESSION: BloxorzSession = BloxorzSession {
         ages: Buf::new([260; 9]),
     },
     transition: TransitionState {
-        phase: 0,
+        phase: TransitionPhase::Idle,
         elapsed: 0,
     },
     fall: FallState {
@@ -290,7 +316,7 @@ impl BloxorzSession {
         self.animation.goal_z = 65535;
         let mut i: u16 = 0;
         while i < self.level.cell_count {
-            if self.level_field(i, 0) == 6 {
+            if self.level_field(i, 0) == TileKind::Goal as u16 {
                 self.animation.goal_x = i % self.level.width;
                 self.animation.goal_z = div_u16(i, self.level.width);
             }
@@ -301,23 +327,23 @@ impl BloxorzSession {
     pub fn begin(&mut self) {
         self.rotations.begin();
         self.reset_level(BLOXORZ_INITIAL_LEVEL);
-        self.animation.phase = ENTRY_OPEN;
+        self.animation.phase = AnimationPhase::EntryOpen;
         if BLOXORZ_INITIAL_PLAY != 0 {
-            self.animation.phase = PLAY;
+            self.animation.phase = AnimationPhase::Play;
         }
         self.animation.elapsed = 0;
         self.animation.held_lock = 0;
         self.animation.captured_frames = 0;
         self.animation.direction_stack = 0;
-        self.transition.phase = 0;
+        self.transition.phase = TransitionPhase::Idle;
         self.transition.elapsed = 0;
     }
 
     pub fn fading(&self) -> bool {
-        self.transition.phase != 0
+        self.transition.phase != TransitionPhase::Idle
     }
 
-    pub fn visual_mode(&self) -> u16 {
+    pub fn visual_mode(&self) -> AnimationPhase {
         self.animation.phase
     }
 
@@ -340,18 +366,18 @@ impl BloxorzSession {
         self.animation.destination = destination;
         self.animation.held_lock = 1;
         self.animation.direction_stack = 0;
-        self.transition.phase = FADE_OUT;
+        self.transition.phase = TransitionPhase::FadeOut;
         self.transition.elapsed = 0;
     }
 
     pub fn tint(&self) -> u16 {
-        if self.transition.phase == FADE_OUT {
+        if self.transition.phase == TransitionPhase::FadeOut {
             return 255 - div_u16(self.transition.elapsed * 51, 64);
         }
-        if self.transition.phase == HOLD {
+        if self.transition.phase == TransitionPhase::Hold {
             return 0;
         }
-        if self.transition.phase == FADE_IN {
+        if self.transition.phase == TransitionPhase::FadeIn {
             return div_u16(self.transition.elapsed * 51, 76);
         }
         255
@@ -363,16 +389,17 @@ impl BloxorzSession {
 
     // Called only after consumer WAIT_ALL and actual Display retirement.
     pub fn presented(&mut self) {
-        if self.transition.phase == FADE_OUT && self.transition.elapsed == 320 {
+        if self.transition.phase == TransitionPhase::FadeOut && self.transition.elapsed == 320 {
             self.reset_level(self.animation.destination);
-            self.animation.phase = ENTRY_OPEN;
+            self.animation.phase = AnimationPhase::EntryOpen;
             self.animation.elapsed = 0;
-            self.transition.phase = HOLD;
+            self.transition.phase = TransitionPhase::Hold;
             self.transition.elapsed = 0;
-        } else if self.transition.phase == FADE_IN && self.transition.elapsed == 380 {
-            self.transition.phase = 0;
+        } else if self.transition.phase == TransitionPhase::FadeIn && self.transition.elapsed == 380
+        {
+            self.transition.phase = TransitionPhase::Idle;
             self.transition.elapsed = 0;
-            self.animation.phase = ENTRY_OPEN;
+            self.animation.phase = AnimationPhase::EntryOpen;
             self.animation.elapsed = 0;
             self.animation.direction_stack = 0;
             gamepad_discard_edges();
@@ -387,11 +414,15 @@ impl BloxorzSession {
         }
         let at = (z as u16) * self.level.width + x as u16;
         let kind = self.level_field(at, 0);
-        kind != 0 && !(kind == 5 && mask & self.level_field(at, 1) == 0)
+        kind != TileKind::Void as u16
+            && !(kind == TileKind::Bridge as u16 && mask & self.level_field(at, 1) == 0)
     }
 
     pub fn try_move(&mut self, direction: u16) -> bool {
-        if self.fading() || self.animation.phase != PLAY || (direction >= 4 && direction != 6) {
+        if self.fading()
+            || self.animation.phase != AnimationPhase::Play
+            || (direction >= 4 && direction != 6)
+        {
             return false;
         }
         self.motion.from_split = self.rules.split;
@@ -437,7 +468,7 @@ impl BloxorzSession {
         if direction == 6 {
             self.motion.elapsed = 220;
             self.motion.moving = 0;
-            if self.rules.status == 2 {
+            if self.rules.status == RuleStatus::Unsupported as u16 {
                 // A soft-switch swap can remove the other cube's bridge. Preserve
                 // the supported cube and drop the actual unsupported one at rest.
                 let first = self.presentation_support(
@@ -446,10 +477,11 @@ impl BloxorzSession {
                     self.rules.bridge_mask,
                 );
                 let falling = if first { 1u16 } else { 0u16 };
-                let mut pose = self.block_transform();
-                if falling != self.rules.active_cube {
-                    pose = self.idle_cube_transform();
-                }
+                let pose: Transform = if falling != self.rules.active_cube {
+                    self.idle_cube_transform()
+                } else {
+                    self.block_transform()
+                };
                 self.motion.from_active = falling;
                 self.rotations.start(falling);
                 self.fall = FallState {
@@ -460,7 +492,7 @@ impl BloxorzSession {
                     spin: fix32::zero(),
                     axis: 0,
                 };
-                self.animation.phase = FALL;
+                self.animation.phase = AnimationPhase::Fall;
                 self.animation.elapsed = 0;
                 self.animation.fall_notified = 0;
                 self.animation.held_lock = 1;
@@ -473,12 +505,12 @@ impl BloxorzSession {
         } else {
             0u16
         });
-        self.animation.phase = ROLL;
+        self.animation.phase = AnimationPhase::Roll;
         self.animation.elapsed = 0;
         self.animation.fall_notified = 0;
         self.motion.elapsed = 0;
         self.motion.moving = 1;
-        self.motion.fall_kind = 0;
+        self.motion.roll_outcome = RollOutcome::Normal;
         self.motion.release_threshold = 79;
         if self.motion.from_orientation != 0 {
             self.motion.release_threshold = 124;
@@ -491,20 +523,26 @@ impl BloxorzSession {
         if self.motion.from_split != 0 {
             self.motion.release_threshold = 124;
         }
-        if self.rules.status == 2 && self.rules.split == 0 && self.rules.orientation == 0 {
+        if self.rules.status == RuleStatus::Unsupported as u16
+            && self.rules.split == 0
+            && self.rules.orientation == 0
+        {
             let x = self.rules.x;
             let z = self.rules.z;
             if x < self.level.width
                 && z < self.level.height
-                && self.level_field(z * self.level.width + x, 0) == 2
+                && self.level_field(z * self.level.width + x, 0) == TileKind::Fragile as u16
             {
-                self.motion.fall_kind = 2;
+                self.motion.roll_outcome = RollOutcome::Crack;
             }
         }
         if self.motion.from_split == 0 && self.rules.split != 0 {
-            self.motion.fall_kind = 3;
+            self.motion.roll_outcome = RollOutcome::Split;
         }
-        if self.rules.status == 2 && self.rules.orientation != 0 && self.motion.from_split == 0 {
+        if self.rules.status == RuleStatus::Unsupported as u16
+            && self.rules.orientation != 0
+            && self.motion.from_split == 0
+        {
             let x = self.rules.x as i16;
             let z = self.rules.z as i16;
             let first = self.presentation_support(x, z, self.rules.bridge_mask);
@@ -522,11 +560,11 @@ impl BloxorzSession {
                 self.rules.bridge_mask,
             );
             if (first && !second) || (!first && second) {
-                self.motion.fall_kind = 1;
+                self.motion.roll_outcome = RollOutcome::Tip;
                 self.motion.first_support = if first { 1u16 } else { 0u16 };
             }
         }
-        if self.rules.status != 0 {
+        if self.rules.status != RuleStatus::Ongoing as u16 {
             self.animation.held_lock = 1;
             self.animation.direction_stack = 0;
         }
@@ -550,7 +588,7 @@ impl BloxorzSession {
         self.rules.z = (first >> 5) & 31;
         self.rules.orientation = if mode < 3 { mode } else { 0u16 };
         self.rules.bridge_mask = (first >> 13) | ((second & 63) << 3);
-        self.rules.status = 0;
+        self.rules.status = RuleStatus::Ongoing as u16;
         self.rules.moves -= 1;
         self.rules.other_x = (second >> 6) & 31;
         self.rules.other_z = (second >> 11) & 31;
@@ -558,7 +596,7 @@ impl BloxorzSession {
         self.rules.split = if mode >= 3 { 1u16 } else { 0u16 };
         self.fracture_cell = 65535;
         self.motion.from_split = 0;
-        self.animation.phase = PLAY;
+        self.animation.phase = AnimationPhase::Play;
         self.animation.elapsed = 0;
         self.animation.fall_notified = 0;
         self.motion.elapsed = 220;
@@ -625,21 +663,21 @@ impl BloxorzSession {
             }
         }
         let phase = self.transition.phase;
-        if phase == 0 || phase == FADE_OUT {
+        if phase == TransitionPhase::Idle || phase == TransitionPhase::FadeOut {
             self.animation_tick(dt);
         }
-        if self.transition.phase == FADE_OUT {
+        if self.transition.phase == TransitionPhase::FadeOut {
             self.transition.elapsed += dt;
             if self.transition.elapsed > 320 {
                 self.transition.elapsed = 320;
             }
-        } else if self.transition.phase == HOLD {
+        } else if self.transition.phase == TransitionPhase::Hold {
             self.transition.elapsed += dt;
             if self.transition.elapsed >= 80 {
-                self.transition.phase = FADE_IN;
+                self.transition.phase = TransitionPhase::FadeIn;
                 self.transition.elapsed = 0;
             }
-        } else if self.transition.phase == FADE_IN {
+        } else if self.transition.phase == TransitionPhase::FadeIn {
             self.transition.elapsed += dt;
             if self.transition.elapsed > 380 {
                 self.transition.elapsed = 380;
@@ -647,7 +685,7 @@ impl BloxorzSession {
         }
         self.switch_tick(dt);
         if !self.fading()
-            && self.animation.phase == PLAY
+            && self.animation.phase == AnimationPhase::Play
             && self.animation.held_lock == 0
             && self.animation.direction_stack != 0
         {
@@ -687,23 +725,23 @@ impl BloxorzSession {
 
     fn animation_tick(&mut self, dt: u16) {
         let mode = self.animation.phase;
-        if mode == PLAY {
+        if mode == AnimationPhase::Play {
             return;
         }
-        if mode != ROLL && self.motion.elapsed < 154 {
+        if mode != AnimationPhase::Roll && self.motion.elapsed < 154 {
             self.motion.elapsed += dt;
             if self.motion.elapsed > 154 {
                 self.motion.elapsed = 154;
             }
         }
         self.animation.elapsed += dt;
-        if mode == ROLL {
+        if mode == AnimationPhase::Roll {
             if self.animation.elapsed > 220 {
                 self.animation.elapsed = 220;
             }
             self.motion.elapsed = self.animation.elapsed;
-            if self.rules.status == 2
-                && self.motion.fall_kind == 0
+            if self.rules.status == RuleStatus::Unsupported as u16
+                && self.motion.roll_outcome == RollOutcome::Normal
                 && self.animation.elapsed >= self.motion.release_threshold
             {
                 self.release_pivot();
@@ -725,26 +763,26 @@ impl BloxorzSession {
                         + fix32::from_int(self.level.height as i16) * half
                         - fix32::from_words(16384, 0))
                     .to_int() as u16;
-                    self.animation.phase = SPLIT_POP;
-                } else if self.rules.status == 1 {
-                    self.animation.phase = GOAL_OPEN;
-                } else if self.rules.status == 2 {
-                    if self.motion.fall_kind == 2 {
-                        self.animation.phase = CRACK;
+                    self.animation.phase = AnimationPhase::SplitPop;
+                } else if self.rules.status == RuleStatus::Goal as u16 {
+                    self.animation.phase = AnimationPhase::GoalOpen;
+                } else if self.rules.status == RuleStatus::Unsupported as u16 {
+                    if self.motion.roll_outcome == RollOutcome::Crack {
+                        self.animation.phase = AnimationPhase::Crack;
                         self.fracture_cell = self.rules.z * self.level.width + self.rules.x;
                     } else {
-                        self.animation.phase = TIP;
+                        self.animation.phase = AnimationPhase::Tip;
                     }
                 } else {
-                    self.animation.phase = PLAY;
+                    self.animation.phase = AnimationPhase::Play;
                 }
                 self.motion.moving = 0;
                 self.animation.elapsed = 0;
             }
-        } else if mode == SPLIT_POP && self.animation.elapsed >= 280 {
-            self.animation.phase = PLAY;
+        } else if mode == AnimationPhase::SplitPop && self.animation.elapsed >= 280 {
+            self.animation.phase = AnimationPhase::Play;
             self.animation.elapsed = 0;
-        } else if mode == CRACK && self.animation.elapsed >= 140 {
+        } else if mode == AnimationPhase::Crack && self.animation.elapsed >= 140 {
             let pose = self.block_transform();
             self.fall = FallState {
                 position: pose.position,
@@ -754,32 +792,34 @@ impl BloxorzSession {
                 spin: fix32::zero(),
                 axis: 0,
             };
-            self.animation.phase = FALL;
+            self.animation.phase = AnimationPhase::Fall;
             self.animation.elapsed = 0;
-        } else if mode == TIP && self.animation.elapsed >= 360 {
+        } else if mode == AnimationPhase::Tip && self.animation.elapsed >= 360 {
             self.animation.elapsed = 360;
             self.release_pivot();
-        } else if mode == ENTRY_OPEN && self.animation.elapsed >= 200 {
-            self.animation.phase = ENTRY_RISE;
+        } else if mode == AnimationPhase::EntryOpen && self.animation.elapsed >= 200 {
+            self.animation.phase = AnimationPhase::EntryRise;
             self.animation.elapsed = 0;
-        } else if mode == ENTRY_RISE && self.animation.elapsed >= 380 {
-            self.animation.phase = PLAY;
+        } else if mode == AnimationPhase::EntryRise && self.animation.elapsed >= 380 {
+            self.animation.phase = AnimationPhase::Play;
             self.animation.elapsed = 0;
-        } else if mode == GOAL_OPEN && self.animation.elapsed >= 200 {
-            self.animation.phase = GOAL_DROP;
+        } else if mode == AnimationPhase::GoalOpen && self.animation.elapsed >= 200 {
+            self.animation.phase = AnimationPhase::GoalDrop;
             self.animation.elapsed = 0;
-        } else if mode == GOAL_DROP && self.animation.elapsed >= 420 {
-            self.animation.phase = GOAL_LAND;
+        } else if mode == AnimationPhase::GoalDrop && self.animation.elapsed >= 420 {
+            self.animation.phase = AnimationPhase::GoalLand;
             self.animation.elapsed = 0;
-        } else if mode == GOAL_LAND && self.animation.elapsed >= 80 {
-            self.animation.phase = GOAL_CLOSE;
+        } else if mode == AnimationPhase::GoalLand && self.animation.elapsed >= 80 {
+            self.animation.phase = AnimationPhase::GoalClose;
             self.animation.elapsed = 0;
-        } else if mode == GOAL_CLOSE && self.animation.elapsed >= 200 {
+        } else if mode == AnimationPhase::GoalClose && self.animation.elapsed >= 200 {
             self.animation.elapsed = 200;
             if !self.fading() {
                 self.begin_fade((self.motion.level + 1) % BLOX_LEVEL_COUNT);
             }
-        } else if mode == FALL && self.animation.elapsed >= 600 && self.animation.fall_notified == 0
+        } else if mode == AnimationPhase::Fall
+            && self.animation.elapsed >= 600
+            && self.animation.fall_notified == 0
         {
             self.animation.fall_notified = 1;
             self.begin_fade(self.motion.level);
@@ -787,14 +827,14 @@ impl BloxorzSession {
     }
 
     pub fn block_visible(&self) -> bool {
-        self.animation.phase != ENTRY_OPEN
-            && !(self.animation.phase == GOAL_CLOSE && self.animation.elapsed >= 200)
+        self.animation.phase != AnimationPhase::EntryOpen
+            && !(self.animation.phase == AnimationPhase::GoalClose && self.animation.elapsed >= 200)
     }
 
     fn release_pivot(&mut self) {
         let pose = self.block_transform();
         let half = fix!(0.5);
-        let tipping = self.animation.phase == TIP;
+        let tipping = self.animation.phase == AnimationPhase::Tip;
         let axis = if tipping {
             if self.rules.orientation == 1 {
                 1u16
@@ -878,7 +918,7 @@ impl BloxorzSession {
             axis: axis,
         };
         self.motion.moving = 0;
-        self.animation.phase = FALL;
+        self.animation.phase = AnimationPhase::Fall;
         self.animation.elapsed = 0;
     }
 
@@ -899,20 +939,20 @@ impl BloxorzSession {
     }
 
     pub fn split_visual(&self) -> bool {
-        if self.animation.phase == SPLIT_POP {
+        if self.animation.phase == AnimationPhase::SplitPop {
             return self.animation.elapsed >= 70;
         }
-        if self.animation.phase == ROLL {
+        if self.animation.phase == AnimationPhase::Roll {
             return self.motion.from_split != 0;
         }
-        if self.animation.phase == FALL && self.motion.from_split != 0 {
+        if self.animation.phase == AnimationPhase::Fall && self.motion.from_split != 0 {
             return true;
         }
         self.rules.split != 0
     }
 
     fn split_pop_scale(&self) -> fix32 {
-        if self.animation.phase != SPLIT_POP {
+        if self.animation.phase != AnimationPhase::SplitPop {
             return fix32::from_int(1);
         }
         let pop = (fraction(self.animation.elapsed, 280) - fix32::from_words(13107, 0))
@@ -929,7 +969,8 @@ impl BloxorzSession {
     }
 
     pub fn idle_cube_transform(&self) -> Transform {
-        let old = (self.animation.phase == ROLL || self.animation.phase == FALL)
+        let old = (self.animation.phase == AnimationPhase::Roll
+            || self.animation.phase == AnimationPhase::Fall)
             && self.motion.from_split != 0;
         let active = if old {
             self.motion.from_active
@@ -972,7 +1013,8 @@ impl BloxorzSession {
     }
 
     pub fn idle_cube_pose(&self, model: &mut Model) {
-        let old = (self.animation.phase == ROLL || self.animation.phase == FALL)
+        let old = (self.animation.phase == AnimationPhase::Roll
+            || self.animation.phase == AnimationPhase::Fall)
             && self.motion.from_split != 0;
         let active = if old {
             self.motion.from_active
@@ -988,19 +1030,20 @@ impl BloxorzSession {
 
     pub fn fragile_dropped(&self, index: u16) -> bool {
         self.fracture_cell == index
-            && (self.animation.phase == CRACK || self.animation.phase == FALL)
+            && (self.animation.phase == AnimationPhase::Crack
+                || self.animation.phase == AnimationPhase::Fall)
     }
 
     pub fn fragile_height(&self, index: u16) -> fix32 {
         if self.fracture_cell != index {
             return fix32::zero();
         }
-        if self.animation.phase == CRACK {
+        if self.animation.phase == AnimationPhase::Crack {
             let f = fraction(self.animation.elapsed, 140);
             let sc = fsincos(f * fix32::from_int(60));
             return sc.x() * fix32::from_words(786, 0) * (fix32::from_int(1) - f);
         }
-        if self.animation.phase == FALL {
+        if self.animation.phase == AnimationPhase::Fall {
             let f = ratio(self.animation.elapsed, 600);
             return -fix32::from_int(16) * f * f;
         }
@@ -1014,7 +1057,7 @@ impl BloxorzSession {
         let one = fix32::from_int(1);
         let two = fix32::from_int(2);
         let half = fix!(0.5);
-        if mode == FALL {
+        if mode == AnimationPhase::Fall {
             let state = self.fall;
             let seconds = ratio(t, 1000);
             let f = ratio(t, 600);
@@ -1033,7 +1076,7 @@ impl BloxorzSession {
                 state.scale,
             );
         }
-        if mode == SPLIT_POP && t < 70 {
+        if mode == AnimationPhase::SplitPop && t < 70 {
             let size = one - fraction(t, 70);
             return Transform::new(
                 Vec3::new(
@@ -1096,7 +1139,7 @@ impl BloxorzSession {
             } else {
                 pivot = if self.motion.direction == 2 { sz } else { zero };
             }
-        } else if mode == TIP {
+        } else if mode == AnimationPhase::Tip {
             let f = fraction(t, 360);
             angle = fix32::from_words(37408, 1) * f * f;
             if orient == 1 {
@@ -1112,7 +1155,7 @@ impl BloxorzSession {
                 }
             }
         }
-        if moving || mode == TIP {
+        if moving || mode == AnimationPhase::Tip {
             let sc = fsincos(angle);
             let c = sc.y();
             let s = sc.x();
@@ -1128,14 +1171,17 @@ impl BloxorzSession {
         }
         let mut vertical = zero;
         let mut squeeze = one;
-        if mode == ENTRY_RISE {
+        if mode == AnimationPhase::EntryRise {
             let remain = one - fraction(t, 380);
             let e = remain * fix32::from_words(26214, 0) + remain * remain * fix!(0.6);
             vertical = -fix32::from_words(5243, 2) * e;
             squeeze = one - fix32::from_words(6554, 0) * e;
         }
-        if mode == GOAL_DROP || mode == GOAL_LAND || mode == GOAL_CLOSE {
-            let f = if mode == GOAL_DROP {
+        if mode == AnimationPhase::GoalDrop
+            || mode == AnimationPhase::GoalLand
+            || mode == AnimationPhase::GoalClose
+        {
+            let f = if mode == AnimationPhase::GoalDrop {
                 fraction(t, 420)
             } else {
                 one
@@ -1164,7 +1210,7 @@ impl BloxorzSession {
     }
 
     pub fn block_orientation(&self) -> u16 {
-        if self.motion.moving != 0 || self.animation.phase == FALL {
+        if self.motion.moving != 0 || self.animation.phase == AnimationPhase::Fall {
             self.rotations.animation()
         } else {
             self.rotations.current(if self.split_visual() {

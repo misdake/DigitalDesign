@@ -41,6 +41,18 @@ Changing a source type can relocate global addresses because RCC places scalar
 buffers and aggregates in separate passes; the per-record field offsets and
 total storage above do not change.
 
+Execution records use one-word `ExecutionPhase` and `ExecutionError` fields.
+Presentation keeps `DisplayFormat` and a first error in its CPU record. Snapshot,
+retirement polling, and passive observation have distinct result types.
+The enums preserve diagnostic numbers and the existing word offsets. Format
+codes convert to integers at the Device3 register boundary. Hardware snapshots
+validate the raw format before accepting it.
+
+Arena allocate, resolve, and free share `GpuObjectKind`. Debug tags and fault
+records retain their numeric representation. The word-oriented CB and prepared
+metadata still store numeric `RecordPhase`, `PreparedState`, and
+`ResourceFactKind` discriminants. Read/write flags remain composable masks.
+
 ## Configuration and public recording resources
 
 `Mesh`, `Model`, `Camera`, `Material`, `RenderState`, `Texture`, `TextureView`,

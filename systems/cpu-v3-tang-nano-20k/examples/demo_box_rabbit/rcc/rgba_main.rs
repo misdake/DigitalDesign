@@ -41,10 +41,11 @@ fn run(limit: u16) {
         if frame == 0 {
             buffer.invalidate_textures();
         }
-        let mut back = color_b.ptr();
-        if frame & 1 != 0 {
-            back = color_a.ptr();
-        }
+        let back: ColorBufferPtr = if frame & 1 != 0 {
+            color_a.ptr()
+        } else {
+            color_b.ptr()
+        };
         {
             let mut pass = buffer.pass(
                 back,

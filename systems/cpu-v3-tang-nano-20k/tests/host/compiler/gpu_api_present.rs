@@ -111,7 +111,7 @@ fn run_format(
     let open = if format == 0 {
         "gpu_present_open()".to_owned()
     } else {
-        format!("gpu_present_open_with_format({format})")
+        "gpu_present_open_with_format(DisplayFormat::LinearRgb565)".to_owned()
     };
     let source = format!(
         r#"mod gpu_present;
@@ -167,10 +167,10 @@ fn display_waits_for_actual_swap_and_old_reads_not_frame_change_alone() {
         "delayed-retirement",
         r#"
  let before=dev_recv(DISPLAY_DEVICE,DISPLAY_FRAME_INDEX);
- check(gpu_present_set_next(0x8800));check(gpu_present_poll()==1);
+ check(gpu_present_set_next(0x8800));check(gpu_present_poll()==PresentPoll::Pending);
  check(dev_recv(DISPLAY_DEVICE,DISPLAY_FRAME_INDEX)!=before);check(GPU_PRESENT.pending==1);
- check(gpu_present_poll()==1);check(gpu_present_wait_vblank());
- check(GPU_PRESENT.pending==0);check(gpu_present_poll()==0);
+ check(gpu_present_poll()==PresentPoll::Pending);check(gpu_present_wait_vblank());
+ check(GPU_PRESENT.pending==0);check(gpu_present_poll()==PresentPoll::Idle);
  check(gpu_present_wait_vblank());
  "#,
         false,
@@ -183,7 +183,7 @@ fn display_faults_do_not_drop_pending_or_emit_a_second_request() {
         "duplicate",
         r#"
  check(gpu_present_set_next(0x8800));check(!gpu_present_set_next(0x9000));
- check(GPU_PRESENT.pending==1&&gpu_present_poll()==65535);
+ check(GPU_PRESENT.pending==1&&gpu_present_poll()==PresentPoll::Fault);
  "#,
         false,
     );
@@ -192,7 +192,7 @@ fn display_faults_do_not_drop_pending_or_emit_a_second_request() {
         "wrong-target",
         r#"
  check(gpu_present_set_next(0x8800));check(!gpu_present_wait_vblank());
- check(GPU_PRESENT.pending==1&&GPU_PRESENT.error==4);
+ check(GPU_PRESENT.pending==1&&GPU_PRESENT.error==PresentError::SwapMismatch);
  "#,
         true,
     );
@@ -210,8 +210,8 @@ fn linear_format_is_staged_and_required_at_actual_retirement() {
     let events = run_format(
         "linear-retirement",
         r#"
- check(GPU_PRESENT.format==1);
- check(gpu_present_set_next(0x8800));check(gpu_present_poll()==1);
+ check(GPU_PRESENT.format==DisplayFormat::LinearRgb565);
+ check(gpu_present_set_next(0x8800));check(gpu_present_poll()==PresentPoll::Pending);
  check(GPU_PRESENT.pending==1);check(gpu_present_wait_vblank());
  check(GPU_PRESENT.pending==0);check(dev_recv(DISPLAY_DEVICE,DISPLAY_COLOR_FORMAT)==1);
  "#,
@@ -224,19 +224,13 @@ fn linear_format_is_staged_and_required_at_actual_retirement() {
         "wrong-format",
         r#"
  check(gpu_present_set_next(0x8800));check(!gpu_present_wait_vblank());
- check(GPU_PRESENT.pending==1&&GPU_PRESENT.error==4);
+ check(GPU_PRESENT.pending==1&&GPU_PRESENT.error==PresentError::SwapMismatch);
  "#,
         false,
         true,
         1,
     );
     assert_eq!(wrong, vec![(1, 0), (2, 0x22), (4, 1), (3, 1)]);
-    let invalid = run(
-        "invalid-format",
-        "check(!gpu_present_open_with_format(2));",
-        false,
-    );
-    assert!(invalid.is_empty());
 }
 
 #[test]
@@ -244,9 +238,9 @@ fn per_swap_format_is_atomic_and_pending_requests_keep_their_format() {
     let events = run(
         "per-swap",
         r#"
- check(gpu_present_set_next_with_format(0x8800,1));check(gpu_present_wait_vblank());
+ check(gpu_present_set_next_with_format(0x8800,DisplayFormat::LinearRgb565));check(gpu_present_wait_vblank());
  check(dev_recv(DISPLAY_DEVICE,DISPLAY_COLOR_FORMAT)==1);
- check(gpu_present_set_next_with_format(0x9000,0));check(gpu_present_wait_vblank());
+ check(gpu_present_set_next_with_format(0x9000,DisplayFormat::Rgb565));check(gpu_present_wait_vblank());
  check(dev_recv(DISPLAY_DEVICE,DISPLAY_COLOR_FORMAT)==0);
  "#,
         false,
@@ -267,17 +261,11 @@ fn per_swap_format_is_atomic_and_pending_requests_keep_their_format() {
     let pending = run(
         "pending-format",
         r#"
- check(gpu_present_set_next_with_format(0x8800,1));
- check(!gpu_present_set_next_with_format(0x9000,0));
- check(GPU_PRESENT.format==1&&GPU_PRESENT.pending==1);
+ check(gpu_present_set_next_with_format(0x8800,DisplayFormat::LinearRgb565));
+ check(!gpu_present_set_next_with_format(0x9000,DisplayFormat::Rgb565));
+ check(GPU_PRESENT.format==DisplayFormat::LinearRgb565&&GPU_PRESENT.pending==1);
  "#,
         false,
     );
     assert_eq!(pending.len(), 4);
-    assert!(run(
-        "invalid-per-swap",
-        "check(!gpu_present_set_next_with_format(0x8800,2));",
-        false
-    )
-    .is_empty());
 }

@@ -1,5 +1,7 @@
 //! Ground-clipped shadow with receiver-cell batches and exact-triangle fallback.
 use crate::dsl_rt::*;
+mod bloxorz_core;
+use bloxorz_core::TileKind;
 mod gpu_api;
 use gpu_api::*;
 
@@ -120,10 +122,10 @@ fn shadow_row_equal(a: Vec4, b: Vec4) -> bool {
 fn shadow_receivers() -> u16 {
     let mode = GAME_SESSION.visual_mode();
     let mut flags: u16 = 0;
-    if mode == ENTRY_OPEN || mode == ENTRY_RISE {
+    if mode == AnimationPhase::EntryOpen || mode == AnimationPhase::EntryRise {
         flags = 1;
     }
-    if mode > GOAL_OPEN && mode <= GOAL_CLOSE {
+    if mode.goal_aperture_open() {
         flags |= 2;
     }
     if GAME_SESSION.fracture_cell != 65535
@@ -602,11 +604,12 @@ fn draw_shadow_hull(
             let left = fix32::from_int(x) - half_width;
             let start =
                 x as u16 == GAME_SESSION.level.start_x && z as u16 == GAME_SESSION.level.start_z;
-            let receiving = kind != 0
+            let receiving = kind != TileKind::Void as u16
                 && !GAME_SESSION.fragile_dropped(i)
-                && !(kind == 5 && mask & GAME_SESSION.level_field(i, 1) == 0)
-                && !(start && (mode == ENTRY_OPEN || mode == ENTRY_RISE))
-                && !(kind == 6 && mode > GOAL_OPEN && mode <= GOAL_CLOSE);
+                && !(kind == TileKind::Bridge as u16 && mask & GAME_SESSION.level_field(i, 1) == 0)
+                && !(start
+                    && (mode == AnimationPhase::EntryOpen || mode == AnimationPhase::EntryRise))
+                && !(kind == TileKind::Goal as u16 && mode.goal_aperture_open());
             if receiving
                 && left + one >= min_x
                 && left <= max_x

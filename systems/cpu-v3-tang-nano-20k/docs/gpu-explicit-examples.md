@@ -47,6 +47,11 @@ new applications may declare their own static buffers instead.
 
 ## Larger examples: read only the relevant boundary first
 
+In the public examples, a typed conditional can select a Copy handle such as
+`let back: ColorBufferPtr = if odd { color_a.ptr() } else { color_b.ptr() };`.
+Use the explicit type on the aggregate binding so both arms write to the same
+destination. The owner of each surface remains in the application.
+
 In RTT, the `0xc000` and `0xc800` sector reservations are application placement
 choices excluded by its packer, not universal GPU addresses. The producer's
 completion precedes sampling, and changed content gets explicit texture-cache

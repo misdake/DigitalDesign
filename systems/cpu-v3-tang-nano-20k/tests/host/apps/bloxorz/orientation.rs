@@ -137,11 +137,11 @@ let absent:Option<CommandMemory>=None;let gpu=Gpu::init(GpuConfig{object_arena_b
 let mut model=Model::new(Transform::new(Vec3::zero(),Vec3::zero(),Vec3::new(fix32::from_int(1),fix32::from_int(1),fix32::from_int(1))));
 GAME_SESSION.begin();GAME_SESSION.level.width=15;GAME_SESSION.level.height=10;GAME_SESSION.level.cell_count=150;GAME_SESSION.level.schema=2;
 let mut i:u16=0;while i<150 {GAME_SESSION.level_words()[8+i*2]=1;GAME_SESSION.level_words()[9+i*2]=0;i+=1;}
-GAME_SESSION.rules.x=5;GAME_SESSION.rules.z=4;GAME_SESSION.rules.orientation=0;GAME_SESSION.rules.bridge_mask=0;GAME_SESSION.rules.status=0;GAME_SESSION.rules.moves=0;GAME_SESSION.rules.split=0;GAME_SESSION.animation.phase=PLAY;
+GAME_SESSION.rules.x=5;GAME_SESSION.rules.z=4;GAME_SESSION.rules.orientation=0;GAME_SESSION.rules.bridge_mask=0;GAME_SESSION.rules.status=0;GAME_SESSION.rules.moves=0;GAME_SESSION.rules.split=0;GAME_SESSION.animation.phase=AnimationPhase::Play;
 GAME_SESSION.block_pose(&mut model);world_probe(&model);check(GAME_SESSION.block_orientation()==8);
 check(GAME_SESSION.try_move(0));GAME_SESSION.animation.elapsed=220;GAME_SESSION.motion.elapsed=220;
 GAME_SESSION.block_pose(&mut model);world_probe(&model);
-GAME_SESSION.tick(0,0,0);check(GAME_SESSION.animation.phase==PLAY);check(GAME_SESSION.block_orientation()!=8);
+GAME_SESSION.tick(0,0,0);check(GAME_SESSION.animation.phase==AnimationPhase::Play);check(GAME_SESSION.block_orientation()!=8);
 GAME_SESSION.block_pose(&mut model);world_probe(&model);
 check(GAME_SESSION.try_move(1));GAME_SESSION.animation.elapsed=220;GAME_SESSION.motion.elapsed=220;
 GAME_SESSION.block_pose(&mut model);world_probe(&model);GAME_SESSION.tick(0,0,0);check(GAME_SESSION.block_orientation()==8);
@@ -294,7 +294,7 @@ fn rendered_roll_endpoints_and_transparent_bridge_occlusion() {
 #[test]
 fn split_swap_merge_undo_and_reset_preserve_each_actor_orientation() {
     let body = r#"
-GAME_SESSION.begin();GAME_SESSION.reset_level(7);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=0;GAME_SESSION.animation.held_lock=0;
+GAME_SESSION.begin();GAME_SESSION.reset_level(7);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=TransitionPhase::Idle;GAME_SESSION.animation.held_lock=0;
 GAME_SESSION.rules.x=2;GAME_SESSION.rules.z=4;GAME_SESSION.rules.orientation=1;check(GAME_SESSION.try_move(0));
 let mut n:u16=0;while n<11 {GAME_SESSION.tick(0,0,50);n+=1;}
 let inherited=GAME_SESSION.rotations.current(0);check(inherited==GAME_SESSION.rotations.current(1)&&inherited!=8);

@@ -42,28 +42,28 @@ fn gpu_group_new(slot: u16, memory: PreparedMemory) -> bool {
 }
 fn gpu_group_free(slot: u16) -> bool {
     let data = gpu_arena_data(slot);
-    if data[GPU_PREPARED_STATE] == GPU_PREPARED_RECORDING {
+    if data[GPU_PREPARED_STATE] == PreparedState::Recording as u16 {
         return false;
     }
     if data[GPU_PREPARED_META] != 0 {
         free(Ptr::from_addr(data[GPU_PREPARED_META]));
     }
-    gpu_arena_free(slot, false, GPU_KIND_PREPARED)
+    gpu_arena_free(slot, false, GpuObjectKind::Prepared)
 }
 fn gpu_group_invalidate(slot: u16) -> bool {
     let mut data = gpu_arena_data(slot);
-    if data[GPU_PREPARED_STATE] == GPU_PREPARED_RECORDING {
+    if data[GPU_PREPARED_STATE] == PreparedState::Recording as u16 {
         return false;
     }
     if data[GPU_PREPARED_META] != 0 {
         free(Ptr::from_addr(data[GPU_PREPARED_META]));
     }
     data[GPU_PREPARED_META] = 0;
-    data[GPU_PREPARED_STATE] = 0;
+    data[GPU_PREPARED_STATE] = PreparedState::Empty as u16;
     true
 }
 fn gpu_group_part_ready(owner: u16) -> bool {
-    gpu_arena_data(owner)[GPU_PREPARED_STATE] == GPU_PREPARED_READY
+    gpu_arena_data(owner)[GPU_PREPARED_STATE] == PreparedState::Ready as u16
 }
 fn gpu_group_pool_init(slot: u16, memory: GpuMemory) -> bool {
     let mut data = gpu_arena_data(slot);
@@ -105,7 +105,7 @@ fn gpu_group_pool_allocate(pool: u16, command_bytes: u16, push_bytes: u16) -> u1
     if total > remaining {
         return 0;
     }
-    let slot = gpu_arena_alloc(false, GPU_KIND_PREPARED);
+    let slot = gpu_arena_alloc(false, GpuObjectKind::Prepared);
     if slot == 0 {
         return 0;
     }
@@ -135,7 +135,9 @@ fn gpu_group_pool_allocate(pool: u16, command_bytes: u16, push_bytes: u16) -> u1
 }
 fn gpu_group_pool_free(pool: u16, owner: u16) -> bool {
     let data = gpu_arena_data(owner);
-    if data[GPU_PREPARED_POOL] != pool || data[GPU_PREPARED_STATE] == GPU_PREPARED_RECORDING {
+    if data[GPU_PREPARED_POOL] != pool
+        || data[GPU_PREPARED_STATE] == PreparedState::Recording as u16
+    {
         return false;
     }
     let next = data[GPU_PREPARED_NEXT];
@@ -161,7 +163,7 @@ fn gpu_group_pool_drop(pool: u16) -> bool {
     let mut current = gpu_arena_data(pool)[GPU_POOL_HEAD];
     while current != 0 {
         let data = gpu_arena_data(current);
-        if data[GPU_PREPARED_STATE] == GPU_PREPARED_RECORDING {
+        if data[GPU_PREPARED_STATE] == PreparedState::Recording as u16 {
             return false;
         }
         current = data[GPU_PREPARED_NEXT];
@@ -174,7 +176,7 @@ fn gpu_group_pool_drop(pool: u16) -> bool {
         }
         current = next;
     }
-    gpu_arena_free(pool, false, GPU_KIND_PREPARED_POOL)
+    gpu_arena_free(pool, false, GpuObjectKind::PreparedPool)
 }
 
 fn gpu_group_pad(slot: u16) -> bool {
@@ -200,7 +202,7 @@ fn gpu_group_part_begin(owner: u16) -> bool {
         return false;
     }
     let mut data = gpu_arena_data(owner);
-    if data[GPU_PREPARED_STATE] == GPU_PREPARED_RECORDING {
+    if data[GPU_PREPARED_STATE] == PreparedState::Recording as u16 {
         return false;
     }
     let context = try_malloc(GPU_API_CB_WORDS + 256);
@@ -222,17 +224,17 @@ fn gpu_group_part_begin(owner: u16) -> bool {
     if !gpu_group_invalidate(owner) {
         return false;
     }
-    data[GPU_PREPARED_STATE] = GPU_PREPARED_RECORDING;
+    data[GPU_PREPARED_STATE] = PreparedState::Recording as u16;
     let mut c = gpu_record_data(GPU_PREPARED_RECORD);
     c[GPU_GROUP_RECORDING] = owner;
-    c[GPU_RECORD_PHASE] = GPU_RECORD_PASS;
+    c[GPU_RECORD_PHASE] = RecordPhase::PassOpen as u16;
     true
 }
 fn gpu_group_abandon(slot: u16) {
     if slot == GPU_PREPARED_RECORD && GPU_PREPARED_CONTEXT != 0 {
         let owner = gpu_record_data(slot)[GPU_GROUP_RECORDING];
         let mut data = gpu_arena_data(owner);
-        data[GPU_PREPARED_STATE] = 0;
+        data[GPU_PREPARED_STATE] = PreparedState::Empty as u16;
         free(Ptr::from_addr(GPU_PREPARED_CONTEXT));
         unsafe {
             addr_of(&GPU_PREPARED_CONTEXT).write(0, 0);
@@ -244,7 +246,7 @@ fn gpu_group_end(slot: u16) -> bool {
         return false;
     }
     let c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS || !gpu_group_pad(slot) {
+    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16 || !gpu_group_pad(slot) {
         return false;
     }
     let words = c[GPU_RECORD_COMMAND_USED];
@@ -278,11 +280,11 @@ fn gpu_group_end(slot: u16) -> bool {
     let at = GPU_GROUP_META_FACTS + count * 4;
     meta[at] = c[GPU_RECORD_PUSH_BASE];
     meta[at + 1] = c[GPU_RECORD_PUSH_CAPACITY] >> 6;
-    meta[at + 2] = GPU_FACT_BUFFER;
+    meta[at + 2] = ResourceFactKind::Buffer as u16;
     meta[at + 3] = GPU_FACT_READ;
     let mut data = gpu_arena_data(c[GPU_GROUP_RECORDING]);
     data[GPU_PREPARED_META] = pointer.addr();
-    data[GPU_PREPARED_STATE] = GPU_PREPARED_READY;
+    data[GPU_PREPARED_STATE] = PreparedState::Ready as u16;
     free(Ptr::from_addr(GPU_PREPARED_CONTEXT));
     unsafe {
         addr_of(&GPU_PREPARED_CONTEXT).write(0, 0);
@@ -297,7 +299,7 @@ fn gpu_group_part_append(slot: u16, owner: u16) -> bool {
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS
+    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16
         || !gpu_group_part_ready(owner)
         || c[GPU_GROUP_RECORDING] != 0
     {
@@ -371,7 +373,7 @@ fn gpu_group_part_append(slot: u16, owner: u16) -> bool {
         words,
         native,
     ) {
-        c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
+        c[GPU_RECORD_PHASE] = RecordPhase::Poisoned as u16;
         return false;
     }
     c[GPU_RECORD_COMMAND_USED] += words;

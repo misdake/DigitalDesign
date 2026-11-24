@@ -136,12 +136,11 @@ fn draw_layer(pass: &mut Pass, draw: &LayerDraw, layer: u16) {
     let kind = entry >> 8;
     let level = entry as u8;
     let index = layers[layer * 2];
-    let mut part = sprites;
-    if index & 32768 != 0 {
-        part = mesh.slice(index & 32767, 1);
+    let part: MeshPtr = if index & 32768 != 0 {
+        mesh.slice(index & 32767, 1)
     } else {
-        part = sprites.slice(index, 1);
-    }
+        sprites.slice(index, 1)
+    };
     if kind == 0 {
         material.set_uniform_color(gray(level, 255));
         pass.draw_billboard(
@@ -162,10 +161,7 @@ fn draw_layer(pass: &mut Pass, draw: &LayerDraw, layer: u16) {
         );
     } else {
         material.set_uniform_color(gray(255, level));
-        let mut texture = views.flash;
-        if kind == 3 {
-            texture = views.smoke;
-        }
+        let texture: TextureViewPtr = if kind == 3 { views.smoke } else { views.flash };
         pass.draw_billboard(part, model, material, texture, BillboardFacing::CameraPlane);
     }
 }
@@ -317,10 +313,7 @@ fn main() {
             buffer.invalidate_textures();
             first = false;
         }
-        let mut color = color_b.ptr();
-        if odd {
-            color = color_a.ptr();
-        }
+        let color: ColorBufferPtr = if odd { color_a.ptr() } else { color_b.ptr() };
         {
             let mut pass = buffer.pass(
                 color,

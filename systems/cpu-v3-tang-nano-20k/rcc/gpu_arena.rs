@@ -113,12 +113,12 @@ fn gpu_arena_handle(slot: u16) -> GpuObjectHandle {
         },
     }
 }
-fn gpu_arena_resolve(handle: GpuObjectHandle, kind: u16) -> u16 {
+fn gpu_arena_resolve(handle: GpuObjectHandle, kind: GpuObjectKind) -> u16 {
     let slot = handle.slot;
     if slot & 15 != 1 || slot > GPU_OBJECT_CONTROL.capacity {
         gpu_api_handle_fault(
             slot,
-            kind,
+            kind as u16,
             handle.generation.low,
             handle.generation.high,
             0,
@@ -134,12 +134,12 @@ fn gpu_arena_resolve(handle: GpuObjectHandle, kind: u16) -> u16 {
         (low | high) != 0 && low == handle.generation.low && high == handle.generation.high;
     #[cfg(gpu_debug)]
     {
-        valid = valid && gpu_arena_tags()[at >> 1] & 255 == kind;
+        valid = valid && gpu_arena_tags()[at >> 1] & 255 == kind as u16;
     }
     if !valid {
         gpu_api_handle_fault(
             slot,
-            kind,
+            kind as u16,
             handle.generation.low,
             handle.generation.high,
             low,
@@ -148,7 +148,7 @@ fn gpu_arena_resolve(handle: GpuObjectHandle, kind: u16) -> u16 {
     }
     slot
 }
-fn gpu_arena_alloc(large: bool, kind: u16) -> u16 {
+fn gpu_arena_alloc(large: bool, kind: GpuObjectKind) -> u16 {
     if GPU_OBJECT_SERIAL.low == 65535 && GPU_OBJECT_SERIAL.high == 65535 {
         return 0;
     }
@@ -189,7 +189,7 @@ fn gpu_arena_alloc(large: bool, kind: u16) -> u16 {
     GPU_OBJECT_CONTROL.live += 1;
     #[cfg(gpu_debug)]
     {
-        let mut tag = kind;
+        let mut tag = kind as u16;
         if large {
             tag |= 256;
         }
@@ -198,7 +198,7 @@ fn gpu_arena_alloc(large: bool, kind: u16) -> u16 {
     }
     handle
 }
-fn gpu_arena_free(handle: u16, large: bool, kind: u16) -> bool {
+fn gpu_arena_free(handle: u16, large: bool, kind: GpuObjectKind) -> bool {
     if handle == 0 || handle - 1 >= GPU_OBJECT_CONTROL.capacity || (handle - 1) & 15 != 0 {
         return false;
     }
@@ -211,7 +211,7 @@ fn gpu_arena_free(handle: u16, large: bool, kind: u16) -> bool {
     {
         let index = (handle - 1) >> 4;
         let mut tags = gpu_arena_tags();
-        let mut tag = kind;
+        let mut tag = kind as u16;
         if large {
             tag |= 256;
         }

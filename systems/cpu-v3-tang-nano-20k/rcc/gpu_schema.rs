@@ -21,20 +21,6 @@ pub enum GpuObjectKind {
     Prepared,
     PreparedPool,
 }
-// Numeric aliases belong to the arena storage/diagnostic boundary.
-pub const GPU_KIND_CAMERA: u16 = GpuObjectKind::Camera as u16;
-pub const GPU_KIND_MODEL: u16 = GpuObjectKind::Model as u16;
-pub const GPU_KIND_MATERIAL: u16 = GpuObjectKind::Material as u16;
-pub const GPU_KIND_STATE: u16 = GpuObjectKind::State as u16;
-pub const GPU_KIND_MESH: u16 = GpuObjectKind::Mesh as u16;
-pub const GPU_KIND_TEXTURE: u16 = GpuObjectKind::Texture as u16;
-pub const GPU_KIND_VIEW: u16 = GpuObjectKind::View as u16;
-pub const GPU_KIND_COLOR: u16 = GpuObjectKind::Color as u16;
-pub const GPU_KIND_DEPTH: u16 = GpuObjectKind::Depth as u16;
-pub const GPU_KIND_UI_ATLAS: u16 = GpuObjectKind::UiAtlas as u16;
-pub const GPU_KIND_UI_GRID: u16 = GpuObjectKind::UiGrid as u16;
-pub const GPU_KIND_PREPARED: u16 = GpuObjectKind::Prepared as u16;
-pub const GPU_KIND_PREPARED_POOL: u16 = GpuObjectKind::PreparedPool as u16;
 
 pub const GPU_API_SMALL_WORDS: u16 = 16;
 pub const GPU_API_LARGE_WORDS: u16 = 48;
@@ -115,6 +101,21 @@ pub const GPU_GROUP_META_EXIT: u16 = GPU_GROUP_META_HEADER_WORDS;
 pub const GPU_GROUP_META_FACTS: u16 = GPU_GROUP_META_EXIT + 12;
 #[cfg(gpu_debug)]
 pub const GPU_GROUP_RESPONSE_MAX: u16 = GPU_CB_GLOBAL + 16;
+#[repr(u16)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum PreparedState {
+    Empty = 0,
+    Recording = 1,
+    Ready = 2,
+}
+
+#[repr(u16)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum DisplayFormat {
+    Rgb565 = 0,
+    LinearRgb565 = 1,
+}
+
 // Prepared allocation payload. State is empty=0, recording=1 or ready=2.
 // External input lifetimes are caller-owned; CBs retain no locks or list links.
 pub const GPU_PREPARED_COMMAND: u16 = 0;
@@ -125,8 +126,6 @@ pub const GPU_PREPARED_META: u16 = 4;
 pub const GPU_PREPARED_STATE: u16 = 5;
 pub const GPU_PREPARED_POOL: u16 = 6;
 pub const GPU_PREPARED_NEXT: u16 = 7;
-pub const GPU_PREPARED_READY: u16 = 2;
-pub const GPU_PREPARED_RECORDING: u16 = 1;
 pub const GPU_POOL_BASE: u16 = 0;
 pub const GPU_POOL_CAPACITY: u16 = 1;
 pub const GPU_POOL_HEAD: u16 = 2;

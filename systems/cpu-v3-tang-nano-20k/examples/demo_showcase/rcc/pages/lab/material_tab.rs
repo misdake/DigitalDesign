@@ -36,7 +36,8 @@ impl MaterialTab {
         } else if self.cursor == 5 {
             self.material.specular = lab_adjust(self.material.specular, pressed, 16, 255);
         } else {
-            self.material.gloss = lab_adjust(self.material.gloss, pressed, 1, 4);
+            self.material.gloss =
+                enum_from_u16::<GlossPreset>(lab_adjust(self.material.gloss as u16, pressed, 1, 4));
         }
     }
 }
@@ -55,7 +56,7 @@ pub fn material_labels(grid: &mut UiGrid, state: MaterialTab) {
     lab_option(grid, 10, state.cursor == 5, b"SPECULAR");
     lab_value(grid, 10, state.material.specular);
     lab_option(grid, 11, state.cursor == 6, b"SHININESS");
-    lab_value(grid, 11, 4u16 << state.material.gloss);
+    lab_value(grid, 11, 4u16 << state.material.gloss as u16);
     hint_at(grid, 1, 12, KEY_DPAD_V, ICON_SELECT);
     hint_at(grid, 8, 12, KEY_DPAD_H, ICON_ADJUST);
 }

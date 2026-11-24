@@ -68,16 +68,38 @@ fn demo_report_drain() {
     }
 }
 
-fn demo_fail(code: u16) {
+#[repr(u16)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DemoPhase {
+    FrameStart = 1,
+    InvalidateTextures = 9,
+    RecordStatic = 10,
+    StaticSubmitted = 11,
+    DynamicRecorded = 12,
+    DynamicSubmitted = 13,
+    DynamicRetired = 14,
+    Presented = 15,
+    WaitStatic = 16,
+}
+
+#[repr(u16)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DemoTimeout {
+    Gpu = 10,
+    Display = 12,
+}
+
+fn demo_fail(reason: DemoTimeout) {
+    let code = reason as u16;
     demo_report_drain();
     demo_report_queue(128 | code, 0, 0);
     demo_report_drain();
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 32 | code);
     halt(0xd000 | code);
 }
-fn require(ok: bool, code: u16) {
+fn require(ok: bool, reason: DemoTimeout) {
     if !ok {
-        demo_fail(code);
+        demo_fail(reason);
     }
 }
 fn wait_gpu(gpu: &mut Gpu, budget: u16) -> CommandBuffer {
@@ -90,14 +112,20 @@ fn wait_gpu(gpu: &mut Gpu, budget: u16) -> CommandBuffer {
             None => {}
         }
         demo_report_step();
-        require(time_elapsed_ms(start, time_milliseconds()) < budget, 10);
+        require(
+            time_elapsed_ms(start, time_milliseconds()) < budget,
+            DemoTimeout::Gpu,
+        );
     }
 }
 fn wait_display(display: &mut Display, budget: u16) {
     let start = time_milliseconds();
     while !display.try_wait_swap() {
         demo_report_step();
-        require(time_elapsed_ms(start, time_milliseconds()) < budget, 12);
+        require(
+            time_elapsed_ms(start, time_milliseconds()) < budget,
+            DemoTimeout::Display,
+        );
     }
 }
 fn prepare_ui(grid: &mut UiGrid, stats: Array<u16>) -> u16 {
@@ -188,7 +216,7 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
     let mut grid = demo_grid(false);
     // Cache invalidation is startup maintenance, never part of the reusable stream.
     dynamic_buffer.invalidate_textures();
-    dev_send(7, 1, 9);
+    dev_send(7, 1, DemoPhase::InvalidateTextures as u16);
     gpu.submit(dynamic_buffer);
     dynamic_buffer = wait_gpu(&mut gpu, budget);
     let mut room_draws = PreparedDraws::new(STATIC_SCENE);
@@ -213,7 +241,7 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
             demo_report_queue(1, frame, observed);
         }
         dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, frame & 31);
-        dev_send(7, 1, 1);
+        dev_send(7, 1, DemoPhase::FrameStart as u16);
         let visible = demo_buttons_update(
             buttons.as_array(),
             dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS),
@@ -240,11 +268,12 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
             }
         }
         // The immutable part supplies World/material, the new Pass supplies View.
-        dev_send(7, 1, 10);
-        let mut back = color_b.ptr();
-        if frame & 1 != 0 {
-            back = color_a.ptr();
-        }
+        dev_send(7, 1, DemoPhase::RecordStatic as u16);
+        let back: ColorBufferPtr = if frame & 1 != 0 {
+            color_a.ptr()
+        } else {
+            color_b.ptr()
+        };
         static_buffer.reset();
         {
             let mut pass = static_buffer.pass(
@@ -258,7 +287,7 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
             pass.draw_prepared(room_draws.ptr());
         }
         gpu.submit(static_buffer);
-        dev_send(7, 1, 11);
+        dev_send(7, 1, DemoPhase::StaticSubmitted as u16);
         // Only dynamic CPU storage is touched while the static GPU work runs.
         dynamic_buffer.reset();
         let mut glyphs: u16 = 0;
@@ -275,19 +304,19 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
                 pass.draw_ui(grid.ptr(), CellRect::new(2, 1, glyphs, 1));
             }
         }
-        dev_send(7, 1, 12);
-        dev_send(7, 1, 16);
+        dev_send(7, 1, DemoPhase::DynamicRecorded as u16);
+        dev_send(7, 1, DemoPhase::WaitStatic as u16);
         static_buffer = wait_gpu(&mut gpu, budget);
         gpu.submit(dynamic_buffer);
-        dev_send(7, 1, 13);
+        dev_send(7, 1, DemoPhase::DynamicSubmitted as u16);
         dynamic_buffer = wait_gpu(&mut gpu, budget);
         observed = time_microseconds();
         dev_send(7, 4, observed);
-        dev_send(7, 1, 14);
+        dev_send(7, 1, DemoPhase::DynamicRetired as u16);
         display.set_next_swap(back);
         wait_display(&mut display, budget);
         dev_send(7, 2, frame + 1);
-        dev_send(7, 1, 15);
+        dev_send(7, 1, DemoPhase::Presented as u16);
         completed = true;
         frame += 1;
     }

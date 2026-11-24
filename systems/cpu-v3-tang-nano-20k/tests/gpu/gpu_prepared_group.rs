@@ -22,7 +22,7 @@ fn select_camera(slot:u16){let mut data=CAMERA.as_array();let mut i:u16=0;while 
 pub fn prepared_group_test(){
  check(gpu_arena_init(8192));gpu_record_init();let saved=read_dseg_page(3);
  check(gpu_record_configure(0,0x9800,128,0x9a00,128));check(gpu_record_configure(1,0xfc00,128,0xfe00,128));
- let owner=gpu_arena_alloc(false,GPU_KIND_PREPARED);
+ let owner=gpu_arena_alloc(false,GpuObjectKind::Prepared);
  check(gpu_group_new(owner,PreparedMemory::new(unsafe{GpuMemory::from_sectors(0xa800,8)},unsafe{GpuMemory::from_sectors(0xa900,32)})));
  let mut i:u16=0;while i<64{ROW[i]=i+123;i+=1;}
  check(gpu_window_write_words(0xc0ff,48,ROW.as_array(),64));
@@ -40,7 +40,7 @@ pub fn prepared_group_test(){
  check(gpu_mesh_draw(GPU_PREPARED_RECORD,MESH.as_array(),MODEL.as_array(),native));native[120u16]=11;MODEL[36u16]=0x4567;MODEL[44u16]+=1;
  check(gpu_mesh_draw(GPU_PREPARED_RECORD,MESH.as_array(),MODEL.as_array(),native));
  check(gpu_group_end(GPU_PREPARED_RECORD));check(!gpu_group_end(GPU_PREPARED_RECORD));check(gpu_group_part_ready(owner));
- let pool=gpu_arena_alloc(false,GPU_KIND_PREPARED_POOL);
+ let pool=gpu_arena_alloc(false,GpuObjectKind::PreparedPool);
  check(gpu_group_pool_init(pool,unsafe{GpuMemory::from_sectors(0xc100,80)}));
  let first=gpu_group_pool_allocate(pool,1024,2048);check(first!=0);let old=gpu_arena_handle(first);
  let second=gpu_group_pool_allocate(pool,1024,2048);check(second!=0);

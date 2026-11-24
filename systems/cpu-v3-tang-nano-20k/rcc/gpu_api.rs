@@ -130,7 +130,7 @@ pub struct PreparedDrawsPtr {
 }
 impl PreparedDrawsPtr {
     fn data(self) -> u16 {
-        gpu_arena_resolve(self.handle, GPU_KIND_PREPARED)
+        gpu_arena_resolve(self.handle, GpuObjectKind::Prepared)
     }
     pub fn ready(self) -> bool {
         gpu_group_part_ready(self.data())
@@ -316,7 +316,7 @@ impl Rgb565 {
     }
 }
 #[repr(u16)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum LoadOp {
     Load,
     Clear,
@@ -395,13 +395,6 @@ pub struct Display {
     identity: u16,
 }
 
-#[repr(u16)]
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum DisplayFormat {
-    Rgb565,
-    LinearRgb565,
-}
-
 impl Gpu {
     pub fn init(config: GpuConfig) -> Self {
         if !gpu_config_init(config) {
@@ -426,7 +419,7 @@ impl Gpu {
         if completed == 65535 {
             gpu_api_fail(
                 GpuFault::ExecutionFault,
-                GPU_EXECUTION.error,
+                GPU_EXECUTION.error as u16,
                 GPU_EXECUTION.owner,
             );
         }
@@ -439,17 +432,17 @@ impl Gpu {
         Some(buffer)
     }
     pub fn wait(&mut self) -> CommandBuffer {
-        if GPU_EXECUTION.phase == GPU_EXEC_FAULT {
+        if GPU_EXECUTION.phase == ExecutionPhase::Fault {
             gpu_api_fail(
                 GpuFault::ExecutionFault,
-                GPU_EXECUTION.error,
+                GPU_EXECUTION.error as u16,
                 GPU_EXECUTION.owner,
             );
         }
-        if GPU_EXECUTION.phase != GPU_EXEC_RUNNING {
+        if GPU_EXECUTION.phase != ExecutionPhase::Running {
             gpu_api_fail(
                 GpuFault::WaitWithoutSubmission,
-                GPU_EXECUTION.phase,
+                GPU_EXECUTION.phase as u16,
                 GPU_EXECUTION.owner,
             );
         }
@@ -460,7 +453,7 @@ impl Gpu {
         if completed == 65535 {
             gpu_api_fail(
                 GpuFault::ExecutionFault,
-                GPU_EXECUTION.error,
+                GPU_EXECUTION.error as u16,
                 GPU_EXECUTION.owner,
             );
         }
@@ -471,7 +464,11 @@ impl Gpu {
 }
 fn gpu_api_submit(slot: u16) {
     if !gpu_execute_submit(slot) {
-        gpu_api_fail(GpuFault::SubmissionRejected, GPU_EXECUTION.error, slot);
+        gpu_api_fail(
+            GpuFault::SubmissionRejected,
+            GPU_EXECUTION.error as u16,
+            slot,
+        );
     }
 }
 impl Drop for Gpu {
@@ -480,10 +477,10 @@ impl Drop for Gpu {
         GPU_EXECUTION.controller = 0;
     }
 }
-fn gpu_api_new_surface(memory: GpuMemory, kind: u16) -> u16 {
+fn gpu_api_new_surface(memory: GpuMemory, kind: GpuObjectKind) -> u16 {
     let slot = gpu_arena_alloc(false, kind);
     if slot == 0 {
-        gpu_api_fail(GpuFault::SurfaceAllocation, kind, 0);
+        gpu_api_fail(GpuFault::SurfaceAllocation, kind as u16, 0);
     }
     if !gpu_surface_init(gpu_arena_data(slot), memory) {
         gpu_api_fail(
@@ -500,7 +497,7 @@ impl ColorBuffer {
     }
     pub fn from_memory(memory: GpuMemory) -> Self {
         ColorBuffer {
-            slot: gpu_api_new_surface(memory, GPU_KIND_COLOR),
+            slot: gpu_api_new_surface(memory, GpuObjectKind::Color),
         }
     }
 }
@@ -510,21 +507,29 @@ impl DepthBuffer {
     }
     pub fn from_memory(memory: GpuMemory) -> Self {
         DepthBuffer {
-            slot: gpu_api_new_surface(memory, GPU_KIND_DEPTH),
+            slot: gpu_api_new_surface(memory, GpuObjectKind::Depth),
         }
     }
 }
 impl Drop for ColorBuffer {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GPU_KIND_COLOR) {
-            gpu_api_fail(GpuFault::SurfaceRelease, GPU_KIND_COLOR, self.slot);
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::Color) {
+            gpu_api_fail(
+                GpuFault::SurfaceRelease,
+                GpuObjectKind::Color as u16,
+                self.slot,
+            );
         }
     }
 }
 impl Drop for DepthBuffer {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GPU_KIND_DEPTH) {
-            gpu_api_fail(GpuFault::SurfaceRelease, GPU_KIND_DEPTH, self.slot);
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::Depth) {
+            gpu_api_fail(
+                GpuFault::SurfaceRelease,
+                GpuObjectKind::Depth as u16,
+                self.slot,
+            );
         }
     }
 }
@@ -538,7 +543,7 @@ impl Mesh {
         );
     }
     pub fn from_native(desc: MeshDesc) -> Self {
-        let slot = gpu_arena_alloc(false, GPU_KIND_MESH);
+        let slot = gpu_arena_alloc(false, GpuObjectKind::Mesh);
         if slot == 0 {
             gpu_api_fail(GpuFault::MeshAllocation, 0, 0);
         }
@@ -548,7 +553,7 @@ impl Mesh {
         Mesh { slot: slot }
     }
     pub fn subset(&self, first: u16, count: u16) -> Mesh {
-        let slot = gpu_arena_alloc(false, GPU_KIND_MESH);
+        let slot = gpu_arena_alloc(false, GpuObjectKind::Mesh);
         if slot == 0 {
             gpu_api_fail(GpuFault::MeshAllocation, 0, 0);
         }
@@ -570,23 +575,23 @@ impl Mesh {
 impl Drop for Mesh {
     fn drop(&mut self) {
         gpu_mesh_release_directory(gpu_arena_data(self.slot));
-        if !gpu_arena_free(self.slot, false, GPU_KIND_MESH) {
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::Mesh) {
             gpu_api_fail(GpuFault::MeshRelease, self.slot, 0);
         }
     }
 }
-fn gpu_api_copy_plane(slot: u16, s: Array<u16>, d: Array<u16>, kind: u16) {
+fn gpu_api_copy_plane(slot: u16, s: Array<u16>, d: Array<u16>, kind: ResourceFactKind) {
     if gpu_record_overlap(s[0u16], s[1u16], d[0u16], d[1u16]) {
         gpu_api_fail(GpuFault::RecorderOperation, slot, 0);
     }
     let facts: Buf<u16, 8> = Buf::new([
         s[0u16],
         s[1u16],
-        kind,
+        kind as u16,
         GPU_FACT_READ,
         d[0u16],
         d[1u16],
-        kind,
+        kind as u16,
         GPU_FACT_WRITE,
     ]);
     let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
@@ -598,7 +603,7 @@ fn gpu_api_copy_plane(slot: u16, s: Array<u16>, d: Array<u16>, kind: u16) {
     }
     gpu_record_resource_commit(slot, facts.as_array(), 2, fact_plan.as_array());
     let mut c = gpu_record_data(slot);
-    c[GPU_RECORD_COPY_FACT] = if kind == GPU_FACT_COLOR {
+    c[GPU_RECORD_COPY_FACT] = if kind == ResourceFactKind::Color {
         fact_plan[0u16] + 1
     } else {
         0
@@ -610,12 +615,22 @@ impl CommandBuffer {
     /// untouched. Call between passes. Submission publication/leases are shared
     /// with drawing. Target-only rebinding can relocate one leading color copy.
     pub fn copy_color(&mut self, source: ColorBufferPtr, destination: ColorBufferPtr) {
-        gpu_api_copy_plane(self.slot, source.data(), destination.data(), GPU_FACT_COLOR);
+        gpu_api_copy_plane(
+            self.slot,
+            source.data(),
+            destination.data(),
+            ResourceFactKind::Color,
+        );
     }
     /// Copy the physical depth plane without changing its stored values.
     /// The caller retains a completed source until this CB retires.
     pub fn copy_depth(&mut self, source: DepthBufferPtr, destination: DepthBufferPtr) {
-        gpu_api_copy_plane(self.slot, source.data(), destination.data(), GPU_FACT_DEPTH);
+        gpu_api_copy_plane(
+            self.slot,
+            source.data(),
+            destination.data(),
+            ResourceFactKind::Depth,
+        );
     }
     /// Seal one target block, with any immutable draw groups and at most one
     /// leading color copy. No matrices, state or source objects are patched.
@@ -664,20 +679,20 @@ impl CommandBuffer {
         let c = color.data();
         let d = depth.data();
         let mut mask: u16 = 0;
-        if color_load.op as u16 == 1 {
+        if color_load.op == LoadOp::Clear {
             mask |= 1;
         }
-        if depth_load.op as u16 == 1 {
+        if depth_load.op == LoadOp::Clear {
             mask |= 2;
         }
         let facts: Buf<u16, 8> = Buf::new([
             c[0u16],
             c[1u16],
-            GPU_FACT_COLOR,
+            ResourceFactKind::Color as u16,
             GPU_FACT_READ | GPU_FACT_WRITE,
             d[0u16],
             d[1u16],
-            GPU_FACT_DEPTH,
+            ResourceFactKind::Depth as u16,
             GPU_FACT_READ | GPU_FACT_WRITE,
         ]);
         let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
@@ -749,7 +764,7 @@ impl Display {
         Self::open_with_format(DisplayFormat::Rgb565)
     }
     pub fn open_with_format(format: DisplayFormat) -> Self {
-        if !gpu_present_open_with_format(format as u16) {
+        if !gpu_present_open_with_format(format) {
             gpu_api_fail(GpuFault::DisplayOpen, 0, 0);
         }
         Display { identity: 1 }
@@ -764,7 +779,7 @@ impl Display {
     }
     /// Stage the pixel interpretation together with its completed framebuffer.
     pub fn set_next_swap_with_format(&mut self, color: ColorBufferPtr, format: DisplayFormat) {
-        if !gpu_present_set_next_with_format(color.data()[0u16], format as u16) {
+        if !gpu_present_set_next_with_format(color.data()[0u16], format) {
             gpu_api_fail(GpuFault::DisplaySwap, 0, 0);
         }
     }
@@ -777,10 +792,10 @@ impl Display {
     // With no owned request this reports stable/idle, not a new frame edge.
     pub fn try_wait_swap(&mut self) -> bool {
         let status = gpu_present_poll();
-        if status == 65535 {
+        if status == PresentPoll::Fault {
             gpu_api_fail(GpuFault::DisplayWait, 0, 0);
         }
-        status != 1
+        status != PresentPoll::Pending
     }
 }
 impl Drop for Display {
@@ -824,10 +839,9 @@ enum GpuCheck {
 }
 
 fn gpu_api_object(large: bool, kind: GpuObjectKind) -> u16 {
-    let kind = kind as u16;
     let slot = gpu_arena_alloc(large, kind);
     if slot == 0 {
-        gpu_api_fail(GpuFault::ObjectAllocation, kind, 0);
+        gpu_api_fail(GpuFault::ObjectAllocation, kind as u16, 0);
     }
     slot
 }
@@ -871,8 +885,12 @@ impl Camera {
 }
 impl Drop for Camera {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, true, GPU_KIND_CAMERA) {
-            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_CAMERA, self.slot);
+        if !gpu_arena_free(self.slot, true, GpuObjectKind::Camera) {
+            gpu_api_fail(
+                GpuFault::ObjectRelease,
+                GpuObjectKind::Camera as u16,
+                self.slot,
+            );
         }
     }
 }
@@ -907,8 +925,12 @@ impl Model {
 }
 impl Drop for Model {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, true, GPU_KIND_MODEL) {
-            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_MODEL, self.slot);
+        if !gpu_arena_free(self.slot, true, GpuObjectKind::Model) {
+            gpu_api_fail(
+                GpuFault::ObjectRelease,
+                GpuObjectKind::Model as u16,
+                self.slot,
+            );
         }
     }
 }
@@ -929,8 +951,12 @@ impl Material {
 }
 impl Drop for Material {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GPU_KIND_MATERIAL) {
-            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_MATERIAL, self.slot);
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::Material) {
+            gpu_api_fail(
+                GpuFault::ObjectRelease,
+                GpuObjectKind::Material as u16,
+                self.slot,
+            );
         }
     }
 }
@@ -951,8 +977,12 @@ impl RenderState {
 }
 impl Drop for RenderState {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GPU_KIND_STATE) {
-            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_STATE, self.slot);
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::State) {
+            gpu_api_fail(
+                GpuFault::ObjectRelease,
+                GpuObjectKind::State as u16,
+                self.slot,
+            );
         }
     }
 }
@@ -973,8 +1003,12 @@ impl Texture {
 }
 impl Drop for Texture {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GPU_KIND_TEXTURE) {
-            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_TEXTURE, self.slot);
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::Texture) {
+            gpu_api_fail(
+                GpuFault::ObjectRelease,
+                GpuObjectKind::Texture as u16,
+                self.slot,
+            );
         }
     }
 }
@@ -1018,8 +1052,12 @@ impl UiAtlas {
 }
 impl Drop for UiAtlas {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GPU_KIND_UI_ATLAS) {
-            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_UI_ATLAS, self.slot);
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::UiAtlas) {
+            gpu_api_fail(
+                GpuFault::ObjectRelease,
+                GpuObjectKind::UiAtlas as u16,
+                self.slot,
+            );
         }
     }
 }
@@ -1047,8 +1085,12 @@ impl UiGrid {
 }
 impl Drop for UiGrid {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GPU_KIND_UI_GRID) {
-            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_UI_GRID, self.slot);
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::UiGrid) {
+            gpu_api_fail(
+                GpuFault::ObjectRelease,
+                GpuObjectKind::UiGrid as u16,
+                self.slot,
+            );
         }
     }
 }
@@ -1059,8 +1101,12 @@ pub struct TextureView {
 }
 impl Drop for TextureView {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GPU_KIND_VIEW) {
-            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_VIEW, self.slot);
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::View) {
+            gpu_api_fail(
+                GpuFault::ObjectRelease,
+                GpuObjectKind::View as u16,
+                self.slot,
+            );
         }
     }
 }
@@ -1250,7 +1296,7 @@ impl UiGrid {
 }
 
 fn gpu_api_set_camera(slot: u16, camera: CameraPtr) {
-    let camera_slot = gpu_arena_resolve(camera.handle, GPU_KIND_CAMERA);
+    let camera_slot = gpu_arena_resolve(camera.handle, GpuObjectKind::Camera);
     let data = gpu_arena_data(camera_slot);
     gpu_api_checked(gpu_bind_desired(slot, true, data), GpuCheck::Camera);
 }
@@ -1274,9 +1320,9 @@ fn gpu_api_draw_textured(
     gpu_api_draw(
         slot,
         mesh,
-        gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
-        gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
-        gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
+        gpu_arena_resolve(model.handle, GpuObjectKind::Model),
+        gpu_arena_resolve(material.handle, GpuObjectKind::Material),
+        gpu_arena_resolve(view.handle, GpuObjectKind::View),
         0,
     );
 }
@@ -1284,8 +1330,8 @@ fn gpu_api_draw_colored(slot: u16, mesh: MeshPtr, model: ModelPtr, material: Mat
     gpu_api_draw(
         slot,
         mesh,
-        gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
-        gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
+        gpu_arena_resolve(model.handle, GpuObjectKind::Model),
+        gpu_arena_resolve(material.handle, GpuObjectKind::Material),
         0,
         0,
     );
@@ -1328,9 +1374,9 @@ impl PreparedPart {
         gpu_api_draw(
             self.slot,
             mesh,
-            gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
-            gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
-            gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
+            gpu_arena_resolve(model.handle, GpuObjectKind::Model),
+            gpu_arena_resolve(material.handle, GpuObjectKind::Material),
+            gpu_arena_resolve(view.handle, GpuObjectKind::View),
             facing as u16 + 1,
         );
     }
@@ -1366,9 +1412,9 @@ impl Pass {
         gpu_api_draw(
             self.slot,
             mesh,
-            gpu_arena_resolve(model.handle, GPU_KIND_MODEL),
-            gpu_arena_resolve(material.handle, GPU_KIND_MATERIAL),
-            gpu_arena_resolve(view.handle, GPU_KIND_VIEW),
+            gpu_arena_resolve(model.handle, GpuObjectKind::Model),
+            gpu_arena_resolve(material.handle, GpuObjectKind::Material),
+            gpu_arena_resolve(view.handle, GpuObjectKind::View),
             facing as u16 + 1,
         );
     }
@@ -1384,11 +1430,11 @@ impl Pass {
         let facts: Buf<u16, 8> = Buf::new([
             data[GPU_UI_GRID_BASE],
             data[GPU_UI_GRID_COUNT],
-            GPU_FACT_GRID,
+            ResourceFactKind::Grid as u16,
             GPU_FACT_READ,
             data[GPU_UI_GRID_ATLAS_BASE],
             data[GPU_UI_GRID_ATLAS_COUNT],
-            GPU_FACT_ATLAS,
+            ResourceFactKind::Atlas as u16,
             GPU_FACT_READ,
         ]);
         let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
@@ -1431,13 +1477,15 @@ fn gpu_api_draw(
     let c = gpu_record_data(slot);
     let part = c[GPU_GROUP_RECORDING] != 0;
     let required = if part { 16u16 } else { 24u16 };
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS || c[GPU_RECORD_VALID] & required != required {
+    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16
+        || c[GPU_RECORD_VALID] & required != required
+    {
         gpu_api_fail(GpuFault::DrawBindings, slot, 0);
     }
     let mut facts: Buf<u16, 8> = Buf::new([
         mesh[GPU_MESH_STORAGE],
         mesh[GPU_MESH_STORAGE_COUNT],
-        GPU_FACT_MESH,
+        ResourceFactKind::Mesh as u16,
         GPU_FACT_READ,
         0,
         0,
@@ -1451,7 +1499,7 @@ fn gpu_api_draw(
         view = gpu_arena_data(view_slot);
         facts[4u16] = view[GPU_VIEW_BASE];
         facts[5u16] = view[GPU_VIEW_COUNT];
-        facts[6u16] = GPU_FACT_TEXTURE;
+        facts[6u16] = ResourceFactKind::Texture as u16;
         facts[7u16] = GPU_FACT_READ;
         count = 2;
     }
@@ -1535,7 +1583,7 @@ impl Camera {
 
 impl CameraPtr {
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_CAMERA))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::Camera))
     }
     pub fn view(self) -> Mat3x4 {
         gpu_api_camera_view(self.data())
@@ -1661,7 +1709,7 @@ impl Material {
 
 impl MaterialPtr {
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_MATERIAL))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::Material))
     }
     pub fn set_uniform_color(self, color: Rgba8) {
         gpu_api_material_set_uniform_color(self.data(), color)
@@ -1733,7 +1781,7 @@ impl MeshPtr {
         }
     }
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_MESH))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::Mesh))
     }
     pub fn meshlet_count(self) -> u16 {
         let data = self.data();
@@ -1762,7 +1810,7 @@ impl Model {
 
 impl ModelPtr {
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_MODEL))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::Model))
     }
     pub fn world(self) -> Mat3x4 {
         gpu_api_model_world(self.data())
@@ -1823,7 +1871,7 @@ impl RenderState {
 
 impl RenderStatePtr {
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_STATE))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::State))
     }
     pub fn set_depth(self, func: DepthFunc, write: bool) {
         gpu_api_render_state_set_depth(self.data(), func, write)
@@ -1887,7 +1935,7 @@ impl TextureView {
 
 impl TextureViewPtr {
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_VIEW))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::View))
     }
     pub fn set_address_mode(self, mode: TextureAddressMode) {
         let mut data = self.data();
@@ -1934,7 +1982,7 @@ impl UiGrid {
 
 impl UiGridPtr {
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_UI_GRID))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::UiGrid))
     }
     pub fn clear(self) {
         self.fill(255);
@@ -1977,12 +2025,12 @@ fn gpu_api_ui_write_glyph(data: Array<u16>, x: u16, y: u16, glyph: u8) {
 
 impl ColorBufferPtr {
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_COLOR))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::Color))
     }
 }
 
 impl DepthBufferPtr {
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GPU_KIND_DEPTH))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::Depth))
     }
 }

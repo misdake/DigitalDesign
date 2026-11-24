@@ -90,10 +90,11 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
         if update != 0 {
             state.set_filter(TextureFilter::Bilinear);
         }
-        let mut back = color_b.ptr();
-        if (update - first) & 1 != 0 {
-            back = color_a.ptr();
-        }
+        let back: ColorBufferPtr = if (update - first) & 1 != 0 {
+            color_a.ptr()
+        } else {
+            color_b.ptr()
+        };
         {
             let mut pass = buffer.pass(
                 back,

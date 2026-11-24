@@ -37,9 +37,9 @@ fn main() {
     assert(g.page==PageId::Home,0x710a);
     let mut c=initial_state(4,0);
     c=update(c,BUTTON_DOWN,1);
-    assert(c.color_cursor==1 && c.color_mode==0,0x710b);
+    assert(c.color_cursor as u16==1 && c.color_mode as u16==0,0x710b);
     c=update(c,BUTTON_CROSS,2);
-    assert(c.color_mode==1 && c.geometry.parameter==8,0x710c);
+    assert(c.color_mode as u16==1 && c.geometry.parameter==8,0x710c);
     halt(0x600d);
 }
 "#;
@@ -53,11 +53,12 @@ fn main() {
             root.join("../../target/core-demo-next/state-rustc"),
         ),
         &mut |name| {
-            std::fs::read_to_string(
-                root.join("examples/demo_showcase/rcc/common")
-                    .join(format!("{name}.rs")),
-            )
-            .map_err(|e| e.to_string())
+            let leaf = name.rsplit('/').next().unwrap_or(name);
+            let directory = match leaf {
+                "gpu_schema" | "gpu_limits" => root.join("rcc"),
+                _ => root.join("examples/demo_showcase/rcc/common"),
+            };
+            std::fs::read_to_string(directory.join(format!("{leaf}.rs"))).map_err(|e| e.to_string())
         },
     )
     .unwrap();

@@ -7,7 +7,7 @@ pub(in super::super) fn cpu_shadow() -> ApplicationCase {
         source = source
             .required_replace(
                 "GAME_SESSION.begin();",
-                "GAME_SESSION.begin();GAME_SESSION.reset_level(28);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
+                "GAME_SESSION.begin();GAME_SESSION.reset_level(28);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
             )
             .required_replace(
                 "GAME_SESSION.tick(buttons, held, elapsed);",
@@ -22,7 +22,7 @@ pub(in super::super) fn moving() -> ApplicationCase {
     edited("renderer_game_frames", move |mut source| {
         source = source.required_replace(
             "GAME_SESSION.begin();",
-            "GAME_SESSION.begin();GAME_SESSION.reset_level(28);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
+            "GAME_SESSION.begin();GAME_SESSION.reset_level(28);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
         );
         // Physical Device5 input and the real millisecond clock drive the roll.
 
@@ -37,7 +37,7 @@ pub(in super::super) fn render_time(fade: bool) -> ApplicationCase {
         source = source.required_replace(
             "GAME_SESSION.begin();",
             if fade {
-                "GAME_SESSION.begin();RENDER_STATE.hud.enabled=1;GAME_SESSION.transition.phase=FADE_OUT;GAME_SESSION.transition.elapsed=160;"
+                "GAME_SESSION.begin();RENDER_STATE.hud.enabled=1;GAME_SESSION.transition.phase=TransitionPhase::FadeOut;GAME_SESSION.transition.elapsed=160;"
             } else {
                 "GAME_SESSION.begin();RENDER_STATE.hud.enabled=1;"
             },

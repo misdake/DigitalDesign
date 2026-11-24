@@ -14,7 +14,7 @@ fn gpu_packet_copy_plane(slot: u16, source: u16, destination: u16) -> bool {
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_READY {
+    if c[GPU_RECORD_PHASE] != RecordPhase::Ready as u16 {
         return false;
     }
     let cb = c[GPU_RECORD_COMMAND_BASE];
@@ -105,7 +105,8 @@ fn gpu_packet_begin(slot: u16, color: u16, depth: u16, clear_mask: u16, cv: u16,
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_READY || !gpu_packet_target_valid(c, color, depth) {
+    if c[GPU_RECORD_PHASE] != RecordPhase::Ready as u16 || !gpu_packet_target_valid(c, color, depth)
+    {
         return false;
     }
     let mut words: u16 = 10;

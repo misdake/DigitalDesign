@@ -1,5 +1,7 @@
 //! Load-time exact grid meshlets; only caller-owned low-memory output is written.
 use crate::dsl_rt::*;
+mod bloxorz_core;
+use bloxorz_core::TileKind;
 mod boot_resources;
 use boot_resources::*;
 mod session;
@@ -21,7 +23,7 @@ pub fn ground_face_key(face: u16) -> u16 {
     let z = (face >> 5) & 31;
     let direction = (face >> 10) & 7;
     let mut material: u16 = 0;
-    if GAME_SESSION.level_field(z * GAME_SESSION.level.width + x, 0) == 7 {
+    if GAME_SESSION.level_field(z * GAME_SESSION.level.width + x, 0) == TileKind::Splitter as u16 {
         material = if direction == 0 { 1u16 } else { 2u16 };
     }
     let bucket = if ground_global_quantization() {

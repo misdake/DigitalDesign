@@ -108,7 +108,9 @@ fn gpu_config_init(config: GpuConfig) -> bool {
 }
 // 65535 is exhaustion/error; real slot zero is an ordinary successful identity.
 fn gpu_config_take_buffer() -> u16 {
-    if GPU_EXECUTION.phase == 0 || GPU_EXECUTION.phase == GPU_EXEC_FAULT {
+    if GPU_EXECUTION.phase == ExecutionPhase::Uninitialized
+        || GPU_EXECUTION.phase == ExecutionPhase::Fault
+    {
         return 65535;
     }
     let mut slot: u16 = 0;
@@ -143,7 +145,9 @@ fn gpu_config_drop_buffer(slot: u16) -> bool {
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_READY && c[GPU_RECORD_PHASE] != GPU_RECORD_SEALED {
+    if c[GPU_RECORD_PHASE] != RecordPhase::Ready as u16
+        && c[GPU_RECORD_PHASE] != RecordPhase::Sealed as u16
+    {
         return false;
     }
     c[GPU_RECORD_PHASE] = 0;

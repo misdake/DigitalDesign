@@ -1,5 +1,7 @@
 //! Retired, caller-owned heap geometry. Only changed cells patch packed indices.
 use crate::dsl_rt::*;
+mod bloxorz_core;
+use bloxorz_core::TileKind;
 mod boot_resources;
 use boot_resources::*;
 mod session;
@@ -139,7 +141,8 @@ pub fn fragile_rebuild(owner: Ptr) {
         let mut n: u16 = 0;
         let mut i: u16 = 0;
         while i < GAME_SESSION.level.cell_count {
-            if GAME_SESSION.level_field(i, 0) == 2 && bucket_of(i) == bucket {
+            if GAME_SESSION.level_field(i, 0) == TileKind::Fragile as u16 && bucket_of(i) == bucket
+            {
                 n += 1;
             }
             i += 1;
@@ -177,7 +180,7 @@ pub fn fragile_rebuild(owner: Ptr) {
             let mut i: u16 = 0;
             while i <= GAME_SESSION.level.cell_count {
                 if i < GAME_SESSION.level.cell_count
-                    && GAME_SESSION.level_field(i, 0) == 2
+                    && GAME_SESSION.level_field(i, 0) == TileKind::Fragile as u16
                     && bucket_of(i) == bucket
                 {
                     cells[count] = i;

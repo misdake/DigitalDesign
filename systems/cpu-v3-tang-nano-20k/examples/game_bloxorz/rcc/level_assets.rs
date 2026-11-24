@@ -28,10 +28,11 @@ pub fn level_geometry_load(which: u16) {
     // Archive order is packed rules, visible faces, then ground count + faces.
     // The next level's packed rules (or the palette) bound this single span.
     let start = BLOX_LEVEL_HEADERS[which].faces_first;
-    let mut end = BLOX_PALETTE_WORD;
-    if which + 1 < BLOX_LEVEL_COUNT {
-        end = BLOX_LEVEL_HEADERS[which + 1].packed_first;
-    }
+    let end = if which + 1 < BLOX_LEVEL_COUNT {
+        BLOX_LEVEL_HEADERS[which + 1].packed_first
+    } else {
+        BLOX_PALETTE_WORD
+    };
     let faces = BLOX_LEVEL_HEADERS[which].face_count;
     if end <= start || end - start > BLOX_LEVEL_GEOMETRY_WORDS || faces >= end - start {
         halt(0xb15);

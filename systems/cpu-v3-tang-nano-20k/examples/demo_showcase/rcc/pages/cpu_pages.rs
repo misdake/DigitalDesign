@@ -15,10 +15,11 @@ use crate::pages::waves_page::*;
 use gamepad::*;
 
 pub fn cpu_pages_draw(grid: &mut UiGrid, state: DemoState, input: GamepadFrame) {
-    let mut surface = COLOR_A;
-    if state.frames & 1 == 0 {
-        surface = COLOR_B;
-    }
+    let surface: Rgb565Surface = if state.frames & 1 == 0 {
+        COLOR_B
+    } else {
+        COLOR_A
+    };
     let canvas = unsafe { canvas_from_surface(surface) };
     if state.page == PageId::Home {
         home_page(grid, canvas, state.selection);
@@ -34,7 +35,7 @@ pub fn cpu_pages_draw(grid: &mut UiGrid, state: DemoState, input: GamepadFrame) 
 }
 pub fn page_display_format(state: DemoState) -> DisplayFormat {
     if state.page == PageId::Color {
-        color_display_format(state.color_mode)
+        state.color_mode
     } else {
         DisplayFormat::Rgb565
     }

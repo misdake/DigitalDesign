@@ -4,6 +4,27 @@ use crate::dsl_rt::*;
 // State words: x,z,orientation,bridge mask,phase,moves,other x/z,active,split.
 // Phases: playing=0, success=1, fall=2. Commands: +X,-X,+Z,-Z,restart,undo,swap.
 // Level: eight header words; schema1 eight words/cell, schema2 two words/cell.
+#[repr(u16)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum TileKind {
+    Void = 0,
+    Normal = 1,
+    Fragile = 2,
+    SoftSwitch = 3,
+    HeavySwitch = 4,
+    Bridge = 5,
+    Goal = 6,
+    Splitter = 7,
+}
+
+#[repr(u16)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum RuleStatus {
+    Ongoing = 0,
+    Goal = 1,
+    Unsupported = 2,
+}
+
 pub const BLOX_HISTORY: u16 = 256;
 
 fn blox_cell(level: Array<u16>, x: i16, z: i16) -> u16 {
@@ -61,7 +82,7 @@ pub fn blox_field(level: Array<u16>, cell: u16, field: u16) -> u16 {
 fn blox_tile(level: Array<u16>, x: i16, z: i16) -> u16 {
     let cell = blox_cell(level, x, z);
     if cell == 0 {
-        return 0;
+        return TileKind::Void as u16;
     }
     blox_field(level, cell, 0)
 }
@@ -89,11 +110,11 @@ fn blox_whole_rest(level: Array<u16>, mut state: Array<u16>) {
     }
     let second_x = x + (if orient == 1 { 1i16 } else { 0i16 });
     let second_z = z + (if orient == 2 { 1i16 } else { 0i16 });
-    if orient != 0 && blox_tile(level, second_x, second_z) == 3 {
+    if orient != 0 && blox_tile(level, second_x, second_z) == TileKind::SoftSwitch as u16 {
         blox_switch(level, state, second_x, second_z);
     }
-    state[4u16] = 0;
-    if orient == 0 && blox_tile(level, x, z) == 7 {
+    state[4u16] = RuleStatus::Ongoing as u16;
+    if orient == 0 && blox_tile(level, x, z) == TileKind::Splitter as u16 {
         let cell = blox_cell(level, x, z);
         if blox_field(level, cell, 4) != 65535 {
             state[0u16] = blox_field(level, cell, 4);
@@ -107,13 +128,13 @@ fn blox_whole_rest(level: Array<u16>, mut state: Array<u16>) {
     }
     let goal_tile = blox_tile(level, x, z);
     if orient == 0 && goal_tile == 6 {
-        state[4u16] = 1;
+        state[4u16] = RuleStatus::Goal as u16;
     } else {
         if !blox_support(level, x, z, state[3u16], orient == 0) {
-            state[4u16] = 2;
+            state[4u16] = RuleStatus::Unsupported as u16;
         }
         if orient != 0 && !blox_support(level, second_x, second_z, state[3u16], false) {
-            state[4u16] = 2;
+            state[4u16] = RuleStatus::Unsupported as u16;
         }
     }
     state[6u16] = 0;
@@ -125,7 +146,7 @@ fn blox_split_rest(level: Array<u16>, mut state: Array<u16>) {
     let active: u16 = if state[8u16] == 0 { 0 } else { 6 };
     let ax = state[active] as i16;
     let az = state[active + 1] as i16;
-    if blox_tile(level, ax, az) == 3 {
+    if blox_tile(level, ax, az) == TileKind::SoftSwitch as u16 {
         blox_switch(level, state, ax, az);
     }
     let x = state[0u16] as i16;
@@ -143,11 +164,11 @@ fn blox_split_rest(level: Array<u16>, mut state: Array<u16>) {
         blox_whole_rest(level, state);
         return;
     }
-    state[4u16] = 0;
+    state[4u16] = RuleStatus::Ongoing as u16;
     if !blox_support(level, x, z, state[3u16], false)
         || !blox_support(level, ox, oz, state[3u16], false)
     {
-        state[4u16] = 2;
+        state[4u16] = RuleStatus::Unsupported as u16;
     }
 }
 fn blox_rest(level: Array<u16>, state: Array<u16>) {
@@ -215,7 +236,10 @@ pub fn blox_dispatch(
         blox_unpack(state, history, hs[0u16] * 6);
         return true;
     }
-    if command > 6 || state[4u16] != 0 || state[5u16] == 65535 || (command == 6 && state[9u16] == 0)
+    if command > 6
+        || state[4u16] != RuleStatus::Ongoing as u16
+        || state[5u16] == 65535
+        || (command == 6 && state[9u16] == 0)
     {
         return false;
     }

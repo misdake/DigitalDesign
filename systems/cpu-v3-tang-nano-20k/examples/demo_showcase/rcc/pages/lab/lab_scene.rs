@@ -4,6 +4,7 @@ mod gpu_api;
 use gpu_api::*;
 mod boot_resources;
 use crate::pages::lab::surface_tab::*;
+use crate::pages::lab::surface_tab::{LabColor, LabGeometry};
 use boot_resources::*;
 
 pub const LAB_FLOOR_Y: fix32 = fix!(-1.1);
@@ -62,7 +63,7 @@ pub struct LabMaterial {
     pub ambient: u16,
     pub diffuse: u16,
     pub specular: u16,
-    pub gloss: u16,
+    pub gloss: GlossPreset,
 }
 impl LabMaterial {
     pub const fn new() -> Self {
@@ -73,7 +74,7 @@ impl LabMaterial {
             ambient: 100,
             diffuse: 100,
             specular: 160,
-            gloss: 2,
+            gloss: GlossPreset::S16,
         }
     }
 }
@@ -86,20 +87,31 @@ fn spherical_direction(yaw: fix32, pitch: fix32) -> Vec3 {
         azimuth.y() * elevation.y(),
     )
 }
-fn gloss_exponent(index: u16) -> Shininess {
-    if index == 0 {
-        return Shininess::S4;
+#[repr(u16)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GlossPreset {
+    S4 = 0,
+    S8 = 1,
+    S16 = 2,
+    S32 = 3,
+    S64 = 4,
+}
+impl GlossPreset {
+    pub fn shininess(self) -> Shininess {
+        if self == Self::S4 {
+            return Shininess::S4;
+        }
+        if self == Self::S8 {
+            return Shininess::S8;
+        }
+        if self == Self::S16 {
+            return Shininess::S16;
+        }
+        if self == Self::S32 {
+            return Shininess::S32;
+        }
+        Shininess::S64
     }
-    if index == 1 {
-        return Shininess::S8;
-    }
-    if index == 2 {
-        return Shininess::S16;
-    }
-    if index == 3 {
-        return Shininess::S32;
-    }
-    Shininess::S64
 }
 
 pub struct LabScene {
@@ -128,8 +140,8 @@ pub struct LabScene {
     texture: Texture,
     white_texture: Texture,
     white_view: TextureView,
-    geometry: u16,
-    color: u16,
+    geometry: LabGeometry,
+    color: LabColor,
 }
 impl LabScene {
     pub fn new() -> Self {
@@ -185,8 +197,8 @@ impl LabScene {
             view: view,
             white_texture: white_texture,
             white_view: white_view,
-            geometry: 2,
-            color: 2,
+            geometry: LabGeometry::Sphere,
+            color: LabColor::Uniform,
         }
     }
     pub fn configure(&mut self, view: &LabView, light: &LabLight, material: &LabMaterial) {
@@ -226,7 +238,7 @@ impl LabScene {
         );
         self.material.set_specular(
             Rgb8::gray(material.specular as u8),
-            gloss_exponent(material.gloss),
+            material.gloss.shininess(),
         );
         // The mesh points along +Z; this rotation yields the same vector as L.
         self.arrow.set_pose(
@@ -258,25 +270,25 @@ impl LabScene {
         self.material.set_unlit(!surface.lit);
     }
     fn object_mesh(&self) -> MeshPtr {
-        if self.color == 0 {
-            if self.geometry == 0 {
+        if self.color == LabColor::VertexRgb {
+            if self.geometry == LabGeometry::Quad {
                 return self.rgb_plane.ptr();
             }
-            if self.geometry == 1 {
+            if self.geometry == LabGeometry::Cube {
                 return self.rgb_cube.ptr();
             }
-            if self.geometry == 2 {
+            if self.geometry == LabGeometry::Sphere {
                 return self.rgb_sphere.ptr();
             }
             return self.rgb_torus.ptr();
         }
-        if self.geometry == 0 {
+        if self.geometry == LabGeometry::Quad {
             return self.plane.ptr();
         }
-        if self.geometry == 1 {
+        if self.geometry == LabGeometry::Cube {
             return self.cube.ptr();
         }
-        if self.geometry == 2 {
+        if self.geometry == LabGeometry::Sphere {
             return self.sphere.ptr();
         }
         self.torus.ptr()
@@ -291,13 +303,14 @@ impl LabScene {
             self.view.ptr(),
         );
         let mesh = self.object_mesh();
-        if self.color == 0 {
+        if self.color == LabColor::VertexRgb {
             pass.draw_colored(mesh, self.object.ptr(), self.material.ptr());
         } else {
-            let mut texture = self.white_view.ptr();
-            if self.color == 1 {
-                texture = self.view.ptr();
-            }
+            let texture: TextureViewPtr = if self.color == LabColor::Texture {
+                self.view.ptr()
+            } else {
+                self.white_view.ptr()
+            };
             pass.draw(mesh, self.object.ptr(), self.material.ptr(), texture);
         }
         // The direction marker remains part of the same scene on every tab.

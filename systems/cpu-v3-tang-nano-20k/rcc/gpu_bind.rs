@@ -76,7 +76,7 @@ fn gpu_bind_desired(slot: u16, camera: bool, data: Array<u16>) -> bool {
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS {
+    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16 {
         return false;
     }
     if camera {
@@ -149,7 +149,7 @@ fn gpu_bind_plan_fields(
         return false;
     }
     let c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS {
+    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16 {
         return false;
     }
     let part = c[GPU_GROUP_RECORDING] != 0;
@@ -319,7 +319,7 @@ fn gpu_bind_payload(slot: u16, native: Array<u16>, plan: Array<u16>) -> bool {
             source,
             words,
         ) {
-            c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
+            c[GPU_RECORD_PHASE] = RecordPhase::Poisoned as u16;
             return false;
         }
     }
@@ -338,7 +338,7 @@ fn gpu_bind_payload(slot: u16, native: Array<u16>, plan: Array<u16>) -> bool {
             instance,
             64,
         ) {
-            c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
+            c[GPU_RECORD_PHASE] = RecordPhase::Poisoned as u16;
             return false;
         }
     }

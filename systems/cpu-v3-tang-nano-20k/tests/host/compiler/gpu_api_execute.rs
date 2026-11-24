@@ -115,7 +115,7 @@ fn execution_peer_orders_publication_start_and_single_retirement() {
     let events = run(
         "immediate",
         r#"
- check(gpu_execute_submit(0));check(GPU_EXECUTION.phase==GPU_EXEC_RUNNING);
+ check(gpu_execute_submit(0));check(GPU_EXECUTION.phase==ExecutionPhase::Running);
  check(gpu_execute_poll()==0);check(GPU_EXECUTION.owner==1);
  check(gpu_execute_poll()==1);check(gpu_execute_poll()==0);check(GPU_EXECUTION.owner==0);
  check(gpu_execute_submit(1));check(gpu_execute_poll()==2);
@@ -139,7 +139,7 @@ fn execution_peer_orders_publication_start_and_single_retirement() {
 fn execution_peer_faults_keep_the_owned_slot_without_extra_sends() {
     let cache = run(
         "cache-error",
-        r#"check(!gpu_execute_submit(0));check(GPU_EXECUTION.owner==1);check(GPU_EXECUTION.error==6);check(gpu_execute_poll()==65535);"#,
+        r#"check(!gpu_execute_submit(0));check(GPU_EXECUTION.owner==1);check(GPU_EXECUTION.error==ExecutionError::CachePublicationFailed);check(gpu_execute_poll()==65535);"#,
         &[0, 0],
         true,
     );

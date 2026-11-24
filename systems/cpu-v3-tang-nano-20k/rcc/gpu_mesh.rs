@@ -164,7 +164,7 @@ fn gpu_mesh_draw_range(
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS {
+    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16 {
         return false;
     }
     if first > mesh[GPU_MESH_COUNT] || total > mesh[GPU_MESH_COUNT] - first {

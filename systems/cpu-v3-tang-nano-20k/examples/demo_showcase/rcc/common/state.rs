@@ -1,5 +1,7 @@
 //! App-owned page identity, navigation and independent animation clocks.
 use crate::dsl_rt::*;
+mod gpu_schema;
+use gpu_schema::DisplayFormat;
 
 pub const PAGE_COUNT: u16 = 7;
 pub const MENU_COUNT: u16 = PAGE_COUNT - 1;
@@ -94,8 +96,8 @@ pub struct DemoState {
     pub geometry: AnimationState,
     pub previous: u16,
     pub frames: u16,
-    pub color_cursor: u16,
-    pub color_mode: u16,
+    pub color_cursor: DisplayFormat,
+    pub color_mode: DisplayFormat,
 }
 pub fn initial_state(page: u16, now: u16) -> DemoState {
     DemoState {
@@ -106,8 +108,8 @@ pub fn initial_state(page: u16, now: u16) -> DemoState {
         geometry: AnimationState::new(),
         previous: now,
         frames: 0,
-        color_cursor: 0,
-        color_mode: 0,
+        color_cursor: DisplayFormat::Rgb565,
+        color_mode: DisplayFormat::Rgb565,
     }
 }
 pub fn update(mut state: DemoState, pressed: u16, now: u16) -> DemoState {
@@ -140,7 +142,11 @@ pub fn update(mut state: DemoState, pressed: u16, now: u16) -> DemoState {
     }
     let vertical = pressed & (BUTTON_UP | BUTTON_DOWN);
     if state.page == PageId::Color && (vertical == BUTTON_UP || vertical == BUTTON_DOWN) {
-        state.color_cursor = 1 - state.color_cursor;
+        state.color_cursor = if state.color_cursor == DisplayFormat::Rgb565 {
+            DisplayFormat::LinearRgb565
+        } else {
+            DisplayFormat::Rgb565
+        };
     }
     if pressed & BUTTON_CROSS != 0 {
         if state.page == PageId::Home {

@@ -34,10 +34,11 @@ fn main() {
     let mut display = Display::open();
     let mut frame: u16 = 0;
     loop {
-        let mut back = color_b.ptr();
-        if frame & 1 != 0 {
-            back = color_a.ptr();
-        }
+        let back: ColorBufferPtr = if frame & 1 == 0 {
+            color_b.ptr()
+        } else {
+            color_a.ptr()
+        };
         cb.reset();
         {
             let mut pass = cb.pass(

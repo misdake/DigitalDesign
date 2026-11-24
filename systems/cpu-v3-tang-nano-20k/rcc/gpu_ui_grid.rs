@@ -137,10 +137,11 @@ pub fn gpu_ui_grid_write(grid: Array<u16>, rect: CellRect, glyphs: &[u8]) -> boo
         }
         let mut x: u16 = 0;
         while x < rect.width {
-            let mut glyph: u16 = 255;
-            if cursor < glyphs.len() as u16 {
-                glyph = glyphs[cursor as usize] as u16;
-            }
+            let glyph: u16 = if cursor < glyphs.len() as u16 {
+                glyphs[cursor as usize] as u16
+            } else {
+                255
+            };
             let word = (parity + x) >> 1;
             if (parity + x) & 1 == 0 {
                 row[word] = (row[word] & 0xff00) | glyph;

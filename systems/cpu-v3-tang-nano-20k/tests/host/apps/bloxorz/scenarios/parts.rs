@@ -7,7 +7,7 @@ pub(in super::super) fn button_parts(fresh: bool) -> ApplicationCase {
         source = source
             .required_replace(
                 "GAME_SESSION.begin();",
-                "GAME_SESSION.begin();GAME_SESSION.reset_level(28);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
+                "GAME_SESSION.begin();GAME_SESSION.reset_level(28);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
             )
             .required_replace(
                 "GAME_SESSION.tick(buttons, held, elapsed);",
@@ -25,7 +25,7 @@ pub(in super::super) fn button_parts(fresh: bool) -> ApplicationCase {
         }
         source += r#"
 fn button_test_pose(n:u16){
- if n==9 || n==14 {GAME_SESSION.reset_level(32);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.rules.bridge_mask=0;}
+ if n==9 || n==14 {GAME_SESSION.reset_level(32);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.rules.bridge_mask=0;}
  if n==0 {GAME_SESSION.rules.bridge_mask=0;}
  let mut i:u16=0;let mut bit:u16=0;
  while i<GAME_SESSION.level.cell_count && bit==0 {let k=GAME_SESSION.level_field(i,0);if k==3 || k==4 {bit=GAME_SESSION.level_field(i,1);}i+=1;}
@@ -50,7 +50,7 @@ pub(in super::super) fn static_cache(level: u16) -> ApplicationCase {
         source = source.required_replace(
             "GAME_SESSION.begin();",
             &format!(
-                "GAME_SESSION.begin();GAME_SESSION.reset_level({});GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
+                "GAME_SESSION.begin();GAME_SESSION.reset_level({});GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;RENDER_STATE.hud.enabled=0;",
                 level - 1
             ),
         );

@@ -52,120 +52,23 @@ pub struct MaterialDesc {
     pub unlit: bool,
 }
 
+// Native Shininess codes index this table; exponent values are not wire codes.
+static SHININESS_EXPONENTS: Buf<u16, 17> = Buf::new([
+    4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64,
+]);
+
 pub fn gpu_scene_shininess_exponent(value: Shininess) -> u16 {
-    let mut result: u16 = 0;
-    match value {
-        Shininess::S4 => {
-            result = 4;
-        }
-        Shininess::S5 => {
-            result = 5;
-        }
-        Shininess::S6 => {
-            result = 6;
-        }
-        Shininess::S7 => {
-            result = 7;
-        }
-        Shininess::S8 => {
-            result = 8;
-        }
-        Shininess::S10 => {
-            result = 10;
-        }
-        Shininess::S12 => {
-            result = 12;
-        }
-        Shininess::S14 => {
-            result = 14;
-        }
-        Shininess::S16 => {
-            result = 16;
-        }
-        Shininess::S20 => {
-            result = 20;
-        }
-        Shininess::S24 => {
-            result = 24;
-        }
-        Shininess::S28 => {
-            result = 28;
-        }
-        Shininess::S32 => {
-            result = 32;
-        }
-        Shininess::S40 => {
-            result = 40;
-        }
-        Shininess::S48 => {
-            result = 48;
-        }
-        Shininess::S56 => {
-            result = 56;
-        }
-        Shininess::S64 => {
-            result = 64;
-        }
-    };
-    result
+    SHININESS_EXPONENTS[value as u16]
 }
 
 fn gpu_scene_shininess_code(code: u16) -> Shininess {
-    let mut result = Shininess::S4;
-    match code {
-        0 => {
-            result = Shininess::S4;
-        }
-        1 => {
-            result = Shininess::S5;
-        }
-        2 => {
-            result = Shininess::S6;
-        }
-        3 => {
-            result = Shininess::S7;
-        }
-        4 => {
-            result = Shininess::S8;
-        }
-        5 => {
-            result = Shininess::S10;
-        }
-        6 => {
-            result = Shininess::S12;
-        }
-        7 => {
-            result = Shininess::S14;
-        }
-        8 => {
-            result = Shininess::S16;
-        }
-        9 => {
-            result = Shininess::S20;
-        }
-        10 => {
-            result = Shininess::S24;
-        }
-        11 => {
-            result = Shininess::S28;
-        }
-        12 => {
-            result = Shininess::S32;
-        }
-        13 => {
-            result = Shininess::S40;
-        }
-        14 => {
-            result = Shininess::S48;
-        }
-        15 => {
-            result = Shininess::S56;
-        }
-        _ => {
-            result = Shininess::S64;
-        }
+    // Codes are dense; words beyond the last code select S64.
+    let valid = if code < Shininess::S64 as u16 {
+        code
+    } else {
+        Shininess::S64 as u16
     };
-    result
+    unsafe { enum_from_u16_unchecked::<Shininess>(valid) }
 }
 
 pub fn gpu_scene_shininess_nearest(exponent: u16) -> Shininess {
@@ -175,12 +78,11 @@ pub fn gpu_scene_shininess_nearest(exponent: u16) -> Shininess {
     while code < 17 {
         let candidate = gpu_scene_shininess_code(code);
         let value = gpu_scene_shininess_exponent(candidate);
-        let mut next: u16 = 0;
-        if exponent > value {
-            next = exponent - value;
+        let next: u16 = if exponent > value {
+            exponent - value
         } else {
-            next = value - exponent;
-        }
+            value - exponent
+        };
         // Ascending candidates and strict comparison choose lower on a tie.
         if next < distance {
             best = candidate;

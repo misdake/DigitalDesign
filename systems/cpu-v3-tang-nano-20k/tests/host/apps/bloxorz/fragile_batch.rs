@@ -27,8 +27,8 @@ while level<33 {
  let mut cell:u16=0;
  while cell<GAME_SESSION.level.cell_count {
   if GAME_SESSION.level_field(cell,0)==2 {
-   GAME_SESSION.fracture_cell=cell;GAME_SESSION.animation.phase=CRACK;fragile_sync(owner);signal(3,cell);
-   GAME_SESSION.fracture_cell=65535;GAME_SESSION.animation.phase=PLAY;fragile_sync(owner);signal(4,cell);
+   GAME_SESSION.fracture_cell=cell;GAME_SESSION.animation.phase=AnimationPhase::Crack;fragile_sync(owner);signal(3,cell);
+   GAME_SESSION.fracture_cell=65535;GAME_SESSION.animation.phase=AnimationPhase::Play;fragile_sync(owner);signal(4,cell);
   }
   cell+=1;
  }
@@ -233,7 +233,7 @@ let color=board_color_b();let depth=board_depth();let camera=game_camera();let s
 let model=game_floor_model();let material=game_material(Rgba8::white(),true);let texture=marker_texture();let view=texture.view();let mesh=fragile_mesh(owner);
 {let mut pass=commands.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0)), DepthLoad::clear(65535));pass.set_camera(camera.ptr());pass.set_state(state.ptr());pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());}
 let mut n:u16=0;while n<3 {
- GAME_SESSION.fracture_cell=if n==1 {0u16}else{65535u16};GAME_SESSION.animation.phase=if n==1 {CRACK}else{PLAY};
+ GAME_SESSION.fracture_cell=if n==1 {0u16}else{65535u16};GAME_SESSION.animation.phase=if n==1 {AnimationPhase::Crack}else{AnimationPhase::Play};
  fragile_sync(owner);gpu.submit(commands);commands=gpu.wait();signal(2,n);n+=1;
 }
 drop(commands);fragile_end(owner);
@@ -657,7 +657,7 @@ fn inflight_mesh_patch_rebuild_and_free_stop_before_mutation() {
         "fragile_rebuild(owner);",
         "fragile_end(owner);",
     ] {
-        let body=format!("GAME_SESSION.reset_level(3);let owner=fragile_begin();fragile_rebuild(owner);signal(2,owner.addr());GAME_SESSION.fracture_cell=5;GAME_SESSION.animation.phase=CRACK;{action}");
+        let body=format!("GAME_SESSION.reset_level(3);let owner=fragile_begin();fragile_rebuild(owner);signal(2,owner.addr());GAME_SESSION.fracture_cell=5;GAME_SESSION.animation.phase=AnimationPhase::Crack;{action}");
         let (program, resources, _) = application_case(
             &format!("fragile-busy-{}", action.split('(').next().unwrap()),
             Some(&body),

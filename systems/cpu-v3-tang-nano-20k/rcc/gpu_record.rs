@@ -57,19 +57,31 @@ const GPU_RECORD_DEPTH_FACT: u16 = 28;
 const GPU_RECORD_TARGET_PROVEN: u16 = 1024;
 const GPU_RECORD_COPY_FACT: u16 = 104;
 const GPU_RECORD_FACT_LIMIT: u16 = 64;
-const GPU_FACT_MESH: u16 = 1;
-const GPU_FACT_TEXTURE: u16 = 2;
-const GPU_FACT_ATLAS: u16 = 3;
-const GPU_FACT_GRID: u16 = 4;
-const GPU_FACT_COLOR: u16 = 5;
-const GPU_FACT_DEPTH: u16 = 6;
-const GPU_FACT_BUFFER: u16 = 7;
+#[repr(u16)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ResourceFactKind {
+    Mesh = 1,
+    Texture = 2,
+    Atlas = 3,
+    Grid = 4,
+    Color = 5,
+    Depth = 6,
+    Buffer = 7,
+}
+
 const GPU_FACT_READ: u16 = 1;
 const GPU_FACT_WRITE: u16 = 2;
-const GPU_RECORD_READY: u16 = 1;
-const GPU_RECORD_PASS: u16 = 2;
-const GPU_RECORD_SEALED: u16 = 3;
-const GPU_RECORD_POISON: u16 = 4;
+
+// Discriminants stored in the CPU recording array.
+#[repr(u16)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum RecordPhase {
+    Empty = 0,
+    Ready = 1,
+    PassOpen = 2,
+    Sealed = 3,
+    Poisoned = 4,
+}
 
 fn gpu_record_data(slot: u16) -> Array<u16> {
     if slot == GPU_PREPARED_RECORD {
@@ -121,7 +133,8 @@ fn gpu_record_resource_room(
         return false;
     }
     let c = gpu_record_data(slot);
-    if (c[GPU_RECORD_PHASE] != GPU_RECORD_READY && c[GPU_RECORD_PHASE] != GPU_RECORD_PASS)
+    if (c[GPU_RECORD_PHASE] != RecordPhase::Ready as u16
+        && c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16)
         || c[GPU_RECORD_FACT_COUNT] > GPU_RECORD_FACT_LIMIT
     {
         return false;
@@ -138,7 +151,7 @@ fn gpu_record_resource_room(
         let kind = input[at + 2];
         if !gpu_memory_extent_valid(first, sectors)
             || kind == 0
-            || kind > GPU_FACT_BUFFER
+            || kind > ResourceFactKind::Buffer as u16
             || input[at + 3] == 0
             || input[at + 3] > 3
         {
@@ -229,7 +242,7 @@ fn gpu_record_configure(
         c[i] = 0;
         i += 1;
     }
-    c[GPU_RECORD_PHASE] = GPU_RECORD_READY;
+    c[GPU_RECORD_PHASE] = RecordPhase::Ready as u16;
     c[GPU_RECORD_COMMAND_BASE] = command;
     c[GPU_RECORD_COMMAND_CAPACITY] = command_sectors << 6;
     c[GPU_RECORD_PUSH_BASE] = push;
@@ -282,11 +295,11 @@ fn gpu_record_preflight(slot: u16, command_words: u16, push_end: u16) -> bool {
     }
     let c = gpu_record_data(slot);
     let phase = c[GPU_RECORD_PHASE];
-    if phase != GPU_RECORD_READY && phase != GPU_RECORD_PASS {
+    if phase != RecordPhase::Ready as u16 && phase != RecordPhase::PassOpen as u16 {
         return false;
     }
     let mut tail: u16 = 2;
-    if phase == GPU_RECORD_PASS || c[GPU_RECORD_TERMINAL] == 0 {
+    if phase == RecordPhase::PassOpen as u16 || c[GPU_RECORD_TERMINAL] == 0 {
         tail = 6;
     }
     // Templates have their own word limit and no enclosing Pass/END tail.
@@ -302,10 +315,10 @@ fn gpu_record_begin_pass(slot: u16) -> bool {
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_READY || !gpu_record_command_room(c, 0, 6) {
+    if c[GPU_RECORD_PHASE] != RecordPhase::Ready as u16 || !gpu_record_command_room(c, 0, 6) {
         return false;
     }
-    c[GPU_RECORD_PHASE] = GPU_RECORD_PASS;
+    c[GPU_RECORD_PHASE] = RecordPhase::PassOpen as u16;
     c[GPU_RECORD_TERMINAL] = 0;
     true
 }
@@ -361,7 +374,7 @@ fn gpu_record_append_reserved(
         )
     {
         // Partial transport is not a transaction rollback and cannot be sealed.
-        c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
+        c[GPU_RECORD_PHASE] = RecordPhase::Poisoned as u16;
         return false;
     }
     c[GPU_RECORD_COMMAND_USED] += command_words;
@@ -373,7 +386,7 @@ fn gpu_record_close_pass(slot: u16) -> bool {
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS
+    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16
         || c[GPU_GROUP_RECORDING] != 0
         || !gpu_record_command_room(c, 4, 2)
     {
@@ -386,11 +399,11 @@ fn gpu_record_close_pass(slot: u16) -> bool {
         code.as_array(),
         4,
     ) {
-        c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
+        c[GPU_RECORD_PHASE] = RecordPhase::Poisoned as u16;
         return false;
     }
     c[GPU_RECORD_COMMAND_USED] += 4;
-    c[GPU_RECORD_PHASE] = GPU_RECORD_READY;
+    c[GPU_RECORD_PHASE] = RecordPhase::Ready as u16;
     c[GPU_RECORD_TERMINAL] = 1;
     true
 }
@@ -399,15 +412,12 @@ fn gpu_record_seal(slot: u16) -> bool {
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] == GPU_RECORD_SEALED {
+    if c[GPU_RECORD_PHASE] == RecordPhase::Sealed as u16 {
         return true;
     }
     let used = c[GPU_RECORD_COMMAND_USED];
-    let mut terminal: u16 = 0;
-    if c[GPU_RECORD_TERMINAL] == 0 {
-        terminal = 4;
-    }
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_READY
+    let terminal: u16 = if c[GPU_RECORD_TERMINAL] == 0 { 4 } else { 0 };
+    if c[GPU_RECORD_PHASE] != RecordPhase::Ready as u16
         || used == 0
         || !gpu_record_command_room(c, terminal, 2)
     {
@@ -429,7 +439,7 @@ fn gpu_record_seal(slot: u16) -> bool {
         count = 64;
     }
     if !gpu_window_write_words(c[GPU_RECORD_COMMAND_BASE], used, zero.as_array(), count) {
-        c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
+        c[GPU_RECORD_PHASE] = RecordPhase::Poisoned as u16;
         return false;
     }
     if padded - used > count {
@@ -440,13 +450,13 @@ fn gpu_record_seal(slot: u16) -> bool {
             padding,
             padded - used - count,
         ) {
-            c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
+            c[GPU_RECORD_PHASE] = RecordPhase::Poisoned as u16;
             return false;
         }
     }
     c[GPU_RECORD_COMMAND_USED] = valid;
     c[GPU_RECORD_PADDED] = padded;
-    c[GPU_RECORD_PHASE] = GPU_RECORD_SEALED;
+    c[GPU_RECORD_PHASE] = RecordPhase::Sealed as u16;
     c[GPU_RECORD_TERMINAL] = 1;
     true
 }
@@ -455,10 +465,12 @@ fn gpu_record_reset(slot: u16) -> bool {
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_READY && c[GPU_RECORD_PHASE] != GPU_RECORD_SEALED {
+    if c[GPU_RECORD_PHASE] != RecordPhase::Ready as u16
+        && c[GPU_RECORD_PHASE] != RecordPhase::Sealed as u16
+    {
         return false;
     }
-    c[GPU_RECORD_PHASE] = GPU_RECORD_READY;
+    c[GPU_RECORD_PHASE] = RecordPhase::Ready as u16;
     let mut i: u16 = GPU_RECORD_COMMAND_USED;
     while i < GPU_API_CB_WORDS {
         c[i] = 0;

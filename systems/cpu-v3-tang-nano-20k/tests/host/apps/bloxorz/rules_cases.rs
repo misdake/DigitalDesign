@@ -4,27 +4,27 @@ use super::*;
 fn first_two_stage_solutions_undo_and_overlapping_fade_follow_real_rules() {
     let body = r#"
 GAME_SESSION.begin();let mut n:u16=0;while n<15 {GAME_SESSION.tick(0,0,40);n+=1;}
-check(GAME_SESSION.animation.phase==PLAY && GAME_SESSION.rules.moves==0);signal(6,1);
+check(GAME_SESSION.animation.phase==AnimationPhase::Play && GAME_SESSION.rules.moves==0);signal(6,1);
 let first:Buf<u16,7>=Buf::new([0,0,2,0,0,0,2]);n=0;
 while n<7 {
     let old_mask=GAME_SESSION.rules.bridge_mask;check(GAME_SESSION.try_move(first[n]));check(GAME_SESSION.visual_mask()==old_mask);
     let mut k:u16=0;while k<5 {GAME_SESSION.tick(0,0,50);k+=1;}n+=1;
 }
-check(GAME_SESSION.rules.status==1 && GAME_SESSION.rules.moves==7 && GAME_SESSION.animation.phase==GOAL_OPEN);signal(6,2);
-GAME_SESSION.tick(32768,0,0);check(GAME_SESSION.rules.status==0 && GAME_SESSION.rules.moves==6 && GAME_SESSION.animation.phase==PLAY);
+check(GAME_SESSION.rules.status==1 && GAME_SESSION.rules.moves==7 && GAME_SESSION.animation.phase==AnimationPhase::GoalOpen);signal(6,2);
+GAME_SESSION.tick(32768,0,0);check(GAME_SESSION.rules.status==0 && GAME_SESSION.rules.moves==6 && GAME_SESSION.animation.phase==AnimationPhase::Play);
 check(GAME_SESSION.try_move(2));n=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}
 n=0;while !GAME_SESSION.fading() && n<32 {GAME_SESSION.tick(0,0,40);n+=1;}
-check(GAME_SESSION.fading() && GAME_SESSION.animation.phase==GOAL_CLOSE && GAME_SESSION.motion.level==0);signal(6,3);
+check(GAME_SESSION.fading() && GAME_SESSION.animation.phase==AnimationPhase::GoalClose && GAME_SESSION.motion.level==0);signal(6,3);
 GAME_SESSION.presented();check(GAME_SESSION.motion.level==0);
 n=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}
-check(GAME_SESSION.animation.elapsed>=200 && !GAME_SESSION.block_visible() && GAME_SESSION.transition.phase==FADE_OUT);
+check(GAME_SESSION.animation.elapsed>=200 && !GAME_SESSION.block_visible() && GAME_SESSION.transition.phase==TransitionPhase::FadeOut);
 n=0;while GAME_SESSION.transition.elapsed<320 && n<10 {GAME_SESSION.tick(0,0,50);n+=1;}
-check(GAME_SESSION.motion.level==0);GAME_SESSION.presented();check(GAME_SESSION.motion.level==1 && GAME_SESSION.transition.phase==HOLD && GAME_SESSION.rules.moves==0);signal(6,4);
+check(GAME_SESSION.motion.level==0);GAME_SESSION.presented();check(GAME_SESSION.motion.level==1 && GAME_SESSION.transition.phase==TransitionPhase::Hold && GAME_SESSION.rules.moves==0);signal(6,4);
 n=0;while n<16 {GAME_SESSION.tick(8|4096|32,32,50);n+=1;}
-check(GAME_SESSION.transition.phase==FADE_IN && GAME_SESSION.transition.elapsed==380 && GAME_SESSION.rules.moves==0);
-GAME_SESSION.presented();check(!GAME_SESSION.fading() && GAME_SESSION.animation.phase==ENTRY_OPEN);
+check(GAME_SESSION.transition.phase==TransitionPhase::FadeIn && GAME_SESSION.transition.elapsed==380 && GAME_SESSION.rules.moves==0);
+GAME_SESSION.presented();check(!GAME_SESSION.fading() && GAME_SESSION.animation.phase==AnimationPhase::EntryOpen);
 n=0;while n<15 {GAME_SESSION.tick(0,0,40);n+=1;}
-check(GAME_SESSION.animation.phase==PLAY);signal(6,5);
+check(GAME_SESSION.animation.phase==AnimationPhase::Play);signal(6,5);
 let second:Buf<u16,17>=Buf::new([3,0,2,0,0,0,0,3,3,2,0,2,0,0,3,0,3]);n=0;
 while n<17 {
     let old_mask=GAME_SESSION.rules.bridge_mask;check(GAME_SESSION.try_move(second[n]));check(GAME_SESSION.visual_mask()==old_mask);
@@ -32,39 +32,39 @@ while n<17 {
 }
 check(GAME_SESSION.rules.status==1 && GAME_SESSION.rules.moves==17);signal(6,6);
 // Full unsupported release leaves before220ms, then continues during the veil.
-GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=0;
+GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=TransitionPhase::Idle;
 check(GAME_SESSION.try_move(0));n=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}
 check(GAME_SESSION.try_move(0));n=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}
 check(GAME_SESSION.try_move(3));GAME_SESSION.tick(0,0,40);GAME_SESSION.tick(0,0,40);
-check(GAME_SESSION.animation.phase==FALL && GAME_SESSION.motion.elapsed==80 && GAME_SESSION.animation.elapsed==0);
+check(GAME_SESSION.animation.phase==AnimationPhase::Fall && GAME_SESSION.motion.elapsed==80 && GAME_SESSION.animation.elapsed==0);
 n=0;while n<12 {GAME_SESSION.tick(0,0,50);n+=1;}
 check(GAME_SESSION.fading() && GAME_SESSION.animation.elapsed==600);GAME_SESSION.tick(0,0,50);check(GAME_SESSION.animation.elapsed==650);signal(6,7);
 // Held movement repeats after settle; newest held direction wins.
-GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=0;GAME_SESSION.animation.held_lock=0;GAME_SESSION.animation.direction_stack=0;
+GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=TransitionPhase::Idle;GAME_SESSION.animation.held_lock=0;GAME_SESSION.animation.direction_stack=0;
 GAME_SESSION.tick(32,32,0);check(GAME_SESSION.rules.moves==1);n=0;while n<5 {GAME_SESSION.tick(0,32,50);n+=1;}
-check(GAME_SESSION.rules.moves==2 && GAME_SESSION.animation.phase==ROLL);
+check(GAME_SESSION.rules.moves==2 && GAME_SESSION.animation.phase==AnimationPhase::Roll);
 GAME_SESSION.tick(64,32|64,0);n=0;while n<5 {GAME_SESSION.tick(0,32|64,50);n+=1;}
 check(GAME_SESSION.motion.direction==2 && GAME_SESSION.rules.moves==3);signal(6,8);
 // Retain256 complete snapshots across a ring wrap, including a16-bit move count.
-GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=0;
+GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=TransitionPhase::Idle;
 n=0;while n<260 {check(GAME_SESSION.try_move(if n&1==0 {0u16}else{1u16}));let mut k:u16=0;while k<5 {GAME_SESSION.tick(0,0,50);k+=1;}n+=1;}
 check(GAME_SESSION.rules.moves==260);n=0;while n<256 {GAME_SESSION.tick(32768,0,0);n+=1;}
 check(GAME_SESSION.rules.moves==4 && GAME_SESSION.rules.x==GAME_SESSION.level.start_x && GAME_SESSION.rules.z==GAME_SESSION.level.start_z);
 GAME_SESSION.tick(32768,0,0);check(GAME_SESSION.rules.moves==4);signal(6,9);
 // Re-pressing one held direction cannot evict another still-held direction.
-GAME_SESSION.animation.phase=ENTRY_OPEN;GAME_SESSION.animation.elapsed=0;GAME_SESSION.animation.held_lock=0;GAME_SESSION.animation.direction_stack=0;
+GAME_SESSION.animation.phase=AnimationPhase::EntryOpen;GAME_SESSION.animation.elapsed=0;GAME_SESSION.animation.held_lock=0;GAME_SESSION.animation.direction_stack=0;
 GAME_SESSION.tick(128,128,0);GAME_SESSION.tick(32,128|32,0);n=0;
 while n<6 {GAME_SESSION.tick(32,128|32,0);n+=1;}
 GAME_SESSION.tick(0,128,0);check((GAME_SESSION.animation.direction_stack&15)==2);signal(6,10);
 // Web switch press duration is260ms, independently of the220ms roll.
-GAME_SESSION.reset_level(1);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.animation.held_lock=0;GAME_SESSION.animation.direction_stack=0;GAME_SESSION.transition.phase=0;GAME_SESSION.rules.bridge_mask=1;
+GAME_SESSION.reset_level(1);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.animation.held_lock=0;GAME_SESSION.animation.direction_stack=0;GAME_SESSION.transition.phase=TransitionPhase::Idle;GAME_SESSION.rules.bridge_mask=1;
 GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,30);
 let half=GAME_SESSION.switch_fraction(0);check(half>fix32::from_words(32760,0) && half<fix32::from_words(32776,0));
 GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,30);
 check(GAME_SESSION.switch_fraction(0)==fix32::from_int(1));signal(6,11);
 // Accepted moves stop at65535; undo reconstructs the previous full16-bit count.
-GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.animation.held_lock=0;GAME_SESSION.animation.direction_stack=0;GAME_SESSION.transition.phase=0;GAME_SESSION.rules.moves=65534;
-check(GAME_SESSION.try_move(0));check(GAME_SESSION.rules.moves==65535);n=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}check(GAME_SESSION.animation.phase==PLAY);check(!GAME_SESSION.try_move(0));
+GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.animation.held_lock=0;GAME_SESSION.animation.direction_stack=0;GAME_SESSION.transition.phase=TransitionPhase::Idle;GAME_SESSION.rules.moves=65534;
+check(GAME_SESSION.try_move(0));check(GAME_SESSION.rules.moves==65535);n=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}check(GAME_SESSION.animation.phase==AnimationPhase::Play);check(!GAME_SESSION.try_move(0));
 GAME_SESSION.tick(32768,0,0);check(GAME_SESSION.rules.moves==65534 && GAME_SESSION.rules.x==GAME_SESSION.level.start_x && GAME_SESSION.rules.z==GAME_SESSION.level.start_z);signal(6,12);
 
 
@@ -119,15 +119,15 @@ GAME_SESSION.begin();let mut n:u16=0;while n<15 {GAME_SESSION.tick(0,0,40);n+=1;
 GAME_SESSION.block_pose(&mut model);world_probe(&model);
 GAME_SESSION.begin();n=0;while n<4 {GAME_SESSION.tick(0,0,50);n+=1;}n=0;while n<3 {GAME_SESSION.tick(0,0,50);n+=1;}GAME_SESSION.tick(0,0,40);
 GAME_SESSION.block_pose(&mut model);world_probe(&model);
-GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;check(GAME_SESSION.try_move(1));
-n=0;while n<4 {GAME_SESSION.tick(0,0,50);n+=1;}GAME_SESSION.tick(0,0,20);check(GAME_SESSION.animation.phase==TIP);
+GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;check(GAME_SESSION.try_move(1));
+n=0;while n<4 {GAME_SESSION.tick(0,0,50);n+=1;}GAME_SESSION.tick(0,0,20);check(GAME_SESSION.animation.phase==AnimationPhase::Tip);
 n=0;while n<3 {GAME_SESSION.tick(0,0,50);n+=1;}GAME_SESSION.tick(0,0,30);
 GAME_SESSION.block_pose(&mut model);world_probe(&model);
-GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;
+GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;
 check(GAME_SESSION.try_move(0));n=0;while n<4 {GAME_SESSION.tick(0,0,50);n+=1;}GAME_SESSION.tick(0,0,20);
 check(GAME_SESSION.try_move(0));n=0;while n<4 {GAME_SESSION.tick(0,0,50);n+=1;}GAME_SESSION.tick(0,0,20);
 check(GAME_SESSION.try_move(3));GAME_SESSION.tick(0,0,40);GAME_SESSION.tick(0,0,40);n=0;while n<3 {GAME_SESSION.tick(0,0,50);n+=1;}
-check(GAME_SESSION.animation.phase==FALL && GAME_SESSION.animation.elapsed==150);GAME_SESSION.block_pose(&mut model);world_probe(&model);
+check(GAME_SESSION.animation.phase==AnimationPhase::Fall && GAME_SESSION.animation.elapsed==150);GAME_SESSION.block_pose(&mut model);world_probe(&model);
 "#;
     use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
     let (program, resources, out) = application("web-actual-session-poses", Some(body));
@@ -266,7 +266,7 @@ fn two_word_previous_index_recurrence_matches_derived_index() {
 
 #[test]
 fn compact_undo_restores_split_active_cube_and_ninth_bridge_bit() {
-    let body = r#"GAME_SESSION.begin();GAME_SESSION.animation.phase=PLAY;GAME_SESSION.rules.x=3;GAME_SESSION.rules.z=3;GAME_SESSION.rules.orientation=0;GAME_SESSION.rules.bridge_mask=256;GAME_SESSION.rules.other_x=5;GAME_SESSION.rules.other_z=3;GAME_SESSION.rules.active_cube=1;GAME_SESSION.rules.split=1;
+    let body = r#"GAME_SESSION.begin();GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.rules.x=3;GAME_SESSION.rules.z=3;GAME_SESSION.rules.orientation=0;GAME_SESSION.rules.bridge_mask=256;GAME_SESSION.rules.other_x=5;GAME_SESSION.rules.other_z=3;GAME_SESSION.rules.active_cube=1;GAME_SESSION.rules.split=1;
 check(GAME_SESSION.try_move(0));GAME_SESSION.tick(32768,0,0);
 check(GAME_SESSION.rules.x==3&&GAME_SESSION.rules.z==3&&GAME_SESSION.rules.orientation==0&&GAME_SESSION.rules.bridge_mask==256&&GAME_SESSION.rules.status==0&&GAME_SESSION.rules.moves==0&&GAME_SESSION.rules.other_x==5&&GAME_SESSION.rules.other_z==3&&GAME_SESSION.rules.active_cube==1&&GAME_SESSION.rules.split==1);"#;
     let (program, resources, _) = application("compact-undo-split-bit8", Some(body));
@@ -307,43 +307,43 @@ fn all_stage_loading_split_swap_merge_fragile_and_navigation_follow_reference_ru
     body.push_str(r#"
 signal(6,1);
 // Actual stage8 splitter at(4,4): legal lying-X prepose(2,4), then+X.
-GAME_SESSION.reset_level(7);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=0;GAME_SESSION.animation.held_lock=0;
+GAME_SESSION.reset_level(7);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=TransitionPhase::Idle;GAME_SESSION.animation.held_lock=0;
 GAME_SESSION.rules.x=2;GAME_SESSION.rules.z=4;GAME_SESSION.rules.orientation=1;check(GAME_SESSION.try_move(0));
 check(GAME_SESSION.rules.x==10&&GAME_SESSION.rules.z==1&&GAME_SESSION.rules.other_x==10&&GAME_SESSION.rules.other_z==7&&GAME_SESSION.rules.split==1&&GAME_SESSION.rules.active_cube==0&&GAME_SESSION.rules.moves==1);
 check(!GAME_SESSION.split_visual());let mut n:u16=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}
-check(GAME_SESSION.animation.phase==SPLIT_POP&&GAME_SESSION.animation.elapsed==0&&GAME_SESSION.motion.landing_x==4&&GAME_SESSION.motion.landing_z==4);
+check(GAME_SESSION.animation.phase==AnimationPhase::SplitPop&&GAME_SESSION.animation.elapsed==0&&GAME_SESSION.motion.landing_x==4&&GAME_SESSION.motion.landing_z==4);
 GAME_SESSION.tick(0,0,35);let squash=GAME_SESSION.block_transform();check(squash.position.x==fix32::from_int(-3)&&squash.position.z==fix32::zero());check(squash.position.y>fix32::from_words(32760,0)&&squash.position.y<fix32::from_words(32776,0));
 GAME_SESSION.tick(0,0,35);check(GAME_SESSION.split_visual());n=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}
-check(GAME_SESSION.animation.phase==PLAY);signal(6,2);
-check(GAME_SESSION.try_move(6));check(GAME_SESSION.rules.active_cube==1&&GAME_SESSION.rules.moves==2&&GAME_SESSION.animation.phase==PLAY);
+check(GAME_SESSION.animation.phase==AnimationPhase::Play);signal(6,2);
+check(GAME_SESSION.try_move(6));check(GAME_SESSION.rules.active_cube==1&&GAME_SESSION.rules.moves==2&&GAME_SESSION.animation.phase==AnimationPhase::Play);
 GAME_SESSION.tick(32768,0,0);check(GAME_SESSION.rules.active_cube==0&&GAME_SESSION.rules.split==1&&GAME_SESSION.rules.moves==1);
 GAME_SESSION.animation.held_lock=0;check(GAME_SESSION.try_move(2));GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,10);
 let rolling=GAME_SESSION.block_transform();let idle=GAME_SESSION.idle_cube_transform();
 check(rolling.position.x==fix32::from_int(3)&&rolling.position.z>fix32::from_words(32760,65533)&&rolling.position.z<fix32::from_words(32776,65533));
 check(rolling.position.y>fix32::from_words(46330,0)&&rolling.position.y<fix32::from_words(46352,0));
 check(rolling.scale.y==fix32::from_int(1)&&idle.position.z==fix32::from_int(3)&&idle.position.y==fix32::from_words(32768,0));
-GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,10);check(GAME_SESSION.animation.phase==PLAY&&GAME_SESSION.rules.z==2);signal(6,3);
+GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,10);check(GAME_SESSION.animation.phase==AnimationPhase::Play&&GAME_SESSION.rules.z==2);signal(6,3);
 GAME_SESSION.tick(16384,0,0);check(GAME_SESSION.rules.active_cube==1&&GAME_SESSION.rules.moves==3);
 n=0;while n<4 {check(GAME_SESSION.try_move(3));let mut k:u16=0;while k<5 {GAME_SESSION.tick(0,0,50);k+=1;}n+=1;}
 check(GAME_SESSION.rules.split==0&&GAME_SESSION.rules.orientation==2&&GAME_SESSION.rules.x==10&&GAME_SESSION.rules.z==2&&GAME_SESSION.rules.moves==7&&!GAME_SESSION.split_visual());
 GAME_SESSION.tick(32768,0,0);check(GAME_SESSION.rules.split==1&&GAME_SESSION.rules.active_cube==1&&GAME_SESSION.rules.z==2&&GAME_SESSION.rules.other_z==4&&GAME_SESSION.rules.moves==6&&GAME_SESSION.split_visual());signal(6,4);
 // Stage4: two lying cells(3,0)/(4,0) stand on fragile(5,0).
-GAME_SESSION.reset_level(3);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=0;GAME_SESSION.animation.held_lock=0;
+GAME_SESSION.reset_level(3);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=TransitionPhase::Idle;GAME_SESSION.animation.held_lock=0;
 GAME_SESSION.rules.x=3;GAME_SESSION.rules.z=0;GAME_SESSION.rules.orientation=1;check(GAME_SESSION.try_move(0));check(GAME_SESSION.rules.status==2&&GAME_SESSION.rules.x==5&&GAME_SESSION.rules.moves==1);
 n=0;while n<5 {GAME_SESSION.tick(0,0,50);n+=1;}
-check(GAME_SESSION.animation.phase==CRACK&&GAME_SESSION.fracture_cell==5&&GAME_SESSION.fragile_dropped(5));
-GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,40);check(GAME_SESSION.animation.phase==FALL&&GAME_SESSION.animation.elapsed==0&&GAME_SESSION.fragile_dropped(5));
+check(GAME_SESSION.animation.phase==AnimationPhase::Crack&&GAME_SESSION.fracture_cell==5&&GAME_SESSION.fragile_dropped(5));
+GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,40);check(GAME_SESSION.animation.phase==AnimationPhase::Fall&&GAME_SESSION.animation.elapsed==0&&GAME_SESSION.fragile_dropped(5));
 GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);GAME_SESSION.tick(0,0,50);let falling=GAME_SESSION.block_transform();
 check(falling.position.y>-fix32::from_words(16,0)&&falling.position.y<fix32::from_words(16,0));
 check(falling.angles.x==fix32::zero()&&falling.angles.z==fix32::zero());
 check(GAME_SESSION.fragile_height(5)>-fix32::from_words(16,1)&&GAME_SESSION.fragile_height(5)<-fix32::from_words(65520,0));
 GAME_SESSION.tick(32768,0,0);check(GAME_SESSION.fracture_cell==65535&&GAME_SESSION.rules.status==0&&GAME_SESSION.rules.moves==0);signal(6,5);
 // Actual previous-level button wraps1->33 only after opaque retirement.
-GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=PLAY;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=0;
+GAME_SESSION.reset_level(0);GAME_SESSION.animation.phase=AnimationPhase::Play;GAME_SESSION.animation.elapsed=0;GAME_SESSION.transition.phase=TransitionPhase::Idle;
 GAME_SESSION.tick(1024,0,0);check(GAME_SESSION.animation.destination==32&&GAME_SESSION.motion.level==0);n=0;while n<7 {GAME_SESSION.tick(0,0,50);n+=1;}
 check(GAME_SESSION.motion.level==0);GAME_SESSION.presented();check(GAME_SESSION.motion.level==32);
-GAME_SESSION.transition.phase=0;GAME_SESSION.animation.phase=GOAL_LAND;GAME_SESSION.animation.elapsed=79;
-GAME_SESSION.tick(0,0,1);check(GAME_SESSION.animation.phase==GOAL_CLOSE&&!GAME_SESSION.fading());n=0;while n<4 {GAME_SESSION.tick(0,0,50);n+=1;}check(GAME_SESSION.animation.destination==0&&GAME_SESSION.fading());signal(6,6);
+GAME_SESSION.transition.phase=TransitionPhase::Idle;GAME_SESSION.animation.phase=AnimationPhase::GoalLand;GAME_SESSION.animation.elapsed=79;
+GAME_SESSION.tick(0,0,1);check(GAME_SESSION.animation.phase==AnimationPhase::GoalClose&&!GAME_SESSION.fading());n=0;while n<4 {GAME_SESSION.tick(0,0,50);n+=1;}check(GAME_SESSION.animation.destination==0&&GAME_SESSION.fading());signal(6,6);
 "#);
     let (program, resources, _) = application("all-stage-session", Some(&body));
     let mut cpu = CpuV3Sim::default();
