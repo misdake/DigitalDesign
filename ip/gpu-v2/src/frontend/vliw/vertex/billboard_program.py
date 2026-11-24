@@ -9,7 +9,8 @@ BOOT = 320
 KERNEL = 384
 FIELDS = dict(l=(0, 2), r=(2, 2), u=(4, 5), swap=(11, 1), up=(12, 2),
               dst=(17, 4), mac=(21, 4), pack_rf=(25, 4), wr=(29, 2), mul=(31, 1),
-              acc=(32, 2), pack=(35, 3), emit=(38, 2), flow=(40, 3), keep=(70, 1))
+              acc=(32, 2), pack=(35, 3), emit=(38, 2), flow=(40, 3),
+              up_hi=(50, 1), keep=(70, 1))
 
 
 def encode(target=None, **fields):
@@ -105,7 +106,9 @@ def render(source):
     # Load RF0 and the position decode config with the original bootstrap.
     # The final keep retires into the same attribute epoch handoff as Bounds.
     bootstrap = [image[i][0] for i in range(7)] + [
-        encode(l=1, u=30), encode(up=3),
+        # The resident World calendar supplies only the matrix and basis.
+        # Form the unlit normal directly, independent of reserved uniform words.
+        encode(), encode(up_hi=1),
         encode(KERNEL, wr=1, dst=12, flow=7, keep=1),
     ]
     for start, words in ((BOOT, bootstrap), (KERNEL, assemble())):

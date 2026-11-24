@@ -252,6 +252,110 @@ fn billboard_schedule_selects_from_metadata_and_matches_every_sample() {
 }
 
 #[test]
+fn billboard_bootstrap_before_after_preserves_initialized_outputs() {
+    use gpu_v2::system::vliw_cycle::vertex::{Bits, Error, Input, Meshlet};
+
+    fn run(vertices: usize, old_rom: bool, tail: Option<u32>) -> (usize, Vec<Bits>, Option<Error>) {
+        let case = support::Case {
+            vertices,
+            billboard: true,
+            uniform: 22,
+            slot: true,
+            ..Default::default()
+        };
+        let mut source = support::data(case);
+        let tail_address = u16::from(case.uniform) * 16 + 15;
+        source.rows.retain(|&(address, _)| address != tail_address);
+        if let Some(value) = tail {
+            source.rows.push((tail_address, u64::from(value)));
+        }
+        let mut model = Meshlet::default();
+        let mut loaded = 0;
+        let mut launched = false;
+        let mut output = Vec::new();
+        for wall in 0..10000 {
+            let mut input = Input {
+                reset: wall < 2,
+                ce: wall % 9 > 2,
+                output_ready: wall % 13 > 3,
+                slot: case.slot,
+                mesh_color: 0xffa1_b2c3,
+                ..Default::default()
+            };
+            if wall >= 2 && loaded < source.rows.len() {
+                (input.dma_address, input.dma_data) = source.rows[loaded];
+                input.dma_write = true;
+                input.ce = false;
+                loaded += 1;
+            }
+            if loaded == source.rows.len()
+                && !launched
+                && model.outputs(input).ready
+                && !input.dma_write
+            {
+                input.start = true;
+                input.ce = true;
+                launched = true;
+            }
+            if old_rom {
+                // Original bootstrap words, before the explicit zero-unpack.
+                match model.core.regs.pc {
+                    327 => model.core.regs.control = 0x1e1,
+                    328 => model.core.regs.control = 0x3000,
+                    _ => {}
+                }
+            }
+            let observed = model.outputs(input);
+            if observed.core.position_write || observed.core.attribute_write {
+                assert_eq!(observed.core.emit_address as usize, output.len());
+                output.push(observed.core.emit_data);
+            }
+            if let Err(error) = model.clock(input) {
+                return (wall, output, Some(error));
+            }
+            if observed.done {
+                assert_eq!(output.len(), vertices * 5);
+                return (wall, output, None);
+            }
+        }
+        panic!("Billboard comparison exceeded cycle limit");
+    }
+
+    for vertices in [1, 5, 64] {
+        let baseline = run(vertices, false, Some(0));
+        for tail in [Some(0), None, Some(0x1234_5678)] {
+            let before = run(vertices, true, tail);
+            let after = run(vertices, false, tail);
+            assert_eq!(after.2, None);
+            assert_eq!(after.1, baseline.1, "fixed output depends on uniform tail");
+            if tail.is_none() {
+                assert_eq!(before.2, Some(Error::Unknown("valid Vertex result")));
+                assert_eq!(before.1.len(), 4);
+                assert_eq!(before.1[..3], after.1[..3]);
+                assert!(!before.1[3].is_known(36));
+                println!("vertices={vertices} tail=unwritten: old Vertex error at cycle {}, fixed completes at cycle {}", before.0, after.0);
+                continue;
+            }
+            assert_eq!(before.2, None);
+            assert_eq!(before.0, after.0, "bootstrap cycle count");
+            let mut differences = 0;
+            let mut unknown = 0;
+            for (field, (&old, &new)) in before.1.iter().zip(&after.1).enumerate() {
+                if old != new {
+                    assert_eq!(field % 5, 3, "position or UV/color changed");
+                    differences += 1;
+                    unknown += usize::from(!old.is_known(36));
+                }
+                assert!(new.is_known(36));
+            }
+            assert_eq!(differences, if tail == Some(0) { 0 } else { vertices });
+            assert_eq!(unknown, if tail.is_none() { vertices } else { 0 });
+            println!("vertices={vertices} tail={tail:?} before/after_cycles={} differing_words={differences} old_unknown_words={unknown}", before.0);
+        }
+    }
+}
+
+#[test]
 fn native_memory_supplies_both_pages_uniforms_and_parallel_cache() {
     let r = support::native::run();
     println!("G2A_SAMPLE {{\"initialization_us\":{},\"stepping_us\":{},\"logic_edges\":{},\"native_cycles\":{},\"trace_collection\":true}}",r.initialization_us,r.stepping_us,r.vertex.trace.len(),r.native_cycles);

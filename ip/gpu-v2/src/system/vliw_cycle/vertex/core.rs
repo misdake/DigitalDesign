@@ -973,6 +973,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn billboard_zero_normal_needs_no_uniform_tail() {
+        let mut core = Core::default();
+        core.regs.busy = true;
+        core.regs.pc = 327;
+        core.regs.control = Core::rom_word(327);
+        core.regs.uniform_base = 22;
+        core.regs.bounds_safe = false;
+        core.rf[12] = Bits::default();
+        // The derived World/View block has no initialized word30.
+        assert_eq!(core.input.peek(22 * 16 + 15)[0].known, 0);
+        for _ in 0..3 {
+            core.clock(CoreInput {
+                ce: true,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        assert_eq!(core.regs.pc, 384);
+        assert_eq!(core.rf_word(12), Bits::new(0, 32));
+    }
+
+    #[test]
     fn disabled_bounds_do_not_read_a_dead_eligibility_operand() {
         let mut core = Core::default();
         core.regs.busy = true;

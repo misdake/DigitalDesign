@@ -123,7 +123,9 @@ original XZ components, sets the Y component to zero and supplies `t=0`. For a
 camera-plane billboard, `p` stores the center, `A/B` are view-projected camera
 right/up directions and `s/t` describe the rotated corner. Direction columns
 act after the model transform. The schedule publishes zero N36 for use with an
-unlit material. Attribute words and indexed triangles retain their usual layout.
+unlit material. The bootstrap forms this zero with the existing zero-unpack
+operation, so it also works with a derived World/View uniform whose reserved
+tail has never been written. Attribute words and indexed triangles retain their usual layout.
 
 The base-position bounds prologue is bypassed for Billboard. A producer doing
 visibility culling must include the displacement in its bounds. T32 uses the
