@@ -714,10 +714,10 @@ fn main(){
  let used=cb.command_words;let objects=cb.object_words;
  let mut saved:Buf<u16,128>=Buf::new([0;128]);let mut i:u16=0;
  while i<128 {saved[i]=GPU_CODE[i];i+=1;}
- let staged=GPU_BUILD[2u16];let cursor=GPU_BUILD[5u16];
+ let staged=GPU_BUILD.staged_words;let cursor=GPU_BUILD.command_cursor;
  mesh.directory_sector=GPU_ASSET_FIRST_SECTOR+128;mesh.first_sector=mesh.directory_sector;mesh.count=17;
  check(!gpu_builder_draw(view_of(&mut cb),view_of(&mut mesh),matrix.as_array(),0xffff,0xffff));
- check(cb.command_words==used&&cb.object_words==objects&&GPU_BUILD[2u16]==staged&&GPU_BUILD[5u16]==cursor);
+ check(cb.command_words==used&&cb.object_words==objects&&GPU_BUILD.staged_words==staged&&GPU_BUILD.command_cursor==cursor);
  i=0;while i<128 {check(saved[i]==GPU_CODE[i]);i+=1;}
  check(gpu_builder_end(view_of(&mut cb)));check(gpu_builder_finish(view_of(&mut cb)));
  halt(0x600d);
@@ -762,7 +762,7 @@ fn main(){{
  let mut cb:GpuBuffer=gpu_buffer_empty();check(gpu_high_slot_init(view_of(&mut cb),0));
  check(gpu_builder_begin(view_of(&mut cb),GPU_COLOR_B_SECTOR,GPU_DEPTH_SECTOR,0,0));
  check(read_dseg_page(3)==19);
- GPU_BUILD[5u16]={cursor};cb.command_words={cursor};
+ GPU_BUILD.command_cursor={cursor};cb.command_words={cursor};
  check(gpu_builder_end(view_of(&mut cb)));check(read_dseg_page(3)==19);
  check(gpu_builder_finish(view_of(&mut cb)));check(read_dseg_page(3)==19);
  check(cb.command_words=={cursor}+6);halt(0x600d);
@@ -815,12 +815,12 @@ fn main(){{
  check(gpu_builder_begin(view_of(&mut cb),GPU_COLOR_B_SECTOR,GPU_DEPTH_SECTOR,0,0));
  let mut entries:Buf<u16,34>=Buf::new([0;34]);let mut i:u16=0;
  while i<17 {{entries[i*2]=0x9d00+i*2;entries[i*2+1]=1;i+=1;}}
- GPU_BUILD[5u16]={cursor};cb.command_words={cursor};
+ GPU_BUILD.command_cursor={cursor};cb.command_words={cursor};
  check(gpu_builder_commands(view_of(&mut cb)));
  check(gpu_builder_mesh_commands(view_of(&mut cb),entries.as_array(),0,16));
  check(gpu_builder_mesh_commands(view_of(&mut cb),unsafe{{entries.as_ptr().add(32).as_u16_array()}},16,1));
  check(gpu_builder_emit(view_of(&mut cb),0,0x3000));
- check(GPU_BUILD[5u16]=={cursor}+102);
+ check(GPU_BUILD.command_cursor=={cursor}+102);
  check(gpu_builder_restore(19,true));check(read_dseg_page(3)==19);halt(0x600d);
 }}"#
         );
@@ -856,7 +856,7 @@ fn main(){{
  GPU_CB.object_words=32368;check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);
  GPU_CB.object_words=16320;GPU_CB.command_words=32760;
  check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);GPU_CB.command_words=commands;
- check(GPU_CB.object_words==16320&&GPU_CB.command_words==commands&&GPU_BUILD[1u16]==1);
+ check(GPU_CB.object_words==16320&&GPU_CB.command_words==commands&&GPU_BUILD.phase==1);
  let ui=gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill});check(ui==pass);
  check(read_dseg_page(3)==19);check(GPU_CB.object_words==16320&&GPU_CB.command_words==commands);
  check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);

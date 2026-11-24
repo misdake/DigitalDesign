@@ -1,6 +1,21 @@
 //! Latest-only autonomous Device5 input. No transport timer or wire waits.
 use crate::dsl_rt::*;
 
+// Exact ten-word compatibility layout; Gamepad uses these named fields.
+#[repr(C)]
+pub struct Ds2State {
+    pub connected: u16,
+    pub id: u16,
+    pub buttons: u16,
+    pub right_x: u16,
+    pub right_y: u16,
+    pub left_x: u16,
+    pub left_y: u16,
+    pub previous_buttons: u16,
+    pub pressed: u16,
+    pub released: u16,
+}
+
 // State[10]: connected, ID, active-high buttons, RX,RY,LX,LY,
 // previous buttons, pressed, released. Invalid/digital axes are neutral128.
 pub fn ds2_disconnect(mut s: Array<u16>) {

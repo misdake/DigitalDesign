@@ -26,7 +26,7 @@ fn gpu_target_span(c: Array<u16>, at: u16, words: u16) -> bool {
         && c[GPU_RECORD_PUSH_USED] <= c[GPU_RECORD_PUSH_CAPACITY]
 }
 fn gpu_target_owned(slot: u16) -> bool {
-    if slot >= 2 || GPU_EXECUTION[1u16] == slot + 1 {
+    if slot >= 2 || GPU_EXECUTION.owner == slot + 1 {
         return false;
     }
     let c = gpu_record_data(slot);
@@ -52,7 +52,7 @@ fn gpu_target_targets(slot: u16, color: Array<u16>, depth: Array<u16>) -> bool {
         return false;
     }
     let mut i: u16 = 0;
-    while i < GPU_EXECUTION[GPU_EXEC_CONFIGURED] {
+    while i < GPU_EXECUTION.configured_slots {
         let other = gpu_record_data(i);
         if gpu_record_overlap(
             color[0u16],
@@ -200,7 +200,7 @@ fn gpu_target_front_safe(color: Array<u16>, depth: Array<u16>) -> bool {
         return false;
     }
     if status == 2 {
-        if GPU_PRESENT[1u16] != 0 || snapshot[0u16] != 0 {
+        if GPU_PRESENT.pending != 0 || snapshot[0u16] != 0 {
             return false;
         }
         let front = (snapshot[1u16] >> 6) | (snapshot[2u16] << 10);

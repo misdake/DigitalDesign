@@ -196,7 +196,7 @@ fn gpu_group_note_responses(slot: u16, material: Array<u16>) {
     }
 }
 fn gpu_group_part_begin(owner: u16) -> bool {
-    if GPU_PREPARED_CONTEXT[0u16] != 0 {
+    if GPU_PREPARED_CONTEXT != 0 {
         return false;
     }
     let mut data = gpu_arena_data(owner);
@@ -207,7 +207,9 @@ fn gpu_group_part_begin(owner: u16) -> bool {
     if context.addr() == 0 {
         return false;
     }
-    GPU_PREPARED_CONTEXT[0u16] = context.addr();
+    unsafe {
+        addr_of(&GPU_PREPARED_CONTEXT).write(0, context.addr());
+    }
     if !gpu_record_configure(
         GPU_PREPARED_RECORD,
         data[GPU_PREPARED_COMMAND],
@@ -227,16 +229,18 @@ fn gpu_group_part_begin(owner: u16) -> bool {
     true
 }
 fn gpu_group_abandon(slot: u16) {
-    if slot == GPU_PREPARED_RECORD && GPU_PREPARED_CONTEXT[0u16] != 0 {
+    if slot == GPU_PREPARED_RECORD && GPU_PREPARED_CONTEXT != 0 {
         let owner = gpu_record_data(slot)[GPU_GROUP_RECORDING];
         let mut data = gpu_arena_data(owner);
         data[GPU_PREPARED_STATE] = 0;
-        free(Ptr::from_addr(GPU_PREPARED_CONTEXT[0u16]));
-        GPU_PREPARED_CONTEXT[0u16] = 0;
+        free(Ptr::from_addr(GPU_PREPARED_CONTEXT));
+        unsafe {
+            addr_of(&GPU_PREPARED_CONTEXT).write(0, 0);
+        }
     }
 }
 fn gpu_group_end(slot: u16) -> bool {
-    if slot != GPU_PREPARED_RECORD || GPU_PREPARED_CONTEXT[0u16] == 0 {
+    if slot != GPU_PREPARED_RECORD || GPU_PREPARED_CONTEXT == 0 {
         return false;
     }
     let c = gpu_record_data(slot);
@@ -279,8 +283,10 @@ fn gpu_group_end(slot: u16) -> bool {
     let mut data = gpu_arena_data(c[GPU_GROUP_RECORDING]);
     data[GPU_PREPARED_META] = pointer.addr();
     data[GPU_PREPARED_STATE] = GPU_PREPARED_READY;
-    free(Ptr::from_addr(GPU_PREPARED_CONTEXT[0u16]));
-    GPU_PREPARED_CONTEXT[0u16] = 0;
+    free(Ptr::from_addr(GPU_PREPARED_CONTEXT));
+    unsafe {
+        addr_of(&GPU_PREPARED_CONTEXT).write(0, 0);
+    }
     true
 }
 

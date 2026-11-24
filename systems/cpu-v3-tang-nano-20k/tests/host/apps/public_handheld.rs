@@ -786,9 +786,14 @@ fn stage2_identity()->Model{Model::new(demo_pose(demo_zero(),demo_zero(),demo_sc
     let rabbit = "        if frame == 1 { stage2_rabbit(&mut rabbit_model); }\n";
     fn fixed_ui(source: &str) -> String {
         let first = source.find("fn prepare_ui(").unwrap();
-        let end = first + source[first..].find("\nfn ").unwrap();
+        let end = first + source[first..].find("\n}").unwrap() + 2;
+        let stats = if source[first..end].contains("stats: Array<u16>") {
+            ",_stats:Array<u16>"
+        } else {
+            ""
+        };
         format!(
-            "{}fn prepare_ui(grid:&mut UiGrid)->u16{{grid.fill(0);demo_glyph(grid,2,1,3);1}}{}",
+            "{}fn prepare_ui(grid:&mut UiGrid{stats})->u16{{grid.fill(0);demo_glyph(grid,2,1,3);1}}{}",
             &source[..first],
             &source[end..]
         )
@@ -815,8 +820,8 @@ fn stage2_identity()->Model{Model::new(demo_pose(demo_zero(),demo_zero(),demo_sc
             "demo_run(2, 2000, false);",
         )
         .replace(
-            "let rabbit_model = demo_identity_model();",
-            "let mut rabbit_model = demo_identity_model();",
+            "let rabbit_model = Model::new(Transform::identity());",
+            "let mut rabbit_model = Model::new(Transform::identity());",
         );
     let anchor =
         "        // The immutable part supplies World/material, the new Pass supplies View.";
@@ -1056,7 +1061,7 @@ fn pad(x:fix32,y:fix32,rx:fix32,ry:fix32,flags:u16)->GamepadFrame{
 GamepadFrame{connected:flags&1,id:115,buttons:flags&3072,pressed:0,released:0,
 left_x:x,left_y:y,right_x:rx,right_y:ry}}
 fn main(){let z=fix32::zero();let one=fix32::from_int(1);
-let mut p=demo_motion_init(65530);save(0,p);
+let mut p=DemoMotion::new(65530);save(0,p);
 let mut n:u16=1;while n<12{
 let mut x=z;let mut y=z;let mut rx=z;let mut ry=z;let mut flags:u16=1;
 let mut now=(n-1)*100+4;
@@ -1067,8 +1072,8 @@ if n==9{p.yaw=fix32::from_words(8585,3);p.pitch=fix32::from_words(32113,1);
 rx=one;ry=-one;now=1704;}
 if n==10{p.eye=Vec3{x:fix32::from_int(16),y:fix32::from_int(16),z:fix32::from_int(16)};
 flags=2049;now=1804;}
-if n==11{p=demo_motion_init(65530);y=-one;now=4;}
-p=demo_motion_update(p,pad(x,y,rx,ry,flags),now);save(n,p);n+=1;}
+if n==11{p=DemoMotion::new(65530);y=-one;now=4;}
+let input=pad(x,y,rx,ry,flags);p.update(&input,now);save(n,p);n+=1;}
 halt(0x600d);}
 "#;
     for debug in [false, true] {

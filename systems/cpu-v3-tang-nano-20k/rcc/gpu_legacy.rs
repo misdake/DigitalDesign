@@ -51,7 +51,7 @@ pub fn gpu_init_with_format(format: u16) -> u16 {
     if format > DISPLAY_LINEAR_RGB565 {
         return GPU_REJECTED;
     }
-    if GPU_DRIVER.as_array()[0u16] != 0 {
+    if GPU_DRIVER.phase != 0 {
         return GPU_REJECTED;
     }
     let display = gpu_display_init_format(format);
@@ -236,8 +236,7 @@ pub fn gpu_submit_idle(cb: u16) -> u16 {
     if cb != GPU_CB_HANDLE {
         return GPU_REJECTED;
     }
-    if gpu_memory_faulted() || GPU_DISPLAY.as_array()[0u16] == 3 || GPU_DRIVER.as_array()[0u16] == 3
-    {
+    if gpu_memory_faulted() || GPU_DISPLAY.phase == 3 || GPU_DRIVER.phase == 3 {
         return GPU_FAULT;
     }
     if GPU_CB.state != GPU_CB_READY {
@@ -286,8 +285,7 @@ pub fn gpu_wait(cb: u16, limit: u16) -> u16 {
     GPU_TIMEOUT
 }
 pub fn gpu_present(cb: u16) -> u16 {
-    if gpu_memory_faulted() || GPU_DRIVER.as_array()[0u16] == 3 || GPU_DISPLAY.as_array()[0u16] == 3
-    {
+    if gpu_memory_faulted() || GPU_DRIVER.phase == 3 || GPU_DISPLAY.phase == 3 {
         return GPU_FAULT;
     }
     if cb != GPU_CB_HANDLE || GPU_CB.state != GPU_CB_COMPLETED || !gpu_driver_can_build() {
@@ -313,9 +311,9 @@ fn gpu_recording_reset() {
     GPU_CB.command_words = 0;
     GPU_CB.object_words = 0;
     GPU_CB.state = GPU_CB_BUILDING;
-    GPU_BUILD.as_array()[0u16] = 0;
-    GPU_BUILD.as_array()[1u16] = 0;
-    GPU_BUILD.as_array()[2u16] = 0;
+    GPU_BUILD.owner = 0;
+    GPU_BUILD.phase = 0;
+    GPU_BUILD.staged_words = 0;
     unsafe {
         addr_of(&GPU_RECORDING).write(0, 0);
     }
@@ -332,7 +330,7 @@ pub fn gpu_cb_cancel(cb: u16) -> bool {
     if status != GPU_IDLE && status != GPU_COMPLETED {
         return false;
     }
-    if GPU_DISPLAY.as_array()[4u16] != 0 && !gpu_display_unreserve() {
+    if GPU_DISPLAY.reserved != 0 && !gpu_display_unreserve() {
         return false;
     }
     gpu_recording_reset();

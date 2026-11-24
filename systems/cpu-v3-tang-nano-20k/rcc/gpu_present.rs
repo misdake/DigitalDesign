@@ -6,10 +6,26 @@ mod gpu_schema;
 use gpu_schema::*;
 
 // ready, owned pending, requested sector, first error, chosen format; three spare words.
-static GPU_PRESENT: Buf<u16, 8> = Buf::new([0; 8]);
+#[repr(C)]
+struct GpuPresentState {
+    ready: u16,
+    pending: u16,
+    sector: u16,
+    error: u16,
+    format: u16,
+    reserved: Buf<u16, 3>,
+}
+static GPU_PRESENT: GpuPresentState = GpuPresentState {
+    ready: 0,
+    pending: 0,
+    sector: 0,
+    error: 0,
+    format: 0,
+    reserved: Buf::new([0; 3]),
+};
 fn gpu_present_fail(code: u16) -> bool {
-    if GPU_PRESENT[3u16] == 0 {
-        GPU_PRESENT[3u16] = code;
+    if GPU_PRESENT.error == 0 {
+        GPU_PRESENT.error = code;
     }
     false
 }
@@ -37,7 +53,7 @@ fn gpu_present_open() -> bool {
 }
 fn gpu_present_open_with_format(format: u16) -> bool {
     // Reject duplicate controllers without resetting the first owner's state.
-    if GPU_PRESENT[0u16] != 0 {
+    if GPU_PRESENT.ready != 0 {
         return false;
     }
     if format > DISPLAY_LINEAR_RGB565 {
@@ -54,28 +70,29 @@ fn gpu_present_open_with_format(format: u16) -> bool {
     if s[0u16] != 0 {
         return false;
     }
-    if GPU_PRESENT[1u16] != 0 {
-        let sector = GPU_PRESENT[2u16];
-        if s[1u16] != sector << 6 || s[2u16] != sector >> 10 || s[3u16] != GPU_PRESENT[4u16] {
+    if GPU_PRESENT.pending != 0 {
+        let sector = GPU_PRESENT.sector;
+        if s[1u16] != sector << 6 || s[2u16] != sector >> 10 || s[3u16] != GPU_PRESENT.format {
             return gpu_present_fail(4);
         }
     }
+    // Include reserved compatibility words in the bulk reset.
     let mut i: u16 = 0;
     while i < 8 {
-        GPU_PRESENT[i] = 0;
+        (unsafe { addr_of(&GPU_PRESENT).as_u16_array() })[i] = 0;
         i += 1;
     }
-    GPU_PRESENT[0u16] = 1;
-    GPU_PRESENT[4u16] = format;
+    GPU_PRESENT.ready = 1;
+    GPU_PRESENT.format = format;
     true
 }
 fn gpu_present_set_next(sector: u16) -> bool {
-    gpu_present_set_next_with_format(sector, GPU_PRESENT[4u16])
+    gpu_present_set_next_with_format(sector, GPU_PRESENT.format)
 }
 fn gpu_present_set_next_with_format(sector: u16, format: u16) -> bool {
-    if GPU_PRESENT[0u16] == 0
-        || GPU_PRESENT[3u16] != 0
-        || GPU_PRESENT[1u16] != 0
+    if GPU_PRESENT.ready == 0
+        || GPU_PRESENT.error != 0
+        || GPU_PRESENT.pending != 0
         || format > DISPLAY_LINEAR_RGB565
         || sector & 511 != 0
         || GPU_API_PLANE_SECTORS - 1 > 65535 - sector
@@ -90,18 +107,18 @@ fn gpu_present_set_next_with_format(sector: u16, format: u16) -> bool {
     if status == 2 || s[0u16] != 0 {
         return gpu_present_fail(2);
     }
-    GPU_PRESENT[1u16] = 1;
-    GPU_PRESENT[2u16] = sector;
-    GPU_PRESENT[4u16] = format;
+    GPU_PRESENT.pending = 1;
+    GPU_PRESENT.sector = sector;
+    GPU_PRESENT.format = format;
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, sector << 6);
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, sector >> 10);
-    dev_send(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT, GPU_PRESENT[4u16]);
+    dev_send(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT, GPU_PRESENT.format);
     dev_send(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND, DISPLAY_NEXT_SWAP);
     true
 }
 // 0=stable/no owned request, 1=pending/retry, 2=applied and retired, 65535=fault.
 fn gpu_present_poll() -> u16 {
-    if GPU_PRESENT[0u16] == 0 || GPU_PRESENT[3u16] != 0 {
+    if GPU_PRESENT.ready == 0 || GPU_PRESENT.error != 0 {
         gpu_present_fail(3);
         return 65535;
     }
@@ -114,14 +131,14 @@ fn gpu_present_poll() -> u16 {
     if status == 1 || s[0u16] != 0 {
         return 1;
     }
-    if GPU_PRESENT[1u16] != 0 {
-        let sector = GPU_PRESENT[2u16];
-        if s[1u16] != sector << 6 || s[2u16] != sector >> 10 || s[3u16] != GPU_PRESENT[4u16] {
+    if GPU_PRESENT.pending != 0 {
+        let sector = GPU_PRESENT.sector;
+        if s[1u16] != sector << 6 || s[2u16] != sector >> 10 || s[3u16] != GPU_PRESENT.format {
             gpu_present_fail(4);
             return 65535;
         }
         // Hardware Pending clears only after the old external reads retire.
-        GPU_PRESENT[1u16] = 0;
+        GPU_PRESENT.pending = 0;
         return 2;
     }
     0
@@ -135,10 +152,10 @@ fn gpu_present_watch(channel: u16, expected: u16) {
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_WATCH_EXPECTED, expected);
 }
 fn gpu_present_wait_vblank() -> bool {
-    if GPU_PRESENT[0u16] == 0 || GPU_PRESENT[3u16] != 0 {
+    if GPU_PRESENT.ready == 0 || GPU_PRESENT.error != 0 {
         return gpu_present_fail(3);
     }
-    if GPU_PRESENT[1u16] != 0 {
+    if GPU_PRESENT.pending != 0 {
         let mut status = gpu_present_poll();
         while status == 1 {
             // A torn snapshot can also return retry. Sleep only on actual Pending;
@@ -170,10 +187,10 @@ fn gpu_present_wait_vblank() -> bool {
 }
 
 fn gpu_present_observe(out: Array<u16>) -> u16 {
-    if GPU_PRESENT[3u16] != 0 {
+    if GPU_PRESENT.error != 0 {
         return 65535;
     }
-    if GPU_PRESENT[0u16] == 0 {
+    if GPU_PRESENT.ready == 0 {
         return 0;
     }
     let status = gpu_present_snapshot(out);

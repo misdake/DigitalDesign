@@ -298,7 +298,7 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
         "local ABI override was used"
     );
     for body in [
-        "let p=GPU_DRIVER.as_array();",
+        "let p=GPU_DRIVER.phase;",
         "let n=gpu_driver_owned_buffer();",
         "gpu_pipeline_init(0);",
         "let f=gpu_pipeline_cancel;",
@@ -310,7 +310,7 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
             "accepted {body}"
         );
     }
-    assert!(parse("mod gpu_device;fn main(){let p=GPU_DRIVER.as_array();}").is_err());
+    assert!(parse("mod gpu_device;fn main(){let p=GPU_DRIVER.phase;}").is_err());
     std::fs::write(f.local.join("gpu_device.rs"), "pub fn fake_device(){} ").unwrap();
     let error = match parse("mod gpu_pipeline;fn main(){halt(resolver_probe());}") {
         Err(e) => e.to_string(),

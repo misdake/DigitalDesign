@@ -106,17 +106,17 @@ fn rejected_ui_preserves_recording_and_exact_object_capacity_is_usable() {
  fn check(x:bool){if !x{halt(0xbad);}}fn main(){check(gpu_init()==GPU_IDLE);let c=gpu_cb_begin();
  let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};
  check(!gpu_pass_draw_ui_grid(c,view_of(&mut a),C.as_array()));let p=gpu_pass_begin(c,0,65535);check(p==1);
- let old=GPU_CB.command_words;let object=GPU_CB.object_words;let used=GPU_BUILD.as_array()[2u16];
+ let old=GPU_CB.command_words;let object=GPU_CB.object_words;let used=GPU_BUILD.staged_words;
  a.sector=0x9e01;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
  a.sector=0xfe00;a.sectors=513;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
  a.sectors=511;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));a.sectors=512;
  check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));a.sector=0xf800;
  check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),unsafe{Ptr::from_addr(0xbfff).as_u16_array()}));
  GPU_CB.command_words=32754;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
- check(GPU_CB.command_words==32754&&GPU_CB.object_words==object&&GPU_BUILD.as_array()[2u16]==used);
+ check(GPU_CB.command_words==32754&&GPU_CB.object_words==object&&GPU_BUILD.staged_words==used);
  GPU_CB.command_words=old;
  GPU_CB.object_words=32321;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
- check(GPU_CB.object_words==32321&&GPU_CB.command_words==old&&GPU_BUILD.as_array()[2u16]==used);
+ check(GPU_CB.object_words==32321&&GPU_CB.command_words==old&&GPU_BUILD.staged_words==used);
  GPU_CB.object_words=32320;check(gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));check(GPU_CB.object_words==32720);
  check(gpu_pass_end(p));check(gpu_cb_finish(c));check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));halt(0x600d);}"#);
 }

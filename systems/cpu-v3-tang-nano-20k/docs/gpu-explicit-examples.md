@@ -52,7 +52,8 @@ choices excluded by its packer, not universal GPU addresses. The producer's
 completion precedes sampling, and changed content gets explicit texture-cache
 invalidation. The consumer uses Nearest/Bilinear: fixed framebuffer views reject
 the generic Trilinear default. The offscreen TextureView is created once and retained across frames; updating
-its backing pixels does not require re-registering the view.
+its backing pixels does not require re-registering the view. The mesh is also
+registered once: producer/consumer MeshPtr slices share its directory owner.
 
 In Billboard, facing controls expansion; blend/depth-write choices and sorted
 draw order remain explicit. Stage/layer selection uses `MeshPtr::slice`, without
@@ -76,6 +77,12 @@ Its static room/RGB and dynamic rabbit/UI streams both use ordinary `submit`.
 There is no `submit_capturable`, pause gate or board capture producer in the
 current public submission API. Application timing includes CPU control/wait
 overhead and must not be described as pure GPU execution time.
+
+The related RGBA4444 caller keeps all scene resources in
+[RgbaScene](/systems/cpu-v3-tang-nano-20k/examples/demo_box_rabbit/rcc/rgba_scene.rs).
+Camera changes and CB recording are per frame; mesh, models, textures, materials
+and separate opaque/transparent states persist. Neither resource registration
+nor state setters belong in its draw-only recording method.
 
 ## Regression fixtures are not application tutorials
 

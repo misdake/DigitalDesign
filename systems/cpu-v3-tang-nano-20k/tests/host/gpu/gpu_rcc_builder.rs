@@ -130,18 +130,18 @@ fn compiled_directory_crossing_and_capacity_failures_preserve_prefix() {
  mesh.directory_sector=0x9cff;mesh.directory_word=62;mesh.sectors=512;
  check(gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),65535,65535));
  let commands=GPU_CB.command_words;let objects=GPU_CB.object_words;
- let staged=GPU_BUILD.as_array()[2u16];
+ let staged=GPU_BUILD.staged_words;
  // Capacity failures must neither flush/modify staging nor publish cursors.
  GPU_CB.command_words=32760;
  check(!gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),0,0));
- check(GPU_CB.command_words==32760 && GPU_CB.object_words==objects && GPU_BUILD.as_array()[2u16]==staged);
+ check(GPU_CB.command_words==32760 && GPU_CB.object_words==objects && GPU_BUILD.staged_words==staged);
  GPU_CB.command_words=commands;GPU_CB.object_words=32740;
  check(!gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),0,0));
- check(GPU_CB.command_words==commands && GPU_CB.object_words==32740 && GPU_BUILD.as_array()[2u16]==staged);
+ check(GPU_CB.command_words==commands && GPU_CB.object_words==32740 && GPU_BUILD.staged_words==staged);
  GPU_CB.object_words=objects;
  let mut bad:GpuMesh=GpuMesh{{directory_sector:0x9c00,directory_word:4,count:4,first_sector:0x9c00,sectors:512}};
  check(!gpu_pass_draw_mesh(pass,view_of(&mut bad),MATRIX.as_array(),0,0));
- check(GPU_CB.command_words==commands && GPU_CB.object_words==objects && GPU_BUILD.as_array()[2u16]==staged);
+ check(GPU_CB.command_words==commands && GPU_CB.object_words==objects && GPU_BUILD.staged_words==staged);
  mesh.directory_sector=65535;mesh.directory_word=63;mesh.count=2;mesh.first_sector=65535;mesh.sectors=1;
  check(!gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),0,0));
  check(gpu_pass_end(pass));check(gpu_cb_finish(cb));check(read_dseg_page(3)==19);

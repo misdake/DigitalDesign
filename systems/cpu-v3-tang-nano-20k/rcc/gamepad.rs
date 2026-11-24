@@ -27,7 +27,18 @@ struct GamepadStick {
     raw_pair: u16,
     key_state: u16,
 }
-static GAMEPAD_STATE: Buf<u16, 10> = Buf::new([0; 10]);
+static GAMEPAD_STATE: Ds2State = Ds2State {
+    connected: 0,
+    id: 0,
+    buttons: 0,
+    right_x: 0,
+    right_y: 0,
+    left_x: 0,
+    left_y: 0,
+    previous_buttons: 0,
+    pressed: 0,
+    released: 0,
+};
 static GAMEPAD_RX: Buf<u16, 9> = Buf::new([0; 9]);
 // Bit0 initialized; bits1/2 mean left/right needs resolution before consumption.
 static GAMEPAD_READY: u16 = 0;
@@ -59,14 +70,20 @@ static GAMEPAD_STICKS: Buf<GamepadStick, 2> = Buf::new(
     }; 2],
 );
 
+// The legacy DS2 routines accept words; keep that cast at this boundary.
+fn gamepad_state_words() -> Array<u16> {
+    unsafe { addr_of(&GAMEPAD_STATE).as_u16_array() }
+}
+
 // Only a pending consumer enters this numerical/install path. Captures can
 // replace the desired raw pair repeatedly before it is used.
 fn gamepad_resolve(which: u16) {
-    let s = GAMEPAD_STATE.as_array();
     let offset: u16 = if which == 0 { 5 } else { 3 };
-    let x = s[offset];
-    let y = s[offset + 1];
-    let enabled = s[0u16] != 0 && s[1u16] != 65;
+    // Right/left axes are adjacent word pairs in the DS2 compatibility ABI.
+    let raw = gamepad_state_words();
+    let x = raw[offset];
+    let y = raw[offset + 1];
+    let enabled = GAMEPAD_STATE.connected != 0 && GAMEPAD_STATE.id != 65;
     let mut all = GAMEPAD_STICKS.as_array();
     let mut c = view_of(&mut all[which]);
     // Device5 axes are zero-extended bytes. State 0 is uninitialized, 1 is
@@ -96,7 +113,7 @@ fn gamepad_resolve(which: u16) {
 
 // Initialize software state and default calibration. No serial transaction/wait.
 pub fn gamepad_init() {
-    ds2_init(GAMEPAD_STATE.as_array());
+    ds2_init(gamepad_state_words());
     let mut config = stick_default();
     let prepared = stick_prepare(view_of(&mut config));
     let mut cache = GAMEPAD_STICKS.as_array();
@@ -132,19 +149,22 @@ pub fn gamepad_capture() -> bool {
     if (GAMEPAD_READY & 1) == 0 {
         return false;
     }
-    let s = GAMEPAD_STATE.as_array();
-    let updated = ds2_capture(s, GAMEPAD_RX.as_array());
-    if !updated && s[0u16] != 0 {
+    let updated = ds2_capture(gamepad_state_words(), GAMEPAD_RX.as_array());
+    if !updated && GAMEPAD_STATE.connected != 0 {
         return false;
     }
-    let enabled = s[0u16] != 0 && s[1u16] != 65;
+    let enabled = GAMEPAD_STATE.connected != 0 && GAMEPAD_STATE.id != 65;
     let cache = GAMEPAD_STICKS.as_array();
     let key: u16 = if enabled { 2 } else { 1 };
     let mut pending: u16 = 1;
-    if cache[0u16].key_state != key || cache[0u16].raw_pair != (s[5u16] | (s[6u16] << 8)) {
+    if cache[0u16].key_state != key
+        || cache[0u16].raw_pair != (GAMEPAD_STATE.left_x | (GAMEPAD_STATE.left_y << 8))
+    {
         pending |= 2;
     }
-    if cache[1u16].key_state != key || cache[1u16].raw_pair != (s[3u16] | (s[4u16] << 8)) {
+    if cache[1u16].key_state != key
+        || cache[1u16].raw_pair != (GAMEPAD_STATE.right_x | (GAMEPAD_STATE.right_y << 8))
+    {
         pending |= 4;
     }
     unsafe {
@@ -156,7 +176,7 @@ pub fn gamepad_capture() -> bool {
 // Drop captured edges at an input-locked boundary without resolving sticks or
 // changing held/previous buttons. A later release/repress produces a new edge.
 pub fn gamepad_discard_edges() {
-    ds2_consume_edges(GAMEPAD_STATE.as_array());
+    ds2_consume_edges(gamepad_state_words());
 }
 
 // Consume once per game tick. Held buttons/motion survive no-new-sample ticks;
@@ -168,18 +188,17 @@ pub fn gamepad_take_frame() -> GamepadFrame {
     if (GAMEPAD_READY & 4) != 0 {
         gamepad_resolve(1);
     }
-    let mut s = GAMEPAD_STATE.as_array();
     let cache = GAMEPAD_STICKS.as_array();
-    let pressed = s[8u16];
-    let released = s[9u16];
+    let pressed = GAMEPAD_STATE.pressed;
+    let released = GAMEPAD_STATE.released;
     // Clear the same two consumed masks directly after resolving motion, so
     // frame values do not spill around a call to a two-store wrapper.
-    s[8u16] = 0;
-    s[9u16] = 0;
+    GAMEPAD_STATE.pressed = 0;
+    GAMEPAD_STATE.released = 0;
     return GamepadFrame {
-        connected: s[0u16],
-        id: s[1u16],
-        buttons: s[2u16],
+        connected: GAMEPAD_STATE.connected,
+        id: GAMEPAD_STATE.id,
+        buttons: GAMEPAD_STATE.buttons,
         pressed: pressed,
         released: released,
         left_x: cache[0u16].x,

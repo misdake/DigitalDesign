@@ -52,18 +52,18 @@ if memory.first_sector()!=65535||memory.sector_count()!=1{halt(0xbad);}halt(0x60
             ),
             (
                 "overflow",
-                r#"if !gpu_memory_extent_valid(65535,2){gpu_api_fail(1,1,65535,2);}halt(0xbad);"#,
+                r#"if !gpu_memory_extent_valid(65535,2){gpu_api_fail(GpuFault::MemoryExtent,65535,2);}halt(0xbad);"#,
                 vec![0xfa17, 1, 1, 65535, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ),
             (
                 "zero",
-                r#"if !gpu_memory_extent_valid(0,0){gpu_api_fail(1,1,0,0);}halt(0xbad);"#,
+                r#"if !gpu_memory_extent_valid(0,0){gpu_api_fail(GpuFault::MemoryExtent,0,0);}halt(0xbad);"#,
                 vec![0xfa17, 1, 1, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ),
             (
                 "sticky",
-                r#"GPU_API_FAULT[0u16]=0xfa17;GPU_API_FAULT[1u16]=7;GPU_API_FAULT[2u16]=8;
-gpu_api_fail(10,11,12,13);halt(0xbad);"#,
+                r#"GPU_API_FAULT.magic=0xfa17;GPU_API_FAULT.site=7;GPU_API_FAULT.code=8;
+gpu_api_fail(GpuFault::DrawBindings,12,13);halt(0xbad);"#,
                 vec![0xfa17, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ),
         ] {

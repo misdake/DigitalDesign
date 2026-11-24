@@ -6,12 +6,22 @@ mod gpu_builder;
 use gpu_builder::*;
 
 // Final object word, first cell, exclusive end cell.
-static GPU_UI_POSITION: Buf<u16, 3> = Buf::new([0; 3]);
+#[repr(C)]
+struct GpuUiPosition {
+    object_word: u16,
+    first_cell: u16,
+    end_cell: u16,
+}
+static GPU_UI_POSITION: GpuUiPosition = GpuUiPosition {
+    object_word: 0,
+    first_cell: 0,
+    end_cell: 0,
+};
 
 fn gpu_builder_ui_active(cb: Array<GpuBuffer>) -> bool {
     cb[0u16].state == GPU_CB_BUILDING
-        && GPU_BUILD[0u16] == cb.as_ptr().addr()
-        && GPU_BUILD[1u16] == 4
+        && GPU_BUILD.owner == cb.as_ptr().addr()
+        && GPU_BUILD.phase == 4
         && !gpu_memory_faulted()
         && gpu_high_slot_valid(cb)
 }
@@ -127,10 +137,10 @@ fn gpu_builder_ui_begin_record(
         p.write(1, base >> 9);
     }
     gpu_zero(p.add(2), 14);
-    GPU_UI_POSITION[0u16] = word;
-    GPU_UI_POSITION[1u16] = first;
-    GPU_UI_POSITION[2u16] = end;
-    GPU_BUILD[1u16] = 4;
+    GPU_UI_POSITION.object_word = word;
+    GPU_UI_POSITION.first_cell = first;
+    GPU_UI_POSITION.end_cell = end;
+    GPU_BUILD.phase = 4;
     true
 }
 fn gpu_builder_ui_write_record(
@@ -140,9 +150,9 @@ fn gpu_builder_ui_write_record(
     count: u16,
 ) -> bool {
     if !gpu_builder_ui_active(cb)
-        || first < GPU_UI_POSITION[1u16]
-        || first > GPU_UI_POSITION[2u16]
-        || count > GPU_UI_POSITION[2u16] - first
+        || first < GPU_UI_POSITION.first_cell
+        || first > GPU_UI_POSITION.end_cell
+        || count > GPU_UI_POSITION.end_cell - first
         || !gpu_window_low_valid(ids, count)
     {
         return false;
@@ -159,7 +169,7 @@ fn gpu_builder_ui_write_record(
     i = 0;
     while i < count {
         let cell = first + i;
-        let word = GPU_UI_POSITION[0u16] + (cell >> 1);
+        let word = GPU_UI_POSITION.object_word + (cell >> 1);
         let next = (cb[0u16].objects.sector + (word >> 6)) >> 8;
         if page != next {
             gpu_builder_map(cb[0u16].objects.sector, word);
@@ -188,13 +198,19 @@ fn gpu_builder_ui_end_record(mut cb: Array<GpuBuffer>, draw: bool) -> bool {
     if !gpu_builder_ui_active(cb) {
         return false;
     }
-    let word = GPU_UI_POSITION[0u16];
-    if !gpu_builder_ui_commands(cb, word, GPU_UI_POSITION[1u16], GPU_UI_POSITION[2u16], draw) {
+    let word = GPU_UI_POSITION.object_word;
+    if !gpu_builder_ui_commands(
+        cb,
+        word,
+        GPU_UI_POSITION.first_cell,
+        GPU_UI_POSITION.end_cell,
+        draw,
+    ) {
         return false;
     }
     cb[0u16].object_words = word + 400;
-    cb[0u16].command_words = GPU_BUILD[5u16];
-    GPU_BUILD[1u16] = 1;
+    cb[0u16].command_words = GPU_BUILD.command_cursor;
+    GPU_BUILD.phase = 1;
     true
 }
 fn gpu_builder_ui_begin(

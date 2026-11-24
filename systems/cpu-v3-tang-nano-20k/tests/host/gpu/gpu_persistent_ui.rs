@@ -299,10 +299,10 @@ signal(1,1);
 // All command capacity is preflighted before a page is referenced or emitted.
 check(gpu_pipeline_begin(0x1111,0x2222)==1);
 let mut cb=gpu_pipeline_buffer(1);let words=cb[0u16].command_words;
-let cursor=GPU_BUILD[5u16];let objects=cb[0u16].object_words;
+let cursor=GPU_BUILD.command_cursor;let objects=cb[0u16].object_words;
 cb[0u16].command_words=32762;
 check(!gpu_pipeline_ui_range(0,750));
-check(gpu_persistent_ui_reference(1)==0 && GPU_BUILD[5u16]==cursor);
+check(gpu_persistent_ui_reference(1)==0 && GPU_BUILD.command_cursor==cursor);
 check(cb[0u16].command_words==32762 && cb[0u16].object_words==objects);
 cb[0u16].command_words=words;
 check(!gpu_pipeline_ui_range(2,1) && !gpu_pipeline_ui_range(0,751));

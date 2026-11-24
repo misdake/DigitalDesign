@@ -72,18 +72,6 @@ pub struct TargetBinding {
     generation_high: u16,
 }
 
-const GPU_KIND_CAMERA: u16 = 1;
-const GPU_KIND_MODEL: u16 = 2;
-const GPU_KIND_MATERIAL: u16 = 3;
-const GPU_KIND_STATE: u16 = 4;
-const GPU_KIND_MESH: u16 = 5;
-const GPU_KIND_TEXTURE: u16 = 6;
-const GPU_KIND_VIEW: u16 = 7;
-const GPU_KIND_COLOR: u16 = 8;
-const GPU_KIND_DEPTH: u16 = 9;
-const GPU_KIND_UI_ATLAS: u16 = 10;
-const GPU_KIND_UI_GRID: u16 = 11;
-
 impl CommandMemory {
     pub const fn allocate(command_bytes: usize, push_bytes: usize) -> Self {
         assert!(command_bytes <= 65536 && push_bytes <= 65536);
@@ -114,8 +102,8 @@ pub struct PreparedDraws {
 }
 impl PreparedDraws {
     pub fn new(memory: PreparedMemory) -> Self {
-        let slot = gpu_api_object(false, GPU_KIND_PREPARED);
-        gpu_api_checked(gpu_group_new(slot, memory), 15);
+        let slot = gpu_api_object(false, GpuObjectKind::Prepared);
+        gpu_api_checked(gpu_group_new(slot, memory), GpuCheck::Prepared);
         Self { slot }
     }
     pub fn ptr(&self) -> PreparedDrawsPtr {
@@ -124,7 +112,7 @@ impl PreparedDraws {
         }
     }
     pub fn record(&mut self) -> PreparedPart {
-        gpu_api_checked(gpu_group_part_begin(self.slot), 15);
+        gpu_api_checked(gpu_group_part_begin(self.slot), GpuCheck::Prepared);
         PreparedPart {
             slot: GPU_PREPARED_RECORD,
         }
@@ -132,7 +120,7 @@ impl PreparedDraws {
 }
 impl Drop for PreparedDraws {
     fn drop(&mut self) {
-        gpu_api_checked(gpu_group_free(self.slot), 15);
+        gpu_api_checked(gpu_group_free(self.slot), GpuCheck::Prepared);
     }
 }
 
@@ -148,12 +136,12 @@ impl PreparedDrawsPtr {
         gpu_group_part_ready(self.data())
     }
     pub fn invalidate(self) {
-        gpu_api_checked(gpu_group_invalidate(self.data()), 15);
+        gpu_api_checked(gpu_group_invalidate(self.data()), GpuCheck::Prepared);
     }
     /// Caller must retire and discard all CBs that reference this part first.
     /// References are not tracked; generation and recorder-state checks remain.
     pub fn record(self) -> PreparedPart {
-        gpu_api_checked(gpu_group_part_begin(self.data()), 15);
+        gpu_api_checked(gpu_group_part_begin(self.data()), GpuCheck::Prepared);
         PreparedPart {
             slot: GPU_PREPARED_RECORD,
         }
@@ -168,25 +156,28 @@ pub struct PreparedPool {
 }
 impl PreparedPool {
     pub fn new(memory: GpuMemory) -> Self {
-        let slot = gpu_api_object(false, GPU_KIND_PREPARED_POOL);
-        gpu_api_checked(gpu_group_pool_init(slot, memory), 15);
+        let slot = gpu_api_object(false, GpuObjectKind::PreparedPool);
+        gpu_api_checked(gpu_group_pool_init(slot, memory), GpuCheck::Prepared);
         Self { slot }
     }
     /// Byte requests round up to 128; 65535 requests the full 64-KiB extent.
     pub fn allocate(&mut self, command_bytes: u16, push_bytes: u16) -> PreparedDrawsPtr {
         let slot = gpu_group_pool_allocate(self.slot, command_bytes, push_bytes);
-        gpu_api_checked(slot != 0, 15);
+        gpu_api_checked(slot != 0, GpuCheck::Prepared);
         PreparedDrawsPtr {
             handle: gpu_arena_handle(slot),
         }
     }
     pub fn free(&mut self, part: PreparedDrawsPtr) {
-        gpu_api_checked(gpu_group_pool_free(self.slot, part.data()), 15);
+        gpu_api_checked(
+            gpu_group_pool_free(self.slot, part.data()),
+            GpuCheck::Prepared,
+        );
     }
 }
 impl Drop for PreparedPool {
     fn drop(&mut self) {
-        gpu_api_checked(gpu_group_pool_drop(self.slot), 15);
+        gpu_api_checked(gpu_group_pool_drop(self.slot), GpuCheck::Prepared);
     }
 }
 impl GpuMemory {
@@ -225,7 +216,7 @@ impl GpuMemory {
     /// Caller guarantees real allocation, lifetime, and no illegal aliasing.
     pub unsafe fn from_sectors(first_sector: u16, sector_count: u16) -> Self {
         if !gpu_memory_extent_valid(first_sector, sector_count) {
-            gpu_api_fail(1, 1, first_sector, sector_count);
+            gpu_api_fail(GpuFault::MemoryExtent, first_sector, sector_count);
         }
         GpuMemory {
             first_sector: first_sector,
@@ -242,10 +233,10 @@ fn gpu_api_transfer(memory: GpuMemory, offset: u16, data: Array<u16>, count: u16
         || relative >= memory.sector_count
         || ((offset & 63) + count - 1) >> 6 >= memory.sector_count - relative
     {
-        gpu_api_fail(1, 2, offset, count);
+        gpu_api_fail(GpuFault::MemoryRange, offset, count);
     }
     if !gpu_storage_copy_owned(data, memory.first_sector, offset, count, read) {
-        gpu_api_fail(1, 3, offset, count);
+        gpu_api_fail(GpuFault::MemoryTransfer, offset, count);
     }
 }
 impl TextureDesc {
@@ -414,14 +405,14 @@ pub enum DisplayFormat {
 impl Gpu {
     pub fn init(config: GpuConfig) -> Self {
         if !gpu_config_init(config) {
-            gpu_api_fail(2, 1, 0, 0);
+            gpu_api_fail(GpuFault::Initialization, 0, 0);
         }
         Gpu { identity: 1 }
     }
     pub fn command_buffer(&mut self) -> CommandBuffer {
         let slot = gpu_config_take_buffer();
         if slot == 65535 {
-            gpu_api_fail(2, 2, 0, 0);
+            gpu_api_fail(GpuFault::CommandBufferUnavailable, 0, 0);
         }
         CommandBuffer { slot: slot }
     }
@@ -433,7 +424,11 @@ impl Gpu {
     pub fn try_wait(&mut self) -> Option<CommandBuffer> {
         let completed = gpu_execute_poll();
         if completed == 65535 {
-            gpu_api_fail(6, 3, GPU_EXECUTION[5u16], GPU_EXECUTION[1u16]);
+            gpu_api_fail(
+                GpuFault::ExecutionFault,
+                GPU_EXECUTION.error,
+                GPU_EXECUTION.owner,
+            );
         }
         if completed == 0 {
             return None;
@@ -444,18 +439,30 @@ impl Gpu {
         Some(buffer)
     }
     pub fn wait(&mut self) -> CommandBuffer {
-        if GPU_EXECUTION[0u16] == GPU_EXEC_FAULT {
-            gpu_api_fail(6, 3, GPU_EXECUTION[5u16], GPU_EXECUTION[1u16]);
+        if GPU_EXECUTION.phase == GPU_EXEC_FAULT {
+            gpu_api_fail(
+                GpuFault::ExecutionFault,
+                GPU_EXECUTION.error,
+                GPU_EXECUTION.owner,
+            );
         }
-        if GPU_EXECUTION[0u16] != GPU_EXEC_RUNNING {
-            gpu_api_fail(6, 4, GPU_EXECUTION[0u16], GPU_EXECUTION[1u16]);
+        if GPU_EXECUTION.phase != GPU_EXEC_RUNNING {
+            gpu_api_fail(
+                GpuFault::WaitWithoutSubmission,
+                GPU_EXECUTION.phase,
+                GPU_EXECUTION.owner,
+            );
         }
         let mut completed = gpu_execute_poll();
         while completed == 0 {
             completed = gpu_execute_poll();
         }
         if completed == 65535 {
-            gpu_api_fail(6, 3, GPU_EXECUTION[5u16], GPU_EXECUTION[1u16]);
+            gpu_api_fail(
+                GpuFault::ExecutionFault,
+                GPU_EXECUTION.error,
+                GPU_EXECUTION.owner,
+            );
         }
         CommandBuffer {
             slot: completed - 1,
@@ -464,22 +471,26 @@ impl Gpu {
 }
 fn gpu_api_submit(slot: u16) {
     if !gpu_execute_submit(slot) {
-        gpu_api_fail(6, 2, GPU_EXECUTION[5u16], slot);
+        gpu_api_fail(GpuFault::SubmissionRejected, GPU_EXECUTION.error, slot);
     }
 }
 impl Drop for Gpu {
     // No implicit wait, context reset or reclamation of a driver-owned CB.
     fn drop(&mut self) {
-        GPU_EXECUTION[GPU_EXEC_CONTROLLER] = 0;
+        GPU_EXECUTION.controller = 0;
     }
 }
 fn gpu_api_new_surface(memory: GpuMemory, kind: u16) -> u16 {
     let slot = gpu_arena_alloc(false, kind);
     if slot == 0 {
-        gpu_api_fail(3, 1, kind, 0);
+        gpu_api_fail(GpuFault::SurfaceAllocation, kind, 0);
     }
     if !gpu_surface_init(gpu_arena_data(slot), memory) {
-        gpu_api_fail(3, 2, memory.first_sector(), memory.sector_count());
+        gpu_api_fail(
+            GpuFault::SurfaceDescription,
+            memory.first_sector(),
+            memory.sector_count(),
+        );
     }
     slot
 }
@@ -506,14 +517,14 @@ impl DepthBuffer {
 impl Drop for ColorBuffer {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, false, GPU_KIND_COLOR) {
-            gpu_api_fail(3, 3, GPU_KIND_COLOR, self.slot);
+            gpu_api_fail(GpuFault::SurfaceRelease, GPU_KIND_COLOR, self.slot);
         }
     }
 }
 impl Drop for DepthBuffer {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, false, GPU_KIND_DEPTH) {
-            gpu_api_fail(3, 3, GPU_KIND_DEPTH, self.slot);
+            gpu_api_fail(GpuFault::SurfaceRelease, GPU_KIND_DEPTH, self.slot);
         }
     }
 }
@@ -521,22 +532,25 @@ impl Mesh {
     /// Refresh only directory descriptors for future recording. Previously
     /// recorded commands retain their snapshots; retire payload users first.
     pub fn refresh_directory(&mut self) {
-        gpu_api_checked(gpu_mesh_refresh_directory(gpu_arena_data(self.slot)), 5);
+        gpu_api_checked(
+            gpu_mesh_refresh_directory(gpu_arena_data(self.slot)),
+            GpuCheck::Mesh,
+        );
     }
     pub fn from_native(desc: MeshDesc) -> Self {
         let slot = gpu_arena_alloc(false, GPU_KIND_MESH);
         if slot == 0 {
-            gpu_api_fail(8, 1, 0, 0);
+            gpu_api_fail(GpuFault::MeshAllocation, 0, 0);
         }
         if !gpu_mesh_init(gpu_arena_data(slot), desc) {
-            gpu_api_fail(8, 2, 0, 0);
+            gpu_api_fail(GpuFault::MeshDescription, 0, 0);
         }
         Mesh { slot: slot }
     }
     pub fn subset(&self, first: u16, count: u16) -> Mesh {
         let slot = gpu_arena_alloc(false, GPU_KIND_MESH);
         if slot == 0 {
-            gpu_api_fail(8, 1, 0, 0);
+            gpu_api_fail(GpuFault::MeshAllocation, 0, 0);
         }
         if !gpu_mesh_subset(
             gpu_arena_data(slot),
@@ -544,7 +558,7 @@ impl Mesh {
             first,
             count,
         ) {
-            gpu_api_fail(8, 3, first, count);
+            gpu_api_fail(GpuFault::MeshRange, first, count);
         }
         Mesh { slot: slot }
     }
@@ -557,13 +571,13 @@ impl Drop for Mesh {
     fn drop(&mut self) {
         gpu_mesh_release_directory(gpu_arena_data(self.slot));
         if !gpu_arena_free(self.slot, false, GPU_KIND_MESH) {
-            gpu_api_fail(8, 4, self.slot, 0);
+            gpu_api_fail(GpuFault::MeshRelease, self.slot, 0);
         }
     }
 }
 fn gpu_api_copy_plane(slot: u16, s: Array<u16>, d: Array<u16>, kind: u16) {
     if gpu_record_overlap(s[0u16], s[1u16], d[0u16], d[1u16]) {
-        gpu_api_fail(4, 2, slot, 0);
+        gpu_api_fail(GpuFault::RecorderOperation, slot, 0);
     }
     let facts: Buf<u16, 8> = Buf::new([
         s[0u16],
@@ -577,10 +591,10 @@ fn gpu_api_copy_plane(slot: u16, s: Array<u16>, d: Array<u16>, kind: u16) {
     ]);
     let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
     if !gpu_record_resource_room(slot, facts.as_array(), 2, fact_plan.as_array()) {
-        gpu_api_fail(4, 6, slot, 0);
+        gpu_api_fail(GpuFault::ResourceConflict, slot, 0);
     }
     if !gpu_packet_copy_plane(slot, s[0u16], d[0u16]) {
-        gpu_api_fail(4, 2, slot, 0);
+        gpu_api_fail(GpuFault::RecorderOperation, slot, 0);
     }
     gpu_record_resource_commit(slot, facts.as_array(), 2, fact_plan.as_array());
     let mut c = gpu_record_data(slot);
@@ -606,7 +620,7 @@ impl CommandBuffer {
     /// Seal one target block, with any immutable draw groups and at most one
     /// leading color copy. No matrices, state or source objects are patched.
     pub fn target_binding(&mut self) -> TargetBinding {
-        gpu_api_checked(gpu_target_binding(self.slot), 14);
+        gpu_api_checked(gpu_target_binding(self.slot), GpuCheck::TargetBinding);
         let c = gpu_record_data(self.slot);
         TargetBinding {
             slot: self.slot,
@@ -623,7 +637,7 @@ impl CommandBuffer {
         color: ColorBufferPtr,
         depth: DepthBufferPtr,
     ) {
-        gpu_api_checked(self.slot == binding.slot, 14);
+        gpu_api_checked(self.slot == binding.slot, GpuCheck::TargetBinding);
         gpu_api_checked(
             gpu_target_retarget(
                 self.slot,
@@ -632,12 +646,12 @@ impl CommandBuffer {
                 color.data(),
                 depth.data(),
             ),
-            14,
+            GpuCheck::TargetBinding,
         );
     }
     pub fn reset(&mut self) {
         if !gpu_record_reset(self.slot) {
-            gpu_api_fail(4, 1, self.slot, 0);
+            gpu_api_fail(GpuFault::RecorderReset, self.slot, 0);
         }
     }
     pub fn pass(
@@ -668,7 +682,7 @@ impl CommandBuffer {
         ]);
         let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
         if !gpu_record_resource_room(self.slot, facts.as_array(), 2, fact_plan.as_array()) {
-            gpu_api_fail(4, 6, self.slot, 0);
+            gpu_api_fail(GpuFault::ResourceConflict, self.slot, 0);
         }
         if !gpu_packet_begin(
             self.slot,
@@ -678,7 +692,7 @@ impl CommandBuffer {
             color_load.value.raw,
             depth_load.value,
         ) {
-            gpu_api_fail(4, 2, self.slot, mask);
+            gpu_api_fail(GpuFault::RecorderOperation, self.slot, mask);
         }
         gpu_record_resource_commit(self.slot, facts.as_array(), 2, fact_plan.as_array());
         let mut record = gpu_record_data(self.slot);
@@ -688,7 +702,7 @@ impl CommandBuffer {
     }
     pub fn invalidate_textures(&mut self) {
         if !gpu_packet_invalidate_textures(self.slot) {
-            gpu_api_fail(4, 3, self.slot, 0);
+            gpu_api_fail(GpuFault::PassPhase, self.slot, 0);
         }
     }
     pub fn command_words(&self) -> u16 {
@@ -701,26 +715,32 @@ impl CommandBuffer {
 impl Drop for CommandBuffer {
     fn drop(&mut self) {
         if !gpu_config_drop_buffer(self.slot) {
-            gpu_api_fail(4, 4, self.slot, 0);
+            gpu_api_fail(GpuFault::CameraBinding, self.slot, 0);
         }
     }
 }
 impl Pass {
     /// Append an immutable part while retaining the next immediate draw's state.
     pub fn draw_prepared(&mut self, part: PreparedDrawsPtr) {
-        gpu_api_checked(gpu_group_part_append(self.slot, part.data()), 15);
+        gpu_api_checked(
+            gpu_group_part_append(self.slot, part.data()),
+            GpuCheck::Prepared,
+        );
     }
     pub fn invalidate_textures(&mut self) {
-        gpu_api_checked(gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0, 15);
+        gpu_api_checked(
+            gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0,
+            GpuCheck::Prepared,
+        );
         if !gpu_packet_invalidate_textures(self.slot) {
-            gpu_api_fail(4, 3, self.slot, 0);
+            gpu_api_fail(GpuFault::PassPhase, self.slot, 0);
         }
     }
 }
 impl Drop for Pass {
     fn drop(&mut self) {
         if !gpu_record_close_pass(self.slot) {
-            gpu_api_fail(4, 5, self.slot, 0);
+            gpu_api_fail(GpuFault::OpenPassDrop, self.slot, 0);
         }
     }
 }
@@ -730,7 +750,7 @@ impl Display {
     }
     pub fn open_with_format(format: DisplayFormat) -> Self {
         if !gpu_present_open_with_format(format as u16) {
-            gpu_api_fail(5, 1, 0, 0);
+            gpu_api_fail(GpuFault::DisplayOpen, 0, 0);
         }
         Display { identity: 1 }
     }
@@ -739,18 +759,18 @@ impl Display {
     }
     pub fn set_next_swap(&mut self, color: ColorBufferPtr) {
         if !gpu_present_set_next(color.data()[0u16]) {
-            gpu_api_fail(5, 2, 0, 0);
+            gpu_api_fail(GpuFault::DisplaySwap, 0, 0);
         }
     }
     /// Stage the pixel interpretation together with its completed framebuffer.
     pub fn set_next_swap_with_format(&mut self, color: ColorBufferPtr, format: DisplayFormat) {
         if !gpu_present_set_next_with_format(color.data()[0u16], format as u16) {
-            gpu_api_fail(5, 2, 0, 0);
+            gpu_api_fail(GpuFault::DisplaySwap, 0, 0);
         }
     }
     pub fn wait_vblank(&mut self) {
         if !gpu_present_wait_vblank() {
-            gpu_api_fail(5, 3, 0, 0);
+            gpu_api_fail(GpuFault::DisplayWait, 0, 0);
         }
     }
     // One observation of the queued swap, including old-read retirement.
@@ -758,7 +778,7 @@ impl Display {
     pub fn try_wait_swap(&mut self) -> bool {
         let status = gpu_present_poll();
         if status == 65535 {
-            gpu_api_fail(5, 3, 0, 0);
+            gpu_api_fail(GpuFault::DisplayWait, 0, 0);
         }
         status != 1
     }
@@ -766,7 +786,7 @@ impl Display {
 impl Drop for Display {
     fn drop(&mut self) {
         // Keep pending request metadata until hardware retirement is observed.
-        GPU_PRESENT[0u16] = 0;
+        GPU_PRESENT.ready = 0;
     }
 }
 
@@ -784,16 +804,36 @@ use gpu_ui_grid::*;
 mod gpu_ui_packet;
 use gpu_ui_packet::*;
 
-fn gpu_api_object(large: bool, kind: u16) -> u16 {
+// Check contexts are wire diagnostics, not arena resource kinds.
+#[repr(u16)]
+#[derive(Copy, Clone)]
+enum GpuCheck {
+    Camera = 1,
+    Model = 2,
+    Material = 3,
+    State = 4,
+    Mesh = 5,
+    Texture = 6,
+    View = 7,
+    Color = 8,
+    Depth = 9,
+    UiAtlas = 10,
+    UiGrid = 11,
+    TargetBinding = 14,
+    Prepared = 15,
+}
+
+fn gpu_api_object(large: bool, kind: GpuObjectKind) -> u16 {
+    let kind = kind as u16;
     let slot = gpu_arena_alloc(large, kind);
     if slot == 0 {
-        gpu_api_fail(7, 1, kind, 0);
+        gpu_api_fail(GpuFault::ObjectAllocation, kind, 0);
     }
     slot
 }
-fn gpu_api_checked(ok: bool, kind: u16) {
+fn gpu_api_checked(ok: bool, context: GpuCheck) {
     if !ok {
-        gpu_api_fail(7, 2, kind, 0);
+        gpu_api_fail(GpuFault::ObjectValidation, context as u16, 0);
     }
 }
 impl Projection {
@@ -820,16 +860,19 @@ pub struct Camera {
 }
 impl Camera {
     pub fn new(desc: CameraDesc) -> Self {
-        let slot = gpu_api_object(true, 1);
-        gpu_api_checked(gpu_scene_camera_init(gpu_arena_data(slot), desc), 1);
-        gpu_api_checked(gpu_camera_revision(gpu_arena_data(slot)), 1);
+        let slot = gpu_api_object(true, GpuObjectKind::Camera);
+        gpu_api_checked(
+            gpu_scene_camera_init(gpu_arena_data(slot), desc),
+            GpuCheck::Camera,
+        );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(slot)), GpuCheck::Camera);
         Camera { slot: slot }
     }
 }
 impl Drop for Camera {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, true, GPU_KIND_CAMERA) {
-            gpu_api_fail(7, 3, 1, self.slot);
+            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_CAMERA, self.slot);
         }
     }
 }
@@ -840,29 +883,32 @@ pub struct Model {
 }
 impl Model {
     pub fn new(transform: Transform) -> Self {
-        let slot = gpu_api_object(true, 2);
-        gpu_api_checked(gpu_scene_model_init(gpu_arena_data(slot), transform), 2);
-        gpu_api_checked(gpu_model_revision(gpu_arena_data(slot)), 2);
+        let slot = gpu_api_object(true, GpuObjectKind::Model);
+        gpu_api_checked(
+            gpu_scene_model_init(gpu_arena_data(slot), transform),
+            GpuCheck::Model,
+        );
+        gpu_api_checked(gpu_model_revision(gpu_arena_data(slot)), GpuCheck::Model);
         Model { slot: slot }
     }
     pub fn from_matrices(mut world: Mat3x4, mut normal: Mat3x3) -> Self {
-        let slot = gpu_api_object(true, 2);
+        let slot = gpu_api_object(true, GpuObjectKind::Model);
         gpu_api_checked(
             gpu_scene_model_matrices(
                 gpu_arena_data(slot),
                 view_of(&mut world),
                 view_of(&mut normal),
             ),
-            2,
+            GpuCheck::Model,
         );
-        gpu_api_checked(gpu_model_revision(gpu_arena_data(slot)), 2);
+        gpu_api_checked(gpu_model_revision(gpu_arena_data(slot)), GpuCheck::Model);
         Model { slot: slot }
     }
 }
 impl Drop for Model {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, true, GPU_KIND_MODEL) {
-            gpu_api_fail(7, 3, 2, self.slot);
+            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_MODEL, self.slot);
         }
     }
 }
@@ -873,15 +919,18 @@ pub struct Material {
 }
 impl Material {
     pub fn new(desc: MaterialDesc) -> Self {
-        let slot = gpu_api_object(false, 3);
-        gpu_api_checked(gpu_scene_material_init(gpu_arena_data(slot), desc), 3);
+        let slot = gpu_api_object(false, GpuObjectKind::Material);
+        gpu_api_checked(
+            gpu_scene_material_init(gpu_arena_data(slot), desc),
+            GpuCheck::Material,
+        );
         Material { slot: slot }
     }
 }
 impl Drop for Material {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, false, GPU_KIND_MATERIAL) {
-            gpu_api_fail(7, 3, 3, self.slot);
+            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_MATERIAL, self.slot);
         }
     }
 }
@@ -892,15 +941,18 @@ pub struct RenderState {
 }
 impl RenderState {
     pub fn new(desc: RenderStateDesc) -> Self {
-        let slot = gpu_api_object(false, 4);
-        gpu_api_checked(gpu_scene_state_init(gpu_arena_data(slot), desc), 4);
+        let slot = gpu_api_object(false, GpuObjectKind::State);
+        gpu_api_checked(
+            gpu_scene_state_init(gpu_arena_data(slot), desc),
+            GpuCheck::State,
+        );
         RenderState { slot: slot }
     }
 }
 impl Drop for RenderState {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, false, GPU_KIND_STATE) {
-            gpu_api_fail(7, 3, 4, self.slot);
+            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_STATE, self.slot);
         }
     }
 }
@@ -911,15 +963,18 @@ pub struct Texture {
 }
 impl Texture {
     pub fn from_native(desc: TextureDesc) -> Self {
-        let slot = gpu_api_object(false, 6);
-        gpu_api_checked(gpu_scene_texture_init(gpu_arena_data(slot), desc), 6);
+        let slot = gpu_api_object(false, GpuObjectKind::Texture);
+        gpu_api_checked(
+            gpu_scene_texture_init(gpu_arena_data(slot), desc),
+            GpuCheck::Texture,
+        );
         Texture { slot: slot }
     }
 }
 impl Drop for Texture {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, false, GPU_KIND_TEXTURE) {
-            gpu_api_fail(7, 3, 6, self.slot);
+            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_TEXTURE, self.slot);
         }
     }
 }
@@ -953,10 +1008,10 @@ impl UiAtlas {
         Self::from_native(desc.memory, desc.glyph_count)
     }
     pub fn from_native(memory: GpuMemory, glyph_count: u16) -> Self {
-        let slot = gpu_api_object(false, 10);
+        let slot = gpu_api_object(false, GpuObjectKind::UiAtlas);
         gpu_api_checked(
             gpu_ui_atlas_init(gpu_arena_data(slot), memory, glyph_count),
-            10,
+            GpuCheck::UiAtlas,
         );
         UiAtlas { slot: slot }
     }
@@ -964,7 +1019,7 @@ impl UiAtlas {
 impl Drop for UiAtlas {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, false, GPU_KIND_UI_ATLAS) {
-            gpu_api_fail(7, 3, 10, self.slot);
+            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_UI_ATLAS, self.slot);
         }
     }
 }
@@ -982,10 +1037,10 @@ impl UiGrid {
         ptr.clear()
     }
     pub fn from_memory(memory: GpuMemory, atlas: &UiAtlas) -> Self {
-        let slot = gpu_api_object(false, 11);
+        let slot = gpu_api_object(false, GpuObjectKind::UiGrid);
         gpu_api_checked(
             gpu_ui_grid_init(gpu_arena_data(slot), memory, gpu_arena_data(atlas.slot)),
-            11,
+            GpuCheck::UiGrid,
         );
         UiGrid { slot: slot }
     }
@@ -993,7 +1048,7 @@ impl UiGrid {
 impl Drop for UiGrid {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, false, GPU_KIND_UI_GRID) {
-            gpu_api_fail(7, 3, 11, self.slot);
+            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_UI_GRID, self.slot);
         }
     }
 }
@@ -1005,7 +1060,7 @@ pub struct TextureView {
 impl Drop for TextureView {
     fn drop(&mut self) {
         if !gpu_arena_free(self.slot, false, GPU_KIND_VIEW) {
-            gpu_api_fail(7, 3, 7, self.slot);
+            gpu_api_fail(GpuFault::ObjectRelease, GPU_KIND_VIEW, self.slot);
         }
     }
 }
@@ -1017,10 +1072,10 @@ impl TextureView {
 }
 impl Texture {
     pub fn view(&self) -> TextureView {
-        let slot = gpu_api_object(false, 7);
+        let slot = gpu_api_object(false, GpuObjectKind::View);
         gpu_api_checked(
             gpu_scene_texture_view(gpu_arena_data(slot), gpu_arena_data(self.slot)),
-            7,
+            GpuCheck::View,
         );
         TextureView { slot: slot }
     }
@@ -1029,8 +1084,11 @@ impl ColorBuffer {
     pub fn texture_view(&self) -> TextureView {
         let source = gpu_arena_data(self.slot);
         let memory = unsafe { GpuMemory::from_sectors(source[0u16], source[1u16]) };
-        let slot = gpu_api_object(false, 7);
-        gpu_api_checked(gpu_scene_color_view(gpu_arena_data(slot), memory), 7);
+        let slot = gpu_api_object(false, GpuObjectKind::View);
+        gpu_api_checked(
+            gpu_scene_color_view(gpu_arena_data(slot), memory),
+            GpuCheck::View,
+        );
         TextureView { slot: slot }
     }
 }
@@ -1046,12 +1104,12 @@ impl TextureView {
 }
 impl Camera {
     pub fn look_at(eye: Vec3, target: Vec3, up: Vec3, projection: Projection) -> Self {
-        let slot = gpu_api_object(true, 1);
+        let slot = gpu_api_object(true, GpuObjectKind::Camera);
         gpu_api_checked(
             gpu_scene_camera_init_look_at(gpu_arena_data(slot), eye, target, up, projection),
-            1,
+            GpuCheck::Camera,
         );
-        gpu_api_checked(gpu_camera_revision(gpu_arena_data(slot)), 1);
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(slot)), GpuCheck::Camera);
         Camera { slot: slot }
     }
     pub fn view(&self) -> Mat3x4 {
@@ -1194,10 +1252,10 @@ impl UiGrid {
 fn gpu_api_set_camera(slot: u16, camera: CameraPtr) {
     let camera_slot = gpu_arena_resolve(camera.handle, GPU_KIND_CAMERA);
     let data = gpu_arena_data(camera_slot);
-    gpu_api_checked(gpu_bind_desired(slot, true, data), 1);
+    gpu_api_checked(gpu_bind_desired(slot, true, data), GpuCheck::Camera);
 }
 fn gpu_api_set_state(slot: u16, state: RenderStatePtr) {
-    gpu_api_checked(gpu_bind_desired(slot, false, state.data()), 4);
+    gpu_api_checked(gpu_bind_desired(slot, false, state.data()), GpuCheck::State);
 }
 #[repr(u16)]
 #[derive(Copy, Clone)]
@@ -1241,7 +1299,7 @@ impl Drop for PreparedPart {
 impl PreparedPart {
     /// Publish this part for use in later passes.
     pub fn finish(self) {
-        gpu_api_checked(gpu_group_end(self.slot), 15);
+        gpu_api_checked(gpu_group_end(self.slot), GpuCheck::Prepared);
         resource_disarm(self);
     }
     pub fn set_state(&mut self, state: RenderStatePtr) {
@@ -1315,7 +1373,10 @@ impl Pass {
         );
     }
     pub fn draw_ui(&mut self, grid: UiGridPtr, clip: CellRect) {
-        gpu_api_checked(gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0, 15);
+        gpu_api_checked(
+            gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0,
+            GpuCheck::Prepared,
+        );
         if clip.width == 0 || clip.height == 0 {
             return;
         }
@@ -1333,7 +1394,7 @@ impl Pass {
         let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
         gpu_api_checked(
             gpu_record_resource_room(self.slot, facts.as_array(), 2, fact_plan.as_array()),
-            11,
+            GpuCheck::UiGrid,
         );
         let native = unsafe {
             gpu_native_scratch()
@@ -1341,10 +1402,10 @@ impl Pass {
                 .add(GPU_SCRATCH_UI as i16)
                 .as_u16_array()
         };
-        gpu_api_checked(gpu_ui_descriptor_prepare(data, native), 11);
+        gpu_api_checked(gpu_ui_descriptor_prepare(data, native), GpuCheck::UiGrid);
         gpu_api_checked(
             gpu_ui_packet_draw(self.slot, native, clip.x, clip.y, clip.width, clip.height),
-            11,
+            GpuCheck::UiGrid,
         );
         gpu_record_resource_commit(self.slot, facts.as_array(), 2, fact_plan.as_array());
     }
@@ -1361,7 +1422,7 @@ fn gpu_api_draw(
     gpu_api_checked(
         mesh_ptr.first <= mesh[GPU_MESH_COUNT]
             && mesh_ptr.count <= mesh[GPU_MESH_COUNT] - mesh_ptr.first,
-        5,
+        GpuCheck::Mesh,
     );
     let textured = view_slot != 0;
     if mesh_ptr.count == 0 {
@@ -1371,7 +1432,7 @@ fn gpu_api_draw(
     let part = c[GPU_GROUP_RECORDING] != 0;
     let required = if part { 16u16 } else { 24u16 };
     if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS || c[GPU_RECORD_VALID] & required != required {
-        gpu_api_fail(9, 1, slot, 0);
+        gpu_api_fail(GpuFault::DrawBindings, slot, 0);
     }
     let mut facts: Buf<u16, 8> = Buf::new([
         mesh[GPU_MESH_STORAGE],
@@ -1397,12 +1458,12 @@ fn gpu_api_draw(
     let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
     gpu_api_checked(
         gpu_record_resource_room(slot, facts.as_array(), count, fact_plan.as_array()),
-        5,
+        GpuCheck::Mesh,
     );
     let desired = unsafe { c.as_ptr().add(GPU_CB_CAMERA as i16).as_u16_array() };
     let material = gpu_arena_data(material_slot);
     if !part && !gpu_bind_scene_current(slot) {
-        gpu_api_checked(gpu_bind_prepare_scene(slot, native), 5);
+        gpu_api_checked(gpu_bind_prepare_scene(slot, native), GpuCheck::Mesh);
     }
     let state = unsafe { c.as_ptr().add(GPU_CB_STATE as i16).as_u16_array() };
     #[cfg(gpu_debug)]
@@ -1416,13 +1477,13 @@ fn gpu_api_draw(
                     gpu_scene_fix_read(material, GPU_MATERIAL_AMBIENT),
                     gpu_scene_fix_read(material, GPU_MATERIAL_DIRECTIONAL),
                 ),
-                5,
+                GpuCheck::Mesh,
             );
         }
     }
     gpu_api_checked(
         gpu_scene_material_prepare(state, material, view, textured, native),
-        5,
+        GpuCheck::Mesh,
     );
     let model = gpu_arena_data(model_slot);
     let mut native = native;
@@ -1436,11 +1497,11 @@ fn gpu_api_draw(
         gpu_scene_view_prepare(desired, native);
     }
     if billboard != 0 {
-        gpu_api_checked(material[GPU_MATERIAL_FLAGS] & 1 != 0, 5);
+        gpu_api_checked(material[GPU_MATERIAL_FLAGS] & 1 != 0, GpuCheck::Mesh);
     }
     gpu_api_checked(
         gpu_mesh_draw_range(slot, mesh, model, native, mesh_ptr.first, mesh_ptr.count),
-        5,
+        GpuCheck::Mesh,
     );
 
     gpu_record_resource_commit(slot, facts.as_array(), count, fact_plan.as_array());
@@ -1504,38 +1565,53 @@ fn gpu_api_camera_view(data: Array<u16>) -> Mat3x4 {
 }
 
 fn gpu_api_camera_set_pose(data: Array<u16>, eye: Vec3, angles: Vec3) {
-    gpu_api_checked(gpu_scene_camera_pose(data, eye, angles), 1);
-    gpu_api_checked(gpu_camera_revision(data), 1);
+    gpu_api_checked(gpu_scene_camera_pose(data, eye, angles), GpuCheck::Camera);
+    gpu_api_checked(gpu_camera_revision(data), GpuCheck::Camera);
 }
 
 fn gpu_api_camera_set_projection(data: Array<u16>, projection: Projection) {
     let focal = projection.focal_pixels();
     let changed =
         data[GPU_CAMERA_FOCAL] != focal.lo_bits() || data[GPU_CAMERA_FOCAL + 1] != focal.hi_bits();
-    gpu_api_checked(gpu_scene_camera_projection(data, projection), 1);
+    gpu_api_checked(
+        gpu_scene_camera_projection(data, projection),
+        GpuCheck::Camera,
+    );
     if changed {
-        gpu_api_checked(gpu_camera_revision(data), 1);
+        gpu_api_checked(gpu_camera_revision(data), GpuCheck::Camera);
     }
 }
 
 fn gpu_api_camera_set_look_at(data: Array<u16>, eye: Vec3, target: Vec3, up: Vec3) {
-    gpu_api_checked(gpu_scene_camera_look_at(data, eye, target, up), 1);
-    gpu_api_checked(gpu_camera_revision(data), 1);
+    gpu_api_checked(
+        gpu_scene_camera_look_at(data, eye, target, up),
+        GpuCheck::Camera,
+    );
+    gpu_api_checked(gpu_camera_revision(data), GpuCheck::Camera);
 }
 
 fn gpu_api_camera_set_look_at_y_up(data: Array<u16>, eye: Vec3, target: Vec3) {
-    gpu_api_checked(gpu_scene_camera_look_at_y_up(data, eye, target), 1);
-    gpu_api_checked(gpu_camera_revision(data), 1);
+    gpu_api_checked(
+        gpu_scene_camera_look_at_y_up(data, eye, target),
+        GpuCheck::Camera,
+    );
+    gpu_api_checked(gpu_camera_revision(data), GpuCheck::Camera);
 }
 
 fn gpu_api_camera_set_look_to(data: Array<u16>, eye: Vec3, direction: Vec3, up: Vec3) {
-    gpu_api_checked(gpu_scene_camera_look_to(data, eye, direction, up), 1);
-    gpu_api_checked(gpu_camera_revision(data), 1);
+    gpu_api_checked(
+        gpu_scene_camera_look_to(data, eye, direction, up),
+        GpuCheck::Camera,
+    );
+    gpu_api_checked(gpu_camera_revision(data), GpuCheck::Camera);
 }
 
 fn gpu_api_camera_set_view(data: Array<u16>, mut view: Mat3x4) {
-    gpu_api_checked(gpu_scene_camera_view(data, view_of(&mut view)), 1);
-    gpu_api_checked(gpu_camera_revision(data), 1);
+    gpu_api_checked(
+        gpu_scene_camera_view(data, view_of(&mut view)),
+        GpuCheck::Camera,
+    );
+    gpu_api_checked(gpu_camera_revision(data), GpuCheck::Camera);
 }
 
 #[derive(Copy, Clone)]
@@ -1602,19 +1678,25 @@ impl MaterialPtr {
 }
 
 fn gpu_api_material_set_uniform_color(data: Array<u16>, color: Rgba8) {
-    gpu_api_checked(gpu_scene_material_color(data, color), 3);
+    gpu_api_checked(gpu_scene_material_color(data, color), GpuCheck::Material);
 }
 
 fn gpu_api_material_set_specular(data: Array<u16>, color: Rgb8, shininess: Shininess) {
-    gpu_api_checked(gpu_scene_material_specular(data, color, shininess), 3);
+    gpu_api_checked(
+        gpu_scene_material_specular(data, color, shininess),
+        GpuCheck::Material,
+    );
 }
 
 fn gpu_api_material_set_response(data: Array<u16>, ambient: fix32, directional: fix32) {
-    gpu_api_checked(gpu_scene_material_response(data, ambient, directional), 3);
+    gpu_api_checked(
+        gpu_scene_material_response(data, ambient, directional),
+        GpuCheck::Material,
+    );
 }
 
 fn gpu_api_material_set_unlit(data: Array<u16>, unlit: bool) {
-    gpu_api_checked(gpu_scene_material_unlit(data, unlit), 3);
+    gpu_api_checked(gpu_scene_material_unlit(data, unlit), GpuCheck::Material);
 }
 
 #[derive(Copy, Clone)]
@@ -1640,7 +1722,10 @@ impl MeshPtr {
     /// Select meshlets without allocating or copying a directory. Retains the
     /// same nonowning generation; nested slices are relative to this range.
     pub fn slice(self, first: u16, count: u16) -> Self {
-        gpu_api_checked(first <= self.count && count <= self.count - first, 5);
+        gpu_api_checked(
+            first <= self.count && count <= self.count - first,
+            GpuCheck::Mesh,
+        );
         Self {
             handle: self.handle,
             first: self.first + first,
@@ -1654,7 +1739,7 @@ impl MeshPtr {
         let data = self.data();
         gpu_api_checked(
             self.first <= data[GPU_MESH_COUNT] && self.count <= data[GPU_MESH_COUNT] - self.first,
-            5,
+            GpuCheck::Mesh,
         );
         self.count
     }
@@ -1702,8 +1787,8 @@ fn gpu_api_model_normal(data: Array<u16>) -> Mat3x3 {
 }
 
 fn gpu_api_model_set_pose(mut data: Array<u16>, transform: Transform) {
-    gpu_api_checked(gpu_scene_model_init(data, transform), 2);
-    gpu_api_checked(gpu_model_revision(data), 2);
+    gpu_api_checked(gpu_scene_model_init(data, transform), GpuCheck::Model);
+    gpu_api_checked(gpu_model_revision(data), GpuCheck::Model);
 }
 
 fn gpu_api_model_set_matrices(mut data: Array<u16>, mut world: Mat3x4, mut normal: Mat3x3) {
@@ -1716,9 +1801,9 @@ fn gpu_api_model_set_matrices(mut data: Array<u16>, mut world: Mat3x4, mut norma
     }
     gpu_api_checked(
         gpu_scene_model_matrices(data, view_of(&mut world), view_of(&mut normal)),
-        2,
+        GpuCheck::Model,
     );
-    gpu_api_checked(gpu_model_revision(data), 2);
+    gpu_api_checked(gpu_model_revision(data), GpuCheck::Model);
 }
 
 #[derive(Copy, Clone)]
@@ -1755,19 +1840,19 @@ impl RenderStatePtr {
 }
 
 fn gpu_api_render_state_set_depth(data: Array<u16>, func: DepthFunc, write: bool) {
-    gpu_api_checked(gpu_scene_state_depth(data, func, write), 4);
+    gpu_api_checked(gpu_scene_state_depth(data, func, write), GpuCheck::State);
 }
 
 fn gpu_api_render_state_set_blend(data: Array<u16>, mode: BlendMode) {
-    gpu_api_checked(gpu_scene_state_blend(data, mode), 4);
+    gpu_api_checked(gpu_scene_state_blend(data, mode), GpuCheck::State);
 }
 
 fn gpu_api_render_state_set_filter(data: Array<u16>, filter: TextureFilter) {
-    gpu_api_checked(gpu_scene_state_filter(data, filter), 4);
+    gpu_api_checked(gpu_scene_state_filter(data, filter), GpuCheck::State);
 }
 
 fn gpu_api_render_state_set_lighting(data: Array<u16>, light: Lighting) {
-    gpu_api_checked(gpu_scene_state_lighting(data, light), 4);
+    gpu_api_checked(gpu_scene_state_lighting(data, light), GpuCheck::State);
 }
 
 #[derive(Copy, Clone)]
@@ -1806,7 +1891,7 @@ impl TextureViewPtr {
     }
     pub fn set_address_mode(self, mode: TextureAddressMode) {
         let mut data = self.data();
-        gpu_api_checked(data[GPU_VIEW_FLAGS] & 2 == 0, 7);
+        gpu_api_checked(data[GPU_VIEW_FLAGS] & 2 == 0, GpuCheck::View);
         data[GPU_VIEW_FLAGS] = (data[GPU_VIEW_FLAGS] & 7) | ((mode as u16) << 3);
     }
     pub fn width(self) -> u16 {
@@ -1879,15 +1964,15 @@ impl UiGridPtr {
 }
 
 fn gpu_api_ui_fill(data: Array<u16>, glyph: u8) {
-    gpu_api_checked(gpu_ui_grid_fill(data, glyph), 11);
+    gpu_api_checked(gpu_ui_grid_fill(data, glyph), GpuCheck::UiGrid);
 }
 
 fn gpu_api_ui_write(data: Array<u16>, rect: CellRect, glyphs: &[u8]) {
-    gpu_api_checked(gpu_ui_grid_write(data, rect, glyphs), 11);
+    gpu_api_checked(gpu_ui_grid_write(data, rect, glyphs), GpuCheck::UiGrid);
 }
 
 fn gpu_api_ui_write_glyph(data: Array<u16>, x: u16, y: u16, glyph: u8) {
-    gpu_api_checked(gpu_ui_grid_write_glyph(data, x, y, glyph), 11);
+    gpu_api_checked(gpu_ui_grid_write_glyph(data, x, y, glyph), GpuCheck::UiGrid);
 }
 
 impl ColorBufferPtr {

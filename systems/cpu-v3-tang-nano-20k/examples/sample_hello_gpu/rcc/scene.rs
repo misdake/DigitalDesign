@@ -14,8 +14,6 @@ pub struct Scene {
 }
 impl Scene {
     pub fn new() -> Self {
-        let mut material = Material::new(MaterialDesc::diffuse(Rgba8::white()));
-        material.set_unlit(true);
         Self {
             mesh: Mesh::from_native(HELLO_TRIANGLE),
             model: Model::new(Transform::translation(Vec3::new(
@@ -28,7 +26,7 @@ impl Scene {
                 Vec3::zero(),
                 Projection::from_focal_pixels(fix!(220), fix!(80)),
             )),
-            material: material,
+            material: Material::new(MaterialDesc::diffuse(Rgba8::white()).with_unlit(true)),
             state: RenderState::new(RenderStateDesc::opaque(Lighting::ambient(fix!(1)))),
         }
     }

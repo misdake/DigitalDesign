@@ -17,6 +17,30 @@ The retired renderer is available only in explicit test-owned fixtures; no produ
 loader or boot project selects it.
 Native commands, vertex arithmetic and hardware precision are unchanged.
 
+## Named CPU state and word-oriented buffers
+
+Fixed control records use `repr(C)` structs with u16 fields in their existing
+word order. Field reads/writes address the original global storage directly;
+they do not copy a state object to the stack. Nested buffers represent genuine
+indexed sets, such as the small/large free lists and Global/Render validity.
+
+| Owning source | State type | Words | Role |
+| --- | --- | ---: | --- |
+| `gpu_arena.rs` | `GpuArenaControl`, `GpuObjectGeneration` | 9 + 2 | Backing, capacity, free lists and monotonic allocation serial |
+| `gpu_execute.rs` | `GpuExecutionState` | 9 | Controller admission, issued slots and in-flight submission |
+| `gpu_present.rs` | `GpuPresentState` | 8 | Independent dynamic presentation request and first error |
+| `gpu_api_fault.rs` | `GpuFaultRecord` | 16 | Stable UART first-fault wire record, including reserved words |
+| `gpu_builder.rs` | `GpuBuildState` | 9 | Legacy recorder ownership, staging and binding validity |
+| `gpu_device.rs`, `gpu_display.rs` | `GpuDriverState`, `GpuDisplayState` | 2 + 8 | Legacy fixed-plane execution and presentation |
+| `gpu_ui_builder.rs` | `GpuUiPosition` | 3 | Native UI object and active cell interval |
+
+Word views remain at bulk reset, serialization and compatibility boundaries.
+Native command/push encodings, aligned scratch, two-slot recording tables,
+resource facts, per-slot ownership and multiword counters remain indexed buffers.
+Changing a source type can relocate global addresses because RCC places scalar
+buffers and aggregates in separate passes; the per-record field offsets and
+total storage above do not change.
+
 ## Configuration and public recording resources
 
 `Mesh`, `Model`, `Camera`, `Material`, `RenderState`, `Texture`, `TextureView`,
@@ -766,7 +790,10 @@ still construct the representation internally.
 
 `gpu_api_fault` reserves 16 low-memory words independently of the arena. Its
 first snapshot is magic `0xfa17`, site, code, two detail words, DSEG3, and ten
-site-specific words that default to zero. An invalid object handle reports
+site-specific words that default to zero. Internal call sites use `GpuFault` variants;
+the high byte retains the site and the low byte retains its code. Resource
+allocation uses `GpuObjectKind`; `GpuCheck` names validation contexts separately
+because a prepared-operation context is not an arena kind. An invalid object handle reports
 site 16, code 1. Detail words contain the slot and expected kind. Words 6–9
 contain the handle generation and the current slot generation, each low word
 first. Zero current generation denotes a free or invalid slot. It emits

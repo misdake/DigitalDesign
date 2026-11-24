@@ -83,9 +83,9 @@ halt(0x600d);}"#;
 #[test]
 fn approved_production_facade_rejects_raw_helpers_aliases_and_legacy_bridges() {
     for source in [
-        "mod gpu_pipeline;fn main(){let p=GPU_DRIVER.as_array();}",
+        "mod gpu_pipeline;fn main(){let p=GPU_DRIVER.phase;}",
         "mod gpu_pipeline;fn main(){let p=GPU_SLOT_OWNERS.as_array();}",
-        "mod gpu_pipeline;fn main(){let p=GPU_BUILD.as_array();}",
+        "mod gpu_pipeline;fn main(){let p=GPU_BUILD.phase;}",
         "mod gpu_pipeline;fn main(){let p=addr_of(&GPU_DRIVER);}",
         "mod gpu_pipeline;fn main(){let f=gpu_driver_owned_buffer;}",
         "mod gpu_pipeline;fn main(){gpu_high_slot_init(0,0);}",

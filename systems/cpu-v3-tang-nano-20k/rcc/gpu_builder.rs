@@ -10,7 +10,29 @@ use gpu_ui::*;
 // owner, phase(open=1/ended=2/ready=3), used staging words,
 // valid Global, valid Render, speculative command cursor, clean for UI,
 // installed UI first/end (end=0 means none).
-static GPU_BUILD: Buf<u16, 9> = Buf::new([0; 9]);
+#[repr(C)]
+struct GpuBuildState {
+    owner: u16,
+    phase: u16,
+    staged_words: u16,
+    binding_valid: Buf<u16, 2>,
+    command_cursor: u16,
+    ui_clean: u16,
+    ui_first: u16,
+    ui_end: u16,
+}
+const GPU_BUILD_GLOBAL: u16 = 0;
+const GPU_BUILD_RENDER: u16 = 1;
+static GPU_BUILD: GpuBuildState = GpuBuildState {
+    owner: 0,
+    phase: 0,
+    staged_words: 0,
+    binding_valid: Buf::new([0; 2]),
+    command_cursor: 0,
+    ui_clean: 0,
+    ui_first: 0,
+    ui_end: 0,
+};
 // Recording is serialized by GPU_BUILD. Encoders fully overwrite their active
 // 16/32/64-word output, including padding; do not clear the alignment slack.
 static GPU_ENCODING: Buf<u16, 127> = Buf::new([0; 127]);
@@ -20,7 +42,7 @@ static GPU_ENTRIES: Buf<u16, 64> = Buf::new([0; 64]);
 static GPU_CODE: Buf<u16, 128> = Buf::new([0; 128]);
 static GPU_GLOBAL_VALUE: Buf<u16, 32> = Buf::new([0; 32]);
 static GPU_RENDER_VALUE: Buf<u16, 16> = Buf::new([0; 16]);
-static GPU_RENDER_PREVIOUS_KIND: Buf<u16, 1> = Buf::new([0; 1]);
+static GPU_RENDER_PREVIOUS_KIND: u16 = 0;
 
 fn gpu_builder_write(
     cb: Array<GpuBuffer>,
@@ -63,28 +85,31 @@ fn gpu_builder_room(cb: Array<GpuBuffer>, add: u16, tail: u16) -> bool {
     gpu_storage_room(view_of(&mut s), 0, padded, 1)
 }
 fn gpu_builder_open(cb: Array<GpuBuffer>) -> bool {
-    let b = GPU_BUILD.as_array();
     cb[0u16].state == GPU_CB_BUILDING
-        && b[0u16] == cb.as_ptr().addr()
-        && b[1u16] == 1
+        && GPU_BUILD.owner == cb.as_ptr().addr()
+        && GPU_BUILD.phase == 1
         && !gpu_memory_faulted()
 }
 fn gpu_builder_flush(cb: Array<GpuBuffer>) -> bool {
-    let mut b = GPU_BUILD.as_array();
-    let used = b[2u16];
+    let used = GPU_BUILD.staged_words;
     if used == 0 {
         return true;
     }
-    if !gpu_builder_write(cb, false, b[5u16] - used, GPU_CODE.as_array(), used) {
+    if !gpu_builder_write(
+        cb,
+        false,
+        GPU_BUILD.command_cursor - used,
+        GPU_CODE.as_array(),
+        used,
+    ) {
         return false;
     }
-    b[2u16] = 0;
+    GPU_BUILD.staged_words = 0;
     true
 }
 fn gpu_builder_emit(cb: Array<GpuBuffer>, low: u16, high: u16) -> bool {
-    let mut b = GPU_BUILD.as_array();
     if cb[0u16].high_slot != 0 {
-        let cursor = b[5u16];
+        let cursor = GPU_BUILD.command_cursor;
         // The caller maps the command page once for its whole append batch.
         // Only crossing the 32-KiB logical window needs another mapping.
         if cursor & 16383 == 0 && !gpu_builder_commands(cb) {
@@ -95,16 +120,16 @@ fn gpu_builder_emit(cb: Array<GpuBuffer>, low: u16, high: u16) -> bool {
             p.write(0, low);
             p.write(1, high);
         }
-        b[5u16] += 2;
+        GPU_BUILD.command_cursor += 2;
         return true;
     }
     let mut code = GPU_CODE.as_array();
-    let used = b[2u16];
+    let used = GPU_BUILD.staged_words;
     code[used] = low;
     code[used + 1] = high;
-    b[2u16] = used + 2;
-    b[5u16] += 2;
-    if b[2u16] == 128 {
+    GPU_BUILD.staged_words = used + 2;
+    GPU_BUILD.command_cursor += 2;
+    if GPU_BUILD.staged_words == 128 {
         return gpu_builder_flush(cb);
     }
     true
@@ -176,16 +201,15 @@ fn gpu_builder_begin_record(
     {
         return false;
     }
-    let mut b = GPU_BUILD.as_array();
-    b[0u16] = cb.as_ptr().addr();
-    b[1u16] = 1;
-    b[2u16] = 0;
-    b[3u16] = 0;
-    b[4u16] = 0;
-    b[5u16] = 0;
-    b[6u16] = 0;
-    b[7u16] = 0;
-    b[8u16] = 0;
+    GPU_BUILD.owner = cb.as_ptr().addr();
+    GPU_BUILD.phase = 1;
+    GPU_BUILD.staged_words = 0;
+    GPU_BUILD.binding_valid[GPU_BUILD_GLOBAL] = 0;
+    GPU_BUILD.binding_valid[GPU_BUILD_RENDER] = 0;
+    GPU_BUILD.command_cursor = 0;
+    GPU_BUILD.ui_clean = 0;
+    GPU_BUILD.ui_first = 0;
+    GPU_BUILD.ui_end = 0;
     if !gpu_builder_commands(cb)
         || !gpu_builder_emit(cb, 3, 0x4000)
         || !gpu_builder_emit(cb, 0, 0x7000)
@@ -205,7 +229,7 @@ fn gpu_builder_begin_record(
     {
         return false;
     }
-    cb[0u16].command_words = b[5u16];
+    cb[0u16].command_words = GPU_BUILD.command_cursor;
     cb[0u16].object_words = object + 16;
     cb[0u16].color = color;
     cb[0u16].depth = depth;
@@ -218,19 +242,18 @@ fn gpu_builder_state(
     mut cb: Array<GpuBuffer>,
     encoded: Array<u16>,
     n: u16,
-    index: u16,
+    binding: u16,
     q: u16,
     opcode: u16,
 ) -> bool {
     if !gpu_builder_open(cb) {
         return false;
     }
-    let mut b = GPU_BUILD.as_array();
     let mut cached = GPU_GLOBAL_VALUE.as_array();
-    if index == 4 {
+    if binding == GPU_BUILD_RENDER {
         cached = GPU_RENDER_VALUE.as_array();
     }
-    let mut same = b[index] != 0;
+    let mut same = GPU_BUILD.binding_valid[binding] != 0;
     let mut i: u16 = 0;
     while i < n {
         if cached[i] != encoded[i] {
@@ -263,8 +286,8 @@ fn gpu_builder_state(
         cached[i] = encoded[i];
         i += 1;
     }
-    b[index] = 1;
-    cb[0u16].command_words = b[5u16];
+    GPU_BUILD.binding_valid[binding] = 1;
+    cb[0u16].command_words = GPU_BUILD.command_cursor;
     cb[0u16].object_words = word + n;
     true
 }
@@ -277,7 +300,7 @@ fn gpu_builder_global_record(cb: Array<GpuBuffer>, g: Array<GpuGlobal>) -> bool 
         {
             return false;
         }
-        if GPU_BUILD[3u16] != 0
+        if GPU_BUILD.binding_valid[GPU_BUILD_GLOBAL] != 0
             && g[0u16].far_low == GPU_GLOBAL_PREVIOUS.far_low
             && g[0u16].far_high == GPU_GLOBAL_PREVIOUS.far_high
             && g[0u16].light_x == GPU_GLOBAL_PREVIOUS.light_x
@@ -302,7 +325,7 @@ fn gpu_builder_global_record(cb: Array<GpuBuffer>, g: Array<GpuGlobal>) -> bool 
         if gpu_memory_faulted() || !gpu_encode_global(view_of(&mut output), word & 63, g) {
             return false;
         }
-        if !gpu_builder_install(cb, word, 32, 3, 264, 0x5000) {
+        if !gpu_builder_install(cb, word, 32, GPU_BUILD_GLOBAL, 264, 0x5000) {
             return false;
         }
         GPU_GLOBAL_PREVIOUS = g[0u16];
@@ -313,7 +336,14 @@ fn gpu_builder_global_record(cb: Array<GpuBuffer>, g: Array<GpuGlobal>) -> bool 
     if !gpu_encode_global(view_of(&mut s), 0, g) {
         return false;
     }
-    gpu_builder_state(cb, unsafe { s.cpu.as_u16_array() }, 32, 3, 264, 0x5000)
+    gpu_builder_state(
+        cb,
+        unsafe { s.cpu.as_u16_array() },
+        32,
+        GPU_BUILD_GLOBAL,
+        264,
+        0x5000,
+    )
 }
 fn gpu_builder_render_record(
     cb: Array<GpuBuffer>,
@@ -350,8 +380,8 @@ fn gpu_builder_render_value(
         if !gpu_builder_open(cb) || !gpu_high_slot_valid(cb) {
             return false;
         }
-        if GPU_BUILD[4u16] != 0
-            && GPU_RENDER_PREVIOUS_KIND[0u16] == kind
+        if GPU_BUILD.binding_valid[GPU_BUILD_RENDER] != 0
+            && GPU_RENDER_PREVIOUS_KIND == kind
             && value.texture_sector == GPU_RENDER_PREVIOUS.texture_sector
             && value.size_log2 == GPU_RENDER_PREVIOUS.size_log2
             && value.texture_flags == GPU_RENDER_PREVIOUS.texture_flags
@@ -381,18 +411,27 @@ fn gpu_builder_render_value(
         {
             return false;
         }
-        if !gpu_builder_install(cb, word, 16, 4, 272, 0x6000) {
+        if !gpu_builder_install(cb, word, 16, GPU_BUILD_RENDER, 272, 0x6000) {
             return false;
         }
         GPU_RENDER_PREVIOUS = value;
-        GPU_RENDER_PREVIOUS_KIND[0u16] = kind;
+        unsafe {
+            addr_of(&GPU_RENDER_PREVIOUS_KIND).write(0, kind);
+        }
         return true;
     }
     let mut s: GpuStorage = gpu_encoding_scratch(GPU_ENCODING.as_array());
     if !gpu_encode_render_kind(view_of(&mut s), 0, view_of(&mut value), framebuffer_view) {
         return false;
     }
-    gpu_builder_state(cb, unsafe { s.cpu.as_u16_array() }, 16, 4, 272, 0x6000)
+    gpu_builder_state(
+        cb,
+        unsafe { s.cpu.as_u16_array() },
+        16,
+        GPU_BUILD_RENDER,
+        272,
+        0x6000,
+    )
 }
 fn gpu_builder_draw_record(
     mut cb: Array<GpuBuffer>,
@@ -418,9 +457,8 @@ fn gpu_builder_draw_policy(
     if count == 0 {
         return true;
     }
-    let b = GPU_BUILD.as_array();
-    if b[3u16] == 0
-        || b[4u16] == 0
+    if GPU_BUILD.binding_valid[GPU_BUILD_GLOBAL] == 0
+        || GPU_BUILD.binding_valid[GPU_BUILD_RENDER] == 0
         || cb[0u16].object_words > 32704
         || !gpu_builder_room(cb, count * 6 + 4, 6)
     {
@@ -511,9 +549,9 @@ fn gpu_builder_draw_policy(
     if !gpu_builder_emit(cb, previous, 0x3000) {
         return false;
     }
-    cb[0u16].command_words = GPU_BUILD.as_array()[5u16];
+    cb[0u16].command_words = GPU_BUILD.command_cursor;
     cb[0u16].object_words = word + 64;
-    GPU_BUILD[6u16] = 0;
+    GPU_BUILD.ui_clean = 0;
     true
 }
 
@@ -526,7 +564,7 @@ fn gpu_builder_mesh_commands(
     first: u16,
     count: u16,
 ) -> bool {
-    let mut cursor = GPU_BUILD[5u16];
+    let mut cursor = GPU_BUILD.command_cursor;
     let mut j: u16 = 0;
     while j < count {
         let index = first + j;
@@ -545,7 +583,7 @@ fn gpu_builder_mesh_commands(
         if offset > 16378 {
             // Each command remains two aligned words. A rare batch straddling
             // the window uses emit's existing per-command page transition.
-            GPU_BUILD[5u16] = cursor;
+            GPU_BUILD.command_cursor = cursor;
             if !gpu_builder_emit(cb, low, high) {
                 return false;
             }
@@ -556,7 +594,7 @@ fn gpu_builder_mesh_commands(
             } else if !gpu_builder_emit(cb, slot ^ 1, 0x3000) || !gpu_builder_emit(cb, 1, 0x4000) {
                 return false;
             }
-            cursor = GPU_BUILD[5u16];
+            cursor = GPU_BUILD.command_cursor;
         } else {
             let p = Ptr::from_addr(0xc000 | offset);
             unsafe {
@@ -581,7 +619,7 @@ fn gpu_builder_mesh_commands(
         }
         j += 1;
     }
-    GPU_BUILD[5u16] = cursor;
+    GPU_BUILD.command_cursor = cursor;
     true
 }
 fn gpu_builder_ui_record(
@@ -669,12 +707,12 @@ fn gpu_builder_ui_record(
     // UI preserves Global/Render/uniforms. Every later draw already reloads
     // its Instance and first meshlet, then prefetches each subsequent page.
     cb[0u16].object_words = word + 400;
-    cb[0u16].command_words = GPU_BUILD.as_array()[5u16];
+    cb[0u16].command_words = GPU_BUILD.command_cursor;
     true
 }
 
 fn gpu_builder_ui_command_words(payload: u16) -> u16 {
-    if GPU_BUILD[6u16] != 0 {
+    if GPU_BUILD.ui_clean != 0 {
         return payload;
     }
     payload + 4
@@ -686,12 +724,12 @@ fn gpu_builder_ui_fence(cb: Array<GpuBuffer>) -> bool {
     if !gpu_builder_commands(cb) {
         return false;
     }
-    if GPU_BUILD[6u16] == 0
+    if GPU_BUILD.ui_clean == 0
         && (!gpu_builder_emit(cb, 3, 0x4000) || !gpu_builder_emit(cb, 0, 0x7000))
     {
         return false;
     }
-    GPU_BUILD[6u16] = 1;
+    GPU_BUILD.ui_clean = 1;
     true
 }
 
@@ -718,8 +756,8 @@ fn gpu_builder_ui_commands(
     {
         return false;
     }
-    GPU_BUILD[7u16] = first;
-    GPU_BUILD[8u16] = end;
+    GPU_BUILD.ui_first = first;
+    GPU_BUILD.ui_end = end;
     if draw {
         return gpu_builder_ui_range_command(cb, first, end);
     }
@@ -729,8 +767,8 @@ fn gpu_builder_ui_commands(
 fn gpu_builder_ui_draw_record(mut cb: Array<GpuBuffer>, first: u16, end: u16) -> bool {
     if !gpu_builder_open(cb)
         || first >= end
-        || first < GPU_BUILD[7u16]
-        || end > GPU_BUILD[8u16]
+        || first < GPU_BUILD.ui_first
+        || end > GPU_BUILD.ui_end
         || !gpu_builder_room(cb, gpu_builder_ui_command_words(2), 6)
     {
         return false;
@@ -738,7 +776,7 @@ fn gpu_builder_ui_draw_record(mut cb: Array<GpuBuffer>, first: u16, end: u16) ->
     if !gpu_builder_ui_fence(cb) || !gpu_builder_ui_range_command(cb, first, end) {
         return false;
     }
-    cb[0u16].command_words = GPU_BUILD[5u16];
+    cb[0u16].command_words = GPU_BUILD.command_cursor;
     true
 }
 fn gpu_builder_ui_page_record(
@@ -755,7 +793,7 @@ fn gpu_builder_ui_page_record(
         || end > 750
         || (descriptor != GPU_UI_PAGE0_SECTOR + (GPU_UI_DESCRIPTOR_WORD >> 6)
             && descriptor != GPU_UI_PAGE1_SECTOR + (GPU_UI_DESCRIPTOR_WORD >> 6))
-        || (!install && (GPU_BUILD[7u16] != 0 || GPU_BUILD[8u16] != 750))
+        || (!install && (GPU_BUILD.ui_first != 0 || GPU_BUILD.ui_end != 750))
         || !gpu_builder_room(cb, gpu_builder_ui_command_words(words), 6)
     {
         return false;
@@ -771,13 +809,13 @@ fn gpu_builder_ui_page_record(
         if !gpu_builder_emit(cb, cmd[0u16], cmd[1u16]) || !gpu_builder_emit(cb, 1, 0x4000) {
             return false;
         }
-        GPU_BUILD[7u16] = 0;
-        GPU_BUILD[8u16] = 750;
+        GPU_BUILD.ui_first = 0;
+        GPU_BUILD.ui_end = 750;
     }
     if !gpu_builder_ui_range_command(cb, first, end) {
         return false;
     }
-    cb[0u16].command_words = GPU_BUILD[5u16];
+    cb[0u16].command_words = GPU_BUILD.command_cursor;
     true
 }
 fn gpu_builder_ui_page(
@@ -801,15 +839,14 @@ fn gpu_builder_end_record(mut cb: Array<GpuBuffer>) -> bool {
     {
         return false;
     }
-    GPU_BUILD.as_array()[1u16] = 2;
-    cb[0u16].command_words = GPU_BUILD.as_array()[5u16];
+    GPU_BUILD.phase = 2;
+    cb[0u16].command_words = GPU_BUILD.command_cursor;
     true
 }
 fn gpu_builder_finish_record(mut cb: Array<GpuBuffer>) -> bool {
-    let mut b = GPU_BUILD.as_array();
     if cb[0u16].state != GPU_CB_BUILDING
-        || b[0u16] != cb.as_ptr().addr()
-        || b[1u16] != 2
+        || GPU_BUILD.owner != cb.as_ptr().addr()
+        || GPU_BUILD.phase != 2
         || gpu_memory_faulted()
         || !gpu_builder_room(cb, 2, 0)
     {
@@ -818,17 +855,17 @@ fn gpu_builder_finish_record(mut cb: Array<GpuBuffer>) -> bool {
     if !gpu_builder_commands(cb) || !gpu_builder_emit(cb, 0, 0xf000) {
         return false;
     }
-    let valid = b[5u16];
+    let valid = GPU_BUILD.command_cursor;
     if cb[0u16].high_slot != 0 {
         let padding = (0 - valid) & 63;
         // The next 128-byte boundary cannot cross a 32-KiB window. END was
         // already appended; overwrite every padding word from the old frame.
         if padding != 0 {
             gpu_zero(Ptr::from_addr(0xc000 | (valid & 16383)), padding);
-            b[5u16] = valid + padding;
+            GPU_BUILD.command_cursor = valid + padding;
         }
     } else {
-        while b[5u16] & 63 != 0 {
+        while GPU_BUILD.command_cursor & 63 != 0 {
             if !gpu_builder_emit(cb, 0, 0) {
                 return false;
             }
@@ -839,7 +876,7 @@ fn gpu_builder_finish_record(mut cb: Array<GpuBuffer>) -> bool {
     }
     cb[0u16].command_words = valid;
     cb[0u16].state = GPU_CB_READY;
-    b[1u16] = 3;
+    GPU_BUILD.phase = 3;
     true
 }
 
@@ -924,7 +961,7 @@ fn gpu_builder_install(
     mut cb: Array<GpuBuffer>,
     word: u16,
     n: u16,
-    index: u16,
+    binding: u16,
     q: u16,
     opcode: u16,
 ) -> bool {
@@ -937,8 +974,8 @@ fn gpu_builder_install(
     {
         return false;
     }
-    GPU_BUILD[index] = 1;
-    cb[0u16].command_words = GPU_BUILD[5u16];
+    GPU_BUILD.binding_valid[binding] = 1;
+    cb[0u16].command_words = GPU_BUILD.command_cursor;
     cb[0u16].object_words = word + n;
     true
 }
@@ -1026,7 +1063,7 @@ fn gpu_builder_finish(cb: Array<GpuBuffer>) -> bool {
 
 fn gpu_builder_commands(cb: Array<GpuBuffer>) -> bool {
     if cb[0u16].high_slot != 0 {
-        gpu_builder_map(cb[0u16].commands.sector, GPU_BUILD[5u16]);
+        gpu_builder_map(cb[0u16].commands.sector, GPU_BUILD.command_cursor);
     }
     !gpu_memory_faulted()
 }

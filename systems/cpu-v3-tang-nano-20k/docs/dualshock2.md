@@ -221,7 +221,10 @@ single CPU consumer owns begin-read; watch cannot acknowledge it. A slow CPU may
 miss intermediate button transitions: this is latest input, not a packet queue.
 Each service call makes one bounded attempt with no serial wait or retry loop.
 
-The caller provides state[10] and rx[9]. State0..2 are connected, ID and
+The compatibility caller provides state[10] and rx[9]. Gamepad stores the same
+ten words in `repr(C) Ds2State`, accessing named connection, button and axis
+fields. Only its calls into the compatibility routines use a word view; the
+nine-byte receive packet remains a buffer. State0..2 are connected, ID and
 active-high buttons;3..6 are raw rightX/Y,leftX/Y;7..9 are previous, pressed and
 released buttons. rx contains reconstructedFF followed by the eight retained
 wire bytes; no pressure tail is exposed. Digital41 axes are absent and ignored,

@@ -7,7 +7,8 @@ use gpu_board::*;
 mod boot_resources;
 use boot_resources::*;
 
-// Legacy names stay direct to avoid adding another aggregate-return ABI layer.
+// Compatibility value factories for frozen recording/qualification fixtures.
+// New application code uses Vec3/Transform and the public descriptor builders.
 pub fn demo_point(x: fix32, y: fix32, z: fix32) -> Vec3 {
     Vec3 { x: x, y: y, z: z }
 }
@@ -94,49 +95,9 @@ pub fn demo_grid(second: bool) -> UiGrid {
     grid
 }
 pub fn demo_glyph(grid: &mut UiGrid, x: u16, y: u16, digit: u16) {
-    let cell = CellRect::new(x, y, 1, 1);
-    // RCC byte slices are packed constants; no persistent UI mirror is needed.
-    if digit == 0 {
-        grid.write(cell, b"0");
-        return;
-    }
-    if digit == 1 {
-        grid.write(cell, b"1");
-        return;
-    }
-    if digit == 2 {
-        grid.write(cell, b"2");
-        return;
-    }
-    if digit == 3 {
-        grid.write(cell, b"3");
-        return;
-    }
-    if digit == 4 {
-        grid.write(cell, b"4");
-        return;
-    }
-    if digit == 5 {
-        grid.write(cell, b"5");
-        return;
-    }
-    if digit == 6 {
-        grid.write(cell, b"6");
-        return;
-    }
-    if digit == 7 {
-        grid.write(cell, b"7");
-        return;
-    }
-    if digit == 8 {
-        grid.write(cell, b"8");
-        return;
-    }
-    if digit == 9 {
-        grid.write(cell, b"9");
-        return;
-    }
-    grid.write(cell, b"\xff");
+    // The base atlas uses ASCII digits; 255 is its blank cell.
+    let glyph: u16 = if digit < 10 { 48 + digit } else { 255 };
+    grid.write_glyph(x, y, glyph as u8);
 }
 pub fn demo_number(grid: &mut UiGrid, x: u16, y: u16, width: u16, value: u16) {
     let mut divisor: u16 = 1;

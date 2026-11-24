@@ -202,15 +202,15 @@ fn exp_submit(slot: u16) {
     let mut cb = exp_buffer(slot);
     exp_check(
         cb[0u16].state == GPU_CB_READY
-            && GPU_DRIVER.as_array()[0u16] == 1
+            && GPU_DRIVER.phase == 1
             && dev_recv(GPU_DEVICE, GPU_STATUS) == 0,
     );
     exp_check(gpu_display_reserve() == cb[0u16].color);
     exp_check(gpu_display_render_start(cb[0u16].color));
     exp_check(dcache_invalidate_all() == 0);
     cb[0u16].state = GPU_CB_INFLIGHT;
-    GPU_DRIVER.as_array()[0u16] = 2;
-    GPU_DRIVER.as_array()[1u16] = cb.as_ptr().addr();
+    GPU_DRIVER.phase = 2;
+    GPU_DRIVER.owner = cb.as_ptr().addr();
     dev_send(7, 10, slot);
     dev_send(
         GPU_DEVICE,

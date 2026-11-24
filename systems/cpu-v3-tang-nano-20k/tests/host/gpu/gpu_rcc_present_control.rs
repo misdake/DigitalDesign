@@ -153,12 +153,12 @@ fn compiled_cancel_discard_and_two_swaps_wait_for_real_active() {
  dev_send(7,0,0);check(gpu_poll(c)==GPU_COMPLETED);check(gpu_cb_begin()==0);
  check(gpu_present(c)==GPU_PENDING);check(gpu_present(c)==GPU_REJECTED);check(gpu_poll(c)==GPU_IDLE);check(!gpu_discard_ready(c));check(gpu_cb_begin()==0);
  check(gpu_present_wait(0)==GPU_TIMEOUT);dev_send(7,0,17);dev_send(7,0,4);check(dev_recv(3,0)==0);
- check(gpu_present_wait(2)==GPU_TIMEOUT);check(GPU_DISPLAY.as_array()[1u16]==1&&GPU_DISPLAY.as_array()[2u16]==2);
+ check(gpu_present_wait(2)==GPU_TIMEOUT);check(GPU_DISPLAY.front==1&&GPU_DISPLAY.pending==2);
  dev_send(7,0,4);check(gpu_present_poll()==GPU_PENDING);dev_send(7,0,3);check(gpu_present_wait(2)==GPU_COMPLETED);
- check(gpu_present_poll()==GPU_IDLE);check(GPU_DISPLAY.as_array()[1u16]==2);check(!gpu_discard_ready(c));
+ check(gpu_present_poll()==GPU_IDLE);check(GPU_DISPLAY.front==2);check(!gpu_discard_ready(c));
  let c=gpu_cb_begin();check(c==1);check(gpu_pass_clear(c,1,65535));check(GPU_CB.color==GPU_COLOR_A_SECTOR);
  check(gpu_submit_idle(c)==GPU_PENDING);dev_send(7,0,0);check(gpu_poll(c)==GPU_COMPLETED);
- check(gpu_present(c)==GPU_PENDING);dev_send(7,0,3);check(gpu_present_poll()==GPU_COMPLETED);check(GPU_DISPLAY.as_array()[1u16]==1);
+ check(gpu_present(c)==GPU_PENDING);dev_send(7,0,3);check(gpu_present_poll()==GPU_COMPLETED);check(GPU_DISPLAY.front==1);
  "#,
         initial(),
     );
@@ -198,7 +198,7 @@ fn compiled_display_and_gpu_errors_never_release_pending() {
         let body = format!(
             r#"check(gpu_init()==GPU_IDLE);let c=gpu_cb_begin();check(gpu_pass_clear(c,0,0));check(gpu_submit_idle(c)==GPU_PENDING);
   dev_send(7,0,0);check(gpu_poll(c)==GPU_COMPLETED);check(gpu_present(c)==GPU_PENDING);dev_send(7,0,{stimulus});
-  check(gpu_present_poll()==GPU_FAULT);check(GPU_DISPLAY.as_array()[1u16]==1&&GPU_DISPLAY.as_array()[2u16]==2);
+  check(gpu_present_poll()==GPU_FAULT);check(GPU_DISPLAY.front==1&&GPU_DISPLAY.pending==2);
   dev_send(7,0,11);dev_send(7,0,0);dev_send(7,0,3);check(gpu_present_poll()==GPU_FAULT);check(gpu_cb_begin()==0);check(!gpu_discard_ready(c));"#
         );
         let s = run(&body, initial());

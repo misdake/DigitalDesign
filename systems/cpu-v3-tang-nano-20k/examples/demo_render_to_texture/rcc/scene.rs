@@ -7,62 +7,65 @@ mod gpu_demo_api;
 use gpu_board::*;
 use gpu_demo_api::*;
 
-fn consume(
-    pass: &mut Pass,
-    camera: &Camera,
-    mesh: &Mesh,
-    model: &Model,
-    material: &Material,
-    texture: &TextureView,
-) {
-    pass.set_camera(camera.ptr());
-    pass.draw(mesh.ptr(), model.ptr(), material.ptr(), texture.ptr());
-}
+// Sector = 128 bytes; both 256 KiB reservations are excluded by tools/assets.py.
+const OFFSCREEN_COLOR_SECTOR: u16 = 0xc000;
+const OFFSCREEN_DEPTH_SECTOR: u16 = 0xc800;
+const OFFSCREEN_SECTORS: u16 = 2048;
+
 fn rtt_run(first: u16, end: u16, ordinary: bool) {
     let mut gpu = Gpu::init(board_gpu_config());
     let mut buffer = gpu.command_buffer();
     // These reservations belong to this application's asset placement.
-    let offscreen = ColorBuffer::from_memory(unsafe { GpuMemory::from_sectors(0xc000, 2048) });
-    let offscreen_depth =
-        DepthBuffer::from_memory(unsafe { GpuMemory::from_sectors(0xc800, 2048) });
+    let offscreen = ColorBuffer::from_memory(unsafe {
+        GpuMemory::from_sectors(OFFSCREEN_COLOR_SECTOR, OFFSCREEN_SECTORS)
+    });
+    let offscreen_depth = DepthBuffer::from_memory(unsafe {
+        GpuMemory::from_sectors(OFFSCREEN_DEPTH_SECTOR, OFFSCREEN_SECTORS)
+    });
     let color_a = board_color_a();
     let color_b = board_color_b();
     let depth = board_depth();
     let mut display = Display::open();
-    let camera = demo_camera();
-    let pattern = demo_mesh_part(0, 1);
-    let screen = demo_mesh_part(1, 1);
-    let producer = Model::new(demo_pose(
-        demo_point(fix32::zero(), fix32::zero(), fix32::from_int(-3)),
-        demo_zero(),
-        demo_scale(),
+    let camera = Camera::new(CameraDesc::new(
+        Vec3::zero(),
+        Vec3::zero(),
+        Projection::from_focal_pixels(fix!(200), fix!(199)),
     ));
-    let one = fix32::from_int(1);
-    let mut consumer = Model::new(demo_pose(
-        demo_point(fix32::zero(), fix32::zero(), -one),
-        demo_zero(),
-        demo_point(one, fix32::from_words(39322, 0), one),
-    ));
+    let mesh = demo_mesh();
+    let parts = mesh.ptr();
+    let pattern = parts.slice(0, 1);
+    let screen = parts.slice(1, 1);
+    let producer = Model::new(Transform::translation(Vec3::new(
+        fix!(0),
+        fix!(0),
+        fix!(-3),
+    )));
+    let mut pose = Transform::new(
+        Vec3::new(fix!(0), fix!(0), fix!(-1)),
+        Vec3::zero(),
+        Vec3::new(fix!(1), fix!(0.6), fix!(1)),
+    );
     if ordinary {
-        consumer.set_pose(demo_pose(
-            demo_point(
-                fix32::from_words(8192, 0),
-                fix32::zero(),
-                -one - fix32::from_words(16384, 0),
-            ),
-            demo_point(fix32::zero(), fix32::from_words(8192, 0), fix32::zero()),
-            demo_point(
-                fix32::from_words(49152, 0),
-                fix32::from_words(32768, 0),
-                one,
-            ),
-        ));
+        pose = Transform::new(
+            Vec3::new(fix!(0.125), fix!(0), fix!(-1.25)),
+            Vec3::new(fix!(0), fix!(0.125), fix!(0)),
+            Vec3::new(fix!(0.75), fix!(0.5), fix!(1)),
+        );
     }
-    let material = demo_material(demo_white(), true);
+    let consumer = Model::new(pose);
+    let material = Material::new(
+        MaterialDesc::lit(Rgba8::white(), Rgb8::black(), Shininess::S16)
+            .with_response(fix!(0.5), fix!(0.5))
+            .with_unlit(true),
+    );
     let texture = demo_texture();
     let ordinary_view = texture.view();
     let offscreen_view = offscreen.texture_view();
-    let mut state = demo_state();
+    let mut state = RenderState::new(
+        RenderStateDesc::opaque(Lighting::directional(Vec3::unit_z(), fix!(1), fix!(1)))
+            .with_depth(DepthFunc::LessEqual, true)
+            .with_filter(TextureFilter::Nearest),
+    );
     let mut update = first;
     while end == 0 || update < end {
         let clear: u16 = if update == 0 { 0xf800 } else { 0x07e0 };
@@ -73,16 +76,11 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
                 offscreen.ptr(),
                 offscreen_depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(clear)),
-                DepthLoad::clear(65535),
+                DepthLoad::clear_far(),
             );
             pass.set_camera(camera.ptr());
             pass.set_state(state.ptr());
-            pass.draw(
-                pattern.ptr(),
-                producer.ptr(),
-                material.ptr(),
-                ordinary_view.ptr(),
-            );
+            pass.draw(pattern, producer.ptr(), material.ptr(), ordinary_view.ptr());
         }
 
         gpu.submit(buffer);
@@ -92,50 +90,26 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
         if update != 0 {
             state.set_filter(TextureFilter::Bilinear);
         }
+        let mut back = color_b.ptr();
+        if (update - first) & 1 != 0 {
+            back = color_a.ptr();
+        }
         {
-            if (update - first) & 1 == 0 {
-                let mut pass = buffer.pass(
-                    color_b.ptr(),
-                    depth.ptr(),
-                    ColorLoad::clear(Rgb565::from_raw(0)),
-                    DepthLoad::clear(65535),
-                );
-                pass.set_state(state.ptr());
-                consume(
-                    &mut pass,
-                    &camera,
-                    &screen,
-                    &consumer,
-                    &material,
-                    &offscreen_view,
-                );
-            } else {
-                let mut pass = buffer.pass(
-                    color_a.ptr(),
-                    depth.ptr(),
-                    ColorLoad::clear(Rgb565::from_raw(0)),
-                    DepthLoad::clear(65535),
-                );
-                pass.set_state(state.ptr());
-                consume(
-                    &mut pass,
-                    &camera,
-                    &screen,
-                    &consumer,
-                    &material,
-                    &offscreen_view,
-                );
-            }
+            let mut pass = buffer.pass(
+                back,
+                depth.ptr(),
+                ColorLoad::clear(Rgb565::from_raw(0)),
+                DepthLoad::clear_far(),
+            );
+            pass.set_camera(camera.ptr());
+            pass.set_state(state.ptr());
             // The sampling view is persistent; only its backing pixels change.
+            pass.draw(screen, consumer.ptr(), material.ptr(), offscreen_view.ptr());
         }
 
         gpu.submit(buffer);
         buffer = gpu.wait();
-        if (update - first) & 1 == 0 {
-            display.set_next_swap(color_b.ptr());
-        } else {
-            display.set_next_swap(color_a.ptr());
-        }
+        display.set_next_swap(back);
         display.wait_vblank();
         update += 1;
     }

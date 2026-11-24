@@ -119,14 +119,14 @@ fn gpu_pipeline_fail(code: u16) -> u16 {
         }
         f[4u16] = dev_recv(GPU_DEVICE, GPU_STATUS);
         p[0u16] = 3;
-        GPU_DRIVER.as_array()[0u16] = 3;
+        GPU_DRIVER.phase = 3;
         gpu_display_fault();
     }
     GPU_FAULT
 }
 fn gpu_pipeline_init(format: u16) -> u16 {
     let mut p = GPU_PIPE.as_array();
-    if p[0u16] != 0 || GPU_DRIVER.as_array()[0u16] != 0 || format > DISPLAY_LINEAR_RGB565 {
+    if p[0u16] != 0 || GPU_DRIVER.phase != 0 || format > DISPLAY_LINEAR_RGB565 {
         return GPU_REJECTED;
     }
     let display = gpu_display_init_format(format);
@@ -198,7 +198,7 @@ fn gpu_pipeline_poll() -> u16 {
     if display == GPU_FAULT {
         return gpu_pipeline_fail(7);
     }
-    if p[3u16] != 0 || GPU_DRIVER.as_array()[0u16] == 4 || display == GPU_PENDING {
+    if p[3u16] != 0 || GPU_DRIVER.phase == 4 || display == GPU_PENDING {
         return GPU_PENDING;
     }
     display
@@ -212,7 +212,7 @@ fn gpu_pipeline_begin(color_value: u16, depth_value: u16) -> u16 {
         || observed == GPU_NOT_INITIALIZED
         || p[1u16] != 0
         || p[2u16] != 0
-        || GPU_DRIVER.as_array()[0u16] == 4
+        || GPU_DRIVER.phase == 4
     {
         return 0;
     }
@@ -297,9 +297,9 @@ fn gpu_pipeline_cancel() -> bool {
     cb[0u16].object_words = 0;
     cb[0u16].state = GPU_CB_BUILDING;
     GPU_SLOT_TARGETS.as_array()[slot - 1] = 0;
-    GPU_BUILD.as_array()[0u16] = 0;
-    GPU_BUILD.as_array()[1u16] = 0;
-    GPU_BUILD.as_array()[2u16] = 0;
+    GPU_BUILD.owner = 0;
+    GPU_BUILD.phase = 0;
+    GPU_BUILD.staged_words = 0;
     if sealed {
         p[2u16] = 0;
     } else {
@@ -329,14 +329,14 @@ fn gpu_pipeline_advance() -> u16 {
     if writer == 0 {
         target = gpu_display_reserve();
         if target == 0 {
-            if GPU_DISPLAY.as_array()[0u16] == 3 {
+            if GPU_DISPLAY.phase == 3 {
                 return gpu_pipeline_fail(10);
             }
             return GPU_PENDING;
         }
     } else {
         // Wait for any pending Display switch before reusing the old Front.
-        if GPU_CAPTURE_CONFIG_ENABLED != 0 && GPU_DISPLAY[2u16] != 0 {
+        if GPU_CAPTURE_CONFIG_ENABLED != 0 && GPU_DISPLAY.pending != 0 {
             return GPU_PENDING;
         }
         let b = gpu_rtt_buffer(writer);
@@ -1046,7 +1046,7 @@ pub fn renderer_frame(r: &mut Renderer, color: u16) -> Frame {
         renderer_fault(22);
     }
     let mut left: u16 = 60000;
-    while GPU_PIPE[2u16] != 0 || GPU_DRIVER[0u16] == 4 {
+    while GPU_PIPE[2u16] != 0 || GPU_DRIVER.phase == 4 {
         gamepad_capture();
         if left == 0 || gpu_pipeline_advance() == GPU_FAULT {
             renderer_fault(23);
@@ -1138,7 +1138,7 @@ fn renderer_cleanup(r: Renderer) {
         gpu_pipeline_fail(32);
         return;
     }
-    if GPU_PIPE[2u16] != 0 || GPU_PIPE[3u16] != 0 || GPU_DISPLAY[2u16] != 0 {
+    if GPU_PIPE[2u16] != 0 || GPU_PIPE[3u16] != 0 || GPU_DISPLAY.pending != 0 {
         GPU_RENDERER[0u16] = 5;
         gpu_pipeline_fail(32);
     } else {
@@ -1165,7 +1165,7 @@ pub fn renderer_close(r: Renderer) {
             resource_disarm(r);
             halt(0xe021);
         }
-        if GPU_PIPE[2u16] == 0 && GPU_PIPE[3u16] == 0 && GPU_DISPLAY[2u16] == 0 {
+        if GPU_PIPE[2u16] == 0 && GPU_PIPE[3u16] == 0 && GPU_DISPLAY.pending == 0 {
             break;
         }
         left -= 1;
@@ -1196,8 +1196,8 @@ fn renderer_member_wait(flags: u16) -> u16 {
         }
         let queued = GPU_PIPE[2u16] != 0 && GPU_RENDERER[0u16] != 6;
         let gpu_done =
-            !queued && GPU_PIPE[3u16] == 0 && GPU_DRIVER[0u16] != 4 && GPU_DRIVER[0u16] != 5;
-        let display_done = gpu_done && GPU_DISPLAY[2u16] == 0;
+            !queued && GPU_PIPE[3u16] == 0 && GPU_DRIVER.phase != 4 && GPU_DRIVER.phase != 5;
+        let display_done = gpu_done && GPU_DISPLAY.pending == 0;
         if ((flags & WAIT_GPU) == 0 || gpu_done) && ((flags & WAIT_DISPLAY) == 0 || display_done) {
             return GPU_COMPLETED;
         }

@@ -24,47 +24,51 @@ use boot_resources::*;
 #[static_buffer]
 const STATIC_SCENE: PreparedMemory = PreparedMemory::allocate(4096, 4096);
 
-static BUTTONS: Buf<u16, 4> = Buf::new([0; 4]);
-static STATS: Buf<u16, 4> = Buf::new([0; 4]);
-
 // One previous completed report, streamed only while GPU/present is pending.
 // A slow UART never stalls input collection or command construction.
-static REPORT: Buf<u16, 12> = Buf::new([0; 12]);
+#[repr(C)]
+struct DemoReport {
+    bytes: Buf<u16, 11>,
+    cursor: u16,
+}
+static REPORT: DemoReport = DemoReport {
+    bytes: Buf::new([0; 11]),
+    cursor: 0,
+};
 fn demo_report_queue(status: u16, frame: u16, us: u16) {
-    REPORT[0u16] = 68;
-    REPORT[1u16] = 68;
-    REPORT[2u16] = 71;
-    REPORT[3u16] = 68;
-    REPORT[4u16] = 3;
-    REPORT[5u16] = status;
-    REPORT[6u16] = frame & 255;
-    REPORT[7u16] = frame >> 8;
-    REPORT[8u16] = us & 255;
-    REPORT[9u16] = us >> 8;
+    REPORT.bytes[0u16] = 68;
+    REPORT.bytes[1u16] = 68;
+    REPORT.bytes[2u16] = 71;
+    REPORT.bytes[3u16] = 68;
+    REPORT.bytes[4u16] = 3;
+    REPORT.bytes[5u16] = status;
+    REPORT.bytes[6u16] = frame & 255;
+    REPORT.bytes[7u16] = frame >> 8;
+    REPORT.bytes[8u16] = us & 255;
+    REPORT.bytes[9u16] = us >> 8;
     let mut i: u16 = 4;
     let mut sum: u16 = 0;
     while i < 10 {
-        sum ^= REPORT[i];
+        sum ^= REPORT.bytes[i];
         i += 1;
     }
-    REPORT[10u16] = sum;
-    REPORT[11u16] = 0;
+    REPORT.bytes[10u16] = sum;
+    REPORT.cursor = 0;
 }
 fn demo_report_step() {
-    let i = REPORT[11u16];
+    let i = REPORT.cursor;
     if i < 11 && dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 == 0 {
-        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, REPORT[i]);
-        REPORT[11u16] = i + 1;
+        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, REPORT.bytes[i]);
+        REPORT.cursor = i + 1;
     }
 }
 fn demo_report_drain() {
-    while REPORT[11u16] < 11 {
+    while REPORT.cursor < 11 {
         demo_report_step();
     }
 }
 
 fn demo_fail(code: u16) {
-    frame_stats_reset(STATS.as_array());
     demo_report_drain();
     demo_report_queue(128 | code, 0, 0);
     demo_report_drain();
@@ -96,12 +100,12 @@ fn wait_display(display: &mut Display, budget: u16) {
         require(time_elapsed_ms(start, time_milliseconds()) < budget, 12);
     }
 }
-fn prepare_ui(grid: &mut UiGrid) -> u16 {
-    if STATS[3u16] == 0 {
+fn prepare_ui(grid: &mut UiGrid, stats: Array<u16>) -> u16 {
+    if stats[3u16] == 0 {
         return 0;
     }
     let digits: Buf<u16, 4> = Buf::new([0; 4]);
-    frame_stats_tenths_digits(STATS.as_array(), digits.as_array());
+    frame_stats_tenths_digits(stats, digits.as_array());
     let mut first: u16 = 0;
     if digits[0u16] == 48 {
         first = 1;
@@ -109,45 +113,49 @@ fn prepare_ui(grid: &mut UiGrid) -> u16 {
     let mut i = first;
     while i < 4 {
         let x = 2 + i - first;
-        if digits[i] == 46 {
-            grid.write(
-                CellRect {
-                    x: x,
-                    y: 1,
-                    width: 1,
-                    height: 1,
-                },
-                b".",
-            );
-        } else {
-            demo_glyph(grid, x, 1, digits[i] - 48);
-        }
+        grid.write_glyph(x, 1, digits[i] as u8);
         i += 1;
     }
     4 - first
 }
+const ROOM_FIRST: u16 = 0;
+const ROOM_COUNT: u16 = 6;
+const RGB_FIRST: u16 = 6;
+const RABBIT_FIRST: u16 = 7;
+const RABBIT_COUNT: u16 = 17;
+
 // Record World/material once; each frame supplies its own Pass View and target.
 fn demo_record_static(
+    mesh: &Mesh,
     draws: &mut PreparedDraws,
     model: &Model,
     material: &Material,
     view: &TextureView,
     state: &RenderState,
 ) {
-    let room = demo_mesh_part(0, 6);
-    let rgb = demo_mesh_part(6, 1);
+    let parts = mesh.ptr();
+    let room = parts.slice(ROOM_FIRST, ROOM_COUNT);
+    let rgb = parts.slice(RGB_FIRST, 1);
     let mut part = draws.record();
     part.set_state(state.ptr());
-    part.draw(room.ptr(), model.ptr(), material.ptr(), view.ptr());
-    part.draw_colored(rgb.ptr(), model.ptr(), material.ptr());
+    part.draw(room, model.ptr(), material.ptr(), view.ptr());
+    part.draw_colored(rgb, model.ptr(), material.ptr());
     part.finish();
 }
-fn demo_identity_model() -> Model {
-    Model::new(demo_pose(demo_zero(), demo_zero(), demo_scale()))
+fn scene_material(unlit: bool) -> Material {
+    // Retain S32/specular codes even when the room bypasses lighting.
+    Material::new(
+        MaterialDesc::lit(Rgba8::white(), Rgb8::new(160, 160, 160), Shininess::S32)
+            .with_response(fix!(0.25), fix!(0.75))
+            .with_unlit(unlit),
+    )
 }
 fn demo_run(limit: u16, budget: u16, orbit: bool) {
-    REPORT[11u16] = 11;
-    frame_stats_reset(STATS.as_array());
+    // These four-word buffers are the controls/frame_stats module interfaces.
+    let buttons: Buf<u16, 4> = Buf::new([0; 4]);
+    let stats: Buf<u16, 4> = Buf::new([0; 4]);
+    frame_stats_reset(stats.as_array());
+    REPORT.cursor = 11;
     let mut gpu = Gpu::init(board_gpu_config());
     let mut static_buffer = gpu.command_buffer();
     let mut dynamic_buffer = gpu.command_buffer();
@@ -155,41 +163,26 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
     let color_b = board_color_b();
     let depth = board_depth();
     let mut display = Display::open_with_format(DisplayFormat::LinearRgb565);
-    let mut camera = demo_camera();
-    let mut motion = demo_motion_init(time_milliseconds());
-    camera.set_pose(motion.eye, demo_motion_angles(motion));
-    let mut state = demo_state();
-    state.set_depth(DepthFunc::Less, true);
-    state.set_filter(TextureFilter::Trilinear);
-    state.set_lighting(demo_lighting(demo_point(
-        fix32::from_words(36045, 65535),
-        fix32::from_words(52429, 0),
-        fix32::from_words(6554, 1),
-    )));
-    let rabbit = demo_mesh_part(7, 17);
-    let box_model = demo_identity_model();
-    let rabbit_model = demo_identity_model();
-    let mut unlit = demo_material(demo_white(), true);
-    // Preserve the native global/render codes even while lighting is bypassed.
-    unlit.set_response(fix32::from_words(16384, 0), fix32::from_words(49152, 0));
-    unlit.set_specular(
-        Rgb8 {
-            r: 160,
-            g: 160,
-            b: 160,
-        },
-        Shininess::S32,
+    let mut camera = Camera::new(CameraDesc::new(
+        Vec3::zero(),
+        Vec3::zero(),
+        Projection::from_focal_pixels(fix!(200), fix!(199)),
+    ));
+    let mut motion = DemoMotion::new(time_milliseconds());
+    camera.set_pose(motion.eye, motion.angles());
+    let light = Lighting::directional(
+        Vec3::new(fix!(-0.45), fix!(0.8), fix!(1.1)),
+        fix!(1),
+        fix!(1),
     );
-    let mut lit = demo_material(demo_white(), false);
-    lit.set_response(fix32::from_words(16384, 0), fix32::from_words(49152, 0));
-    lit.set_specular(
-        Rgb8 {
-            r: 160,
-            g: 160,
-            b: 160,
-        },
-        Shininess::S32,
-    );
+    let state = RenderState::new(RenderStateDesc::opaque(light));
+    let mesh = demo_mesh();
+    let parts = mesh.ptr();
+    let rabbit = parts.slice(RABBIT_FIRST, RABBIT_COUNT);
+    let box_model = Model::new(Transform::identity());
+    let rabbit_model = Model::new(Transform::identity());
+    let unlit = scene_material(true);
+    let lit = scene_material(false);
     let texture = demo_texture();
     let view = texture.view();
     let mut grid = demo_grid(false);
@@ -199,10 +192,10 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
     gpu.submit(dynamic_buffer);
     dynamic_buffer = wait_gpu(&mut gpu, budget);
     let mut room_draws = PreparedDraws::new(STATIC_SCENE);
-    demo_record_static(&mut room_draws, &box_model, &unlit, &view, &state);
+    demo_record_static(&mesh, &mut room_draws, &box_model, &unlit, &view, &state);
     gamepad_init();
     demo_buttons_init(
-        BUTTONS.as_array(),
+        buttons.as_array(),
         dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS),
         time_milliseconds(),
     );
@@ -216,39 +209,34 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
         let now = time_milliseconds();
         gamepad_capture();
         let input = gamepad_take_frame();
-        if completed && REPORT[11u16] == 11 {
+        if completed && REPORT.cursor == 11 {
             demo_report_queue(1, frame, observed);
         }
         dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, frame & 31);
         dev_send(7, 1, 1);
         let visible = demo_buttons_update(
-            BUTTONS.as_array(),
+            buttons.as_array(),
             dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS),
             now,
         );
-        frame_stats_elapsed_begin(STATS.as_array(), observed, completed);
+        frame_stats_elapsed_begin(stats.as_array(), observed, completed);
         completed = false;
         if orbit {
-            // A complete, repeatable orbit every512 successful frames.
+            // A complete, repeatable orbit every 512 successful frames.
             let phase = fix32::from_words(frame << 7, 0);
             let direction = fsincos(phase * fix32::from_words(18559, 6));
-            let radius = fix32::from_words(52429, 2);
+            let radius = fix!(2.8);
             camera.set_look_at_y_up(
                 Vec3 {
                     x: direction.x() * radius,
-                    y: fix32::from_words(14418, 0),
+                    y: fix!(0.22),
                     z: direction.y() * radius,
                 },
-                Vec3 {
-                    x: fix32::zero(),
-                    y: fix32::zero(),
-                    z: fix32::zero(),
-                },
+                Vec3::zero(),
             );
         } else {
-            motion = demo_motion_update(motion, input, now);
-            if motion.changed {
-                camera.set_pose(motion.eye, demo_motion_angles(motion));
+            if motion.update(&input, now) {
+                camera.set_pose(motion.eye, motion.angles());
             }
         }
         // The immutable part supplies World/material, the new Pass supplies View.
@@ -275,49 +263,16 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
         dynamic_buffer.reset();
         let mut glyphs: u16 = 0;
         if visible {
-            glyphs = prepare_ui(&mut grid);
+            glyphs = prepare_ui(&mut grid, stats.as_array());
         }
-        if frame & 1 == 0 {
-            let mut pass = dynamic_buffer.pass(
-                color_b.ptr(),
-                depth.ptr(),
-                ColorLoad::load(),
-                DepthLoad::load(),
-            );
+        {
+            let mut pass =
+                dynamic_buffer.pass(back, depth.ptr(), ColorLoad::load(), DepthLoad::load());
             pass.set_camera(camera.ptr());
             pass.set_state(state.ptr());
-            pass.draw(rabbit.ptr(), rabbit_model.ptr(), lit.ptr(), view.ptr());
+            pass.draw(rabbit, rabbit_model.ptr(), lit.ptr(), view.ptr());
             if glyphs != 0 {
-                pass.draw_ui(
-                    grid.ptr(),
-                    CellRect {
-                        x: 2,
-                        y: 1,
-                        width: glyphs,
-                        height: 1,
-                    },
-                );
-            }
-        } else {
-            let mut pass = dynamic_buffer.pass(
-                color_a.ptr(),
-                depth.ptr(),
-                ColorLoad::load(),
-                DepthLoad::load(),
-            );
-            pass.set_camera(camera.ptr());
-            pass.set_state(state.ptr());
-            pass.draw(rabbit.ptr(), rabbit_model.ptr(), lit.ptr(), view.ptr());
-            if glyphs != 0 {
-                pass.draw_ui(
-                    grid.ptr(),
-                    CellRect {
-                        x: 2,
-                        y: 1,
-                        width: glyphs,
-                        height: 1,
-                    },
-                );
+                pass.draw_ui(grid.ptr(), CellRect::new(2, 1, glyphs, 1));
             }
         }
         dev_send(7, 1, 12);
@@ -329,11 +284,7 @@ fn demo_run(limit: u16, budget: u16, orbit: bool) {
         observed = time_microseconds();
         dev_send(7, 4, observed);
         dev_send(7, 1, 14);
-        if frame & 1 == 0 {
-            display.set_next_swap(color_b.ptr());
-        } else {
-            display.set_next_swap(color_a.ptr());
-        }
+        display.set_next_swap(back);
         wait_display(&mut display, budget);
         dev_send(7, 2, frame + 1);
         dev_send(7, 1, 15);

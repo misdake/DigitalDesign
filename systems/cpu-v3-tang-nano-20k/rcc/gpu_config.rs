@@ -63,8 +63,8 @@ fn gpu_config_init(config: GpuConfig) -> bool {
     if config.object_arena_bytes == 0
         || config.object_arena_bytes > GPU_API_ARENA_BYTES
         || config.object_arena_bytes & 31 != 0
-        || GPU_EXECUTION[GPU_EXEC_CONTROLLER] != 0
-        || GPU_EXECUTION[1u16] != 0
+        || GPU_EXECUTION.controller != 0
+        || GPU_EXECUTION.owner != 0
         || !gpu_arena_empty()
         || !gpu_config_command_valid(config.command_a)
     {
@@ -73,8 +73,8 @@ fn gpu_config_init(config: GpuConfig) -> bool {
     // CBs are not arena objects. A handed-out, undropped record still owns its
     // slot even after the public Gpu token has been dropped.
     let mut slot: u16 = 0;
-    while slot < GPU_EXECUTION[GPU_EXEC_CONFIGURED] {
-        if GPU_EXECUTION[GPU_EXEC_TAKEN] & (1u16 << slot) != 0
+    while slot < GPU_EXECUTION.configured_slots {
+        if GPU_EXECUTION.taken_slots & (1u16 << slot) != 0
             && gpu_record_data(slot)[GPU_RECORD_PHASE] != 0
         {
             return false;
@@ -95,30 +95,30 @@ fn gpu_config_init(config: GpuConfig) -> bool {
     if !gpu_config_record(0, config.command_a) {
         return false;
     }
-    GPU_EXECUTION[GPU_EXEC_CONFIGURED] = 1;
+    GPU_EXECUTION.configured_slots = 1;
     let second: Option<CommandMemory> = config.command_b;
     if let Some(b) = second {
         if !gpu_config_record(1, b) {
             return false;
         }
-        GPU_EXECUTION[GPU_EXEC_CONFIGURED] = 2;
+        GPU_EXECUTION.configured_slots = 2;
     }
-    GPU_EXECUTION[GPU_EXEC_CONTROLLER] = 1;
+    GPU_EXECUTION.controller = 1;
     true
 }
 // 65535 is exhaustion/error; real slot zero is an ordinary successful identity.
 fn gpu_config_take_buffer() -> u16 {
-    if GPU_EXECUTION[0u16] == 0 || GPU_EXECUTION[0u16] == GPU_EXEC_FAULT {
+    if GPU_EXECUTION.phase == 0 || GPU_EXECUTION.phase == GPU_EXEC_FAULT {
         return 65535;
     }
     let mut slot: u16 = 0;
-    while slot < GPU_EXECUTION[GPU_EXEC_CONFIGURED] {
+    while slot < GPU_EXECUTION.configured_slots {
         let mask: u16 = 1 << slot;
-        if GPU_EXECUTION[GPU_EXEC_TAKEN] & mask == 0 {
+        if GPU_EXECUTION.taken_slots & mask == 0 {
             if !gpu_record_new_generation(gpu_record_data(slot)) {
                 return 65535;
             }
-            GPU_EXECUTION[GPU_EXEC_TAKEN] |= mask;
+            GPU_EXECUTION.taken_slots |= mask;
             return slot;
         }
         slot += 1;
@@ -139,7 +139,7 @@ fn gpu_surface_init(mut out: Array<u16>, memory: GpuMemory) -> bool {
     true
 }
 fn gpu_config_drop_buffer(slot: u16) -> bool {
-    if slot >= 2 || GPU_EXECUTION[1u16] == slot + 1 {
+    if slot >= 2 || GPU_EXECUTION.owner == slot + 1 {
         return false;
     }
     let mut c = gpu_record_data(slot);

@@ -30,6 +30,11 @@ Public Mesh draws use resident World/View. The room/RGB part retains its World
 data and commands; each frame appends it into a Pass with the current Camera
 and target. No scene packet patching is required. Rabbit draws use the same
 shared encoder.
+The public caller registers the mesh directory once, selecting room/RGB/rabbit
+through nonowning slices. Its control and frame-statistics buffers belong to the
+run scope; only the asynchronous diagnostic packet remains shared by the wait
+helpers. Native asset factories stay at the application compatibility boundary;
+ordinary Camera, Transform, Material and RenderState setup uses SDK constructors.
 Use matching World/View-capable gateware. The low-level fixtures described below
 retain their original precomposed workload for independent comparisons.
 
@@ -52,6 +57,10 @@ periodic textures keep Repeat. The initial screen-left panel uses uniform alpha
 controls are shared with `demo-box-rabbit`. That application's source and assets
 remain unchanged. The example has 25 stored meshlets and 1145 submitted triangles
 because the extra two-triangle quad is drawn twice.
+`rcc/rgba_scene.rs` owns the persistent mesh, models, materials, textures/views and
+the separate opaque/transparent states. The frame loop updates only Camera and
+records draws; it does not recreate resource registrations or mutate state while
+recording. MeshPtr slices select all five draws from one mesh owner.
 
 `tools/rgba_assets.py` composes the original classic producer, appends the quad
 to its mesh resource, and emits the separate column-packed alpha texture and

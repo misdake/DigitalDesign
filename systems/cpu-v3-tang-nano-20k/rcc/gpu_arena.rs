@@ -9,13 +9,31 @@ use gpu_api_fault::*;
 
 // Aligned base, effective words, small/large high water, small/large free heads,
 // live registration count, owning heap pointer and generation table base.
-const GPU_OBJECT_LIVE: u16 = 6;
-const GPU_OBJECT_STORAGE: u16 = 7;
-const GPU_OBJECT_GENERATION_BASE: u16 = 8;
-static GPU_OBJECT_CONTROL: Buf<u16, 9> = Buf::new([0; 9]);
+#[repr(C)]
+struct GpuArenaControl {
+    base: u16,
+    capacity: u16,
+    small_used: u16,
+    large_used: u16,
+    free_heads: Buf<u16, 2>,
+    live: u16,
+    storage: u16,
+    generations: u16,
+}
+static GPU_OBJECT_CONTROL: GpuArenaControl = GpuArenaControl {
+    base: 0,
+    capacity: 0,
+    small_used: 0,
+    large_used: 0,
+    free_heads: Buf::new([0; 2]),
+    live: 0,
+    storage: 0,
+    generations: 0,
+};
 // Zero marks a free slot. The serial is never reset, even across Gpu::init.
-static GPU_OBJECT_SERIAL: Buf<u16, 2> = Buf::new([0; 2]);
+static GPU_OBJECT_SERIAL: GpuObjectGeneration = GpuObjectGeneration { low: 0, high: 0 };
 
+#[repr(C)]
 #[derive(Copy, Clone)]
 struct GpuObjectGeneration {
     low: u16,
@@ -28,13 +46,12 @@ struct GpuObjectHandle {
 }
 
 fn gpu_arena_empty() -> bool {
-    GPU_OBJECT_CONTROL[GPU_OBJECT_LIVE] == 0
+    GPU_OBJECT_CONTROL.live == 0
 }
 fn gpu_arena_init(bytes: u16) -> bool {
     if bytes == 0 || bytes > GPU_API_ARENA_BYTES || bytes & 31 != 0 {
         return false;
     }
-    let mut c = GPU_OBJECT_CONTROL.as_array();
     let words = bytes >> 1;
     let slots = words >> 4;
     let mut metadata_words = slots * 2;
@@ -42,9 +59,9 @@ fn gpu_arena_init(bytes: u16) -> bool {
     {
         metadata_words += slots;
     }
-    let previous = c[GPU_OBJECT_STORAGE];
+    let previous = GPU_OBJECT_CONTROL.storage;
     let mut storage = Ptr::from_addr(previous);
-    if previous == 0 || words != c[1u16] {
+    if previous == 0 || words != GPU_OBJECT_CONTROL.capacity {
         // Reserve alignment, payload and slot metadata in the same heap block.
         // Keep the old allocation until the replacement succeeds.
         storage = try_malloc(words + 15 + metadata_words);
@@ -60,30 +77,30 @@ fn gpu_arena_init(bytes: u16) -> bool {
         metadata[n] = 0;
         n += 1;
     }
-    c[0u16] = base;
-    c[1u16] = words;
-    c[2u16] = 0;
-    c[3u16] = 0;
-    c[4u16] = 0;
-    c[5u16] = 0;
-    c[GPU_OBJECT_LIVE] = 0;
-    c[GPU_OBJECT_STORAGE] = storage.addr();
-    c[GPU_OBJECT_GENERATION_BASE] = generations;
+    GPU_OBJECT_CONTROL.base = base;
+    GPU_OBJECT_CONTROL.capacity = words;
+    GPU_OBJECT_CONTROL.small_used = 0;
+    GPU_OBJECT_CONTROL.large_used = 0;
+    GPU_OBJECT_CONTROL.free_heads[0u16] = 0;
+    GPU_OBJECT_CONTROL.free_heads[1u16] = 0;
+    GPU_OBJECT_CONTROL.live = 0;
+    GPU_OBJECT_CONTROL.storage = storage.addr();
+    GPU_OBJECT_CONTROL.generations = generations;
     if previous != 0 && previous != storage.addr() {
         free(Ptr::from_addr(previous));
     }
     true
 }
 fn gpu_arena_generations() -> Array<u16> {
-    unsafe { Ptr::from_addr(GPU_OBJECT_CONTROL[GPU_OBJECT_GENERATION_BASE]).as_u16_array() }
+    unsafe { Ptr::from_addr(GPU_OBJECT_CONTROL.generations).as_u16_array() }
 }
 #[cfg(gpu_debug)]
 fn gpu_arena_tags() -> Array<u16> {
-    let base = GPU_OBJECT_CONTROL[GPU_OBJECT_GENERATION_BASE] + (GPU_OBJECT_CONTROL[1u16] >> 3);
+    let base = GPU_OBJECT_CONTROL.generations + (GPU_OBJECT_CONTROL.capacity >> 3);
     unsafe { Ptr::from_addr(base).as_u16_array() }
 }
 fn gpu_arena_data(slot: u16) -> Array<u16> {
-    unsafe { Ptr::from_addr(GPU_OBJECT_CONTROL[0u16] + slot - 1).as_u16_array() }
+    unsafe { Ptr::from_addr(GPU_OBJECT_CONTROL.base + slot - 1).as_u16_array() }
 }
 fn gpu_arena_handle(slot: u16) -> GpuObjectHandle {
     let at = (slot - 1) >> 3;
@@ -98,7 +115,7 @@ fn gpu_arena_handle(slot: u16) -> GpuObjectHandle {
 }
 fn gpu_arena_resolve(handle: GpuObjectHandle, kind: u16) -> u16 {
     let slot = handle.slot;
-    if slot & 15 != 1 || slot > GPU_OBJECT_CONTROL[1u16] {
+    if slot & 15 != 1 || slot > GPU_OBJECT_CONTROL.capacity {
         gpu_api_handle_fault(
             slot,
             kind,
@@ -132,42 +149,44 @@ fn gpu_arena_resolve(handle: GpuObjectHandle, kind: u16) -> u16 {
     slot
 }
 fn gpu_arena_alloc(large: bool, kind: u16) -> u16 {
-    if GPU_OBJECT_SERIAL[0u16] == 65535 && GPU_OBJECT_SERIAL[1u16] == 65535 {
+    if GPU_OBJECT_SERIAL.low == 65535 && GPU_OBJECT_SERIAL.high == 65535 {
         return 0;
     }
-    let mut c = GPU_OBJECT_CONTROL.as_array();
-    let mut free_at: u16 = 4;
+    let mut pool: u16 = 0;
     let mut words = GPU_API_SMALL_WORDS;
     if large {
-        free_at = 5;
+        pool = 1;
         words = GPU_API_LARGE_WORDS;
     }
-    let mut handle = c[free_at];
+    let mut handle = GPU_OBJECT_CONTROL.free_heads[pool];
     if handle != 0 {
-        c[free_at] = gpu_arena_data(handle)[0u16];
+        GPU_OBJECT_CONTROL.free_heads[pool] = gpu_arena_data(handle)[0u16];
     } else {
-        let used = c[2u16] * GPU_API_SMALL_WORDS + c[3u16] * GPU_API_LARGE_WORDS;
-        if used > c[1u16] || words > c[1u16] - used {
+        let used = GPU_OBJECT_CONTROL.small_used * GPU_API_SMALL_WORDS
+            + GPU_OBJECT_CONTROL.large_used * GPU_API_LARGE_WORDS;
+        if used > GPU_OBJECT_CONTROL.capacity || words > GPU_OBJECT_CONTROL.capacity - used {
             return 0;
         }
         if large {
-            c[3u16] += 1;
-            handle = c[1u16] - c[3u16] * GPU_API_LARGE_WORDS + 1;
+            GPU_OBJECT_CONTROL.large_used += 1;
+            handle = GPU_OBJECT_CONTROL.capacity
+                - GPU_OBJECT_CONTROL.large_used * GPU_API_LARGE_WORDS
+                + 1;
         } else {
-            handle = c[2u16] * GPU_API_SMALL_WORDS + 1;
-            c[2u16] += 1;
+            handle = GPU_OBJECT_CONTROL.small_used * GPU_API_SMALL_WORDS + 1;
+            GPU_OBJECT_CONTROL.small_used += 1;
         }
     }
-    let low = GPU_OBJECT_SERIAL[0u16] + 1;
+    let low = GPU_OBJECT_SERIAL.low + 1;
     if low == 0 {
-        GPU_OBJECT_SERIAL[1u16] += 1;
+        GPU_OBJECT_SERIAL.high += 1;
     }
-    GPU_OBJECT_SERIAL[0u16] = low;
+    GPU_OBJECT_SERIAL.low = low;
     let at = (handle - 1) >> 3;
     let mut generations = gpu_arena_generations();
     generations[at] = low;
-    generations[at + 1] = GPU_OBJECT_SERIAL[1u16];
-    c[GPU_OBJECT_LIVE] += 1;
+    generations[at + 1] = GPU_OBJECT_SERIAL.high;
+    GPU_OBJECT_CONTROL.live += 1;
     #[cfg(gpu_debug)]
     {
         let mut tag = kind;
@@ -180,7 +199,7 @@ fn gpu_arena_alloc(large: bool, kind: u16) -> u16 {
     handle
 }
 fn gpu_arena_free(handle: u16, large: bool, kind: u16) -> bool {
-    if handle == 0 || handle - 1 >= GPU_OBJECT_CONTROL[1u16] || (handle - 1) & 15 != 0 {
+    if handle == 0 || handle - 1 >= GPU_OBJECT_CONTROL.capacity || (handle - 1) & 15 != 0 {
         return false;
     }
     let at = (handle - 1) >> 3;
@@ -201,14 +220,14 @@ fn gpu_arena_free(handle: u16, large: bool, kind: u16) -> bool {
         }
         tags[index] = 0;
     }
-    let mut free_at: u16 = 4;
+    let mut pool: u16 = 0;
     if large {
-        free_at = 5;
+        pool = 1;
     }
     generations[at] = 0;
     generations[at + 1] = 0;
-    GPU_OBJECT_CONTROL[GPU_OBJECT_LIVE] -= 1;
-    gpu_arena_data(handle)[0u16] = GPU_OBJECT_CONTROL[free_at];
-    GPU_OBJECT_CONTROL[free_at] = handle;
+    GPU_OBJECT_CONTROL.live -= 1;
+    gpu_arena_data(handle)[0u16] = GPU_OBJECT_CONTROL.free_heads[pool];
+    GPU_OBJECT_CONTROL.free_heads[pool] = handle;
     true
 }

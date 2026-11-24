@@ -115,9 +115,9 @@ fn execution_peer_orders_publication_start_and_single_retirement() {
     let events = run(
         "immediate",
         r#"
- check(gpu_execute_submit(0));check(GPU_EXECUTION[0u16]==GPU_EXEC_RUNNING);
- check(gpu_execute_poll()==0);check(GPU_EXECUTION[1u16]==1);
- check(gpu_execute_poll()==1);check(gpu_execute_poll()==0);check(GPU_EXECUTION[1u16]==0);
+ check(gpu_execute_submit(0));check(GPU_EXECUTION.phase==GPU_EXEC_RUNNING);
+ check(gpu_execute_poll()==0);check(GPU_EXECUTION.owner==1);
+ check(gpu_execute_poll()==1);check(gpu_execute_poll()==0);check(GPU_EXECUTION.owner==0);
  check(gpu_execute_submit(1));check(gpu_execute_poll()==2);
  "#,
         &[0, 0, 0, 1, 0, 0, 0, 0, 0],
@@ -139,28 +139,28 @@ fn execution_peer_orders_publication_start_and_single_retirement() {
 fn execution_peer_faults_keep_the_owned_slot_without_extra_sends() {
     let cache = run(
         "cache-error",
-        r#"check(!gpu_execute_submit(0));check(GPU_EXECUTION[1u16]==1);check(GPU_EXECUTION[5u16]==6);check(gpu_execute_poll()==65535);"#,
+        r#"check(!gpu_execute_submit(0));check(GPU_EXECUTION.owner==1);check(GPU_EXECUTION.error==6);check(gpu_execute_poll()==65535);"#,
         &[0, 0],
         true,
     );
     assert!(cache.iter().all(|e| e.0 != 4));
     let busy = run(
         "unexpected-busy",
-        r#"check(!gpu_execute_submit(0));check(GPU_EXECUTION[1u16]==1);check(gpu_execute_poll()==65535);"#,
+        r#"check(!gpu_execute_submit(0));check(GPU_EXECUTION.owner==1);check(gpu_execute_poll()==65535);"#,
         &[0, 1],
         false,
     );
     assert!(busy.is_empty());
     let fault = run(
         "fault-idle",
-        r#"check(gpu_execute_submit(0));check(gpu_execute_poll()==65535);check(GPU_EXECUTION[1u16]==1);check(gpu_execute_poll()==65535);"#,
+        r#"check(gpu_execute_submit(0));check(gpu_execute_poll()==65535);check(GPU_EXECUTION.owner==1);check(gpu_execute_poll()==65535);"#,
         &[0, 0, 0, 2],
         false,
     );
     assert_eq!(fault.iter().filter(|e| e.0 == 4).count(), 2);
     let duplicate = run(
         "busy-submit",
-        r#"check(gpu_execute_submit(0));check(!gpu_execute_submit(1));check(GPU_EXECUTION[1u16]==1);check(gpu_execute_poll()==65535);"#,
+        r#"check(gpu_execute_submit(0));check(!gpu_execute_submit(1));check(GPU_EXECUTION.owner==1);check(gpu_execute_poll()==65535);"#,
         &[0, 0, 0],
         false,
     );

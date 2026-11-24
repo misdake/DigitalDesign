@@ -68,7 +68,7 @@ let p=frame_ui_pass(&mut f);pass_complete(p);frame_complete(f);
 }
 check(!render_buffer_wait(&mut r,&mut b,0));
 check(render_buffer_wait(&mut r,&mut b,60000));
-check(gpu_rtt_buffer(id)[10u16]==1 && GPU_DISPLAY[2u16]==0);
+check(gpu_rtt_buffer(id)[10u16]==1 && GPU_DISPLAY.pending==0);
 check(dev_recv(7,1)==0);
 check(gpu_rtt_view_begin(id));check(!gpu_rtt_write(id,2));
 check(gpu_rtt_read(id,2));gpu_rtt_view_end(id);

@@ -168,9 +168,9 @@ fn display_waits_for_actual_swap_and_old_reads_not_frame_change_alone() {
         r#"
  let before=dev_recv(DISPLAY_DEVICE,DISPLAY_FRAME_INDEX);
  check(gpu_present_set_next(0x8800));check(gpu_present_poll()==1);
- check(dev_recv(DISPLAY_DEVICE,DISPLAY_FRAME_INDEX)!=before);check(GPU_PRESENT[1u16]==1);
+ check(dev_recv(DISPLAY_DEVICE,DISPLAY_FRAME_INDEX)!=before);check(GPU_PRESENT.pending==1);
  check(gpu_present_poll()==1);check(gpu_present_wait_vblank());
- check(GPU_PRESENT[1u16]==0);check(gpu_present_poll()==0);
+ check(GPU_PRESENT.pending==0);check(gpu_present_poll()==0);
  check(gpu_present_wait_vblank());
  "#,
         false,
@@ -183,7 +183,7 @@ fn display_faults_do_not_drop_pending_or_emit_a_second_request() {
         "duplicate",
         r#"
  check(gpu_present_set_next(0x8800));check(!gpu_present_set_next(0x9000));
- check(GPU_PRESENT[1u16]==1&&gpu_present_poll()==65535);
+ check(GPU_PRESENT.pending==1&&gpu_present_poll()==65535);
  "#,
         false,
     );
@@ -192,7 +192,7 @@ fn display_faults_do_not_drop_pending_or_emit_a_second_request() {
         "wrong-target",
         r#"
  check(gpu_present_set_next(0x8800));check(!gpu_present_wait_vblank());
- check(GPU_PRESENT[1u16]==1&&GPU_PRESENT[3u16]==4);
+ check(GPU_PRESENT.pending==1&&GPU_PRESENT.error==4);
  "#,
         true,
     );
@@ -210,10 +210,10 @@ fn linear_format_is_staged_and_required_at_actual_retirement() {
     let events = run_format(
         "linear-retirement",
         r#"
- check(GPU_PRESENT[4u16]==1);
+ check(GPU_PRESENT.format==1);
  check(gpu_present_set_next(0x8800));check(gpu_present_poll()==1);
- check(GPU_PRESENT[1u16]==1);check(gpu_present_wait_vblank());
- check(GPU_PRESENT[1u16]==0);check(dev_recv(DISPLAY_DEVICE,DISPLAY_COLOR_FORMAT)==1);
+ check(GPU_PRESENT.pending==1);check(gpu_present_wait_vblank());
+ check(GPU_PRESENT.pending==0);check(dev_recv(DISPLAY_DEVICE,DISPLAY_COLOR_FORMAT)==1);
  "#,
         false,
         false,
@@ -224,7 +224,7 @@ fn linear_format_is_staged_and_required_at_actual_retirement() {
         "wrong-format",
         r#"
  check(gpu_present_set_next(0x8800));check(!gpu_present_wait_vblank());
- check(GPU_PRESENT[1u16]==1&&GPU_PRESENT[3u16]==4);
+ check(GPU_PRESENT.pending==1&&GPU_PRESENT.error==4);
  "#,
         false,
         true,
@@ -269,7 +269,7 @@ fn per_swap_format_is_atomic_and_pending_requests_keep_their_format() {
         r#"
  check(gpu_present_set_next_with_format(0x8800,1));
  check(!gpu_present_set_next_with_format(0x9000,0));
- check(GPU_PRESENT[4u16]==1&&GPU_PRESENT[1u16]==1);
+ check(GPU_PRESENT.format==1&&GPU_PRESENT.pending==1);
  "#,
         false,
     );

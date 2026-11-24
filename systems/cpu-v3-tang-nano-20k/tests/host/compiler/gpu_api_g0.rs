@@ -37,10 +37,10 @@ impl CommandBuffer{fn id(&self)->u16{self.word}fn pass(&mut self)->Pass{Pass{wor
 impl Pass{fn touch(&mut self,value:CommandMemory){check(value.commands.sector_count()==512);}}
 fn main(){
  check(!gpu_arena_init(0));check(!gpu_arena_init(31));check(!gpu_arena_init(8193));
- check(gpu_arena_init(128));let backing=GPU_OBJECT_CONTROL[GPU_OBJECT_STORAGE];
- check(gpu_arena_init(128));check(GPU_OBJECT_CONTROL[GPU_OBJECT_STORAGE]==backing);
+ check(gpu_arena_init(128));let backing=GPU_OBJECT_CONTROL.storage;
+ check(gpu_arena_init(128));check(GPU_OBJECT_CONTROL.storage==backing);
  let hold=try_malloc(28500);check(hold.addr()!=0);
- check(!gpu_arena_init(8192));check(GPU_OBJECT_CONTROL[GPU_OBJECT_STORAGE]==backing&&GPU_OBJECT_CONTROL[1u16]==64);
+ check(!gpu_arena_init(8192));check(GPU_OBJECT_CONTROL.storage==backing&&GPU_OBJECT_CONTROL.capacity==64);
  free(hold);
  let small=gpu_arena_alloc(false,1);let large=gpu_arena_alloc(true,2);
  check(small==1&&large==17);check(gpu_arena_alloc(false,1)==0);
@@ -53,7 +53,7 @@ fn main(){
  check(gpu_arena_alloc(true,2)==large);check(gpu_arena_free(small,false,1));check(gpu_arena_alloc(false,1)==small);
  check(gpu_arena_init(512));let anchor=gpu_arena_alloc(true,2);let mut ids:Buf<u16,8>=Buf::new([0;8]);
  let mut n:u16=0;while n<8{ids[n]=gpu_arena_alloc(false,1);check(ids[n]!=0);n+=1;}
- check(anchor==209);check(gpu_arena_data(anchor).as_ptr().addr()==GPU_OBJECT_CONTROL[0u16]+208);
+ check(anchor==209);check(gpu_arena_data(anchor).as_ptr().addr()==GPU_OBJECT_CONTROL.base+208);
  check(gpu_arena_free(ids[3u16],false,1));check(gpu_arena_alloc(false,1)==ids[3u16]);
  check(gpu_arena_init(192));let l=gpu_arena_alloc(true,2);let s=gpu_arena_alloc(false,1);let s1=gpu_arena_alloc(false,1);let s2=gpu_arena_alloc(false,1);
  check(l!=0&&s!=0&&s1!=0&&s2!=0);check(gpu_arena_free(s,false,1));check(gpu_arena_alloc(true,2)==0);check(gpu_arena_alloc(false,1)==s);

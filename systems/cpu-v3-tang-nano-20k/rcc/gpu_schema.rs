@@ -4,6 +4,38 @@ use crate::dsl_rt::*;
 
 mod gpu_limits;
 pub use gpu_limits::*;
+#[repr(u16)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum GpuObjectKind {
+    Camera = 1,
+    Model,
+    Material,
+    State,
+    Mesh,
+    Texture,
+    View,
+    Color,
+    Depth,
+    UiAtlas,
+    UiGrid,
+    Prepared,
+    PreparedPool,
+}
+// Numeric aliases belong to the arena storage/diagnostic boundary.
+pub const GPU_KIND_CAMERA: u16 = GpuObjectKind::Camera as u16;
+pub const GPU_KIND_MODEL: u16 = GpuObjectKind::Model as u16;
+pub const GPU_KIND_MATERIAL: u16 = GpuObjectKind::Material as u16;
+pub const GPU_KIND_STATE: u16 = GpuObjectKind::State as u16;
+pub const GPU_KIND_MESH: u16 = GpuObjectKind::Mesh as u16;
+pub const GPU_KIND_TEXTURE: u16 = GpuObjectKind::Texture as u16;
+pub const GPU_KIND_VIEW: u16 = GpuObjectKind::View as u16;
+pub const GPU_KIND_COLOR: u16 = GpuObjectKind::Color as u16;
+pub const GPU_KIND_DEPTH: u16 = GpuObjectKind::Depth as u16;
+pub const GPU_KIND_UI_ATLAS: u16 = GpuObjectKind::UiAtlas as u16;
+pub const GPU_KIND_UI_GRID: u16 = GpuObjectKind::UiGrid as u16;
+pub const GPU_KIND_PREPARED: u16 = GpuObjectKind::Prepared as u16;
+pub const GPU_KIND_PREPARED_POOL: u16 = GpuObjectKind::PreparedPool as u16;
+
 pub const GPU_API_SMALL_WORDS: u16 = 16;
 pub const GPU_API_LARGE_WORDS: u16 = 48;
 pub const GPU_API_CB_WORDS: u16 = 160;
@@ -98,8 +130,6 @@ pub const GPU_PREPARED_RECORDING: u16 = 1;
 pub const GPU_POOL_BASE: u16 = 0;
 pub const GPU_POOL_CAPACITY: u16 = 1;
 pub const GPU_POOL_HEAD: u16 = 2;
-pub const GPU_KIND_PREPARED: u16 = 12;
-pub const GPU_KIND_PREPARED_POOL: u16 = 13;
 // Read-only draw input view begins at GPU_CB_CAMERA, spanning camera and state.
 pub const GPU_CB_DESIRED_WORDS: u16 = 48;
 pub const GPU_DESIRED_CAMERA: u16 = 0;

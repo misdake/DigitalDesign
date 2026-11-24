@@ -11,7 +11,7 @@ Both stages use the shared resident World/View path. Each Pass selects its
 camera and each Model supplies World; producer retirement and texture ownership
 remain explicit. Use World/View-capable gateware for these rebuilt applications.
 
-Shared scene.rs uses member finish, explicit submit and wait. There is no
+Shared scene.rs uses scoped Pass recording, explicit submit and wait. There is no
 animation, CPU pixel copying/reordering, UI/postprocess unit, Bloxorz or gradient.
 Each demo presents once and halts, leaving its image visible. The bounded
 renderer_rtt_two_updates regression entry checks source reuse and capture epochs.
@@ -28,6 +28,11 @@ snapshot. Input reconstruction remains an explicit qualification of the shared
 encoder. Outputs stay in this worktree target.
 Packaging does not program a board or qualify timing.
 
+The scene registers its mesh directory once, using nonowning MeshPtr slices for
+the producer triangle and consumer quad. Transforms and state use the public
+value constructors. Both consumer recording and presentation use the same Back
+pointer; A/B selection does not duplicate the drawing path.
+
 The shared column asset packer supplies a white POT texture, atlas, RGB meshlet
 and UV meshlet. External reservations are color byte0x600000 and depth byte0x640000,
 capacity262144 bytes each. Assets avoid both complete spans. Physical ownership
@@ -39,7 +44,6 @@ Only use an audited matching bitstream/firmware/assets combination after explici
 device assignment. Receipts distinguish CPU peers, native sampler/micro-scenes
 and the selected full-pipeline replay backend.
 
-When capture is configured, each stage explicitly requests a snapshot and uses
-`submit_capturable`; the profiler gate can filter producer jobs before its runtime.
-Ordinary builds disable that hook. Plain `Gpu::submit` keeps its non-capturing
-behavior. Both stages still retire before source reuse or Display handoff.
+Both stages use ordinary `Gpu::submit` and retire before source reuse or Display
+handoff. CPU/GPU simulators inspect submitted jobs; application code does not
+contain capture requests or a special capture submission API.

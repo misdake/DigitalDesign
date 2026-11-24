@@ -14,7 +14,7 @@ static GPU_CB_RESOURCE_FACTS: Buf<u16, 512> = Buf::new([0; 512]);
 // Never reset with a context: copied binding locations cannot regain an epoch.
 static GPU_RECORD_GENERATION: Buf<u16, 2> = Buf::new([0; 2]);
 // Transient record and facts are acquired only while recording a prepared part.
-static GPU_PREPARED_CONTEXT: Buf<u16, 1> = Buf::new([0]);
+static GPU_PREPARED_CONTEXT: u16 = 0;
 
 fn gpu_native_scratch() -> Array<u16> {
     unsafe { Ptr::from_addr((GPU_NATIVE_SCRATCH.as_ptr().addr() + 15) & 65520).as_u16_array() }
@@ -73,7 +73,7 @@ const GPU_RECORD_POISON: u16 = 4;
 
 fn gpu_record_data(slot: u16) -> Array<u16> {
     if slot == GPU_PREPARED_RECORD {
-        return unsafe { Ptr::from_addr(GPU_PREPARED_CONTEXT[0u16]).as_u16_array() };
+        return unsafe { Ptr::from_addr(GPU_PREPARED_CONTEXT).as_u16_array() };
     }
     unsafe {
         GPU_CB_RECORDS
@@ -100,9 +100,7 @@ fn gpu_record_new_generation(mut c: Array<u16>) -> bool {
 // Caller has validated slot; C reads exactly record.fact_count * 4 words.
 fn gpu_record_resource_facts(slot: u16) -> Array<u16> {
     if slot == GPU_PREPARED_RECORD {
-        return unsafe {
-            Ptr::from_addr(GPU_PREPARED_CONTEXT[0u16] + GPU_API_CB_WORDS).as_u16_array()
-        };
+        return unsafe { Ptr::from_addr(GPU_PREPARED_CONTEXT + GPU_API_CB_WORDS).as_u16_array() };
     }
     unsafe {
         GPU_CB_RESOURCE_FACTS
@@ -218,7 +216,7 @@ fn gpu_record_configure(
     push_sectors: u16,
 ) -> bool {
     if slot >= GPU_RECORD_COUNT
-        || (slot == GPU_PREPARED_RECORD && GPU_PREPARED_CONTEXT[0u16] == 0)
+        || (slot == GPU_PREPARED_RECORD && GPU_PREPARED_CONTEXT == 0)
         || !gpu_record_extent(command, command_sectors)
         || !gpu_record_extent(push, push_sectors)
         || gpu_record_overlap(command, command_sectors, push, push_sectors)
