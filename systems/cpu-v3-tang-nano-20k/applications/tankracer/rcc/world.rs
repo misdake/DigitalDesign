@@ -37,6 +37,7 @@ pub struct World {
     blended: RenderState,
     groups: Ptr,
     opaque_draws: Ptr,
+    opaque_mask: Ptr,
     blended_draws: Ptr,
     blended_order: Ptr,
     cache_a: Ptr,
@@ -93,6 +94,7 @@ impl World {
             ),
             groups,
             opaque_draws,
+            opaque_mask: malloc(OPAQUE_MASK_WORDS),
             blended_draws,
             blended_order,
             cache_a,
@@ -299,7 +301,12 @@ impl World {
 
     fn select(&mut self, view: &View) -> Selection {
         let words = unsafe { self.groups.as_u16_array() };
-        let mut opaque = unsafe { self.opaque_draws.as_u16_array() };
+        let mut mask = unsafe { self.opaque_mask.as_u16_array() };
+        let mut bucket: u16 = 0;
+        while bucket < OPAQUE_MASK_WORDS {
+            mask[bucket] = 0;
+            bucket += 1;
+        }
         let mut blended = unsafe { self.blended_draws.as_u16_array() };
         let mut result = Selection {
             opaque: 0,
@@ -359,11 +366,9 @@ impl World {
                     let depth = -project(&view.matrix.row2, &bound);
                     if classification == 2 || visible_group(view, words, record, &bound, depth) {
                         let next = group_span(words, record, depth - bound.w);
-                        let mut output = opaque;
-                        let mut target = result.opaque * 3;
                         if words[record + 12] >= OPAQUE_COUNT {
-                            output = blended;
-                            target = result.blended * 6;
+                            let mut output = blended;
+                            let target = result.blended * 6;
                             if same_blended {
                                 if result.blended >= self.previous_blended {
                                     same_blended = false;
@@ -374,13 +379,13 @@ impl World {
                             output[target + 3] = words[record + 12];
                             output[target + 4] = depth.lo_bits();
                             output[target + 5] = depth.hi_bits();
+                            output[target] = next.first;
+                            output[target + 1] = next.count;
+                            output[target + 2] = next.material;
                             result.blended += 1;
                         } else {
-                            result.opaque += 1;
+                            mask[next.first >> 4] |= 1u16 << (next.first & 15);
                         }
-                        output[target] = next.first;
-                        output[target + 1] = next.count;
-                        output[target + 2] = next.material;
                     }
                     index += 1;
                 }
@@ -395,8 +400,7 @@ impl World {
                 cluster += 1;
             }
         }
-        sort_opaque(opaque, result.opaque);
-        result.opaque = coalesce_opaque(opaque, result.opaque);
+        result.opaque = self.ordered_opaque(words);
         let order = unsafe { self.blended_order.as_u16_array() };
         same_blended = same_blended && result.blended == self.previous_blended;
         self.previous_blended = result.blended;
@@ -404,6 +408,44 @@ impl World {
             sort_back_to_front(blended, order, result.blended);
         }
         result
+    }
+
+    fn ordered_opaque(&mut self, words: Array<u16>) -> u16 {
+        let mask = unsafe { self.opaque_mask.as_u16_array() };
+        let mut output = unsafe { self.opaque_draws.as_u16_array() };
+        let mut count: u16 = 0;
+        let mut bucket: u16 = 0;
+        while bucket < OPAQUE_MASK_WORDS {
+            let mut bits = mask[bucket];
+            if bits != 0 {
+                if !gpu_window_asset_read(words, MAP_OPAQUE_SPANS.first_sector, bucket * 48, 48) {
+                    halt(0x7a13);
+                }
+                let mut at: u16 = 0;
+                while bits != 0 {
+                    if bits & 1 != 0 {
+                        let first = words[at];
+                        let length = words[at + 1];
+                        let material = words[at + 2];
+                        if count != 0
+                            && output[(count - 1) * 3 + 2] == material
+                            && output[(count - 1) * 3] + output[(count - 1) * 3 + 1] == first
+                        {
+                            output[(count - 1) * 3 + 1] += length;
+                        } else {
+                            output[count * 3] = first;
+                            output[count * 3 + 1] = length;
+                            output[count * 3 + 2] = material;
+                            count += 1;
+                        }
+                    }
+                    bits >>= 1;
+                    at += 3;
+                }
+            }
+            bucket += 1;
+        }
+        count
     }
 
     fn draw_list(&mut self, pass: &mut Pass, words: Array<u16>, count: u16, stride: u16) {
@@ -421,30 +463,6 @@ impl World {
             i += 1;
         }
     }
-}
-
-fn coalesce_opaque(mut words: Array<u16>, count: u16) -> u16 {
-    let mut output: u16 = 0;
-    let mut i: u16 = 0;
-    while i < count {
-        let at = i * 3;
-        let first = words[at];
-        let length = words[at + 1];
-        let material = words[at + 2];
-        if output != 0
-            && words[(output - 1) * 3 + 2] == material
-            && words[(output - 1) * 3] + words[(output - 1) * 3 + 1] == first
-        {
-            words[(output - 1) * 3 + 1] += length;
-        } else {
-            words[output * 3] = first;
-            words[output * 3 + 1] = length;
-            words[output * 3 + 2] = material;
-            output += 1;
-        }
-        i += 1;
-    }
-    output
 }
 
 fn blended_ordered(records: Array<u16>, order: Array<u16>, count: u16) -> bool {
@@ -498,37 +516,6 @@ fn sort_back_to_front(records: Array<u16>, mut order: Array<u16>, count: u16) {
                 at -= gap;
             }
             order[at] = record;
-            i += 1;
-        }
-        gap /= 3;
-    }
-}
-
-fn sort_opaque(mut order: Array<u16>, count: u16) {
-    let mut gap: u16 = 1;
-    while gap * 3 + 1 <= count / 3 {
-        gap = gap * 3 + 1;
-    }
-    while gap > 0 {
-        let mut i = gap;
-        while i < count {
-            let first = order[i * 3];
-            let length = order[i * 3 + 1];
-            let material = order[i * 3 + 2];
-            let mut at = i;
-            while at >= gap {
-                let previous = (at - gap) * 3;
-                if order[previous] <= first {
-                    break;
-                }
-                order[at * 3] = order[previous];
-                order[at * 3 + 1] = order[previous + 1];
-                order[at * 3 + 2] = order[previous + 2];
-                at -= gap;
-            }
-            order[at * 3] = first;
-            order[at * 3 + 1] = length;
-            order[at * 3 + 2] = material;
             i += 1;
         }
         gap /= 3;
@@ -640,17 +627,28 @@ fn classify_cluster(view: &View, words: Array<u16>, at: u16) -> u16 {
         fixed(words, at + 10),
         fixed(words, at + 12),
     );
-    if !intersects(view, &bound, extent, depth) {
+    // Keep projected bounds in scalar locals for both reject and full-accept
+    // tests. Boundary groups still use the original per-group visibility path.
+    let z_extent = extent_at(&view.absolute.row2, extent);
+    let farthest = depth + z_extent;
+    if farthest <= fix32::zero() || depth - bound.w > DISPLAY_DISTANCE {
         return 0;
     }
-    let z_extent = extent_at(&view.absolute.row2, extent);
+    let x = project(&view.matrix.row0, &bound).abs();
+    let x_extent = extent_at(&view.absolute.row0, extent);
+    if x > farthest * X_PER_DEPTH + x_extent {
+        return 0;
+    }
+    let y = project(&view.matrix.row1, &bound).abs();
+    let y_extent = extent_at(&view.absolute.row1, extent);
+    if y > farthest * Y_PER_DEPTH + y_extent {
+        return 0;
+    }
     let nearest = depth - z_extent;
     if nearest > fix32::zero()
         && depth + bound.w <= DISPLAY_DISTANCE
-        && project(&view.matrix.row0, &bound).abs() + extent_at(&view.absolute.row0, extent)
-            <= nearest * X_PER_DEPTH
-        && project(&view.matrix.row1, &bound).abs() + extent_at(&view.absolute.row1, extent)
-            <= nearest * Y_PER_DEPTH
+        && x + x_extent <= nearest * X_PER_DEPTH
+        && y + y_extent <= nearest * Y_PER_DEPTH
     {
         return 2;
     }

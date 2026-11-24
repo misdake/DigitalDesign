@@ -9,7 +9,7 @@ from pathlib import Path
 from PIL import Image
 from compare_frames import compare
 
-from static_assets import CLUSTER_GROUPS, CLUSTER_WORDS, GROUP_WORDS, cluster_groups, q16
+from static_assets import CLUSTER_GROUPS, CLUSTER_WORDS, GROUP_WORDS, cluster_groups, opaque_spans, q16
 
 
 def signed(word):
@@ -22,6 +22,18 @@ def row(center, extent, identity):
 
 
 class SelectionRecords(unittest.TestCase):
+    def test_opaque_span_order_keeps_sparse_fine_and_coarse_ranges(self):
+        rows = row([0, 0, 0], [1, 1, 1], 0) + row([0, 0, 0], [1, 1, 1], 1)
+        rows[14:20] = [0, 2, 5, 1, 7, 0]
+        rows[34:40] = [2, 1, 2, 1, 8, 0]
+        spans = opaque_spans(rows, 2, 6)
+        self.assertEqual(len(spans), 48)
+        self.assertEqual([spans[n:n+3] for n in [0, 6, 15]], [[0, 2, 7], [2, 1, 8], [5, 1, 7]])
+        self.assertTrue(all(spans[n * 3 + 1] == 0 for n in [1, 3, 4, 6, 15]))
+        rows[34] = 0
+        with self.assertRaisesRegex(ValueError, 'unique'):
+            opaque_spans(rows, 2, 6)
+
     def test_frame_comparison_near_gate(self):
         with tempfile.TemporaryDirectory() as folder:
             before, after = Path(folder) / 'before', Path(folder) / 'after'

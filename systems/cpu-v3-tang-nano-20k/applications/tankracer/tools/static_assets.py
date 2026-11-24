@@ -292,6 +292,25 @@ def ring_chunks(metadata, maximum):
     return directory
 
 
+def opaque_spans(rows, opaque_count, meshlet_count):
+    """Index immutable draw spans by their first meshlet, in submission order."""
+    spans = [0] * (((meshlet_count + 15) // 16) * 16 * 3)
+    owners = {}
+    for identity in range(opaque_count):
+        at = identity * 20
+        for offset in (14, 16):
+            first, count = rows[at + offset:at + offset + 2]
+            if not count or first + count > meshlet_count:
+                raise ValueError('opaque span exceeds the meshlet directory')
+            record = [first, count, rows[at + 18]]
+            previous = spans[first * 3:first * 3 + 3]
+            if first in owners and (owners[first] != identity or previous != record):
+                raise ValueError('opaque spans need unique first meshlets')
+            owners[first] = identity
+            spans[first * 3:first * 3 + 3] = record
+    return spans
+
+
 def build(output, route_path=None):
     map_path = os.getenv("TANKRACER_MAP_INPUT")
     camera_path = os.getenv("TANKRACER_CAMERA_INPUT")
@@ -377,6 +396,8 @@ def build(output, route_path=None):
     for at, first in coarse_ranges:
         rows[at] = len(records) + first
     records.extend(coarse_records)
+    spans = opaque_spans(rows, opaque_count, len(records))
+    assets.bytes("MAP_OPAQUE_SPANS", struct.pack(f"<{len(spans)}H", *spans))
     packed, clusters, cluster_counts = cluster_groups(rows)
     ring = None
     if route_input is not None:
@@ -429,6 +450,7 @@ def build(output, route_path=None):
         MAP_RING_ACCEPT_SQUARED_LOW=q16(safe_corridor * safe_corridor)[0],
         MAP_RING_ACCEPT_SQUARED_HIGH=q16(safe_corridor * safe_corridor)[1],
         TANKRACER_REUSE=int(recording == 'reuse'),
+        OPAQUE_MASK_WORDS=(len(records) + 15) // 16,
         TANKRACER_POLICY=policy, GROUP_COUNT=len(inventory), GROUP_WORDS=GROUP_WORDS,
         GROUP_SCRATCH_WORDS=CLUSTER_GROUPS * GROUP_WORDS, OPAQUE_COUNT=opaque_count,
         CLUSTER_COUNT=len(cluster_counts), CLUSTER_WORDS=CLUSTER_WORDS,

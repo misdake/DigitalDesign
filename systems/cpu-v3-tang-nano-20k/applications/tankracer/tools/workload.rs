@@ -264,7 +264,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         if let Some(StepOutcome::Halted { signal }) = step {
-            return Err(format!("CPU halted with {signal:#06x}").into());
+            let memory = machine.cpu().physical_memory_slice();
+            let fault = memory[..8192].windows(16).find(|words| words[0] == 0xfa17);
+            if let Some(folder) = &capture {
+                std::fs::write(
+                    folder.join("cpu-failure.json"),
+                    serde_json::to_vec_pretty(&serde_json::json!({
+                        "instructions":instructions,"registers":machine.cpu().registers(),
+                        "fault":fault,"resident_words":&memory[..65536],
+                    }))?,
+                )?;
+            }
+            return Err(format!("CPU halted with {signal:#06x} after {instructions} instructions; GPU fault {fault:?}").into());
         }
         if let Some(error) = machine.gpu().last_error() {
             return Err(error.to_string().into());

@@ -312,6 +312,22 @@ original complete spatial-cluster path. `--candidates clusters` selects that
 baseline explicitly. `--policy full` always bypasses route coarse filtering.
 CPU command recording, binding and matrix handling are unchanged.
 
+Opaque selection marks a meshlet-first bitset and streams its baked span table
+in ascending order. Nonempty buckets reuse the existing group scratch. Adjacent
+compatible spans coalesce during emission. ENGLAND uses 166 bytes for the bitset
+and 7,968 asset bytes for the sparse table; selection needs no per-frame opaque
+sort. Fine/coarse selection, transparent depth order and the UnlitBank replay
+path retain their existing behavior.
+
+Coarse classification shares projected centers and extents between rejection
+and full acceptance. Its checked host fixture runs the actual RCC function
+against the original visibility rules, including fixed-point clip boundaries,
+moving cameras, rear views and off-route positions:
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_classification.py --output target/classification-check
+```
+
 ```powershell
 $assets = "systems/cpu-v3-tang-nano-20k/applications/tankracer/assets/england"
 $out = Read-Host "New output root"
