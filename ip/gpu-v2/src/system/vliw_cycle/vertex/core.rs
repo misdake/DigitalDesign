@@ -43,6 +43,7 @@ fn rom() -> &'static [u128; 512] {
         words
     })
 }
+
 fn fields() -> &'static BTreeMap<&'static str, (u32, u32)> {
     static FIELDS: OnceLock<BTreeMap<&'static str, (u32, u32)>> = OnceLock::new();
     FIELDS.get_or_init(|| {
@@ -795,7 +796,9 @@ impl Core {
                     n.uniform_base = 22;
                 }
                 if r.pc & 384 == 256 {
-                    if c.bit(51) {
+                    // Once disabled (in particular for billboards), this AND
+                    // cannot observe an otherwise unused bounds operand.
+                    if c.bit(51) && r.bounds_safe {
                         let value = r.unpacked.get(32, "bounds eligibility operand")?;
                         let over = |k: u32| {
                             if value & (1 << 31) != 0 {
@@ -962,5 +965,28 @@ impl Core {
         }
         self.regs = n;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_bounds_do_not_read_a_dead_eligibility_operand() {
+        let mut core = Core::default();
+        core.regs.busy = true;
+        // Last Billboard bootstrap word: bit51 belongs to its branch target,
+        // while bounds were disabled when this meshlet launched.
+        core.regs.pc = 329;
+        core.regs.control = 1 << 51;
+        core.regs.bounds_safe = false;
+        core.regs.unpacked = Bits::default();
+        core.clock(CoreInput {
+            ce: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!core.regs.bounds_safe);
     }
 }

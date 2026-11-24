@@ -162,6 +162,53 @@ Texture `from_memory` similarly accepts an existing `GpuMemory` span and layout.
 The unsafe asset bindings promise actual storage and lifetime; numeric validation
 does not replace that promise.
 
+## Dynamic Billboard batches
+
+The optional `rcc/billboard.rs` helper encodes application-selected, sequential
+Billboard batches through the public GPU API. Import `mod billboard; use
+billboard::*;`. Its unsafe constructor accepts caller-owned `GpuMemory`, a
+disjoint canonical 256-byte quad template, and 1..32 directory entries. The
+storage needs one 128-byte directory plus the records actually built. Each
+record uses 128 bytes of metadata and a payload rounded up to 128 bytes.
+One quad needs 256 bytes; sixteen quads need 1024 bytes, excluding the directory.
+The constructor seeds dormant entries from the template so a Mesh can register
+once. Draw only entries published by `finish`, up to `batch_count()`.
+
+The application sorts transparent items and chooses compatible runs: texture,
+material/uniform color, model and Billboard facing must agree. The writer does
+not reorder items, approximate alpha or flush implicitly:
+
+```rust
+writer.reset(); // Retire executions and discard recorded readers first.
+writer.begin(origin, quant_shift);
+assert!(unsafe { writer.append(center, corners) });
+// Append more sorted, compatible quads before finishing this batch.
+let batch = unsafe { writer.finish() };
+mesh.refresh_directory(); // Once after rebuilding all batches.
+// Draw mesh.ptr().slice(batch, 1) with the run's material and facing.
+```
+
+`begin` selects a shared Q16.16 origin and a quantization step of
+`2^quant_shift` raw Q16.16 units (shift 0..31). Each center displacement must be
+nonnegative, fit the signed Q16.16 subtraction and round to delta10 (0..1023).
+Rounding uses ties-to-even. `append` writes four vertices in the supplied order;
+`finish` generates `(0,1,2), (0,2,3)` per quad. At most sixteen quads (64 vertices)
+fit one batch. `append` returns false without changing bytes or cursors if the
+next quad exceeds count, storage or center range; finish the current nonempty
+batch and begin another. Empty `finish`, invalid sequencing or exhausted
+entries are errors in both profiles. `used_bytes()` reports the packed extent.
+
+`BillboardVertex` uses signed X/Y offsets in 1/512 world units (-512..511) and
+unsigned Q0.16 U/V. Debug checks validate offsets. Its four input corners must
+remain readable during `append`.
+
+The writer is a mutable nonowning builder, with no arena slot, allocation,
+implicit wait, sorting, animation or texture-cache policy. Its write methods
+are unsafe: acquire CPU ownership, retire GPU/Display use and discard recorded
+readers before changing backing bytes. `Mesh::refresh_directory` replaces the
+CPU directory snapshot after rebuilding; payloads remain external. Application
+code owns coordinate conversion, rotation, quantization and appearance.
+
 ## Board buffers and UI
 
 `CommandMemory::new(commands, push)` groups one recording slot. `GpuConfig::single`

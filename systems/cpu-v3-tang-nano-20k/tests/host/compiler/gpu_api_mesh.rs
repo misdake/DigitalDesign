@@ -125,3 +125,103 @@ fn mesh_directory_expands_with_pingpong_prefetch_and_whole_draw_preflight() {
         }
     }
 }
+#[test]
+fn billboard_batches_keep_order_and_reject_overflow_without_consuming_a_quad() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
+    let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    let source = r#"mod billboard;use billboard::*;mod gpu_api;use gpu_api::*;
+fn main(){
+ let memory=unsafe{GpuMemory::from_sectors(0xa000,32)};
+ let template=unsafe{GpuMemory::from_sectors(0xb000,2)};
+ let mut writer=unsafe{BillboardWriter::new(memory,template,2)};
+ let corners:Buf<BillboardVertex,4>=Buf::new([BillboardVertex{x:-12,y:23,u:456,v:789};4]);
+ writer.begin(Vec3::zero(),16);
+ if unsafe{writer.append(Vec3::new(fix32::from_int(-1),fix32::zero(),fix32::zero()),corners.as_array())}{halt(10);}
+ let mut i=0u16;
+ while i<16{if !unsafe{writer.append(Vec3::new(fix32::from_int(i as i16),fix32::zero(),fix32::zero()),corners.as_array())}{halt(11);}i+=1;}
+ if unsafe{writer.append(Vec3::zero(),corners.as_array())}{halt(12);}
+ if unsafe{writer.finish()}!=0||writer.batch_count()!=1||writer.used_bytes()!=1152{halt(13);}
+ writer.begin(Vec3::zero(),6);
+ i=0;while i<3{if !unsafe{writer.append(Vec3::new(fix32::from_words(32+i*64,0),fix32::zero(),fix32::zero()),corners.as_array())}{halt(14);}i+=1;}
+ if unsafe{writer.finish()}!=1||writer.batch_count()!=2{halt(15);}
+ if dcache_clean_all()!=0{halt(16);}halt(0x600d);
+}"#;
+    let parsed = rcc::frontend::compile_program_named_with_libraries_checked(
+        "billboard-batches",
+        source,
+        &options,
+        &[root.join("gpu_api.rs")],
+        &RustcCheck::new(root.join("../../../target/billboard-batch/rustc-format")),
+        &mut |name| {
+            let origin = root.join(format!("{name}.rs"));
+            Ok(rcc::frontend::ModuleSource {
+                source: std::fs::read_to_string(&origin).map_err(|e| e.to_string())?,
+                origin: Some(origin),
+                namespace: rcc::frontend::ModuleNamespace::Flat,
+            })
+        },
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+    let mut cpu = CpuV3Sim::default();
+    cpu.set_boot_window(&program.words);
+    // Canonical, degenerate but valid unlit quad for dormant directory entries.
+    let template = 0xb000 * 64;
+    let memory = cpu.physical_memory_mut();
+    memory[template] = 4 | (2 << 8);
+    memory[template + 1] = 20 | (6 << 8);
+    memory[template + 4] = 1;
+    let indices = (1u64 << 6) | (2u64 << 12) | (((2u64 << 6) | (3u64 << 12)) << 18);
+    for word in 0..4 {
+        memory[template + 64 + 24 + word] = (indices >> (word * 16)) as u16;
+    }
+
+    assert!(matches!(
+        cpu.run(1_000_000).unwrap(),
+        RunOutcome::Halted { signal: 0x600d, .. }
+    ));
+    let memory = cpu.physical_memory_mut();
+    let base = 0xa000 * 64;
+    assert_eq!(&memory[base..base + 4], &[0xa001, 7, 0xa009, 2]);
+    let record = &memory[base + 64..];
+    assert_eq!(record[0], 64 | (32 << 8));
+    assert_eq!(record[1], 20 | (96 << 8));
+    assert_eq!(record[4], 1);
+    assert_eq!(record[14], 16);
+    for quad in 0..16 {
+        for corner in 0..4 {
+            let at = 64 + (quad * 4 + corner) * 6;
+            assert_eq!(
+                &record[at..at + 6],
+                &[
+                    quad as u16,
+                    0,
+                    ((-12i16 as u16) & 1023) | (23 << 10),
+                    0,
+                    456,
+                    789
+                ]
+            );
+        }
+    }
+    let indices = &record[64 + 16 * 24..];
+    for triangle in 0..32 {
+        let group = indices[(triangle / 3) * 4..(triangle / 3) * 4 + 4]
+            .iter()
+            .enumerate()
+            .fold(0u64, |v, (i, &word)| v | u64::from(word) << (i * 16));
+        let packed = (group >> ((triangle % 3) * 18)) & 0x3ffff;
+        let a = (triangle / 2) * 4;
+        let (b, c) = if triangle % 2 == 0 {
+            (a + 1, a + 2)
+        } else {
+            (a + 2, a + 3)
+        };
+        assert_eq!(packed, (a | (b << 6) | (c << 12)) as u64);
+    }
+    let second = &memory[base + 9 * 64..];
+    assert_eq!(second[14], 6);
+    for (quad, delta) in [0, 2, 2].into_iter().enumerate() {
+        assert_eq!(second[64 + quad * 24], delta, "ties-to-even center {quad}");
+    }
+}

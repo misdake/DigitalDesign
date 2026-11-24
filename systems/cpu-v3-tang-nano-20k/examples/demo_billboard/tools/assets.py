@@ -1,4 +1,4 @@
-"""Pack the supplied inspection stage and captured explosion into native meshlets."""
+"""Pack static stage geometry, one reusable quad and captured sprite parameters."""
 
 import argparse
 import hashlib
@@ -89,21 +89,26 @@ def source_center(position_q10):
     return (x >> 3) / 128, (y >> 3) / 128, -(z >> 3) / 128
 
 
-def sprite_record(sprite, origin, indices):
-    kind, position, (width, height), (s, c), (u0, v0, u1, v1), brightness = sprite
-    extent = 128 if kind == 0 else 64
+def sprite_values(sprite, origin):
+    kind, position, (width, height), (sine, cosine), uv, brightness = sprite
     center = [(v - base + shift) * SCENE_SCALE
               for v, base, shift in zip(source_center(position), origin, (4, 1.3, 0))]
-    half_x, half_y = width / 1024, height / 1024
-    vertices = []
-    for (x, y), (u, v) in zip(
-        ((-half_x, half_y), (half_x, half_y), (half_x, -half_y), (-half_x, -half_y)),
-        ((u0, v0), (u1, v0), (u1, v1), (u0, v1)),
-    ):
-        offset = ((x * c + y * s) * SCENE_SCALE / 4096,
-                  (-x * s + y * c) * SCENE_SCALE / 4096)
-        vertices.append((center, offset, (u / extent, v / extent)))
-    return record(vertices, indices, billboard=True, shift=0), center, kind, min(255, 2 * brightness)
+    fixed = [round(v * 65536) for v in (-center[0], center[1], center[2])]
+    assert all(0 < size < 32768 for size in (width, height))
+    assert all(-4096 <= value <= 4096 for value in (sine, cosine))
+    extent = 128 if kind == 0 else 64
+    assert all(0 <= value <= extent for value in uv)
+    for x, y in ((-width, height), (width, height), (width, -height), (-width, -height)):
+        dx = round(-(x * cosine + y * sine) / 65536)
+        dy = round((-x * sine + y * cosine) / 65536)
+        assert -512 <= dx < 512 and -512 <= dy < 512
+    values = [(kind + 2) * 256 + min(255, 2 * brightness)]
+    for value in fixed:
+        values.extend((value & 65535, (value >> 16) & 65535))
+    values.extend((width, height, sine & 65535, cosine & 65535,
+                   uv[0] | (uv[1] << 8), uv[2] | (uv[3] << 8)))
+    assert len(values) == 13
+    return values
 
 
 def texture_pixels(image, name):
@@ -136,7 +141,7 @@ def pack(output):
     scene = json.loads(document.read_text(encoding="utf-8"))
     frames = scene["frames"]
     assert len(frames) == 199 and all(len(f) <= 10 for f in frames) and not frames[-1]
-    resources, constants = [], {}
+    resources, constants, placements = [], {}, {}
     address = asset_regions()[0][0]
 
     def place(name, payload):
@@ -147,8 +152,7 @@ def pack(output):
         (output / filename).write_bytes(payload)
         resources.append(dict(file=filename, address=address, bytes=len(payload),
                               sha256=hashlib.sha256(payload).hexdigest()))
-        constants[f"{name.upper()}_SECTOR"] = address // 128
-        constants[f"{name.upper()}_SECTORS"] = len(payload) // 128
+        placements[name] = (address // 128, len(payload))
         address += len(payload)
 
     records = []
@@ -172,21 +176,26 @@ def pack(output):
         layer(center, kind, part["shade"])
 
     origin = source_center(frames[0][0][1])
-    starts = []
+    starts, animation = [], []
     for frame in frames:
-        starts.append(len(layers) // 4)
+        starts.append(len(animation) // 13)
         for sprite in frame:
-            payload, center, kind, shade = sprite_record(sprite, origin, scene["indices"])
-            records.append(payload)
-            layer(center, kind + 2, shade)
-    starts.append(len(layers) // 4)
+            animation.extend(sprite_values(sprite, origin))
+    starts.append(len(animation) // 13)
     assert len(records) <= 5460
     mesh = bytearray((len(records) * 4 + 127) & ~127)
     for index, payload in enumerate(records):
         struct.pack_into("<2H", mesh, index * 4, (address + len(mesh)) // 128, len(payload) // 128 - 1)
         mesh.extend(payload)
     place("mesh", mesh)
-    constants.update(MESH_COUNT=len(records), TICK_MS=scene["tick_ms"], FRAME_COUNT=len(frames))
+    quad = record([((0, 0, 0), (0, 0), uv) for uv in QUAD_UV],
+                  scene["indices"], billboard=True, shift=0)
+    place("quad", quad)
+    animation_bytes = struct.pack(f"<{len(animation)}H", *animation)
+    place("animation", animation_bytes + bytes((-len(animation_bytes)) % 128))
+    constants.update(TICK_MS=scene["tick_ms"], FRAME_COUNT=len(frames))
+    constants.update(SPRITE_CAPACITY=max(map(len, frames)),
+                     SPRITE_STORAGE_BYTES=128 + max(map(len, frames)) * len(quad))
 
     paths = [Path(__file__), LAYOUT, document,
              EXAMPLE.parents[1] / "tools/gpu_mesh_layout.py",
@@ -205,11 +214,30 @@ def pack(output):
                     resources=resources, sources={
                         p.resolve().relative_to(REPO).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                         for p in paths}, export_sha256=scene["export_sha256"],
-                    frames=len(frames), sprites=len(layers) // 4 - 2)
+                    frames=len(frames), sprites=len(animation) // 13)
     (output / "assets.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    rust = "use crate::dsl_rt::*;\n" + "".join(
+    rust = ("use crate::dsl_rt::*;\nmod gpu_api; use gpu_api::*;\n"
+            "mod static_assets; use static_assets::*;\n") + "".join(
         f"pub const SCENE_{name}: u16 = {value};\n" for name, value in constants.items()
+        if not name.endswith("_SIZE")
     )
+    for name, (sector, length) in placements.items():
+        symbol = f"SCENE_{name.upper()}"
+        rust += (f"const {symbol}_BYTES: AssetBytes = AssetBytes {{ first_sector: {sector}, "
+                 f"sector_count: {length // 128}, byte_len_lo: {length & 65535}, "
+                 f"byte_len_hi: {length >> 16} }};\n")
+        if name == "mesh":
+            rust += (f"pub const {symbol}: MeshDesc = unsafe {{ "
+                     f"MeshDesc::from_asset({symbol}_BYTES, 0, {len(records)}) }};\n")
+        elif name in TEXTURES:
+            size = constants[f"{name.upper()}_SIZE"]
+            fmt = "Rgb565" if name in TEXTURES[:3] else "Rgba4444"
+            rust += (f"pub const {symbol}: TextureDesc = unsafe {{ TextureDesc::from_asset("
+                     f"{symbol}_BYTES, TextureLayout::square({size}, TextureFormat::{fmt}, "
+                     "Mipmaps::BaseOnly)) };\n")
+        else:
+            rust += (f"pub const {symbol}: GpuMemory = unsafe {{ "
+                     f"GpuMemory::from_asset({symbol}_BYTES) }};\n")
     rust += emit_buffer("SCENE_FRAME_STARTS", starts) + emit_buffer("SCENE_LAYERS", layers)
     (output / "tree_explosion_assets.rs").write_text(rust, encoding="utf-8")
 

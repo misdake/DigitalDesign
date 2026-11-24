@@ -4,7 +4,14 @@ mod boot_resources;
 mod gamepad;
 mod gpu_api;
 mod gpu_board;
+mod stream;
 mod time;
+use stream::*;
+mod static_buffer;
+use static_buffer::StaticBuffer;
+
+#[static_buffer]
+const SPRITES: StaticBuffer = StaticBuffer::new(SCENE_SPRITE_STORAGE_BYTES as usize, 128);
 use boot_resources::*;
 use gamepad::*;
 use gpu_api::*;
@@ -63,14 +70,6 @@ fn orbit_camera(camera: &mut Camera, orbit: &Orbit, direction: Vec3) {
     camera.set_look_at_y_up(eye, Vec3::new(fix32::zero(), target_y, fix32::zero()));
 }
 
-fn scene_texture(sector: u16, sectors: u16, size: u16, format: TextureFormat) -> Texture {
-    let memory = unsafe { GpuMemory::from_sectors(sector, sectors) };
-    Texture::from_native(TextureDesc::from_memory(
-        memory,
-        TextureLayout::square(size, format, Mipmaps::BaseOnly),
-    ))
-}
-
 fn clamp_view(texture: &Texture) -> TextureView {
     let mut view = texture.view();
     view.set_address_mode(TextureAddressMode::ClampToEdge);
@@ -83,6 +82,7 @@ struct StageViews {
     rock: TextureViewPtr,
 }
 
+#[derive(Copy, Clone)]
 struct LayerViews {
     crown: TextureViewPtr,
     trunk: TextureViewPtr,
@@ -90,9 +90,13 @@ struct LayerViews {
     smoke: TextureViewPtr,
 }
 
-struct LayerFrame {
-    direction: Vec3,
-    index: u16,
+struct LayerDraw {
+    mesh: MeshPtr,
+    sprites: MeshPtr,
+    model: ModelPtr,
+    material: MaterialPtr,
+    views: LayerViews,
+    layers: Array<u16>,
 }
 
 fn gray(level: u8, alpha: u8) -> Rgba8 {
@@ -106,104 +110,53 @@ fn gray(level: u8, alpha: u8) -> Rgba8 {
 
 fn draw_stage(
     pass: &mut Pass,
-    mesh: &Mesh,
+    mesh: MeshPtr,
     model: ModelPtr,
     material: &mut Material,
     views: &StageViews,
 ) {
-    let grass = mesh.subset(SCENE_GRASS_FIRST, SCENE_GRASS_COUNT);
-    let road = mesh.subset(SCENE_ROAD_FIRST, SCENE_ROAD_COUNT);
-    let rock = mesh.subset(SCENE_ROCK_FIRST, SCENE_ROCK_COUNT);
+    let grass = mesh.slice(SCENE_GRASS_FIRST, SCENE_GRASS_COUNT);
+    let road = mesh.slice(SCENE_ROAD_FIRST, SCENE_ROAD_COUNT);
+    let rock = mesh.slice(SCENE_ROCK_FIRST, SCENE_ROCK_COUNT);
     material.set_uniform_color(gray(230, 255));
-    pass.draw(grass.ptr(), model, material.ptr(), views.grass);
-    pass.draw(road.ptr(), model, material.ptr(), views.road);
+    pass.draw(grass, model, material.ptr(), views.grass);
+    pass.draw(road, model, material.ptr(), views.road);
     material.set_uniform_color(gray(204, 255));
-    pass.draw(rock.ptr(), model, material.ptr(), views.rock);
+    pass.draw(rock, model, material.ptr(), views.rock);
 }
 
-fn q8_8(word: u16) -> fix32 {
-    fix32::from_words(word << 8, ((word as i16) >> 8) as u16)
-}
-
-fn layer_depth(layer: u16, direction: &Vec3) -> i16 {
-    let at = layer * 4;
-    let depth = fdot(
-        vec3::new(
-            q8_8(SCENE_LAYERS[at + 1]),
-            q8_8(SCENE_LAYERS[at + 2]),
-            q8_8(SCENE_LAYERS[at + 3]),
-        ),
-        vec3::new(direction.x, direction.y, direction.z),
-    );
-    (depth * fix!(256.0)).to_int()
-}
-
-fn layer_index(slot: u16, first_effect: u16) -> u16 {
-    if slot < 2 {
-        return slot;
-    }
-    first_effect + (slot - 2)
-}
-
-fn sort_layer_order(mut order: Array<u16>, depths: Array<i16>, count: u16) {
-    // Use Knuth's gaps, growing 1, 4, 13, ... until the next gap would exceed one third of the list.
-    let mut gap: u16 = 1;
-    while gap * 3 + 1 <= count / 3 {
-        gap = gap * 3 + 1;
-    }
-    loop {
-        let mut i = gap;
-        while i < count {
-            let slot = order[i];
-            let depth = depths[slot];
-            let mut at = i;
-            while at >= gap {
-                let previous = order[at - gap];
-                let previous_depth = depths[previous];
-                // Use the original slot to preserve input order at equal depths.
-                if previous_depth < depth || (previous_depth == depth && previous < slot) {
-                    break;
-                }
-                order[at] = previous;
-                at -= gap;
-            }
-            order[at] = slot;
-            i += 1;
-        }
-        if gap == 1 {
-            break;
-        }
-        gap /= 3;
-    }
-}
-
-fn draw_layer(
-    pass: &mut Pass,
-    mesh: &Mesh,
-    model: ModelPtr,
-    material: &mut Material,
-    views: &LayerViews,
-    layer: u16,
-) {
-    let entry = SCENE_LAYERS[layer * 4];
+fn draw_layer(pass: &mut Pass, draw: &LayerDraw, layer: u16) {
+    let mesh = draw.mesh;
+    let sprites = draw.sprites;
+    let model = draw.model;
+    let material = draw.material;
+    let views = draw.views;
+    let layers = draw.layers;
+    let entry = layers[layer * 2 + 1];
     let kind = entry >> 8;
     let level = entry as u8;
-    let part = mesh.subset(SCENE_TRANSPARENT_FIRST + layer, 1);
+    let index = layers[layer * 2];
+    let mut part = sprites;
+    if index & 32768 != 0 {
+        part = mesh.slice(index & 32767, 1);
+    } else {
+        part = sprites.slice(index, 1);
+    }
     if kind == 0 {
         material.set_uniform_color(gray(level, 255));
         pass.draw_billboard(
-            part.ptr(),
+            part,
             model,
-            material.ptr(),
+            material,
             views.crown,
             BillboardFacing::Vertical,
         );
     } else if kind == 1 {
         material.set_uniform_color(gray(level, 255));
         pass.draw_billboard(
-            part.ptr(),
+            part,
             model,
-            material.ptr(),
+            material,
             views.trunk,
             BillboardFacing::Vertical,
         );
@@ -213,43 +166,25 @@ fn draw_layer(
         if kind == 3 {
             texture = views.smoke;
         }
-        pass.draw_billboard(
-            part.ptr(),
-            model,
-            material.ptr(),
-            texture,
-            BillboardFacing::CameraPlane,
-        );
+        pass.draw_billboard(part, model, material, texture, BillboardFacing::CameraPlane);
     }
 }
 
-fn draw_layers(
-    pass: &mut Pass,
-    mesh: &Mesh,
-    model: ModelPtr,
-    material: &mut Material,
-    views: &LayerViews,
-    frame: &LayerFrame,
-) {
-    // Two tree panels and at most ten recorded effect layers.
-    let mut order: Buf<u16, 12> = Buf::new([0; 12]);
-    let mut depths: Buf<i16, 12> = Buf::new([0; 12]);
-    let first_effect = SCENE_FRAME_STARTS[frame.index];
-    let count = 2 + (SCENE_FRAME_STARTS[frame.index + 1] - first_effect);
-    let direction = frame.direction;
+fn draw_layers(pass: &mut Pass, draw: &LayerDraw, count: u16) {
     let mut at: u16 = 0;
     while at < count {
-        order[at] = at;
-        depths[at] = layer_depth(layer_index(at, first_effect), &direction);
+        draw_layer(pass, draw, at);
         at += 1;
     }
-    sort_layer_order(order.as_array(), depths.as_array(), count);
-    at = 0;
-    while at < count {
-        let layer = layer_index(order[at], first_effect);
-        draw_layer(pass, mesh, model, material, views, layer);
-        at += 1;
-    }
+}
+
+fn stage_desc() -> RenderStateDesc {
+    RenderStateDesc::opaque(Lighting::directional(
+        Vec3::unit_y(),
+        fix32::one(),
+        fix32::zero(),
+    ))
+    .with_filter(TextureFilter::Bilinear)
 }
 
 fn main() {
@@ -265,53 +200,16 @@ fn main() {
         Projection::from_focal_pixels(fix!(256.0), fix!(20.0)),
     ));
     let model = Model::new(Transform::identity());
-    let mesh = Mesh::from_native(MeshDesc::from_memory(
-        unsafe { GpuMemory::from_sectors(SCENE_MESH_SECTOR, SCENE_MESH_SECTORS) },
-        0,
-        SCENE_MESH_COUNT,
-    ));
-    let grass = scene_texture(
-        SCENE_GRASS_SECTOR,
-        SCENE_GRASS_SECTORS,
-        SCENE_GRASS_SIZE,
-        TextureFormat::Rgb565,
-    );
-    let road = scene_texture(
-        SCENE_ROAD_SECTOR,
-        SCENE_ROAD_SECTORS,
-        SCENE_ROAD_SIZE,
-        TextureFormat::Rgb565,
-    );
-    let rock = scene_texture(
-        SCENE_ROCK_SECTOR,
-        SCENE_ROCK_SECTORS,
-        SCENE_ROCK_SIZE,
-        TextureFormat::Rgb565,
-    );
-    let crown = scene_texture(
-        SCENE_NTREE1_SECTOR,
-        SCENE_NTREE1_SECTORS,
-        SCENE_NTREE1_SIZE,
-        TextureFormat::Rgba4444,
-    );
-    let trunk = scene_texture(
-        SCENE_NTREE2_SECTOR,
-        SCENE_NTREE2_SECTORS,
-        SCENE_NTREE2_SIZE,
-        TextureFormat::Rgba4444,
-    );
-    let flash = scene_texture(
-        SCENE_FLASH_SECTOR,
-        SCENE_FLASH_SECTORS,
-        SCENE_FLASH_SIZE,
-        TextureFormat::Rgba4444,
-    );
-    let smoke = scene_texture(
-        SCENE_SMOKE_SECTOR,
-        SCENE_SMOKE_SECTORS,
-        SCENE_SMOKE_SIZE,
-        TextureFormat::Rgba4444,
-    );
+    let mesh = Mesh::from_native(SCENE_MESH);
+    let mut writer = sprite_writer(GpuMemory::from_buffer(SPRITES));
+    let mut sprite_owner = Mesh::from_native(writer.mesh_desc());
+    let grass = Texture::from_native(SCENE_GRASS);
+    let road = Texture::from_native(SCENE_ROAD);
+    let rock = Texture::from_native(SCENE_ROCK);
+    let crown = Texture::from_native(SCENE_NTREE1);
+    let trunk = Texture::from_native(SCENE_NTREE2);
+    let flash = Texture::from_native(SCENE_FLASH);
+    let smoke = Texture::from_native(SCENE_SMOKE);
     let grass_view = clamp_view(&grass);
     let road_view = clamp_view(&road);
     let rock_view = clamp_view(&rock);
@@ -324,27 +222,29 @@ fn main() {
         road: road_view.ptr(),
         rock: rock_view.ptr(),
     };
-    let layer_views = LayerViews {
-        crown: crown_view.ptr(),
-        trunk: trunk_view.ptr(),
-        flash: flash_view.ptr(),
-        smoke: smoke_view.ptr(),
-    };
-    let opaque = RenderStateDesc::opaque(Lighting::directional(
-        Vec3::unit_y(),
-        fix32::one(),
-        fix32::zero(),
-    ))
-    .with_filter(TextureFilter::Bilinear);
-    let stage_state = RenderState::new(opaque);
+    let stage_state = RenderState::new(stage_desc());
     let layer_state = RenderState::new(
-        opaque
+        stage_desc()
             .with_depth(DepthFunc::LessEqual, false)
             .with_blend(BlendMode::SrcOver),
     );
     let mut material = Material::new(
         MaterialDesc::lit(Rgba8::white(), Rgb8::black(), Shininess::S4).with_unlit(true),
     );
+    let mut stream = SpriteStream::new();
+    let layer_draw = LayerDraw {
+        mesh: mesh.ptr(),
+        sprites: sprite_owner.ptr(),
+        model: model.ptr(),
+        material: material.ptr(),
+        views: LayerViews {
+            crown: crown_view.ptr(),
+            trunk: trunk_view.ptr(),
+            flash: flash_view.ptr(),
+            smoke: smoke_view.ptr(),
+        },
+        layers: stream.plan(),
+    };
     gamepad_init();
     let mut orbit = initial_orbit();
     let mut direction = orbit_direction(&orbit);
@@ -412,6 +312,7 @@ fn main() {
         }
 
         buffer.reset();
+        let batch_count = stream.prepare(&mut writer, &mut sprite_owner, frame, direction);
         if first {
             buffer.invalidate_textures();
             first = false;
@@ -429,19 +330,15 @@ fn main() {
             );
             pass.set_camera(camera.ptr());
             pass.set_state(stage_state.ptr());
-            draw_stage(&mut pass, &mesh, model.ptr(), &mut material, &stage_views);
-            pass.set_state(layer_state.ptr());
-            draw_layers(
+            draw_stage(
                 &mut pass,
-                &mesh,
+                layer_draw.mesh,
                 model.ptr(),
                 &mut material,
-                &layer_views,
-                &LayerFrame {
-                    direction,
-                    index: frame,
-                },
+                &stage_views,
             );
+            pass.set_state(layer_state.ptr());
+            draw_layers(&mut pass, &layer_draw, batch_count);
         }
         gpu.submit(buffer);
         buffer = gpu.wait();
