@@ -1,5 +1,6 @@
 //! Small application menu helpers; no renderer or input ownership.
 use crate::dsl_rt::*;
+use crate::gamepad::{DS2_DOWN, DS2_LEFT, DS2_RIGHT, DS2_UP};
 mod gpu_api;
 use crate::common::state::*;
 use crate::common::ui::*;
@@ -27,24 +28,24 @@ pub fn lab_wrap_angle(value: fix32) -> fix32 {
 }
 pub fn lab_cursor(cursor: u16, pressed: u16, count: u16) -> u16 {
     let mut next = cursor;
-    if pressed & BUTTON_DOWN != 0 {
+    if pressed & DS2_DOWN != 0 {
         next = (next + 1) % count;
     }
-    if pressed & BUTTON_UP != 0 {
+    if pressed & DS2_UP != 0 {
         next = (next + count - 1) % count;
     }
     next
 }
 pub fn lab_adjust(value: u16, pressed: u16, step: u16, maximum: u16) -> u16 {
     let mut next = value;
-    if pressed & BUTTON_RIGHT != 0 {
+    if pressed & DS2_RIGHT != 0 {
         next = if maximum - next < step {
             maximum
         } else {
             next + step
         };
     }
-    if pressed & BUTTON_LEFT != 0 {
+    if pressed & DS2_LEFT != 0 {
         next = if next < step { 0 } else { next - step };
     }
     next

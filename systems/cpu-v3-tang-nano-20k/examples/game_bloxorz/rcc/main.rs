@@ -744,10 +744,10 @@ struct FrameClock {
 fn advance_gameplay(clock: &mut FrameClock) {
     gamepad_capture();
     let input = gamepad_take_frame();
-    if !GAME_SESSION.fading() && input.pressed & 8192 != 0 {
+    if !GAME_SESSION.fading() && input.pressed & DS2_CIRCLE != 0 {
         RENDER_STATE.hud.enabled ^= 1;
     }
-    if !GAME_SESSION.fading() && input.pressed & 1 != 0 {
+    if !GAME_SESSION.fading() && input.pressed & DS2_SELECT != 0 {
         RENDER_STATE.background = if RENDER_STATE.background == BackgroundMode::Dithered {
             BackgroundMode::Solid
         } else {
@@ -758,7 +758,7 @@ fn advance_gameplay(clock: &mut FrameClock) {
     let elapsed = now - clock.previous;
     clock.previous = now;
     let buttons = input.pressed;
-    let held = input.buttons & 240;
+    let held = input.buttons & DS2_DPAD;
     GAME_SESSION.tick(buttons, held, elapsed);
 }
 

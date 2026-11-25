@@ -12,7 +12,7 @@ use crate::pages::lab::lab_scene::*;
 use crate::pages::lab::light_tab::*;
 use crate::pages::lab::material_tab::*;
 use crate::pages::lab::surface_tab::*;
-use gamepad::*;
+use gamepad::{GamepadFrame, DS2_L2, DS2_R2, DS2_SQUARE, DS2_TRIANGLE};
 
 #[repr(u16)]
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -61,16 +61,16 @@ impl GpuLab {
             dt = 50;
         }
         let seconds = fix32::from_int(dt as i16) * fix!(0.001);
-        if input.pressed & BUTTON_SQUARE != 0 {
+        if input.pressed & DS2_SQUARE != 0 {
             self.show_camera = !self.show_camera;
         }
-        if input.pressed & BUTTON_R2 != 0 {
+        if input.pressed & DS2_R2 != 0 {
             self.tab = LabTab::from_index((self.tab as u16 + 1) % 4);
         }
-        if input.pressed & BUTTON_L2 != 0 {
+        if input.pressed & DS2_L2 != 0 {
             self.tab = LabTab::from_index((self.tab as u16 + 3) % 4);
         }
-        let reset = input.pressed & BUTTON_TRIANGLE != 0;
+        let reset = input.pressed & DS2_TRIANGLE != 0;
         if reset {
             self.surface = SurfaceTab::new();
             self.camera = CameraTab::new();

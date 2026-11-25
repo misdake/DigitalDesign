@@ -18,11 +18,6 @@ use gpu_api::*;
 use gpu_board::*;
 use time::*;
 
-const BUTTON_LEFT: u16 = 1 << 7;
-const BUTTON_RIGHT: u16 = 1 << 5;
-const BUTTON_TRIANGLE: u16 = 1 << 12;
-const BUTTON_CROSS: u16 = 1 << 14;
-const BUTTON_SQUARE: u16 = 1 << 15;
 const LOOP_MS: u16 = SCENE_FRAME_COUNT * SCENE_TICK_MS + 800;
 const SKY: Rgb565 = Rgb565::rgb(169, 182, 181);
 
@@ -270,22 +265,22 @@ fn main() {
         if frame > last {
             frame = last;
         }
-        if input.pressed & BUTTON_CROSS != 0 {
+        if input.pressed & DS2_CROSS != 0 {
             age = 0;
             frame = 0;
             paused = false;
-        } else if input.pressed & BUTTON_LEFT != 0 && frame > 0 {
+        } else if input.pressed & DS2_LEFT != 0 && frame > 0 {
             frame -= 1;
             age = frame * SCENE_TICK_MS;
             paused = true;
-        } else if input.pressed & BUTTON_RIGHT != 0 && frame < last {
+        } else if input.pressed & DS2_RIGHT != 0 && frame < last {
             frame += 1;
             age = frame * SCENE_TICK_MS;
             paused = true;
-        } else if input.pressed & BUTTON_SQUARE != 0 {
+        } else if input.pressed & DS2_SQUARE != 0 {
             paused = !paused;
         }
-        if input.pressed & BUTTON_TRIANGLE != 0 {
+        if input.pressed & DS2_TRIANGLE != 0 {
             orbit = initial_orbit();
             direction = orbit_direction(&orbit);
             orbit_camera(&mut camera, &orbit, direction);

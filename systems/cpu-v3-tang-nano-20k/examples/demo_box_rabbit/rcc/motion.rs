@@ -5,9 +5,6 @@ use gpu_api::*;
 mod gamepad;
 use gamepad::*;
 
-const BUTTON_L1: u16 = 1 << 10;
-const BUTTON_R1: u16 = 1 << 11;
-
 pub struct DemoMotion {
     pub eye: Vec3,
     pub yaw: fix32,
@@ -59,14 +56,14 @@ impl DemoMotion {
         if pitch < -limit {
             pitch = -limit;
         }
-        let shoulders = input.buttons & (BUTTON_L1 | BUTTON_R1);
+        let shoulders = input.buttons & (DS2_L1 | DS2_R1);
         let strafe = input.left_x * distance;
         let forward = -input.left_y * distance;
         let mut vertical = fix32::zero();
-        if shoulders == BUTTON_L1 {
+        if shoulders == DS2_L1 {
             vertical = -distance;
         }
-        if shoulders == BUTTON_R1 {
+        if shoulders == DS2_R1 {
             vertical = distance;
         }
         if yaw == old_yaw

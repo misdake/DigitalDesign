@@ -1,5 +1,8 @@
 //! App-owned page identity, navigation and independent animation clocks.
 use crate::dsl_rt::*;
+use crate::gamepad::{
+    DS2_CROSS, DS2_DOWN, DS2_L1, DS2_LEFT, DS2_R1, DS2_RIGHT, DS2_START, DS2_TRIANGLE, DS2_UP,
+};
 mod gpu_schema;
 use gpu_schema::DisplayFormat;
 
@@ -39,19 +42,6 @@ impl PageId {
     }
 }
 
-pub const BUTTON_START: u16 = 1 << 3;
-pub const BUTTON_UP: u16 = 1 << 4;
-pub const BUTTON_DOWN: u16 = 1 << 6;
-pub const BUTTON_RIGHT: u16 = 1 << 5;
-pub const BUTTON_LEFT: u16 = 1 << 7;
-pub const BUTTON_L1: u16 = 1 << 10;
-pub const BUTTON_R1: u16 = 1 << 11;
-pub const BUTTON_L2: u16 = 1 << 8;
-pub const BUTTON_R2: u16 = 1 << 9;
-pub const BUTTON_TRIANGLE: u16 = 1 << 12;
-pub const BUTTON_CROSS: u16 = 1 << 14;
-pub const BUTTON_SQUARE: u16 = 1 << 15;
-
 #[derive(Copy, Clone)]
 pub struct AnimationState {
     pub parameter: u16,
@@ -72,16 +62,16 @@ impl AnimationState {
         }
     }
     pub fn controls(&mut self, pressed: u16) {
-        if pressed & BUTTON_CROSS != 0 {
+        if pressed & DS2_CROSS != 0 {
             self.paused = !self.paused;
         }
-        if pressed & BUTTON_RIGHT != 0 {
+        if pressed & DS2_RIGHT != 0 {
             self.parameter = (self.parameter + 1) % 32;
         }
-        if pressed & BUTTON_LEFT != 0 {
+        if pressed & DS2_LEFT != 0 {
             self.parameter = (self.parameter + 31) % 32;
         }
-        if pressed & BUTTON_TRIANGLE != 0 {
+        if pressed & DS2_TRIANGLE != 0 {
             *self = Self::new();
         }
     }
@@ -123,32 +113,32 @@ pub fn update(mut state: DemoState, pressed: u16, now: u16) -> DemoState {
     } else if state.page == PageId::Geometry {
         state.geometry.advance(dt);
     }
-    if pressed & BUTTON_R1 != 0 {
+    if pressed & DS2_R1 != 0 {
         state.page = state.page.next();
     }
-    if pressed & BUTTON_L1 != 0 {
+    if pressed & DS2_L1 != 0 {
         state.page = state.page.previous();
     }
-    if pressed & BUTTON_START != 0 {
+    if pressed & DS2_START != 0 {
         state.page = PageId::Home;
     }
     if state.page == PageId::Home {
-        if pressed & BUTTON_DOWN != 0 {
+        if pressed & DS2_DOWN != 0 {
             state.selection = state.selection % MENU_COUNT + 1;
         }
-        if pressed & BUTTON_UP != 0 {
+        if pressed & DS2_UP != 0 {
             state.selection = (state.selection + MENU_COUNT - 2) % MENU_COUNT + 1;
         }
     }
-    let vertical = pressed & (BUTTON_UP | BUTTON_DOWN);
-    if state.page == PageId::Color && (vertical == BUTTON_UP || vertical == BUTTON_DOWN) {
+    let vertical = pressed & (DS2_UP | DS2_DOWN);
+    if state.page == PageId::Color && (vertical == DS2_UP || vertical == DS2_DOWN) {
         state.color_cursor = if state.color_cursor == DisplayFormat::Rgb565 {
             DisplayFormat::LinearRgb565
         } else {
             DisplayFormat::Rgb565
         };
     }
-    if pressed & BUTTON_CROSS != 0 {
+    if pressed & DS2_CROSS != 0 {
         if state.page == PageId::Home {
             state.page = PageId::from_index(state.selection);
             // Opening a page consumes Accept; it must not also pause that page.

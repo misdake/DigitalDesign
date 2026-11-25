@@ -1,5 +1,6 @@
 //! Independent geometry, base-color source and lighting choices.
 use crate::dsl_rt::*;
+use crate::gamepad::{DS2_CROSS, DS2_LEFT, DS2_RIGHT};
 mod gpu_api;
 use crate::common::state::*;
 use crate::common::ui::*;
@@ -44,10 +45,10 @@ impl SurfaceTab {
     pub fn update(&mut self, pressed: u16) {
         self.cursor = lab_cursor(self.cursor, pressed, 3);
         let mut step = 0;
-        if pressed & (BUTTON_RIGHT | BUTTON_CROSS) != 0 {
+        if pressed & (DS2_RIGHT | DS2_CROSS) != 0 {
             step = 1;
         }
-        if pressed & BUTTON_LEFT != 0 {
+        if pressed & DS2_LEFT != 0 {
             step = 3;
         }
         if step != 0 {

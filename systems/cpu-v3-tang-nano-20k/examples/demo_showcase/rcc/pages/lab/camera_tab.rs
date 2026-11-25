@@ -9,7 +9,7 @@ use crate::pages::lab::lab_scene::*;
 use crate::pages::lab::lab_ui::*;
 use boot_resources::*;
 mod gamepad;
-use gamepad::*;
+use gamepad::{GamepadFrame, DS2_LEFT, DS2_RIGHT};
 
 #[derive(Copy, Clone)]
 pub struct CameraTab {
@@ -42,12 +42,12 @@ impl CameraTab {
             fix!(2),
         );
         if self.cursor == 0 {
-            let step = if input.pressed & BUTTON_RIGHT != 0 {
+            let step = if input.pressed & DS2_RIGHT != 0 {
                 fix!(0.5)
             } else {
                 fix!(0)
             };
-            let back = if input.pressed & BUTTON_LEFT != 0 {
+            let back = if input.pressed & DS2_LEFT != 0 {
                 fix!(-0.5)
             } else {
                 fix!(0)

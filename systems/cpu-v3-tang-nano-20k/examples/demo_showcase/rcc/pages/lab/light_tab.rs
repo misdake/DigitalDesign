@@ -9,7 +9,7 @@ use crate::pages::lab::lab_scene::*;
 use crate::pages::lab::lab_ui::*;
 use boot_resources::*;
 mod gamepad;
-use gamepad::*;
+use gamepad::{GamepadFrame, DS2_LEFT, DS2_RIGHT};
 
 #[derive(Copy, Clone)]
 pub struct LightTab {
@@ -42,10 +42,10 @@ impl LightTab {
             fix!(1),
         );
         let mut delta = fix!(0);
-        if input.pressed & BUTTON_RIGHT != 0 {
+        if input.pressed & DS2_RIGHT != 0 {
             delta = fix!(0.1);
         }
-        if input.pressed & BUTTON_LEFT != 0 {
+        if input.pressed & DS2_LEFT != 0 {
             delta = fix!(-0.1);
         }
         if self.cursor == 0 {

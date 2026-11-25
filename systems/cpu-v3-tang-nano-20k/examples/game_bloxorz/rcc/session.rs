@@ -252,15 +252,15 @@ pub fn fraction(t: u16, duration: u16) -> fix32 {
 
 fn direction_button(direction: u16) -> u16 {
     if direction == 0 {
-        32
+        DS2_RIGHT
     } else {
         if direction == 1 {
-            128
+            DS2_LEFT
         } else {
             if direction == 2 {
-                64
+                DS2_DOWN
             } else {
-                16
+                DS2_UP
             }
         }
     }
@@ -404,7 +404,11 @@ impl BloxorzSession {
             self.animation.direction_stack = 0;
             gamepad_discard_edges();
             let input = gamepad_take_frame();
-            self.animation.held_lock = if input.buttons & 240 != 0 { 1u16 } else { 0u16 };
+            self.animation.held_lock = if input.buttons & DS2_DPAD != 0 {
+                1u16
+            } else {
+                0u16
+            };
         }
     }
 
@@ -610,7 +614,7 @@ impl BloxorzSession {
             return;
         }
         if self.animation.held_lock != 0 {
-            if held & 240 == 0 {
+            if held & DS2_DPAD == 0 {
                 self.animation.held_lock = 0;
             } else {
                 return;
@@ -633,7 +637,7 @@ impl BloxorzSession {
             stack >>= 4;
         }
         self.animation.direction_stack = compact;
-        if pressed & 240 != 0 {
+        if pressed & DS2_DPAD != 0 {
             let mut i: u16 = 0;
             while i < 4 {
                 let bit = direction_button(i);
@@ -650,15 +654,15 @@ impl BloxorzSession {
         let dt = if elapsed > 50 { 50u16 } else { elapsed };
         self.held_update(pressed, held);
         if !self.fading() {
-            if pressed & 1024 != 0 {
+            if pressed & DS2_L1 != 0 {
                 self.begin_fade((self.motion.level + BLOX_LEVEL_COUNT - 1) % BLOX_LEVEL_COUNT);
-            } else if pressed & (4096 | 2048) != 0 {
+            } else if pressed & (DS2_TRIANGLE | DS2_R1) != 0 {
                 self.begin_fade((self.motion.level + 1) % BLOX_LEVEL_COUNT);
-            } else if pressed & 8 != 0 {
+            } else if pressed & DS2_START != 0 {
                 self.begin_fade(self.motion.level);
-            } else if pressed & 32768 != 0 {
+            } else if pressed & DS2_SQUARE != 0 {
                 self.undo();
-            } else if pressed & 16384 != 0 {
+            } else if pressed & DS2_CROSS != 0 {
                 self.try_move(6);
             }
         }

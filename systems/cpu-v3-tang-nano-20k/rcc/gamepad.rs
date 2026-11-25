@@ -5,6 +5,26 @@ use dualshock2::*;
 mod stick;
 use stick::*;
 
+// Active-high masks shared by held, pressed, and released button states.
+pub const DS2_SELECT: u16 = 1 << 0;
+pub const DS2_L3: u16 = 1 << 1;
+pub const DS2_R3: u16 = 1 << 2;
+pub const DS2_START: u16 = 1 << 3;
+pub const DS2_UP: u16 = 1 << 4;
+pub const DS2_RIGHT: u16 = 1 << 5;
+pub const DS2_DOWN: u16 = 1 << 6;
+pub const DS2_LEFT: u16 = 1 << 7;
+pub const DS2_L2: u16 = 1 << 8;
+pub const DS2_R2: u16 = 1 << 9;
+pub const DS2_L1: u16 = 1 << 10;
+pub const DS2_R1: u16 = 1 << 11;
+pub const DS2_TRIANGLE: u16 = 1 << 12;
+pub const DS2_CIRCLE: u16 = 1 << 13;
+pub const DS2_CROSS: u16 = 1 << 14;
+pub const DS2_SQUARE: u16 = 1 << 15;
+
+pub const DS2_DPAD: u16 = DS2_UP | DS2_RIGHT | DS2_DOWN | DS2_LEFT;
+
 pub struct GamepadFrame {
     pub connected: u16,
     pub id: u16,

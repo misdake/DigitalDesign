@@ -248,6 +248,12 @@ to own the raw state, calibration and per-frame edge consumption. Do not mix
 independent raw readers with that facade: Device5 begin-read/changed belongs to
 one CPU consumer. Neither entry point waits for serial I/O or retries internally.
 
+The gamepad facade exports an active-high `DS2_*` mask for each button. Use
+the same masks with `GamepadFrame.buttons`, `pressed` and `released`. Combine
+buttons with `|` and test with `&`, for example
+`input.pressed & (DS2_CROSS | DS2_CIRCLE) != 0`. `DS2_DPAD` combines the four
+directional buttons.
+
 ## Validation and limits
 
 Bounded independent peers check complete command bytes, setup/hold/guard,

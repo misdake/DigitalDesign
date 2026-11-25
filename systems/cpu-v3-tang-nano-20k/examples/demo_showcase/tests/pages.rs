@@ -12,33 +12,35 @@ fn page_navigation_keeps_animation_controls_and_clocks_independent() {
     let source = r#"
 use crate::dsl_rt::*;
 mod state; use state::*;
+mod gamepad;
+use crate::gamepad::{DS2_CROSS, DS2_DOWN, DS2_L1, DS2_R1, DS2_RIGHT, DS2_START, DS2_TRIANGLE};
 fn main() {
     let mut s = initial_state(1,65530);
-    s=update(s,BUTTON_RIGHT|BUTTON_CROSS,5);
+    s=update(s,DS2_RIGHT|DS2_CROSS,5);
     assert(s.triangles.parameter==9 && s.triangles.paused && s.triangles.elapsed==11,0x7101);
-    s=update(s,BUTTON_R1,105);
+    s=update(s,DS2_R1,105);
     assert(s.page==PageId::Waves && !s.waves.paused && s.waves.parameter==8 && s.waves.elapsed==0,0x7102);
-    s=update(s,BUTTON_RIGHT,205);
+    s=update(s,DS2_RIGHT,205);
     assert(s.waves.parameter==9 && s.waves.elapsed==100 && s.triangles.elapsed==11,0x7103);
-    s=update(s,BUTTON_L1,305);
+    s=update(s,DS2_L1,305);
     assert(s.triangles.paused && s.waves.elapsed==200,0x7104);
-    s=update(s,BUTTON_TRIANGLE,405);
+    s=update(s,DS2_TRIANGLE,405);
     assert(!s.triangles.paused && s.triangles.parameter==8 && s.triangles.elapsed==0,0x7105);
     assert(s.waves.parameter==9 && s.waves.elapsed==200,0x7106);
-    s=update(s,BUTTON_START,505);
-    s=update(s,BUTTON_CROSS,605);
+    s=update(s,DS2_START,505);
+    s=update(s,DS2_CROSS,605);
     assert(s.page==PageId::Triangles && !s.triangles.paused && s.triangles.elapsed==100,0x7107);
     let mut g=initial_state(5,0);
-    g=update(g,BUTTON_RIGHT|BUTTON_CROSS,10);
+    g=update(g,DS2_RIGHT|DS2_CROSS,10);
     assert(g.geometry.parameter==9 && g.geometry.paused && !g.triangles.paused,0x7108);
-    g=update(g,BUTTON_R1,20);
+    g=update(g,DS2_R1,20);
     assert(g.page==PageId::GpuLab && g.page.uses_gpu_scene() && !g.page.is_animated(),0x7109);
-    g=update(g,BUTTON_R1,30);
+    g=update(g,DS2_R1,30);
     assert(g.page==PageId::Home,0x710a);
     let mut c=initial_state(4,0);
-    c=update(c,BUTTON_DOWN,1);
+    c=update(c,DS2_DOWN,1);
     assert(c.color_cursor as u16==1 && c.color_mode as u16==0,0x710b);
-    c=update(c,BUTTON_CROSS,2);
+    c=update(c,DS2_CROSS,2);
     assert(c.color_mode as u16==1 && c.geometry.parameter==8,0x710c);
     halt(0x600d);
 }
@@ -55,8 +57,8 @@ fn main() {
         &mut |name| {
             let leaf = name.rsplit('/').next().unwrap_or(name);
             let directory = match leaf {
-                "gpu_schema" | "gpu_limits" => root.join("rcc"),
-                _ => root.join("examples/demo_showcase/rcc/common"),
+                "state" => root.join("examples/demo_showcase/rcc/common"),
+                _ => root.join("rcc"),
             };
             std::fs::read_to_string(directory.join(format!("{leaf}.rs"))).map_err(|e| e.to_string())
         },
