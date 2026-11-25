@@ -1249,6 +1249,12 @@ and visibility-widening re-exports fail before target lowering. Ordinary modules
 receive distinct internal symbols, so functions/types/constants may share names
 across files. Inline modules remain outside the subset.
 
+An import takes its visibility from the declaration or alias selected by its
+path. Distinct declarations of a shared compatibility module retain separate
+visibility. An explicit re-export cannot widen the selected binding. A glob
+imports visible entries and caps each entry's export visibility at its source
+scope. Legacy compatibility symbol definitions retain their export rules.
+
 `ModuleSource.namespace` defaults to `ModuleNamespace::Scoped` in the plain checked
 loader adapter. The host may explicitly select `Flat` for existing SDK or generated
 constant exports. That flag controls naming only: actual canonical origins and
@@ -1267,7 +1273,8 @@ labels, asset bytes or allocation policy.
 
 Checked compilation also supports ordinary sized-value references with elided
 lifetimes. `&T` and `&mut T` occupy one address word and borrow the original
-memory-resident value; they never copy the referenced struct. Locals, parameters,
+memory-resident value; they never copy the referenced struct. An ordinary field
+of a resource aggregate can be borrowed as an ordinary value. Locals, parameters,
 fields and array elements can be borrowed, dereferenced, forwarded, returned under
 rustc's lifetime rules, and selected by conditionals. Fields and inherent value
 methods automatically dereference ordinary borrows. Mutable borrows coerce to

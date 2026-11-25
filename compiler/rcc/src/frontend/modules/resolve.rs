@@ -37,6 +37,9 @@ enum Target {
 struct Binding {
     target: Target,
     scope: Option<usize>,
+    // Legacy symbol definitions retain their existing export behavior.
+    // An ordinary import still has its own visibility, even for those symbols.
+    reexport_scope: Option<usize>,
 }
 
 struct Names<'a> {
@@ -62,6 +65,20 @@ impl Names<'_> {
             child = parent;
         }
     }
+    fn lexical_module(&self, module: usize) -> Binding {
+        let scope = self.graph.parents[module].and_then(|parent| {
+            let (name, _) = self.graph.children[parent]
+                .iter()
+                .find(|(_, child)| **child == module)?;
+            self.module_scopes[parent].get(name)?.scope
+        });
+        Binding {
+            target: Target::Module(module),
+            scope,
+            reexport_scope: scope,
+        }
+    }
+
     fn member(
         &self,
         current: usize,
@@ -105,17 +122,17 @@ impl Names<'_> {
         parts: &[String],
         at: &impl syn::spanned::Spanned,
         module_context: bool,
-    ) -> Result<Option<(Target, usize)>, syn::Error> {
+    ) -> Result<Option<(Binding, usize)>, syn::Error> {
         let Some(first) = parts.first() else {
             return Ok(None);
         };
-        let (mut target, mut consumed) = match first.as_str() {
-            "crate" => (Target::Module(0), 1),
-            "self" => (Target::Module(current), 1),
+        let mut binding = match first.as_str() {
+            "crate" => self.lexical_module(0),
+            "self" => self.lexical_module(current),
             "super" => {
                 let parent = self.graph.parents[current]
                     .ok_or_else(|| err(at, "super escapes the crate root"))?;
-                (Target::Module(parent), 1)
+                self.lexical_module(parent)
             }
             _ => {
                 let binding = if module_context || parts.len() > 1 {
@@ -131,10 +148,10 @@ impl Names<'_> {
                 let Some(binding) = binding else {
                     return Ok(None);
                 };
-                (binding.target.clone(), 1)
+                binding.clone()
             }
         };
-        let key = if matches!(target, Target::Module(_)) {
+        let key = if matches!(binding.target, Target::Module(_)) {
             format!("::{first}")
         } else {
             first.clone()
@@ -142,17 +159,18 @@ impl Names<'_> {
         if self.ambiguous.contains(&(current, key)) {
             return Err(err(at, format!("ambiguous module import `{first}`")));
         }
+        let mut consumed = 1;
         while consumed < parts.len() {
-            let Target::Module(module) = target else {
+            let Target::Module(module) = binding.target else {
                 break;
             };
-            if parts[consumed] == "super" {
-                target = Target::Module(
+            binding = if parts[consumed] == "super" {
+                self.lexical_module(
                     self.graph.parents[module]
                         .ok_or_else(|| err(at, "super escapes the crate root"))?,
-                );
+                )
             } else {
-                let Some(binding) = self.member(
+                let Some(member) = self.member(
                     current,
                     module,
                     &parts[consumed],
@@ -162,11 +180,11 @@ impl Names<'_> {
                 else {
                     return Ok(None);
                 };
-                target = binding.target;
-            }
+                member
+            };
             consumed += 1;
         }
-        Ok(Some((target, consumed)))
+        Ok(Some((binding, consumed)))
     }
 }
 
@@ -294,7 +312,13 @@ impl Rewrite<'_, '_> {
         }
         let result = self.names.resolve(self.file, &parts, path, false);
         match result {
-            Ok(Some((Target::Symbol { file, name }, used))) => {
+            Ok(Some((
+                Binding {
+                    target: Target::Symbol { file, name },
+                    ..
+                },
+                used,
+            ))) => {
                 let emitted = &self.names.emitted[&(file, name)];
                 let mut segments = syn::punctuated::Punctuated::new();
                 let mut head = path.segments[used - 1].clone();
@@ -464,12 +488,14 @@ pub(super) fn prepare(
         for item in &file.items {
             if let Some((ident, vis)) = definition(item) {
                 let name = ident.to_string();
+                let scope = visibility(vis, fi, graph).map_err(|e| (fi, e))?;
                 let binding = Binding {
                     target: Target::Symbol {
                         file: fi,
                         name: name.clone(),
                     },
-                    scope: visibility(vis, fi, graph).map_err(|e| (fi, e))?,
+                    scope,
+                    reexport_scope: if legacy { None } else { scope },
                 };
                 if names.scopes[fi]
                     .insert(name.clone(), binding.clone())
@@ -518,11 +544,13 @@ pub(super) fn prepare(
             }
             if let Item::Mod(module) = item {
                 if let Some(&child) = graph.children[fi].get(&module.ident.to_string()) {
+                    let scope = visibility(&module.vis, fi, graph).map_err(|e| (fi, e))?;
                     names.module_scopes[fi].insert(
                         module.ident.to_string(),
                         Binding {
                             target: Target::Module(child),
-                            scope: visibility(&module.vis, fi, graph).map_err(|e| (fi, e))?,
+                            scope,
+                            reexport_scope: scope,
                         },
                     );
                     names
@@ -562,7 +590,7 @@ pub(super) fn prepare(
     for _ in 0..=files.len() {
         let mut changed = false;
         for (fi, path, alias, scope, at) in &imports {
-            let Some((target, used)) = names.resolve(*fi, path, *at, true).map_err(|e| (*fi, e))?
+            let Some((source, used)) = names.resolve(*fi, path, *at, true).map_err(|e| (*fi, e))?
             else {
                 continue;
             };
@@ -570,14 +598,8 @@ pub(super) fn prepare(
                 continue;
             }
             let entries = if let Some(alias) = alias {
-                vec![(
-                    alias.clone(),
-                    Binding {
-                        target,
-                        scope: *scope,
-                    },
-                )]
-            } else if let Target::Module(module) = target {
+                vec![(alias.clone(), source)]
+            } else if let Target::Module(module) = source.target {
                 names.scopes[module]
                     .iter()
                     .chain(names.module_scopes[module].iter())
@@ -585,46 +607,34 @@ pub(super) fn prepare(
                         !names.ambiguous.contains(&(module, (*name).clone()))
                             && (b.scope.is_none_or(|scope| names.descendant(*fi, scope)))
                     })
-                    .map(|(name, b)| {
-                        (
-                            name.clone(),
-                            Binding {
-                                target: b.target.clone(),
-                                scope: *scope,
-                            },
-                        )
-                    })
+                    .map(|(name, binding)| (name.clone(), binding.clone()))
                     .collect()
             } else {
                 continue;
             };
-            for (name, binding) in entries {
-                let original = match &binding.target {
-                    Target::Symbol { file, name }
-                        if !protected.contains_key(file) && !graph.compatibility[*file] =>
+            for (name, source) in entries {
+                let scope = match source.reexport_scope {
+                    Some(limit)
+                        if scope.is_none_or(|requested| !names.descendant(requested, limit)) =>
                     {
-                        names.scopes[*file].get(name)
+                        if alias.is_some() {
+                            return Err((
+                                *fi,
+                                err(
+                                    *at,
+                                    format!("cannot re-export private module item `{name}`"),
+                                ),
+                            ));
+                        }
+                        Some(limit)
                     }
-                    Target::Symbol { .. } => None,
-                    Target::Module(module) => graph.parents[*module].and_then(|parent| {
-                        names.module_scopes[parent]
-                            .values()
-                            .find(|b| b.target == binding.target)
-                    }),
+                    _ => *scope,
                 };
-                if original.and_then(|b| b.scope).is_some_and(|original| {
-                    binding
-                        .scope
-                        .is_none_or(|requested| !names.descendant(requested, original))
-                }) {
-                    return Err((
-                        *fi,
-                        err(
-                            *at,
-                            format!("cannot re-export private module item `{name}`"),
-                        ),
-                    ));
-                }
+                let binding = Binding {
+                    target: source.target,
+                    scope,
+                    reexport_scope: scope,
+                };
                 let is_module = matches!(binding.target, Target::Module(_));
                 let key = (
                     *fi,

@@ -1091,9 +1091,13 @@ impl<'a> Checker<'a> {
                         let local = name(&r.expr).ok_or_else(|| {
                             error(r, "resource reborrows need a simple bound local")
                         })?;
-                        let binding = self
-                            .lookup(&local, r)?
-                            .ok_or_else(|| error(r, "resource reborrows need a resource place"))?;
+                        let Some(binding) = self.lookup(&local, r)? else {
+                            if let Some(place) = self.ordinary_field(&r.expr) {
+                                *r.expr = place;
+                                return Ok(Kind::Scalar);
+                            }
+                            return Err(error(r, "resource reborrows need a resource place"));
+                        };
                         let mutable = r.mutability.is_some();
                         if mutable && !binding.mutable {
                             return Err(error(r, "mutable resource borrow needs a mutable owner"));

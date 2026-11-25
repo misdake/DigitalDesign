@@ -69,6 +69,20 @@ impl Fixture {
         );
         (r, deps)
     }
+    fn compile_checked(&self, source: &str) -> Result<rcc::frontend::Program, String> {
+        let options = cpu_v3::rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        rcc::frontend::compile_program_named_with_libraries_checked(
+            "main.rs",
+            source,
+            &options,
+            &[],
+            &rcc::frontend::rustc_check::RustcCheck::new(self.root.join("rustc")),
+            &mut |name| {
+                resolver::load_module_source(&self.local, &self.shared, "", name, &mut |_| {})
+            },
+        )
+        .map_err(|error| error.to_string())
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -93,6 +107,82 @@ fn local_overrides_shared_and_missing_local_override_is_observed() {
     let (text, deps) = f.load("value");
     assert_eq!(text.unwrap(), "local");
     assert!(deps.contains(&f.local.join("value.rs")));
+}
+
+#[test]
+fn shared_module_import_uses_the_visibility_of_the_selected_declaration() {
+    let f = Fixture::new();
+    std::fs::write(f.shared.join("shared.rs"), "pub fn value() -> u16 { 7 }").unwrap();
+    std::fs::write(f.local.join("private_route.rs"), "mod shared;").unwrap();
+    std::fs::write(f.local.join("public_route.rs"), "pub mod shared;").unwrap();
+
+    for declarations in [
+        "mod private_route; mod public_route;",
+        "mod public_route; mod private_route;",
+    ] {
+        for import in [
+            "use crate::public_route::shared;",
+            "use crate::public_route::*;",
+            "pub use crate::public_route::shared;",
+            "pub use crate::public_route::*;",
+        ] {
+            let source = format!("{declarations} {import} fn main() {{ halt(shared::value()); }}");
+            f.compile_checked(&source)
+                .unwrap_or_else(|error| panic!("{source}\n{error}"));
+        }
+        let source = format!("{declarations} pub use crate::private_route::shared; fn main() {{}}");
+        let error = f
+            .compile_checked(&source)
+            .err()
+            .expect("private route was visible");
+        assert!(error.contains("private module item `shared`"), "{error}");
+    }
+}
+
+#[test]
+fn scoped_module_reexports_preserve_the_selected_bindings_scope() {
+    let f = Fixture::new();
+    std::fs::write(
+        f.local.join("values.rs"),
+        "pub fn value() -> u16 { 7 } pub(crate) fn restricted() -> u16 { 1 }",
+    )
+    .unwrap();
+    std::fs::write(
+        f.local.join("facade.rs"),
+        "use crate::values::value as hidden; pub use self::hidden as exposed;",
+    )
+    .unwrap();
+    std::fs::write(
+        f.local.join("module_alias.rs"),
+        "pub use self as exposed; pub fn value() -> u16 { 7 }",
+    )
+    .unwrap();
+
+    for source in [
+        "mod values; pub use crate::values::value; fn main() { halt(value()); }",
+        "mod values; pub use crate::values::*; fn main() { halt(value() + restricted()); }",
+        "pub mod module_alias; fn main() { halt(module_alias::exposed::value()); }",
+    ] {
+        f.compile_checked(source)
+            .unwrap_or_else(|error| panic!("{source}\n{error}"));
+    }
+    for (source, name) in [
+        (
+            "mod values; pub use crate::values::restricted; fn main() {}",
+            "restricted",
+        ),
+        ("mod values; mod facade; fn main() {}", "exposed"),
+        ("mod module_alias; fn main() {}", "exposed"),
+    ] {
+        let error = f
+            .compile_checked(source)
+            .err()
+            .expect("re-export widened visibility");
+        assert!(
+            error.contains(&format!("cannot re-export private module item `{name}`")),
+            "{error}"
+        );
+    }
 }
 #[test]
 fn non_not_found_read_and_parse_errors_do_not_use_shared() {
