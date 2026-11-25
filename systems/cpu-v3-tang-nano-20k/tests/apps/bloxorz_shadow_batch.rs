@@ -147,7 +147,7 @@ fn application_from_sources(
         "block_pose(model);",
         "block_pose(model);world_probe(model);",
     );
-    source+="\nfn world_probe(model:&Model){let world=model.world();let words:Buf<u16,24>=Buf::new([world.row0.x.lo_bits(),world.row0.x.hi_bits(),world.row0.y.lo_bits(),world.row0.y.hi_bits(),world.row0.z.lo_bits(),world.row0.z.hi_bits(),world.row0.w.lo_bits(),world.row0.w.hi_bits(),world.row1.x.lo_bits(),world.row1.x.hi_bits(),world.row1.y.lo_bits(),world.row1.y.hi_bits(),world.row1.z.lo_bits(),world.row1.z.hi_bits(),world.row1.w.lo_bits(),world.row1.w.hi_bits(),world.row2.x.lo_bits(),world.row2.x.hi_bits(),world.row2.y.lo_bits(),world.row2.y.hi_bits(),world.row2.z.lo_bits(),world.row2.z.hi_bits(),world.row2.w.lo_bits(),world.row2.w.hi_bits()]);signal(13,words.as_ptr().addr());}\n";
+    source+="\nfn world_probe(model:&Transform){let world=model.world();let words:Buf<u16,24>=Buf::new([world.row0.x.lo_bits(),world.row0.x.hi_bits(),world.row0.y.lo_bits(),world.row0.y.hi_bits(),world.row0.z.lo_bits(),world.row0.z.hi_bits(),world.row0.w.lo_bits(),world.row0.w.hi_bits(),world.row1.x.lo_bits(),world.row1.x.hi_bits(),world.row1.y.lo_bits(),world.row1.y.hi_bits(),world.row1.z.lo_bits(),world.row1.z.hi_bits(),world.row1.w.lo_bits(),world.row1.w.hi_bits(),world.row2.x.lo_bits(),world.row2.x.hi_bits(),world.row2.y.lo_bits(),world.row2.y.hi_bits(),world.row2.z.lo_bits(),world.row2.z.hi_bits(),world.row2.w.lo_bits(),world.row2.w.hi_bits()]);signal(13,words.as_ptr().addr());}\n";
     if baseline.is_none() {
         source = source.replace(
             "let ground_owner = ground_begin();",
@@ -206,15 +206,15 @@ fn application_from_sources(
         shadow = shadow.replace(&needle, &format!("fn measured_body_{name}("));
     }
     shadow += r#"
-pub fn draw_shadow(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,b:&Model){signal(5,0);measured_body_draw_shadow(p,m,o,a,b);signal(6,0);}
+pub fn draw_shadow(p:&mut Pass,o:&mut Transform,m:&Mesh,a:&Material,b:&Transform){signal(5,0);measured_body_draw_shadow(p,o,m,a,b);signal(6,0);}
 fn shadow_project(w:Mat3x4)->u16{signal(7,1);let n=measured_body_shadow_project(w);signal(8,1);n}
 fn shadow_hull(c:u16)->u16{signal(7,2);let n=measured_body_shadow_hull(c);signal(8,2);n}
 fn shadow_clip(a:Array<ShadowScalar>,b:Array<ShadowScalar>,c:u16,d:fix32,e:u16)->u16{signal(7,3);let n=measured_body_shadow_clip(a,b,c,d,e);signal(8,3);n}
-fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){let v:Buf<u16,12>=Buf::new([t.x.lo_bits(),t.x.hi_bits(),t.z.lo_bits(),t.z.hi_bits(),t.ax.lo_bits(),t.ax.hi_bits(),t.az.lo_bits(),t.az.hi_bits(),t.bx.lo_bits(),t.bx.hi_bits(),t.bz.lo_bits(),t.bz.hi_bits()]);signal(9,v.as_ptr().addr());signal(7,4);measured_body_shadow_draw(p,m,o,a,t);signal(8,4);}
+fn shadow_draw(p:&mut Pass,o:&mut Transform,m:&Mesh,a:&Material,t:ShadowTriangle){let v:Buf<u16,12>=Buf::new([t.x.lo_bits(),t.x.hi_bits(),t.z.lo_bits(),t.z.hi_bits(),t.ax.lo_bits(),t.ax.hi_bits(),t.az.lo_bits(),t.az.hi_bits(),t.bx.lo_bits(),t.bx.hi_bits(),t.bz.lo_bits(),t.bz.hi_bits()]);signal(9,v.as_ptr().addr());signal(7,4);measured_body_shadow_draw(p,o,m,a,t);signal(8,4);}
 "#;
 
     if name.ends_with("-snapped") {
-        shadow=shadow.replace("measured_body_shadow_draw(p,m,o,a,t);", "let x=batch_snap(t.x);let z=batch_snap(t.z);let triangle:ShadowTriangle=ShadowTriangle{x:x,z:z,ax:batch_snap(t.x+t.ax)-x,az:batch_snap(t.z+t.az)-z,bx:batch_snap(t.x+t.bx)-x,bz:batch_snap(t.z+t.bz)-z};measured_body_shadow_draw(p,m,o,a,triangle);");
+        shadow=shadow.replace("measured_body_shadow_draw(p,o,m,a,t);", "let x=batch_snap(t.x);let z=batch_snap(t.z);let triangle:ShadowTriangle=ShadowTriangle{x:x,z:z,ax:batch_snap(t.x+t.ax)-x,az:batch_snap(t.z+t.az)-z,bx:batch_snap(t.x+t.bx)-x,bz:batch_snap(t.z+t.bz)-z};measured_body_shadow_draw(p,o,m,a,triangle);");
         shadow+="\nfn batch_snap(v:fix32)->fix32{fix32::from_int((v*fix32::from_int(512)+fix32::from_words(32768,0)).to_int())*fix32::from_words(128,0)}\n";
     }
 
@@ -242,7 +242,7 @@ fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){le
             "fn draw_shadow(",
             "fn measured_body_draw_shadow(",
         );
-        plain+="\npub fn draw_shadow(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,b:&Model){signal(5,0);measured_body_draw_shadow(p,m,o,a,b);signal(6,0);}\n";
+        plain+="\npub fn draw_shadow(p:&mut Pass,o:&mut Transform,m:&Mesh,a:&Material,b:&Transform){signal(5,0);measured_body_draw_shadow(p,o,m,a,b);signal(6,0);}\n";
         shadow = plain;
     }
     std::fs::write(path, shadow).unwrap();

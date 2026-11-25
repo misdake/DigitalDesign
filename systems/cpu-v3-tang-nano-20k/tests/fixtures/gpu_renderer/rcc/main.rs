@@ -30,9 +30,9 @@ fn camera() -> Camera {
         projection: Projection::from_focal_pixels(fix32::from_int(200), fix32::from_int(199)),
     })
 }
-fn model() -> Model {
+fn model() -> Transform {
     let one = fix32::from_int(1);
-    Model::new(Transform {
+    Transform::new(Pose {
         position: point(fix32::zero(), fix32::zero(), fix32::from_int(-3)),
         angles: zero(),
         scale: point(one, one, one),
@@ -245,7 +245,7 @@ fn run(limit: u16) {
             );
             pass.set_camera(camera.ptr());
             pass.set_state(state.ptr());
-            pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
+            pass.draw(model.ptr(), mesh.ptr(), material.ptr(), &view);
             pass.draw_ui(
                 grid_b.ptr(),
                 CellRect {
@@ -265,7 +265,7 @@ fn run(limit: u16) {
             );
             pass.set_camera(camera.ptr());
             pass.set_state(state.ptr());
-            pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
+            pass.draw(model.ptr(), mesh.ptr(), material.ptr(), &view);
             pass.draw_ui(
                 grid_a.ptr(),
                 CellRect {
@@ -297,7 +297,6 @@ fn run(limit: u16) {
     drop(buffer);
     drop(grid_a);
     drop(grid_b);
-    drop(view);
     drop(mesh);
     drop(state);
     drop(material);

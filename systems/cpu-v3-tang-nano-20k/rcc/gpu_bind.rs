@@ -31,7 +31,7 @@ fn gpu_bind_copy(c: Array<u16>, dst: u16, data: Array<u16>, src: u16, words: u16
 }
 fn gpu_bind_world_prepare(model: Array<u16>, mut native: Array<u16>) {
     // Assemble two 64-byte sections from tightly packed source matrices.
-    // Model padding never becomes a GPU coefficient or material value.
+    // Transform padding never becomes a GPU coefficient or material value.
     gpu_bind_copy(native, GPU_SCRATCH_INSTANCE, model, 0, 24);
     gpu_bind_copy(native, GPU_SCRATCH_INSTANCE + 32, model, 24, 18);
     native[GPU_SCRATCH_INSTANCE + 24] = 0;
@@ -134,7 +134,7 @@ fn gpu_bind_scene_current(slot: u16) -> bool {
     let valid = gpu_record_data(slot)[GPU_RECORD_VALID];
     valid & (1 | GPU_BIND_SCENE_DIRTY) == 1
 }
-// Seven caller-local words: changes, borrowed Model pointer, View/Scene offset,
+// Seven caller-local words: changes, borrowed Transform pointer, View/Scene offset,
 // World offset, push end, command words and DRAW mode (zero for scene-only).
 // Full View and its Scene tail are one mutually exclusive upload decision.
 const GPU_BIND_PLAN_VIEW: u16 = 16;

@@ -30,7 +30,7 @@ struct DrawSpan {
 pub struct World {
     unlit: UnlitBank,
     bindings: Ptr,
-    model: Model,
+    model: Transform,
     camera: Camera,
     material: Material,
     opaque: RenderState,
@@ -78,7 +78,7 @@ impl World {
         let mut world = Self {
             unlit,
             bindings: Ptr::from_addr(0),
-            model: Model::new(Transform::identity()),
+            model: Transform::new(Pose::identity()),
             camera: Camera::new(CameraDesc::new(
                 Vec3::zero(),
                 Vec3::zero(),
@@ -174,12 +174,9 @@ impl World {
                         if MAP_MATERIALS[material * 4 + 1] != 0 {
                             view.set_address_mode(TextureAddressMode::ClampToEdge);
                         }
-                        map[index] = self.unlit.add(
-                            state,
-                            self.material.ptr(),
-                            view.ptr(),
-                            key & 32768 != 0,
-                        );
+                        map[index] =
+                            self.unlit
+                                .add(state, self.material.ptr(), &view, key & 32768 != 0);
                     }
                 }
                 i += 1;

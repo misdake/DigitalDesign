@@ -1,4 +1,4 @@
-//! Independent signed-axis group and actual Model source-matrix qualification.
+//! Independent signed-axis group and actual Transform source-matrix qualification.
 use super::scenarios;
 use super::*;
 use cpu_v3::{CpuV3Sim, Device};
@@ -26,7 +26,7 @@ fn all_cube_orientations_preserve_world_and_normal_columns() {
     let body = &module[module.find("pub const ROTATION_IDENTITY").unwrap()..];
     let caller = r#"mod gpu_api;use gpu_api::*;
 fn v(x:i16,y:i16,z:i16)->Vec3{Vec3{x:fix32::from_int(x),y:fix32::from_int(y),z:fix32::from_int(z)}}
-fn save_model(model:&Model,at:u16){
+fn save_model(model:&Transform,at:u16){
  let mut world=model.world();let mut normal=model.normal();
  let w=unsafe{view_of(&mut world).as_ptr().as_u16_array()};let n=unsafe{view_of(&mut normal).as_ptr().as_u16_array()};
  let out=Ptr::from_addr(at);let mut i:u16=0;while i<24 {unsafe{out.write(i as i16,w[i]);}i+=1;}
@@ -40,8 +40,8 @@ fn main(){
  let memory:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_sectors(0x9800,512)},push:unsafe{GpuMemory::from_sectors(0x9a00,512)}};
  let absent:Option<CommandMemory>=None;
  let gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:memory,command_b:absent});
- let pose:Transform=Transform{position:v(7,9,-2),angles:Vec3{x:fix32::zero(),y:fix32::zero(),z:fix32::from_words(32768,0)},scale:v(1,2,3)};
- let mut model=Model::new(pose);save_model(&model,0x4200);q=0;
+ let pose:Pose=Pose{position:v(7,9,-2),angles:Vec3{x:fix32::zero(),y:fix32::zero(),z:fix32::from_words(32768,0)},scale:v(1,2,3)};
+ let mut model=Transform::new(pose);save_model(&model,0x4200);q=0;
  while q<24 {rotation_pose(&mut model,pose,q);save_model(&model,0x4300+q*42);q+=1;}
  drop(model);drop(gpu);halt(0x600d);
 }"#;
@@ -134,7 +134,7 @@ fn roll_completion_inverse_and_undo_keep_the_same_local_faces() {
     let body = r#"
 let memory:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_sectors(0x9800,512)},push:unsafe{GpuMemory::from_sectors(0x9a00,512)}};
 let absent:Option<CommandMemory>=None;let gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:memory,command_b:absent});
-let mut model=Model::new(Transform::new(Vec3::zero(),Vec3::zero(),Vec3::new(fix32::from_int(1),fix32::from_int(1),fix32::from_int(1))));
+let mut model=Transform::new(Pose::new(Vec3::zero(),Vec3::zero(),Vec3::new(fix32::from_int(1),fix32::from_int(1),fix32::from_int(1))));
 GAME_SESSION.begin();GAME_SESSION.level.width=15;GAME_SESSION.level.height=10;GAME_SESSION.level.cell_count=150;GAME_SESSION.level.schema=2;
 let mut i:u16=0;while i<150 {GAME_SESSION.level_words()[8+i*2]=1;GAME_SESSION.level_words()[9+i*2]=0;i+=1;}
 GAME_SESSION.rules.x=5;GAME_SESSION.rules.z=4;GAME_SESSION.rules.orientation=0;GAME_SESSION.rules.bridge_mask=0;GAME_SESSION.rules.status=0;GAME_SESSION.rules.moves=0;GAME_SESSION.rules.split=0;GAME_SESSION.animation.phase=AnimationPhase::Play;

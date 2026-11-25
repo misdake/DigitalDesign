@@ -9,12 +9,17 @@ use std::{
 };
 
 fn assets(test_name: &str) -> PathBuf {
+    assets_with_motion(test_name, "manual")
+}
+
+fn assets_with_motion(test_name: &str, motion: &str) -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = root
         .join("../../target/public-handheld/test-assets")
         .join(test_name);
     let result = std::process::Command::new("python")
         .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("BOX_RABBIT_MOTION", motion)
         .arg(root.join("examples/demo_box_rabbit/tools/public_assets.py"))
         .arg("--output")
         .arg(&out)
@@ -778,9 +783,9 @@ fn stage2_frame2_matches_frozen_unsplit_inputs_and_rotates_only_rabbit() {
 fn stage2_camera(camera:&mut Camera){camera.set_pose(
  demo_point(fix32::from_words(16384,0),fix32::from_words(14418,0),fix32::from_words(52429,2)),
  demo_point(fix32::from_words(3277,0),fix32::from_words(24576,3),fix32::zero()));}
-fn stage2_rabbit(model:&mut Model){model.set_pose(demo_pose(demo_zero(),
+fn stage2_rabbit(model:&mut Transform){model.set_pose(demo_pose(demo_zero(),
  demo_point(fix32::zero(),fix32::from_words(8192,0),fix32::zero()),demo_scale()));}
-fn stage2_identity()->Model{Model::new(demo_pose(demo_zero(),demo_zero(),demo_scale()))}
+fn stage2_identity()->Transform{Transform::new(demo_pose(demo_zero(),demo_zero(),demo_scale()))}
 "#;
     let camera = "        if frame == 1 { stage2_camera(&mut camera); }\n";
     let rabbit = "        if frame == 1 { stage2_rabbit(&mut rabbit_model); }\n";
@@ -805,8 +810,8 @@ fn stage2_identity()->Model{Model::new(demo_pose(demo_zero(),demo_zero(),demo_sc
             "let model=stage2_identity();let mut rabbit_model=stage2_identity();",
         )
         .replace(
-            "pass.draw(rabbit.ptr(), model.ptr(), lit.ptr(), view.ptr());",
-            "pass.draw(rabbit.ptr(), rabbit_model.ptr(), lit.ptr(), view.ptr());",
+            "pass.draw(&rabbit, &model, &lit, &view);",
+            "pass.draw(rabbit_model.ptr(), rabbit.ptr(), lit.ptr(), &view);",
         );
     assert_eq!(reference.matches("let mut rabbit_model=").count(), 1);
     reference = reference.replace(
@@ -820,8 +825,8 @@ fn stage2_identity()->Model{Model::new(demo_pose(demo_zero(),demo_zero(),demo_sc
             "demo_run(2, 2000, false);",
         )
         .replace(
-            "let rabbit_model = Model::new(Transform::identity());",
-            "let mut rabbit_model = Model::new(Transform::identity());",
+            "let rabbit_model = Transform::new(Pose::identity());",
+            "let mut rabbit_model = Transform::new(Pose::identity());",
         );
     let anchor =
         "        // The immutable part supplies World/material, the new Pass supplies View.";
@@ -1015,6 +1020,88 @@ fn functional_planes(
     planes.extend(retired_planes);
     planes
 }
+
+#[test]
+fn rolling_rabbit_slices_match_flat_draws_across_wrap() {
+    let out = assets("rabbit-slice-wrap");
+    let source = include_str!("../../../examples/demo_box_rabbit/rcc/public_main.rs")
+        .replace(
+            "demo_run(0, 2000, GPU_DEMO_AUTO_ORBIT != 0);",
+            "demo_run(2, 2000, false);",
+        )
+        .replace(
+            "let visible = demo_buttons_update(",
+            "let visible = false && demo_buttons_update(",
+        );
+    let mode = "let slice_demo = GPU_DEMO_RABBIT_SLICES != 0;";
+    let sliced = source
+        .replace(mode, "let slice_demo = true;")
+        .replace(
+            "const RABBIT_SLICE_HOLD: u16 = 16;",
+            "const RABBIT_SLICE_HOLD: u16 = 1;",
+        )
+        .replace(
+            "let mut slice_start: u16 = 0;",
+            "let mut slice_start: u16 = 5;",
+        );
+    let flat = source.replace(mode, "let slice_demo = false;").replace(
+        "pass.draw(rabbit_model.ptr(), rabbit, lit.ptr(), &view);",
+        r#"if frame == 0 {
+            let tail = rabbit.slice(15, 2);
+            let head = rabbit.slice(0, 6);
+            pass.draw(rabbit_model.ptr(), tail, lit.ptr(), &view);
+            pass.draw(rabbit_model.ptr(), head, lit.ptr(), &view);
+        } else {
+            let head = rabbit.slice(0, 9);
+            pass.draw(rabbit_model.ptr(), head, lit.ptr(), &view);
+        }"#,
+    );
+    let listed = functional_planes(&compile(&sliced, &out, false), &out, false, "list");
+    let reference = functional_planes(&compile(&flat, &out, false), &out, false, "flat");
+    for (index, (actual, expected)) in listed.iter().zip(&reference).enumerate() {
+        let different = actual.iter().zip(expected).filter(|(a, b)| a != b).count();
+        assert_eq!(different, 0, "framebuffer/depth plane {index}");
+    }
+    assert!(
+        listed[3] != listed[5],
+        "the selected rabbit geometry must change"
+    );
+}
+
+#[test]
+fn rolling_ring_slices_light_both_sides_of_the_seam() {
+    use cpu_v3_tang_nano_20k::framebuffer_word_at;
+
+    let out = assets_with_motion("ring-slice-wrap", "ring");
+    let source = include_str!("../../../examples/demo_box_rabbit/rcc/public_main.rs")
+        .replace(
+            "demo_run(0, 2000, GPU_DEMO_AUTO_ORBIT != 0);",
+            "demo_run(2, 2000, false);",
+        )
+        .replace(
+            "const RING_SLICE_HOLD: u16 = 8;",
+            "const RING_SLICE_HOLD: u16 = 1;",
+        )
+        .replace(
+            "let mut slice_start: u16 = 0;",
+            "let mut slice_start: u16 = GPU_DEMO_RING_SECTIONS - 1;",
+        );
+    let planes = functional_planes(&compile(&source, &out, false), &out, false, "ring");
+    let pixel = |frame: usize, x, y| planes[3 + frame * 2][framebuffer_word_at(0, x, y) as usize];
+    let luminance = |color: u16| (color >> 11) + ((color >> 5) & 63) + (color & 31);
+    for x in 192..=208 {
+        assert!(
+            luminance(pixel(0, x, 37)) > 45,
+            "bright across the seam at x={x}"
+        );
+    }
+    assert!(
+        (1..30).contains(&luminance(pixel(1, 208, 37))),
+        "tail returns to track"
+    );
+    assert!(luminance(pixel(1, 192, 37)) > 45, "head remains bright");
+}
+
 #[test]
 #[ignore = "requires STAGE2_PREPARED_SOURCE/controlled frozen reference; raw functional color/depth qualification"]
 fn stage2_functional_raw_color_depth_match_same_inputs_without_masks() {

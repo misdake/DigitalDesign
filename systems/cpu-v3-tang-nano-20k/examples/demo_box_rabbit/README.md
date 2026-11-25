@@ -22,6 +22,30 @@ without controller input and keeps the normal frame timing and UART reports:
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build demo-box-rabbit --motion orbit --out target/box-rabbit-orbit
 ```
 
+`--motion slices` displays a rolling
+window over the rabbit. The application records its 17 meshlets in six groups
+once, draws three consecutive groups each frame, and advances the first group
+every 16 successful presents. A window crossing the end uses two slices in the
+same list. Each list also carries the normal room/triangle prefix and overlay
+tail. The room supplies View and Target. Each rabbit group starts with its
+World and material setup. The camera remains under the usual DS2 controls.
+
+```powershell
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build demo-box-rabbit --motion slices --out target/box-rabbit-slices
+```
+
+Use `--motion ring` to inspect the wrap from a fixed camera. A bright arc
+travels over a dim circular track. The marker at
+twelve o'clock identifies the seam. The arc spans 12 of 32 sections and advances
+one section every eight presents. The whole ring is recorded once, with a
+command offset for each section. Each frame selects one prepared slice or two
+when the arc crosses the seam, and submits them in one command list with the
+track and overlay. The selected slices replay the original section draws.
+
+```powershell
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build demo-box-rabbit --motion ring --out target/box-rabbit-ring
+```
+
 `rcc/public_main.rs` uses the checked GPU API and unified gamepad input.
 `tools/public_assets.py` reuses the classic scene producer and publishes its
 asset descriptors. The room and RGB geometry use an independent prepared part;
@@ -34,7 +58,7 @@ The public caller registers the mesh directory once, selecting room/RGB/rabbit
 through nonowning slices. Its control and frame-statistics buffers belong to the
 run scope; only the asynchronous diagnostic packet remains shared by the wait
 helpers. Native asset factories stay at the application compatibility boundary;
-ordinary Camera, Transform, Material and RenderState setup uses SDK constructors.
+ordinary Camera, Pose, Material and RenderState setup uses SDK constructors.
 Use matching World/View-capable gateware. The low-level fixtures described below
 retain their original precomposed workload for independent comparisons.
 

@@ -1,18 +1,20 @@
 //! RGBA4444/mip panels over the classic opaque box, rabbit and RGB triangle.
-use crate::dsl_rt::*;
-mod gpu_api;
-use gpu_api::*;
-mod gpu_board;
-use gpu_board::*;
-mod motion;
-use motion::*;
+mod boot_resources;
 mod gamepad;
-use gamepad::*;
-mod time;
-use time::*;
-
+mod gpu_api;
+mod gpu_board;
+mod gpu_demo_api;
+mod motion;
 mod rgba_scene;
-use rgba_scene::*;
+mod time;
+
+use crate::dsl_rt::*;
+use crate::gamepad::{gamepad_capture, gamepad_init, gamepad_take_frame};
+use crate::gpu_api::{Camera, ColorBufferPtr, ColorLoad, DepthLoad, Display, Gpu, Rgb565};
+use crate::gpu_board::{board_color_a, board_color_b, board_depth, board_gpu_config};
+use crate::motion::DemoMotion;
+use crate::rgba_scene::RgbaScene;
+use crate::time::time_milliseconds;
 
 fn run(limit: u16) {
     let mut gpu = Gpu::init(board_gpu_config());

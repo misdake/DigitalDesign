@@ -112,9 +112,7 @@ fn main() {
     {
         halt(5);
     }
-    if !gpu_scene_texture_view(VIEW.as_array(), TEXTURE.as_array()) {
-        halt(6);
-    }
+    gpu_scene_texture_view(VIEW.as_array(), TEXTURE.as_array());
     TEXTURE[0u16] = 8192;
     if VIEW[0u16] != 4096
         || VIEW[1u16] != 36

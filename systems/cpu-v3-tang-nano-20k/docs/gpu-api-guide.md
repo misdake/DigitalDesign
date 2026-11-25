@@ -11,11 +11,16 @@ Start here to read application code. The current public entry is `rcc/gpu_api.rs
 registration; a `Desc` is a construction value; a Copy `Ptr` is a nonowning,
 generation-checked reference. None of these owns the external asset/pixel bytes.
 
+A drawable model is an application type. Hello GPU groups its `Transform`,
+`Mesh` and `Material` in a local `Model`. The SDK exposes those resources
+independently. `Pass` and `PreparedPart` draw methods take the three handles
+in `transform, mesh, material` order. Textured draws then borrow a `&TextureView`.
+
 ## Reading route
 
 | Question | Read next | What to look for |
 | --- | --- | --- |
-| What does the smallest application do? | [Hello GPU main](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/rcc/main.rs), then [Scene](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/rcc/scene.rs) | Main owns frame handoff; Scene owns mesh/model/camera/material/state. |
+| What does the smallest application do? | [Hello GPU main](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/rcc/main.rs), then [Scene](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/rcc/scene.rs) | Main owns frame handoff; Scene owns a Model, Camera and RenderState. |
 | Where do the mesh and font come from? | [Hello producer](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/tools/assets.py), [recipe](/systems/cpu-v3-tang-nano-20k/examples/sample_hello_gpu/application.rs), [static assets](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md) | Source geometry/font becomes encoded payload and a placed description; addresses are build outputs. |
 | How do I write colors, poses and buffers? | [SDK values](/systems/cpu-v3-tang-nano-20k/docs/sdk-values.md) | Constructors and units before raw native fields. |
 | When are my changes visible? | [Sampling and lifetime](#sampling-and-lifetime) | Setter snapshots, draw snapshots and live external bytes are different. |
@@ -76,13 +81,63 @@ request it waits for a frame edge. `try_wait_swap` with no request reports idle
 immediately. CPU recording may overlap one GPU submission by using the other CB;
 two configured slots do not create two hardware queues.
 
+### Submit an ordered command list
+
+Build a `CommandList` with its final
+descriptor count (1–32). Add a recorded `CommandBuffer` with `push`. It is
+sealed and consumed, and its commands must fit in a single 8 KiB span. Raw
+command slices can also be added with unsafe `push_slice(memory, first, length)`
+using 32-bit instruction units. A raw slice may start inside a sector and cover
+up to 64 sectors. The caller provides its required entry state, dependencies
+and backing lifetime. The last slice must include the terminal fence and END.
+
+```rust
+let mut list = CommandList::new(2);
+list.push(first);
+list.push(second);
+gpu.submit_list(list);
+// CPU work may overlap the GPU here.
+gpu.wait_list();
+```
+
+The builder writes descriptors directly to a 128 B aligned SDRAM sector.
+Submission publishes the CPU writes and sends that sector address without
+copying the table or commands. `wait_list` or a successful `try_wait_list`
+releases the list allocation and makes any consumed CB slots available
+through `command_buffer()` with fresh recorder state. Dropping an unsubmitted
+list releases the same allocations. Use the existing `submit` and `wait`
+pair for a flat CB.
+
+#### Select a prepared range
+
+Call `PreparedPart::mark_slice()` at each independently selectable draw group
+boundary and at the end of the recording. It returns the offset in 32-bit
+instructions and makes the next nonempty draw emit its World and material
+setup. Pass a pair of marks to select `[first, end)`.
+
+```rust
+let first = part.mark_slice();
+part.draw_colored(transform.ptr(), mesh.ptr(), material.ptr());
+let end = part.mark_slice();
+part.finish();
+// First add a recorded CB that installs Target and View.
+list.push_prepared_range(prepared.ptr(), first, end);
+```
+
+`push_prepared_range` checks the finished part, marked range, and the scene
+installed by the preceding recorded CB. It references the original commands
+and prevents changes to the Prepared registration while the list holds it.
+The last segment supplies the terminal fence and END. Preserve the external
+command, push, and input storage through retirement. See the examples in
+[GPU command lists](/systems/cpu-v3-tang-nano-20k/docs/gpu-command-lists.md).
+
 ## Sampling and lifetime
 
 | Value/storage | When it is sampled | What can change afterwards? |
 | --- | --- | --- |
 | `CameraPtr` passed to `set_camera` | At the setter call: Camera source values are copied into desired Pass state. | Mutating or dropping the Camera cannot change that captured value; call the setter again to install an edit. |
 | `RenderStatePtr` passed to `set_state` | At the setter call, including light, depth/blend and filter choices. | Later resource edits need another setter. |
-| Model, Material and TextureView used by draw | During draw recording. | Later descriptor edits do not rewrite earlier command/push snapshots. |
+| Transform, Material and TextureView used by draw | During draw recording. | Later descriptor edits do not rewrite earlier command/push snapshots. |
 | Mesh directory | At Mesh registration/refresh, into an owned CPU directory; draw emits commands from it. | Refresh affects future recordings. It does not change earlier CBs or previously created subset directories. |
 | Mesh vertex/index/metadata bytes and sampled texture bytes | During GPU execution at encoded external addresses. | Keep input storage and contents unchanged through every recorded use; discard referring CBs before updating or reusing it. |
 | UI Grid cells and Atlas pixels | During GPU execution. Only the descriptor/ranges are recorded. | Keep recorded inputs unchanged; retire executions and discard referring CBs before editing them. |
@@ -108,12 +163,12 @@ For example, these operations are deliberately not equivalent:
 ```rust
 pass.set_camera(camera.ptr());       // capture the current camera
 camera.set_pose(new_eye, new_angles);
-pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr()); // previous camera
+pass.draw_colored(transform.ptr(), mesh.ptr(), material.ptr()); // previous camera
 pass.set_camera(camera.ptr());       // capture the edit
-pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr()); // edited camera
+pass.draw_colored(transform.ptr(), mesh.ptr(), material.ptr()); // edited camera
 ```
 
-Changing a Model or Material before the second draw is different: draw reads
+Changing a Transform or Material before the second draw is different: draw reads
 those values at that second call. Neither pattern makes it safe to modify a
 texture or UI grid while the GPU is reading its external bytes.
 
@@ -127,7 +182,7 @@ texture or UI grid while the GPU is reading its external bytes.
 | `Mesh::subset` | New registration plus an independently allocated/copied directory; it is not a borrowed slice. Prefer creating fixed subsets during setup. |
 | `MeshPtr::slice(first, count)` | Nonowning directory range, with no allocation/copy; valid only while the same Mesh owner is live. Accepted by ordinary and prepared draws. |
 | Unsafe `GpuMemory::read_words` / `write_words` | A bounded CPU-owned external transfer, at most 128 u16 words. No implicit GPU/Display wait or texture invalidation. |
-| Camera/Model pose update | Fixed-point matrix preparation and source revision update. |
+| Camera/Transform pose update | Fixed-point matrix preparation and source revision update. |
 | Draw recording | Resource resolution, changed-state encoding, command/push writes and allocation-fact bookkeeping. No GPU rendering yet. |
 | `draw_prepared` | Metadata/fact checks, possible Pass View install and aligned command copy; no CPU re-encoding of each stored draw. |
 
@@ -139,7 +194,7 @@ native DRAW even when World/View transfers are reused.
 
 | Route | Inputs that remain fixed | Inputs supplied/changed later | Main limits |
 | --- | --- | --- | --- |
-| Reset and record ordinary draws | External asset layout unless explicitly updated | Target, draw order, Camera, state, Model and Material | General route; CPU records every frame. |
+| Reset and record ordinary draws | External asset layout unless explicitly updated | Target, draw order, Camera, state, Transform and Material | General route; CPU records every frame. |
 | Record `PreparedDraws`, then `Pass::draw_prepared(ptr)` | Stored draw order, World/model, material, texture/raster/filter | Current Pass Camera and light direction/intensities; enclosing target | Mesh/Billboard only. Not an RTT framebuffer cache. Application-owned command/push capacities. |
 | Submit a returned sealed CB again | Encoded commands, snapshots and external input contents | Ordered GPU target contents; the limited retarget operation below | CPU input changes require discarding the old recording. Replay does not resample Camera. |
 | `target_binding` / `retarget_target` | Camera, World/material, commands and optional copy source | Color/depth targets; optional leading copy destination | One target block, no UI, at most one eligible leading color copy. |
@@ -149,7 +204,7 @@ comes from the Pass at append; its raster/filter comes from recording. After
 append, the Pass still retains its desired Camera/state for the next ordinary
 draw. Frame reset clears its own metadata without touching independent parts or
 walking references. The caller invalidates/re-records a part only after retiring
-all executions and discarding every referring CB. Changing a stored Model/Material
+all executions and discarding every referring CB. Changing a stored Transform/Material
 resource alone does not refresh a finished part.
 
 For a static object with a moving camera, prefer a prepared part appended into a

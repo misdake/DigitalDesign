@@ -16,7 +16,7 @@ const COMMANDS: CommandMemory = CommandMemory::allocate(4096, 4096);
 #[static_buffer]
 const GRID: UiGridStorage = UiGridStorage::allocate();
 
-const POSE: Transform = Transform::translation(Vec3::new(fix!(0), fix!(0), fix!(-3)));
+const POSE: Pose = Pose::translation(Vec3::new(fix!(0), fix!(0), fix!(-3)));
 const WORLD: Mat3x4 = POSE.world_matrix();
 const NORMAL: Mat3x3 = POSE.normal_matrix();
 const PROJECTION: Projection = Projection::from_focal_pixels(fix!(200), fix!(199));
@@ -30,7 +30,7 @@ fn main() {
     let texture = Texture::from_native(CHECKER);
     let mut view = texture.view();
     view.set_address_mode(TextureAddressMode::ClampToEdge);
-    let model = Model::from_matrices(WORLD, NORMAL);
+    let model = Transform::from_matrices(WORLD, NORMAL);
     let camera = Camera::new(CameraDesc::new(Vec3::zero(), Vec3::zero(), PROJECTION));
     let material = Material::new(MaterialDesc::unlit(Rgba8::white()));
     let state = RenderState::new(RenderStateDesc::opaque(Lighting::ambient(fix!(1))));
@@ -47,7 +47,7 @@ fn main() {
         );
         pass.set_camera(camera.ptr());
         pass.set_state(state.ptr());
-        pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
+        pass.draw(model.ptr(), mesh.ptr(), material.ptr(), &view);
         pass.draw_ui(grid.ptr(), CellRect::full_grid());
     }
     gpu.submit(commands);

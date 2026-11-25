@@ -1,22 +1,34 @@
 //! A captured explosion replayed on an orbitable inspection stage.
 use crate::dsl_rt::*;
+mod billboard;
 mod boot_resources;
 mod gamepad;
 mod gpu_api;
 mod gpu_board;
+mod static_buffer;
 mod stream;
 mod time;
-use stream::*;
-mod static_buffer;
-use static_buffer::StaticBuffer;
+use crate::boot_resources::{
+    SCENE_FLASH, SCENE_FRAME_COUNT, SCENE_GRASS, SCENE_GRASS_COUNT, SCENE_GRASS_FIRST, SCENE_MESH,
+    SCENE_NTREE1, SCENE_NTREE2, SCENE_ROAD, SCENE_ROAD_COUNT, SCENE_ROAD_FIRST, SCENE_ROCK,
+    SCENE_ROCK_COUNT, SCENE_ROCK_FIRST, SCENE_SMOKE, SCENE_SPRITE_STORAGE_BYTES, SCENE_TICK_MS,
+};
+use crate::gamepad::{
+    gamepad_capture, gamepad_init, gamepad_take_frame, DS2_CROSS, DS2_LEFT, DS2_RIGHT, DS2_SQUARE,
+    DS2_TRIANGLE,
+};
+use crate::gpu_api::{
+    BillboardFacing, Camera, ColorBufferPtr, ColorLoad, DepthLoad, Display, Gpu, Material,
+    MaterialPtr, Mesh, MeshPtr, Pass, RenderState, Rgb565, Texture, TextureView, Transform,
+    TransformPtr,
+};
+use crate::gpu_board::{board_color_a, board_color_b, board_depth, board_gpu_config};
+use crate::static_buffer::StaticBuffer;
+use crate::stream::{sprite_writer, SpriteStream};
+use crate::time::time_milliseconds;
 
 #[static_buffer]
 const SPRITES: StaticBuffer = StaticBuffer::new(SCENE_SPRITE_STORAGE_BYTES as usize, 128);
-use boot_resources::*;
-use gamepad::*;
-use gpu_api::*;
-use gpu_board::*;
-use time::*;
 
 const LOOP_MS: u16 = SCENE_FRAME_COUNT * SCENE_TICK_MS + 800;
 const SKY: Rgb565 = Rgb565::rgb(169, 182, 181);
@@ -72,24 +84,23 @@ fn clamp_view(texture: &Texture) -> TextureView {
 }
 
 struct StageViews {
-    grass: TextureViewPtr,
-    road: TextureViewPtr,
-    rock: TextureViewPtr,
+    grass: TextureView,
+    road: TextureView,
+    rock: TextureView,
 }
 
-#[derive(Copy, Clone)]
 struct LayerViews {
-    crown: TextureViewPtr,
-    trunk: TextureViewPtr,
-    flash: TextureViewPtr,
-    smoke: TextureViewPtr,
+    crown: TextureView,
+    trunk: TextureView,
+    flash: TextureView,
+    smoke: TextureView,
 }
 
 struct LayerDraw {
+    transform: TransformPtr,
     mesh: MeshPtr,
-    sprites: MeshPtr,
-    model: ModelPtr,
     material: MaterialPtr,
+    sprites: MeshPtr,
     views: LayerViews,
     layers: Array<u16>,
 }
@@ -105,8 +116,8 @@ fn gray(level: u8, alpha: u8) -> Rgba8 {
 
 fn draw_stage(
     pass: &mut Pass,
+    transform: TransformPtr,
     mesh: MeshPtr,
-    model: ModelPtr,
     material: &mut Material,
     views: &StageViews,
 ) {
@@ -114,18 +125,18 @@ fn draw_stage(
     let road = mesh.slice(SCENE_ROAD_FIRST, SCENE_ROAD_COUNT);
     let rock = mesh.slice(SCENE_ROCK_FIRST, SCENE_ROCK_COUNT);
     material.set_uniform_color(gray(230, 255));
-    pass.draw(grass, model, material.ptr(), views.grass);
-    pass.draw(road, model, material.ptr(), views.road);
+    pass.draw(transform, grass, material.ptr(), &views.grass);
+    pass.draw(transform, road, material.ptr(), &views.road);
     material.set_uniform_color(gray(204, 255));
-    pass.draw(rock, model, material.ptr(), views.rock);
+    pass.draw(transform, rock, material.ptr(), &views.rock);
 }
 
 fn draw_layer(pass: &mut Pass, draw: &LayerDraw, layer: u16) {
     let mesh = draw.mesh;
     let sprites = draw.sprites;
-    let model = draw.model;
+    let transform = draw.transform;
     let material = draw.material;
-    let views = draw.views;
+    let views = &draw.views;
     let layers = draw.layers;
     let entry = layers[layer * 2 + 1];
     let kind = entry >> 8;
@@ -139,25 +150,35 @@ fn draw_layer(pass: &mut Pass, draw: &LayerDraw, layer: u16) {
     if kind == 0 {
         material.set_uniform_color(gray(level, 255));
         pass.draw_billboard(
+            transform,
             part,
-            model,
             material,
-            views.crown,
+            &views.crown,
             BillboardFacing::Vertical,
         );
     } else if kind == 1 {
         material.set_uniform_color(gray(level, 255));
         pass.draw_billboard(
+            transform,
             part,
-            model,
             material,
-            views.trunk,
+            &views.trunk,
             BillboardFacing::Vertical,
         );
     } else {
         material.set_uniform_color(gray(255, level));
-        let texture: TextureViewPtr = if kind == 3 { views.smoke } else { views.flash };
-        pass.draw_billboard(part, model, material, texture, BillboardFacing::CameraPlane);
+        let texture: &TextureView = if kind == 3 {
+            &views.smoke
+        } else {
+            &views.flash
+        };
+        pass.draw_billboard(
+            transform,
+            part,
+            material,
+            texture,
+            BillboardFacing::CameraPlane,
+        );
     }
 }
 
@@ -190,7 +211,7 @@ fn main() {
         Vec3::zero(),
         Projection::from_focal_pixels(fix!(256.0), fix!(20.0)),
     ));
-    let model = Model::new(Transform::identity());
+    let model = Transform::new(Pose::identity());
     let mesh = Mesh::from_native(SCENE_MESH);
     let mut writer = sprite_writer(GpuMemory::from_buffer(SPRITES));
     let mut sprite_owner = Mesh::from_native(writer.mesh_desc());
@@ -209,9 +230,9 @@ fn main() {
     let flash_view = clamp_view(&flash);
     let smoke_view = clamp_view(&smoke);
     let stage_views = StageViews {
-        grass: grass_view.ptr(),
-        road: road_view.ptr(),
-        rock: rock_view.ptr(),
+        grass: grass_view,
+        road: road_view,
+        rock: rock_view,
     };
     let stage_state = RenderState::new(stage_desc());
     let layer_state = RenderState::new(
@@ -224,15 +245,15 @@ fn main() {
     );
     let mut stream = SpriteStream::new();
     let layer_draw = LayerDraw {
+        transform: model.ptr(),
         mesh: mesh.ptr(),
-        sprites: sprite_owner.ptr(),
-        model: model.ptr(),
         material: material.ptr(),
+        sprites: sprite_owner.ptr(),
         views: LayerViews {
-            crown: crown_view.ptr(),
-            trunk: trunk_view.ptr(),
-            flash: flash_view.ptr(),
-            smoke: smoke_view.ptr(),
+            crown: crown_view,
+            trunk: trunk_view,
+            flash: flash_view,
+            smoke: smoke_view,
         },
         layers: stream.plan(),
     };
@@ -320,8 +341,8 @@ fn main() {
             pass.set_state(stage_state.ptr());
             draw_stage(
                 &mut pass,
-                layer_draw.mesh,
                 model.ptr(),
+                layer_draw.mesh,
                 &mut material,
                 &stage_views,
             );

@@ -103,7 +103,7 @@ fn application_from_sources(
         "block_pose(model);",
         "block_pose(model);world_probe(model);",
     );
-    source+="\nfn world_probe(model:&Model){let world=model.world();let words:Buf<u16,24>=Buf::new([world.row0.x.lo_bits(),world.row0.x.hi_bits(),world.row0.y.lo_bits(),world.row0.y.hi_bits(),world.row0.z.lo_bits(),world.row0.z.hi_bits(),world.row0.w.lo_bits(),world.row0.w.hi_bits(),world.row1.x.lo_bits(),world.row1.x.hi_bits(),world.row1.y.lo_bits(),world.row1.y.hi_bits(),world.row1.z.lo_bits(),world.row1.z.hi_bits(),world.row1.w.lo_bits(),world.row1.w.hi_bits(),world.row2.x.lo_bits(),world.row2.x.hi_bits(),world.row2.y.lo_bits(),world.row2.y.hi_bits(),world.row2.z.lo_bits(),world.row2.z.hi_bits(),world.row2.w.lo_bits(),world.row2.w.hi_bits()]);signal(13,words.as_ptr().addr());}\n";
+    source+="\nfn world_probe(model:&Transform){let world=model.world();let words:Buf<u16,24>=Buf::new([world.row0.x.lo_bits(),world.row0.x.hi_bits(),world.row0.y.lo_bits(),world.row0.y.hi_bits(),world.row0.z.lo_bits(),world.row0.z.hi_bits(),world.row0.w.lo_bits(),world.row0.w.hi_bits(),world.row1.x.lo_bits(),world.row1.x.hi_bits(),world.row1.y.lo_bits(),world.row1.y.hi_bits(),world.row1.z.lo_bits(),world.row1.z.hi_bits(),world.row1.w.lo_bits(),world.row1.w.hi_bits(),world.row2.x.lo_bits(),world.row2.x.hi_bits(),world.row2.y.lo_bits(),world.row2.y.hi_bits(),world.row2.z.lo_bits(),world.row2.z.hi_bits(),world.row2.w.lo_bits(),world.row2.w.hi_bits()]);signal(13,words.as_ptr().addr());}\n";
     let source = application_entry::select(&source, "renderer_game_three_frames").unwrap();
     std::fs::write(out.join("compiled-main.rs"), &source).unwrap();
     let local = out.join("instrumented-rcc");
@@ -134,11 +134,11 @@ fn application_from_sources(
         shadow = shadow.replace(&needle, &format!("fn measured_body_{name}("));
     }
     shadow += r#"
-pub fn draw_shadow(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,b:&Model){signal(5,0);measured_body_draw_shadow(p,m,o,a,b);signal(6,0);}
+pub fn draw_shadow(p:&mut Pass,o:&mut Transform,m:&Mesh,a:&Material,b:&Transform){signal(5,0);measured_body_draw_shadow(p,o,m,a,b);signal(6,0);}
 fn shadow_project(w:Mat3x4)->u16{signal(7,1);let n=measured_body_shadow_project(w);signal(8,1);n}
 fn shadow_hull(c:u16)->u16{signal(7,2);let n=measured_body_shadow_hull(c);signal(8,2);n}
 fn shadow_clip(a:Array<ShadowScalar>,b:Array<ShadowScalar>,c:u16,d:fix32,e:u16)->u16{signal(7,3);let n=measured_body_shadow_clip(a,b,c,d,e);signal(8,3);n}
-fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){signal(7,4);measured_body_shadow_draw(p,m,o,a,t);signal(8,4);}
+fn shadow_draw(p:&mut Pass,o:&mut Transform,m:&Mesh,a:&Material,t:ShadowTriangle){signal(7,4);measured_body_shadow_draw(p,o,m,a,t);signal(8,4);}
 "#;
     std::fs::write(path, shadow).unwrap();
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);

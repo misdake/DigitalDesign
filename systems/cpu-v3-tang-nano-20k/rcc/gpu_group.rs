@@ -4,6 +4,8 @@ mod gpu_bind;
 use gpu_bind::*;
 mod gpu_record;
 use gpu_record::*;
+mod gpu_execute;
+use gpu_execute::*;
 mod gpu_storage;
 use gpu_storage::*;
 mod gpu_schema;
@@ -17,8 +19,94 @@ use gpu_api_values::*;
 
 // Plans must survive scene preparation and command encoding in native scratch.
 static GPU_PREPARED_FACT_PLAN: Buf<u16, 64> = Buf::new([0; 64]);
+// Only standalone parts and pools claim ranges. Pool children use first-fit.
+static GPU_GROUP_BACKINGS: u16 = 0;
 
+fn gpu_group_backing_available(memory: GpuMemory) -> bool {
+    let first = memory.first_sector();
+    let count = memory.sector_count();
+    if !gpu_memory_extent_valid(first, count) {
+        return false;
+    }
+    let mut slot: u16 = 0;
+    while slot < GPU_EXECUTION.configured_slots {
+        let record = gpu_record_data(slot);
+        if gpu_record_overlap(
+            first,
+            count,
+            record[GPU_RECORD_COMMAND_BASE],
+            record[GPU_RECORD_COMMAND_CAPACITY] >> 6,
+        ) || gpu_record_overlap(
+            first,
+            count,
+            record[GPU_RECORD_PUSH_BASE],
+            record[GPU_RECORD_PUSH_CAPACITY] >> 6,
+        ) {
+            return false;
+        }
+        slot += 1;
+    }
+    slot = GPU_GROUP_BACKINGS;
+    while slot != 0 {
+        let data = gpu_arena_data(slot);
+        let overlaps = if data[GPU_GROUP_BACKING_KIND] == GpuObjectKind::PreparedPool as u16 {
+            gpu_record_overlap(first, count, data[GPU_POOL_BASE], data[GPU_POOL_CAPACITY])
+        } else {
+            gpu_record_overlap(
+                first,
+                count,
+                data[GPU_PREPARED_COMMAND],
+                data[GPU_PREPARED_COMMAND_CAPACITY] >> 6,
+            ) || gpu_record_overlap(
+                first,
+                count,
+                data[GPU_PREPARED_PUSH],
+                data[GPU_PREPARED_PUSH_CAPACITY] >> 6,
+            )
+        };
+        if overlaps {
+            return false;
+        }
+        slot = data[GPU_GROUP_BACKING_NEXT];
+    }
+    true
+}
+fn gpu_group_link_backing(slot: u16, kind: GpuObjectKind) {
+    let mut data = gpu_arena_data(slot);
+    data[GPU_GROUP_BACKING_KIND] = kind as u16;
+    data[GPU_GROUP_BACKING_NEXT] = GPU_GROUP_BACKINGS;
+    unsafe {
+        addr_of(&GPU_GROUP_BACKINGS).write(0, slot);
+    }
+}
+fn gpu_group_unlink_backing(slot: u16) -> bool {
+    let mut link = addr_of(&GPU_GROUP_BACKINGS);
+    let mut current = unsafe { link.read(0) };
+    while current != slot {
+        if current == 0 {
+            return false;
+        }
+        link = gpu_arena_data(current)
+            .as_ptr()
+            .add(GPU_GROUP_BACKING_NEXT as i16);
+        current = unsafe { link.read(0) };
+    }
+    unsafe {
+        link.write(0, gpu_arena_data(slot)[GPU_GROUP_BACKING_NEXT]);
+    }
+    true
+}
 fn gpu_group_new(slot: u16, memory: PreparedMemory) -> bool {
+    if !gpu_group_backing_available(memory.commands)
+        || !gpu_group_backing_available(memory.push)
+        || !gpu_group_init(slot, memory)
+    {
+        return false;
+    }
+    gpu_group_link_backing(slot, GpuObjectKind::Prepared);
+    true
+}
+fn gpu_group_init(slot: u16, memory: PreparedMemory) -> bool {
     let code = memory.commands;
     let push = memory.push;
     if !gpu_record_extent(code.first_sector(), code.sector_count())
@@ -41,23 +129,39 @@ fn gpu_group_new(slot: u16, memory: PreparedMemory) -> bool {
     true
 }
 fn gpu_group_free(slot: u16) -> bool {
-    let data = gpu_arena_data(slot);
-    if data[GPU_PREPARED_STATE] == PreparedState::Recording as u16 {
-        return false;
+    gpu_group_invalidate(slot)
+        && (gpu_arena_data(slot)[GPU_PREPARED_POOL] != 0 || gpu_group_unlink_backing(slot))
+        && gpu_arena_free(slot, false, GpuObjectKind::Prepared)
+}
+fn gpu_group_mutable(data: Array<u16>) -> bool {
+    data[GPU_PREPARED_STATE] != PreparedState::Recording as u16 && data[GPU_PREPARED_LIST_REFS] == 0
+}
+fn gpu_group_clear_slice_marks(mut data: Array<u16>) {
+    let marks = data[GPU_PREPARED_SLICE_MARKS];
+    if marks != 0 {
+        free(Ptr::from_addr(marks));
+        data[GPU_PREPARED_SLICE_MARKS] = 0;
     }
-    if data[GPU_PREPARED_META] != 0 {
-        free(Ptr::from_addr(data[GPU_PREPARED_META]));
+    #[cfg(gpu_debug)]
+    {
+        let mut head = data[GPU_PREPARED_SLICE_RESPONSES];
+        while head != 0 {
+            let pointer = Ptr::from_addr(head);
+            head = unsafe { pointer.read(0) };
+            free(pointer);
+        }
+        data[GPU_PREPARED_SLICE_RESPONSES] = 0;
     }
-    gpu_arena_free(slot, false, GpuObjectKind::Prepared)
 }
 fn gpu_group_invalidate(slot: u16) -> bool {
     let mut data = gpu_arena_data(slot);
-    if data[GPU_PREPARED_STATE] == PreparedState::Recording as u16 {
+    if !gpu_group_mutable(data) {
         return false;
     }
     if data[GPU_PREPARED_META] != 0 {
         free(Ptr::from_addr(data[GPU_PREPARED_META]));
     }
+    gpu_group_clear_slice_marks(data);
     data[GPU_PREPARED_META] = 0;
     data[GPU_PREPARED_STATE] = PreparedState::Empty as u16;
     true
@@ -65,12 +169,87 @@ fn gpu_group_invalidate(slot: u16) -> bool {
 fn gpu_group_part_ready(owner: u16) -> bool {
     gpu_arena_data(owner)[GPU_PREPARED_STATE] == PreparedState::Ready as u16
 }
+fn gpu_group_mark_slice(owner: u16, offset: u16) -> bool {
+    let mut data = gpu_arena_data(owner);
+    let capacity = data[GPU_PREPARED_COMMAND_CAPACITY];
+    if offset > capacity >> 1 {
+        return false;
+    }
+    let mut marks = data[GPU_PREPARED_SLICE_MARKS];
+    if marks == 0 {
+        // One bit per 32-bit command and one for the endpoint of a full buffer.
+        let words = (capacity >> 5) + 1;
+        let pointer = try_malloc(words);
+        marks = pointer.addr();
+        if marks == 0 {
+            return false;
+        }
+        gpu_scene_zero(unsafe { pointer.as_u16_array() }, words);
+        data[GPU_PREPARED_SLICE_MARKS] = marks;
+    }
+    let mut bits = unsafe { Ptr::from_addr(marks).as_u16_array() };
+    bits[offset >> 4] |= 1u16 << (offset & 15);
+    true
+}
+fn gpu_group_slice_marked(bits: Array<u16>, offset: u16) -> bool {
+    bits[offset >> 4] & (1u16 << (offset & 15)) != 0
+}
+fn gpu_group_slice_valid(owner: u16, first: u16, end: u16, scene: u16) -> bool {
+    let data = gpu_arena_data(owner);
+    let marks = data[GPU_PREPARED_SLICE_MARKS];
+    if scene == 0
+        || !gpu_group_part_ready(owner)
+        || marks == 0
+        || data[GPU_PREPARED_LIST_REFS] == 65535
+    {
+        return false;
+    }
+    let meta = unsafe { Ptr::from_addr(data[GPU_PREPARED_META]).as_u16_array() };
+    if first >= end || end > meta[GPU_GROUP_META_COMMAND_COUNT] {
+        return false;
+    }
+    let bits = unsafe { Ptr::from_addr(marks).as_u16_array() };
+    if !gpu_group_slice_marked(bits, first) || !gpu_group_slice_marked(bits, end) {
+        return false;
+    }
+    #[cfg(gpu_debug)]
+    {
+        let c = gpu_record_data(scene - 1);
+        let state = unsafe { c.as_ptr().add(GPU_CB_STATE as i16).as_u16_array() };
+        // Newest group first. Each node stores next, first, and four response words.
+        let mut head = data[GPU_PREPARED_SLICE_RESPONSES];
+        let maxima: Buf<u16, 4> = Buf::new([0; 4]);
+        while head != 0 {
+            let entry = unsafe { Ptr::from_addr(head).as_u16_array() };
+            let start = entry[1u16];
+            if start < first {
+                break;
+            }
+            if start < end {
+                gpu_group_merge_responses(maxima.as_array(), 0, entry, 2);
+            }
+            head = entry[0u16];
+        }
+        if !gpu_scene_responses_valid(
+            state,
+            gpu_scene_fix_read(maxima.as_array(), 0),
+            gpu_scene_fix_read(maxima.as_array(), 2),
+        ) {
+            return false;
+        }
+    }
+    true
+}
 fn gpu_group_pool_init(slot: u16, memory: GpuMemory) -> bool {
+    if !gpu_group_backing_available(memory) {
+        return false;
+    }
     let mut data = gpu_arena_data(slot);
     gpu_scene_zero(data, GPU_API_SMALL_WORDS);
     data[GPU_POOL_BASE] = memory.first_sector();
     data[GPU_POOL_CAPACITY] = memory.sector_count();
-    memory.sector_count() != 0
+    gpu_group_link_backing(slot, GpuObjectKind::PreparedPool);
+    true
 }
 // First-fit through address-sorted live allocations. No external free-list
 // traffic, fixed part count, fixed partitions or heap compaction is required.
@@ -119,7 +298,8 @@ fn gpu_group_pool_allocate(pool: u16, command_bytes: u16, push_bytes: u16) -> u1
             sector_count: push,
         },
     );
-    if !gpu_group_new(slot, memory) {
+    if !gpu_group_init(slot, memory) {
+        gpu_arena_free(slot, false, GpuObjectKind::Prepared);
         return 0;
     }
     let mut data = gpu_arena_data(slot);
@@ -135,9 +315,7 @@ fn gpu_group_pool_allocate(pool: u16, command_bytes: u16, push_bytes: u16) -> u1
 }
 fn gpu_group_pool_free(pool: u16, owner: u16) -> bool {
     let data = gpu_arena_data(owner);
-    if data[GPU_PREPARED_POOL] != pool
-        || data[GPU_PREPARED_STATE] == PreparedState::Recording as u16
-    {
+    if data[GPU_PREPARED_POOL] != pool || !gpu_group_mutable(data) {
         return false;
     }
     let next = data[GPU_PREPARED_NEXT];
@@ -163,7 +341,7 @@ fn gpu_group_pool_drop(pool: u16) -> bool {
     let mut current = gpu_arena_data(pool)[GPU_POOL_HEAD];
     while current != 0 {
         let data = gpu_arena_data(current);
-        if data[GPU_PREPARED_STATE] == PreparedState::Recording as u16 {
+        if !gpu_group_mutable(data) {
             return false;
         }
         current = data[GPU_PREPARED_NEXT];
@@ -176,7 +354,7 @@ fn gpu_group_pool_drop(pool: u16) -> bool {
         }
         current = next;
     }
-    gpu_arena_free(pool, false, GpuObjectKind::PreparedPool)
+    gpu_group_unlink_backing(pool) && gpu_arena_free(pool, false, GpuObjectKind::PreparedPool)
 }
 
 fn gpu_group_pad(slot: u16) -> bool {
@@ -186,23 +364,48 @@ fn gpu_group_pad(slot: u16) -> bool {
     gpu_record_append(slot, zero.as_array(), words, zero.as_array(), 0, 1)
 }
 #[cfg(gpu_debug)]
-fn gpu_group_note_responses(slot: u16, material: Array<u16>) {
-    let c = gpu_record_data(slot);
+fn gpu_group_merge_responses(out: Array<u16>, at: u16, input: Array<u16>, start: u16) {
     let mut i: u16 = 0;
     while i < 4 {
-        let value = gpu_scene_fix_read(material, GPU_MATERIAL_AMBIENT + i);
-        if value > gpu_scene_fix_read(c, GPU_GROUP_RESPONSE_MAX + i) {
-            gpu_scene_fix_write(c, GPU_GROUP_RESPONSE_MAX + i, value);
+        let value = gpu_scene_fix_read(input, start + i);
+        if value > gpu_scene_fix_read(out, at + i) {
+            gpu_scene_fix_write(out, at + i, value);
         }
         i += 2;
     }
+}
+#[cfg(gpu_debug)]
+fn gpu_group_note_responses(slot: u16, material: Array<u16>) -> bool {
+    let c = gpu_record_data(slot);
+    gpu_group_merge_responses(c, GPU_GROUP_RESPONSE_MAX, material, GPU_MATERIAL_AMBIENT);
+    let mut data = gpu_arena_data(c[GPU_GROUP_RECORDING]);
+    if data[GPU_PREPARED_SLICE_MARKS] == 0 {
+        return true;
+    }
+    let start = c[GPU_GROUP_SLICE_START];
+    let mut head = data[GPU_PREPARED_SLICE_RESPONSES];
+    if head == 0 || unsafe { Ptr::from_addr(head).read(1) } != start {
+        let pointer = try_malloc(6);
+        if pointer.addr() == 0 {
+            return false;
+        }
+        let mut entry = unsafe { pointer.as_u16_array() };
+        gpu_scene_zero(entry, 6);
+        entry[0u16] = head;
+        entry[1u16] = start;
+        head = pointer.addr();
+        data[GPU_PREPARED_SLICE_RESPONSES] = head;
+    }
+    let entry = unsafe { Ptr::from_addr(head).as_u16_array() };
+    gpu_group_merge_responses(entry, 2, material, GPU_MATERIAL_AMBIENT);
+    true
 }
 fn gpu_group_part_begin(owner: u16) -> bool {
     if GPU_PREPARED_CONTEXT != 0 {
         return false;
     }
     let mut data = gpu_arena_data(owner);
-    if data[GPU_PREPARED_STATE] == PreparedState::Recording as u16 {
+    if !gpu_group_mutable(data) {
         return false;
     }
     let context = try_malloc(GPU_API_CB_WORDS + 256);
@@ -234,6 +437,7 @@ fn gpu_group_abandon(slot: u16) {
     if slot == GPU_PREPARED_RECORD && GPU_PREPARED_CONTEXT != 0 {
         let owner = gpu_record_data(slot)[GPU_GROUP_RECORDING];
         let mut data = gpu_arena_data(owner);
+        gpu_group_clear_slice_marks(data);
         data[GPU_PREPARED_STATE] = PreparedState::Empty as u16;
         free(Ptr::from_addr(GPU_PREPARED_CONTEXT));
         unsafe {
@@ -246,7 +450,11 @@ fn gpu_group_end(slot: u16) -> bool {
         return false;
     }
     let c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16 || !gpu_group_pad(slot) {
+    if c[GPU_RECORD_PHASE] != RecordPhase::PassOpen as u16 {
+        return false;
+    }
+    let command_count = c[GPU_RECORD_COMMAND_USED] >> 1;
+    if !gpu_group_pad(slot) {
         return false;
     }
     let words = c[GPU_RECORD_COMMAND_USED];
@@ -263,7 +471,7 @@ fn gpu_group_end(slot: u16) -> bool {
     let mut meta = unsafe { pointer.as_u16_array() };
     meta[0u16] = words;
     meta[1u16] = count + 1;
-    meta[2u16] = 0;
+    meta[GPU_GROUP_META_COMMAND_COUNT] = command_count;
     meta[3u16] = 0;
     #[cfg(gpu_debug)]
     {

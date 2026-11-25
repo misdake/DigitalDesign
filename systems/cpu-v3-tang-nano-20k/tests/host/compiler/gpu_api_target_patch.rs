@@ -10,8 +10,8 @@ fn main(){
  let mut gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:first,command_b:Some(second)});
  let mut a=gpu.command_buffer();let mut b=gpu.command_buffer();let mut display=Display::open();
  let cam=Camera::new(CameraDesc{eye:v(0,0,0),angles:v(0,0,0),projection:Projection::from_focal_pixels(fix32::from_int(200),fix32::from_int(120))});
- let model=Model::new(Transform{position:v(0,0,-3),angles:v(0,0,0),scale:v(1,1,1)});
- let model2=Model::new(Transform{position:v(1,0,-4),angles:v(0,0,0),scale:v(1,1,1)});
+ let model=Transform::new(Pose{position:v(0,0,-3),angles:v(0,0,0),scale:v(1,1,1)});
+ let model2=Transform::new(Pose{position:v(1,0,-4),angles:v(0,0,0),scale:v(1,1,1)});
  let material=Material::new(MaterialDesc{uniform_color:Rgba8{r:80,g:160,b:240,a:255},specular:Rgb8{r:10,g:20,b:30},shininess:Shininess::S32,ambient_response:fix32::from_words(32768,0),directional_response:fix32::from_words(16384,0),unlit:false});
  let material2=Material::new(MaterialDesc{uniform_color:Rgba8{r:240,g:80,b:160,a:255},specular:Rgb8{r:10,g:20,b:30},shininess:Shininess::S32,ambient_response:fix32::from_words(32768,0),directional_response:fix32::from_words(16384,0),unlit:false});
  let state=RenderState::new(RenderStateDesc{depth:DepthFunc::Less,depth_write:true,blend:BlendMode::Replace,filter:TextureFilter::Nearest,lighting:Lighting{direction:v(0,0,1),ambient:fix32::from_int(1),directional:fix32::from_int(1)}});
@@ -28,7 +28,7 @@ fn main(){
 fn source(copy: bool) -> String {
     let record = |buffer: &str, target: &str| {
         format!(
-            "{}{{let mut p={buffer}.pass({target}.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::clear(65535));p.set_camera(cam.ptr());p.set_state(state.ptr());p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());p.draw_colored(mesh.ptr(), model2.ptr(), material2.ptr());}}",
+            "{}{{let mut p={buffer}.pass({target}.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::clear(65535));p.set_camera(cam.ptr());p.set_state(state.ptr());p.draw_colored(model.ptr(), mesh.ptr(), material.ptr());p.draw_colored(model2.ptr(), mesh.ptr(), material2.ptr());}}",
             if copy {
                 format!("{buffer}.copy_color(background.ptr(), {target}.ptr());")
             } else {

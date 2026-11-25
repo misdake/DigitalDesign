@@ -19,8 +19,8 @@ fn v(x: i16, y: i16, z: i16) -> Vec3 {
         z: fix32::from_int(z),
     }
 }
-fn transform() -> Transform {
-    Transform {
+fn transform() -> Pose {
+    Pose {
         position: v(10, -4, -12),
         angles: Vec3 {
             x: fix32::from_words(8192, 0),
@@ -34,8 +34,8 @@ fn transform() -> Transform {
         },
     }
 }
-fn model() -> Model {
-    Model::new(transform())
+fn model() -> Transform {
+    Transform::new(transform())
 }
 fn make_euler(projection: Projection) -> Camera {
     let camera = Camera::new(CameraDesc {
@@ -175,8 +175,8 @@ fn main() {
         );
         pass.set_camera(euler.ptr());
         pass.set_state(state.ptr());
-        pass.draw_colored(mesh.ptr(), m0.ptr(), material.ptr());
-        pass.draw_colored(mesh.ptr(), m1.ptr(), material.ptr());
+        pass.draw_colored(m0.ptr(), mesh.ptr(), material.ptr());
+        pass.draw_colored(m1.ptr(), mesh.ptr(), material.ptr());
     }
     {
         let mut pass = second.pass(
@@ -187,10 +187,10 @@ fn main() {
         );
         pass.set_camera(look.ptr());
         pass.set_state(state.ptr());
-        pass.draw_colored(mesh.ptr(), m0.ptr(), material.ptr());
+        pass.draw_colored(m0.ptr(), mesh.ptr(), material.ptr());
     }
     mark(1);
-    m0.set_pose(Transform {
+    m0.set_pose(Pose {
         position: v(11, 0, -3),
         angles: v(0, 0, 0),
         scale: v(1, 1, 1),
@@ -208,7 +208,7 @@ fn main() {
         a: 4,
     });
     drop(m0);
-    let replacement = Model::new(Transform {
+    let replacement = Transform::new(Pose {
         position: v(11, 0, -3),
         angles: v(0, 0, 0),
         scale: v(1, 1, 1),
@@ -225,8 +225,8 @@ fn main() {
         );
         pass.set_camera(euler.ptr());
         pass.set_state(state.ptr());
-        pass.draw(mesh.ptr(), replacement.ptr(), material.ptr(), view.ptr());
-        pass.draw(mesh.ptr(), replacement.ptr(), material.ptr(), rtt.ptr());
+        pass.draw(replacement.ptr(), mesh.ptr(), material.ptr(), &view);
+        pass.draw(replacement.ptr(), mesh.ptr(), material.ptr(), &rtt);
         pass.draw_ui(
             grid.ptr(),
             CellRect {
@@ -236,14 +236,14 @@ fn main() {
                 height: 1,
             },
         );
-        pass.draw_colored(mesh.ptr(), replacement.ptr(), material.ptr());
+        pass.draw_colored(replacement.ptr(), mesh.ptr(), material.ptr());
         material.set_uniform_color(Rgba8 {
             r: 1,
             g: 2,
             b: 3,
             a: 8,
         });
-        pass.draw_colored(mesh.ptr(), replacement.ptr(), material.ptr());
+        pass.draw_colored(replacement.ptr(), mesh.ptr(), material.ptr());
     }
     mark(3);
     drop(replacement);
@@ -256,8 +256,6 @@ fn main() {
     drop(state);
     drop(euler);
     drop(look);
-    drop(view);
-    drop(rtt);
     drop(grid);
     drop(mesh);
     drop(color);

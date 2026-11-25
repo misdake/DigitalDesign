@@ -390,8 +390,8 @@ fn shadow_clip(
 }
 fn shadow_triangle(
     pass: &mut Pass,
+    model: &mut Transform,
     mesh: &Mesh,
-    model: &mut Model,
     material: &Material,
     points: Array<ShadowScalar>,
     i: u16,
@@ -419,12 +419,12 @@ fn shadow_triangle(
     } else {
         shadow_invalidate();
     }
-    shadow_draw(pass, mesh, model, material, triangle);
+    shadow_draw(pass, model, mesh, material, triangle);
 }
 fn shadow_draw(
     pass: &mut Pass,
+    model: &mut Transform,
     mesh: &Mesh,
-    model: &mut Model,
     material: &Material,
     t: ShadowTriangle,
 ) {
@@ -458,17 +458,17 @@ fn shadow_draw(
         },
     );
     // The immutable shadow mesh carries white vertex colors and no texture UVs.
-    pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr());
+    pass.draw_colored(model.ptr(), mesh.ptr(), material.ptr());
     DRAW_STATS.draw_calls += mesh.meshlet_count();
     SHADOW_WORKSPACE.info.triangles += 1;
 }
 
 pub fn draw_shadow(
     pass: &mut Pass,
+    model: &mut Transform,
     mesh: &Mesh,
-    model: &mut Model,
     material: &Material,
-    block: &Model,
+    block: &Transform,
 ) {
     if shadow_batch_enabled() {
         shadow_batch_select();
@@ -509,7 +509,7 @@ pub fn draw_shadow(
         SHADOW_WORKSPACE.info.triangles = 0;
         let mut i: u16 = 0;
         while i < count {
-            shadow_draw(pass, mesh, model, material, shadow_cache_load(i));
+            shadow_draw(pass, model, mesh, material, shadow_cache_load(i));
             i += 1;
         }
         return;
@@ -530,14 +530,14 @@ pub fn draw_shadow(
     SHADOW_WORKSPACE.info.triangles = 0;
     let count = shadow_hull(shadow_project(world));
     SHADOW_WORKSPACE.info.hull_points = count;
-    draw_shadow_hull(pass, mesh, model, material, count, mask);
+    draw_shadow_hull(pass, model, mesh, material, count, mask);
 }
 
 // Projection/cache selection is complete; clip the shared hull to receiver cells.
 fn draw_shadow_hull(
     pass: &mut Pass,
+    model: &mut Transform,
     mesh: &Mesh,
-    model: &mut Model,
     material: &Material,
     count: u16,
     mask: u16,
@@ -664,7 +664,7 @@ fn draw_shadow_hull(
                 } else {
                     let mut triangle: u16 = 2;
                     while triangle < n {
-                        shadow_triangle(pass, mesh, model, material, points, triangle);
+                        shadow_triangle(pass, model, mesh, material, points, triangle);
                         triangle += 1;
                     }
                 }
@@ -873,7 +873,7 @@ fn shadow_batch_cell(points: Array<ShadowScalar>, count: u16, left: fix32, top: 
     data[0u16] = record + 1;
     triangles
 }
-fn shadow_batch_draw(pass: &mut Pass, model: &mut Model, material: &Material) {
+fn shadow_batch_draw(pass: &mut Pass, model: &mut Transform, material: &Material) {
     let data = shadow_batch_slot();
     if data[0u16] == 0 {
         return;
@@ -914,10 +914,10 @@ fn shadow_batch_draw(pass: &mut Pass, model: &mut Model, material: &Material) {
             row2: Vec3::new(zero, zero, one),
         },
     );
-    pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr());
+    pass.draw_colored(model.ptr(), mesh.ptr(), material.ptr());
     DRAW_STATS.draw_calls += mesh.meshlet_count();
 }
-fn shadow_batch_finish(pass: &mut Pass, model: &mut Model, material: &Material) {
+fn shadow_batch_finish(pass: &mut Pass, model: &mut Transform, material: &Material) {
     if !shadow_batch_enabled() {
         return;
     }

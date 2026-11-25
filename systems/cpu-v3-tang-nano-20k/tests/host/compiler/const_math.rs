@@ -28,7 +28,7 @@ fn const_projection_units_and_nonuniform_normal_matrices_execute_on_cpu() {
     let source = format!(
         "{PREFIX}{}",
         r#"
-const POSE:Transform=Transform::new(Vec3::new(fix!(1),fix!(-2),fix!(-3)),
+const POSE:Pose=Pose::new(Vec3::new(fix!(1),fix!(-2),fix!(-3)),
  Vec3::new(fix!(0),fix!(0),fix!(90).to_radians()),Vec3::new(fix!(2),fix!(3),fix!(-4)));
 static WORLD:Mat3x4=POSE.world_matrix();
 static NORMAL:Mat3x3=POSE.normal_matrix();
@@ -39,8 +39,8 @@ static VERTICAL_FOCAL:fix32=VERTICAL.focal_pixels();
 static HORIZONTAL_FOCAL:fix32=HORIZONTAL.focal_pixels();
 const DURATION:u16=seconds_to_milliseconds(2);
 fn close(a:fix32,b:fix32)->bool{(a-b).abs()<=fix32::from_words(8,0)}
-fn dynamic_world(pose:Transform)->Mat3x4{pose.world_matrix()}
-fn dynamic_normal(pose:Transform)->Mat3x3{pose.normal_matrix()}
+fn dynamic_world(pose:Pose)->Mat3x4{pose.world_matrix()}
+fn dynamic_normal(pose:Pose)->Mat3x3{pose.normal_matrix()}
 fn degrees_runtime(angle:fix32)->fix32{angle.to_radians()}
 fn main(){
  if WORLD.row0.x!=fix!(0)||WORLD.row0.y!=fix!(-3)||WORLD.row0.w!=fix!(1){halt(1);}
@@ -117,7 +117,7 @@ fn invalid_const_projection_scale_and_duration_are_rejected() {
         ),
         (
             "bad-scale",
-            "const BAD:Mat3x3=Transform::uniform_scale(fix!(0)).normal_matrix();",
+            "const BAD:Mat3x3=Pose::uniform_scale(fix!(0)).normal_matrix();",
         ),
         ("bad-duration", "const BAD:u16=seconds_to_milliseconds(66);"),
     ] {

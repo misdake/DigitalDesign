@@ -27,7 +27,7 @@ pub struct Mat3x3 {
     pub row2: Vec3,
 }
 #[derive(Copy, Clone)]
-pub struct Transform {
+pub struct Pose {
     pub position: Vec3,
     pub angles: Vec3,
     pub scale: Vec3,
@@ -309,30 +309,30 @@ pub fn gpu_scene_camera_init_look_at(
     true
 }
 
-pub fn gpu_scene_model_init(mut out: Array<u16>, transform: Transform) -> bool {
-    if transform.scale.x == fix32::zero()
-        || transform.scale.y == fix32::zero()
-        || transform.scale.z == fix32::zero()
+pub fn gpu_scene_model_init(mut out: Array<u16>, pose: Pose) -> bool {
+    if pose.scale.x == fix32::zero()
+        || pose.scale.y == fix32::zero()
+        || pose.scale.z == fix32::zero()
     {
         return false;
     }
     let rotation: Buf<u16, 24> = Buf::new([0; 24]);
-    gpu_scene_rotation(rotation.as_array(), transform.angles);
-    let ix = frcp(transform.scale.x);
-    let iy = frcp(transform.scale.y);
-    let iz = frcp(transform.scale.z);
+    gpu_scene_rotation(rotation.as_array(), pose.angles);
+    let ix = frcp(pose.scale.x);
+    let iy = frcp(pose.scale.y);
+    let iz = frcp(pose.scale.z);
     let mut row: u16 = 0;
     while row < 3 {
         let mut col: u16 = 0;
         while col < 3 {
-            let mut scale = transform.scale.x;
+            let mut scale = pose.scale.x;
             let mut inverse = ix;
             if col == 1 {
-                scale = transform.scale.y;
+                scale = pose.scale.y;
                 inverse = iy;
             }
             if col == 2 {
-                scale = transform.scale.z;
+                scale = pose.scale.z;
                 inverse = iz;
             }
             let value = gpu_scene_fix_read(rotation.as_array(), row * 8 + col * 2);
@@ -340,12 +340,12 @@ pub fn gpu_scene_model_init(mut out: Array<u16>, transform: Transform) -> bool {
             gpu_scene_fix_write(out, GPU_MODEL_NORMAL + (row * 3 + col) * 2, value * inverse);
             col += 1;
         }
-        let mut translation = transform.position.x;
+        let mut translation = pose.position.x;
         if row == 1 {
-            translation = transform.position.y;
+            translation = pose.position.y;
         }
         if row == 2 {
-            translation = transform.position.z;
+            translation = pose.position.z;
         }
         gpu_scene_fix_write(out, GPU_MODEL_WORLD + row * 8 + 6, translation);
         row += 1;

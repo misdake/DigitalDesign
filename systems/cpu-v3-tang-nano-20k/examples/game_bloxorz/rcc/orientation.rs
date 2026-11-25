@@ -119,7 +119,7 @@ fn rotation_world_row(row: Vec4, x: u16, y: u16, z: u16) -> Vec4 {
         w: row.w,
     }
 }
-pub fn rotation_pose(model: &mut Model, pose: Transform, orientation: u16) {
+pub fn rotation_pose(model: &mut Transform, pose: Pose, orientation: u16) {
     model.set_pose(pose);
     if orientation == ROTATION_IDENTITY {
         return;

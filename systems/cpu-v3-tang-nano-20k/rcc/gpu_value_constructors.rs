@@ -75,7 +75,7 @@ impl Mat3x4 {
         )
     }
 }
-impl Transform {
+impl Pose {
     /// Source-world TRS; angles are radians and normal matrices remain derived.
     pub const fn new(position: Vec3, angles: Vec3, scale: Vec3) -> Self {
         Self {

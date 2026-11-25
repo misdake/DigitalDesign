@@ -49,6 +49,11 @@ Source geometry is refreshed only after both preceding CBs retire. Dynamic
 bridges, switches, opening strips/hatches, goal carrier, shadow and players remain
 outside this static recording.
 
+The Bloxorz game owns one clamped View for the terrain atlas and one for the
+marker atlas for the full run. Static floor, wells and fragile batches, as
+well as dynamic bridges, switches, pads and blocks, use those views when
+recording. The goal carrier has its own level-dependent texture View.
+
 Each scene frame reuses the same static command bytes. A public `TargetBinding`
 updates Target32 and the optional leading background copy's destination together,
 selecting Back or the boundary RTT snapshot. World/material/View payloads remain
@@ -146,7 +151,7 @@ translation, support pivots and occupied bounds remain canonical. Split cubes
 inherit the parent orientation and then track each actor independently; swapping
 changes selection only, merging adopts the moving actor's landed orientation.
 Undo retains both actor orientations in an additional512-word heap ring, freed
-on finite exit; resets restore identity. Resting Model cache keys include this
+on finite exit; resets restore identity. Resting Transform cache keys include this
 orientation. Early free fall retains its release orientation without adding an
 uncompleted quarter turn.
 
@@ -343,7 +348,7 @@ existing paths and relative ordering.
 The33 imported boards are at most15x10. Native positions are unsigned delta10
 plus signed F16 origins, not signed10 coordinates. On boards up to15 in both
 axes, X/Z source positions are twice the world grid and Y is eight times world
-height, with a common Model scale(1/2,1/8,1/2). Both tops and sides then use
+height, with a common Transform scale(1/2,1/8,1/2). Both tops and sides then use
 quant_shift11: maximum X/Z deltas960/640, and side thickness51 codes. The side
 source bottom is-104448/65536, retaining world-51/256 exactly. Sorting material,
 then top/side, fills records across the whole board instead of closing a record
@@ -351,13 +356,13 @@ at every3x3 boundary. Stage4's54 quads occupy16+12 top and16+10 side quads: four
 meshlets, not twelve.
 
 All source normals are signed coordinate axes, checked by the asset producer.
-The Model receives the original half-scale normal basis through `set_matrices`:
+The Transform receives the original half-scale normal basis through `set_matrices`:
 it is parallel to the inverse transpose on each supported axis, with its
 per-axis magnitude normalized back to the original value. This preserves the
 original normal18 input range instead of sending an eightfold Y normal into
 signed18 transport. Non-axial templates are rejected. The bounded native
 Instance test compares the normal matrix against the original half-scale
-Model and checks each axial MAC result's range.
+Transform and checks each axial MAC result's range.
 
 Larger coordinate ranges use local3x3 buckets for both top and side quads,
 quant_shift9 and the original half scale. Unsupported coordinate/key ranges
@@ -419,7 +424,7 @@ each part boundary; native Global/Render equality can omit redundant bindings.
 Pads, shadows and players follow the opaque bridges; hints then precede HUD.
 
 The bank uses the existing64KiB command and64KiB push reservations, with fixed
-part partitions rather than a growing prefix. No persistent per-button Model or
+part partitions rather than a growing prefix. No persistent per-button Transform or
 new GPU command is introduced. A47-word heap allocation holds button count and
 up to15 triples of cell index, saved key and actual draw count. Kind and channel
 come from the canonical level data; no second descriptor table or cell/channel
@@ -433,7 +438,7 @@ dynamic CB.
 ## Stable pad preparation
 
 Entrance hatch/four strips, goal hatch/carrier/four fallback strips have eleven
-independent Model owners. Five immutable role materials and shared texture/views
+independent Transform owners. Five immutable role materials and shared texture/views
 persist for the run; the carrier view is recreated only on level change. No
 resource handles are embedded in ordinary buffers. A 15-word heap allocation
 stores generation, normalized entry/goal opening keys, initialized/dirty/visible
@@ -441,7 +446,7 @@ masks, selected goal aperture and exact Q16 opening values. It is zeroed once,
 retained through the run and freed after both CBs retire/drop at finite exit.
 
 Opening math runs only when its actual geometry key changes. Stable role poses
-skip `set_pose`, leaving Camera-revision invalidation to the existing Model cache.
+skip `set_pose`, leaving Camera-revision invalidation to the existing Transform cache.
 Entrance and goal have separate keys, so entry animation does not dirty a stable
 goal. The original draw order, exact easing, hatch scale, quantized carrier
 selection and levels15/17 four-strip fallback remain unchanged. Hidden players
@@ -455,4 +460,4 @@ saved sequence; a changed key re-records all eleven role calls in their original
 order. Camera/state are reinstalled after the bank boundary. Carrier texture,
 mesh variant and camera changes remain covered by level generation and the
 existing goal key. This uses one existing2-KiB push partition and one1-KiB
-template; no new resource Model or static record is introduced.
+template; no new resource Transform or static record is introduced.

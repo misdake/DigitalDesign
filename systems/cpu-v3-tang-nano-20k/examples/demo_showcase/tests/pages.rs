@@ -106,10 +106,12 @@ fn main() {
                 .join("../../target/core-demo/graphical/canvas-rustc"),
         ),
         &mut |name| {
+            // Shared SDK sources are stored together, even for nested imports.
+            let leaf = name.rsplit('/').next().unwrap_or(name);
             std::fs::read_to_string(
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("rcc")
-                    .join(format!("{name}.rs")),
+                    .join(format!("{leaf}.rs")),
             )
             .map_err(|e| e.to_string())
         },

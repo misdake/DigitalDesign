@@ -8,7 +8,7 @@ source. After successful retirement, another job samples it:
 - bilinear.rs: an ordinary translated/rotated/scaled mesh using bilinear.
 
 Both stages use the shared resident World/View path. Each Pass selects its
-camera and each Model supplies World; producer retirement and texture ownership
+camera and each Transform supplies World; producer retirement and texture ownership
 remain explicit. Use World/View-capable gateware for these rebuilt applications.
 
 Shared scene.rs uses scoped Pass recording, explicit submit and wait. There is no

@@ -20,12 +20,12 @@ pub fn same_cb_rtt_once() {
     let pattern = demo_mesh_part(0, 1);
     let screen = demo_mesh_part(1, 1);
     let one = fix32::from_int(1);
-    let producer = Model::new(demo_pose(
+    let producer = Transform::new(demo_pose(
         demo_point(fix32::zero(), fix32::zero(), fix32::from_int(-3)),
         demo_zero(),
         demo_scale(),
     ));
-    let consumer = Model::new(demo_pose(
+    let consumer = Transform::new(demo_pose(
         demo_point(fix32::zero(), fix32::zero(), -one),
         demo_zero(),
         // Keep the full physical targets and texture, but sample into a small
@@ -46,10 +46,10 @@ pub fn same_cb_rtt_once() {
         pass.set_camera(camera.ptr());
         pass.set_state(state.ptr());
         pass.draw(
-            pattern.ptr(),
             producer.ptr(),
+            pattern.ptr(),
             material.ptr(),
-            ordinary.ptr(),
+            &ordinary,
         );
     }
     commands.invalidate_textures();
@@ -63,7 +63,7 @@ pub fn same_cb_rtt_once() {
         );
         pass.set_camera(camera.ptr());
         pass.set_state(state.ptr());
-        pass.draw(screen.ptr(), consumer.ptr(), material.ptr(), view.ptr());
+        pass.draw(consumer.ptr(), screen.ptr(), material.ptr(), &view);
     }
     gpu.submit(commands);
     commands = gpu.wait();

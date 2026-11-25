@@ -51,7 +51,7 @@ fn main() {
         82,
     );
     let projection: Projection = gpu_scene_projection_value(PROJECTION.as_array());
-    let model: Transform = Transform {
+    let model: Pose = Pose {
         position: Vec3 {
             x: fix32::from_int(10),
             y: fix32::from_int(-4),

@@ -7,7 +7,7 @@ use gpu_api::*;
 mod boot_resources;
 use boot_resources::*;
 
-const FIXED_POSE: Transform = Transform::translation(Vec3::new(fix!(1.4), fix!(0), fix!(-4.5)))
+const FIXED_POSE: Pose = Pose::translation(Vec3::new(fix!(1.4), fix!(0), fix!(-4.5)))
     .with_rotation(Vec3::new(
         fix!(-20).to_radians(),
         fix!(30).to_radians(),
@@ -18,10 +18,10 @@ pub const FIXED_WORLD: Mat3x4 = FIXED_POSE.world_matrix();
 pub const FIXED_NORMAL: Mat3x3 = FIXED_POSE.normal_matrix();
 pub const GEOMETRY_PROJECTION: Projection = Projection::from_focal_pixels(fix!(200), fix!(199));
 
-fn geometry_update(model: &mut Model, camera: &mut Camera, state: AnimationState) {
+fn geometry_update(model: &mut Transform, camera: &mut Camera, state: AnimationState) {
     let angle = animation_phase(state);
     model.set_pose(
-        Transform::translation(Vec3::new(fix!(-1.4), fix!(0), fix!(-4.5)))
+        Pose::translation(Vec3::new(fix!(-1.4), fix!(0), fix!(-4.5)))
             .with_rotation(Vec3::new(fix!(-20).to_radians(), angle, fix!(0)))
             .with_scale(Vec3::splat(fix!(0.7))),
     );
@@ -40,8 +40,8 @@ pub struct GeometryPage {
     view: TextureView,
     texture: Texture,
     mesh: Mesh,
-    fixed: Model,
-    rotating: Model,
+    fixed: Transform,
+    rotating: Transform,
     camera: Camera,
     material: Material,
     render_state: RenderState,
@@ -52,8 +52,8 @@ impl GeometryPage {
         let texture = Texture::from_native(GEOMETRY_CHECKER);
         let mut view = texture.view();
         view.set_address_mode(TextureAddressMode::ClampToEdge);
-        let fixed = Model::from_matrices(FIXED_WORLD, FIXED_NORMAL);
-        let rotating = Model::new(Transform::identity());
+        let fixed = Transform::from_matrices(FIXED_WORLD, FIXED_NORMAL);
+        let rotating = Transform::new(Pose::identity());
         let camera = Camera::new(CameraDesc::new(
             Vec3::zero(),
             Vec3::zero(),
@@ -84,16 +84,16 @@ impl GeometryPage {
         pass.set_camera(self.camera.ptr());
         pass.set_state(self.render_state.ptr());
         pass.draw(
-            self.mesh.ptr(),
             self.fixed.ptr(),
+            self.mesh.ptr(),
             self.material.ptr(),
-            self.view.ptr(),
+            &self.view,
         );
         pass.draw(
-            self.mesh.ptr(),
             self.rotating.ptr(),
+            self.mesh.ptr(),
             self.material.ptr(),
-            self.view.ptr(),
+            &self.view,
         );
     }
 }

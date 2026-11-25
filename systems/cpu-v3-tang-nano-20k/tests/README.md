@@ -380,10 +380,10 @@ All cases stop within one million CPU instructions; their peers do not render.
 checked RCC and executes CPU V3 in both `gpu_debug` profiles, with a 250,000-step
 limit per program. It checks final native encodings and independently compares
 the complete external UI allocation across a DSEG3 boundary. Two cameras share
-a nonuniformly scaled Model; independent oracles cover the entire 256-word
+a nonuniformly scaled Transform; independent oracles cover the entire 256-word
 native/scratch span, source matrices, light quantization and frozen input arrays.
 The oblique case independently multiplies host rotation matrices for full
-three-axis Model/Euler camera rotations, negative/nonuniform scaling and a
+three-axis Transform/Euler camera rotations, negative/nonuniform scaling and a
 non-axis look-at. It compares source world/normal/view and final native
 position/normal/light, with fixed Q16/Q14 tolerances, exact padding/scratch gaps
 and byte-identical healthy output across profiles.
@@ -421,21 +421,20 @@ constants; independent native arithmetic and recording assertions stay fixed.
 The public fixture runs both `gpu_debug` profiles under a 5,000,000-step limit.
 It keeps six Models and two Cameras live, checks oblique Euler/look-at native
 matrices and light with independent matrix products, then mutates resources,
-Drops and reuses a Model slot and appends to one of two independent CBs.
+Drops and reuses a Transform slot and appends to one of two independent CBs.
 Full old command/push/fact snapshots must remain unchanged. Public texture and
 RTT views survive their source descriptor's Drop. A small atlas and odd/short
 UI write cross a DSEG3 boundary, preserving neighbor bytes and allocation tail.
 3D/UI/3D, DMA/full WAIT ordering, equal-value reuse and RGBA-only changes are
 checked in the emitted native stream. Healthy outputs match across profiles.
-Projection private-field access, a moved Model and private helper calls are
+Projection private-field access, a moved Transform and private helper calls are
 negative checked cases. Static plus observed stack must fit 16 KiB, including
 the actual C globals; no hypothetical capture reservation is added. This is
 public recording qualification, without GPU pixels or captured DRAW/UI G3.
 
 The ignored `raster_phase_replica::export_raster_phase_inputs` test materializes
 the portable/native frontend, final production GPU leaf and inner command RTL
-under `target/raster-phase-native/native/input` when
-`CPU_V3_GPU_PROFILE=production`. `raster_phase_replica.py --export <rtl.v>
+under `target/raster-phase-native/native/input`. `raster_phase_replica.py --export <rtl.v>
 --output <fresh-directory>` checks their common clock/reset/CE/phase bindings
 without an external baseline snapshot. Its actual modules check 256
 post-edge phase values across all four active/paused phases, abort frontend
@@ -488,7 +487,7 @@ recording scope is described in [API storage](/systems/cpu-v3-tang-nano-20k/docs
 `gpu_api_resources` uses the actual approved root for factories, Pass/descriptor
 lifetimes, capacity rejection, reinitialization and Display retirement. Private
 execute tests do not establish public submission/capture or GPU pixel rendering.
-`gpu_api_model_cache` checks independent Model dirty data, Camera revision
+`gpu_api_model_cache` checks independent Transform dirty data, Camera revision
 snapshots across interleaved CBs, descriptor reuse, two-allocation capacity
 failure, and revision carry/exhaustion. It compares complete recorded commands
 and push data with a forced-recompute run; historical-source and native-cycle
@@ -659,7 +658,7 @@ matrices, GPU output or the old cmodel; it does not qualify full-frame equality.
 | Value | Additional boundary |
 | --- | --- |
 | `success` (default) | Three submissions, real recording/execution overlap, CE pauses, backpressure and independent input/color retirement |
-| `cross-window` | Two submissions; source Camera/Model/Material mutations preserve the first recorded draw and affect the second; CPU writes and GPU reads cross the second object window, then restore DSEG0..3 |
+| `cross-window` | Two submissions; source Camera/Transform/Material mutations preserve the first recorded draw and affect the second; CPU writes and GPU reads cross the second object window, then restore DSEG0..3 |
 | `capacity` | Full object arena rejects the successor while the first GPU input remains live |
 | `gpu-error` | A real second-CB read error on a valid LAST freezes its in-flight reference, with no later submit/present |
 | `display-error` | A real old-Front read error freezes the recorded successor before a later submit |
@@ -685,7 +684,6 @@ and need not clear GPU busy or manufacture a successful terminal.
 Run each case in a separate process with a fresh evidence directory:
 
 ```powershell
-$env:CPU_V3_GPU_PROFILE = 'production'
 $env:GPU_RENDERER_NATIVE_CASE = 'success'
 $env:GPU_RENDERER_NATIVE_EVIDENCE = (Join-Path $PWD 'target/renderer-native-success')
 & scripts/run-cargo.ps1 -Subcommand test -Label 'renderer native success' -CargoArgs @('-p','cpu-v3-tang-nano-20k','--test','gpu_renderer_native','--','--ignored','--nocapture')

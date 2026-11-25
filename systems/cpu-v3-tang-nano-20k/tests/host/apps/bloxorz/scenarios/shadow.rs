@@ -219,11 +219,11 @@ fn instrument_shadow_cost(original: &std::path::Path, local: &std::path::Path) {
         shadow = shadow.replace(&needle, &format!("fn measured_body_{name}("));
     }
     shadow += r#"
-pub fn draw_shadow(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,b:&Model){signal(5,0);measured_body_draw_shadow(p,m,o,a,b);signal(6,0);}
+pub fn draw_shadow(p:&mut Pass,o:&mut Transform,m:&Mesh,a:&Material,b:&Transform){signal(5,0);measured_body_draw_shadow(p,o,m,a,b);signal(6,0);}
 fn shadow_project(w:Mat3x4)->u16{signal(7,1);let n=measured_body_shadow_project(w);signal(8,1);n}
 fn shadow_hull(c:u16)->u16{signal(7,2);let n=measured_body_shadow_hull(c);signal(8,2);n}
 fn shadow_clip(a:Array<ShadowScalar>,b:Array<ShadowScalar>,c:u16,d:fix32,e:u16)->u16{signal(7,3);let n=measured_body_shadow_clip(a,b,c,d,e);signal(8,3);n}
-fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){signal(7,4);measured_body_shadow_draw(p,m,o,a,t);signal(8,4);}
+fn shadow_draw(p:&mut Pass,o:&mut Transform,m:&Mesh,a:&Material,t:ShadowTriangle){signal(7,4);measured_body_shadow_draw(p,o,m,a,t);signal(8,4);}
 "#;
     std::fs::write(local.join("shadow.rs"), shadow).unwrap();
 }

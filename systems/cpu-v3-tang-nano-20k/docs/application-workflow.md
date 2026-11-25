@@ -33,7 +33,7 @@ Application names use `demo-` for showcases, `sample-` for starter code,
 `game-` for complete games and `bench-` for benchmarks. Source directories
 use the same prefixes with underscores.
 
-Public GPU examples use the shared resident World/View path: `Model` supplies
+Public GPU examples use the shared resident World/View path: `Transform` supplies
 world-space transforms and `Pass::set_camera` selects the view. Applications do
 not calculate MV themselves. Prepared parts retain World and inherit the Pass
 camera when appended. Rebuild these applications with matching World/View-capable

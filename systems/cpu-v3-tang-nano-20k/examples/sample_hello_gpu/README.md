@@ -34,7 +34,8 @@ File modules load from their normal directories, without listing subdirectories
 in `ordinary_sources`.
 
 The default source-world camera looks along -Z; the triangle model sits at z=-4.
-`Scene::draw` selects that camera and passes the Model's World transform; the
+`Scene::draw` selects that camera and draws the application-owned Model, which groups its
+Transform, Mesh, and Material. The
 shared driver and Geometry ROM compose the effective matrix. No application-side
 MV construction is needed. Use matching World/View-capable gateware.
 

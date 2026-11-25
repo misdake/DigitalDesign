@@ -48,13 +48,13 @@ initializes projection and zero padding. View getters and setters preserve
 the same source basis, allowing an unchanged round trip. Caller-supplied views
 must be rigid transforms.
 
-Model TRS preparation writes world=R*S and normal=R*inverse(S), with translation
+Transform TRS preparation writes world=R*S and normal=R*inverse(S), with translation
 only in world. It computes the three inverse scales once. Zero scale fails
 before writing; input values and intermediate arithmetic must fit the native
 fixed-point domain. Explicit matrix input uses the caller's supplied normal
 matrix. The normal matrix is tightly packed at words 24..41. Pure preparation
 zeros words42..47. The public adapter stamps its source revision at44..47.
-A public Model owns one48-word slot with no derived allocation. Getters return the exact source matrices; view changes cannot
+A public Transform owns one48-word slot with no derived allocation. Getters return the exact source matrices; view changes cannot
 modify them. Explicit matrices and TRS setters both update only source-world data.
 
 ## Resident World/View draw conversion
@@ -68,11 +68,11 @@ Geometry uses its existing MAC to compose World with View. Ordinary preparation
 is97 enabled edges, including two light-response products and half-up Q8 rounding.
 Billboard branches after position composition and copies direction pairs from
 View, for65 edges total. Normal and Billboard per-vertex programs are unchanged.
-No CPU MV or per-Model derived cache participates in this path.
+No CPU MV or per-Transform derived cache participates in this path.
 
 The horizontal Billboard basis retains camera right's XZ components without
 renormalization; full-facing basis uses projected right/up. The CPU computes the
-shared basis only when View changes, independently of Model count. Source light
+shared basis only when View changes, independently of Transform count. Source light
 normalization stays at RenderState construction; Q14 view-light conversion is
 reused until a captured Camera view/focal or light direction changes. Snapshot
 setters invalidate that encoding directly; there is no second source-key mirror. Shader ray/far data remains a
@@ -119,7 +119,7 @@ This stage performs no command emission or binding comparison. A failed
 conversion may have changed its scratch output; the adapter must reject it.
 
 The matrix kernel reads the three Camera rows and the world rows with existing
-four-lane imports. Three overlapping imports at Model words 24, 30 and 34 read
+four-lane imports. Three overlapping imports at Transform words 24, 30 and 34 read
 the normal matrix without crossing word 41. It transposes in FPU registers and
 finishes normals before loading world rows; one position basis is live at a time.
 Five four-lane exports and one scalar write cover exactly the 42 coefficient
@@ -128,13 +128,13 @@ projection multiplication or the row-zero normal negation; arithmetic precision
 and wrapping remain unchanged. Scalar and six-word vector helpers carry explicit
 best-effort inline hints. No compiler policy or cache dependency changes.
 
-## Camera and Model source identity
+## Camera and Transform source identity
 
 Every successful Camera view setter allocates a fresh nonzero64-bit revision.
 Projection changes allocate one when focal changes; far/ray changes are separate
 scene dependencies. Pass copies the revision into record words16..19 along with
 numeric Camera data. The counter never resets on arena/context reuse and rejects
-wrap before changing any token. Model creation/updates use the same monotonic
+wrap before changing any token. Transform creation/updates use the same monotonic
 source counter and stamp their own revision at44..47; Models never track a Camera
 revision. Far/ray changes retain the matrix revision but Pass setters separately
 capture their numeric tail and mark Scene dirty.
@@ -177,13 +177,13 @@ independent of `full_mip`. Both use the same16-bit storage and filters.
 Each mip occupies at least four sectors; larger levels use the native 16x16
 column-macro footprint. Full-mip descriptions cover all levels down to 1x1.
 
-A view copies the entire 16-word prepared description. It contains no owner
-reference and survives reuse of the source description. This does not extend
-the lifetime of its external payload. A color view records fixed400x240 shape,
+A view stores six words of sampling data. The application owns the value,
+and draw recording borrows it. The external texture allocation stays live
+through execution and replay according to the application's storage contract. A color view records fixed400x240 shape,
 64-KiB base alignment, exponent 9, no mip chain and the allocation's actual
 sector count; the physical image spans 1600 sectors.
 The prepared flags word keeps mip in bit0 and fixed shape in bit1, with
-RGBA4444 in bit2 and POT ClampToEdge in bit3; the16-word description does not grow. Fixed color views
+RGBA4444 in bit2 and POT ClampToEdge in bit3. Fixed color views
 remain RGB565. The raw internal `GpuTexture`/`GpuRender.texture_flags` packs
 mip in bit0, RGBA4444 in bit1 and ClampToEdge in bit2.
 

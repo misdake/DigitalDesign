@@ -9,8 +9,6 @@ mod boot_resources;
 use boot_resources::*;
 mod session;
 use session::*;
-mod texture_views;
-use texture_views::*;
 mod render_stats;
 use render_stats::*;
 
@@ -196,8 +194,8 @@ pub struct PadPart {
 
 pub fn draw_pad_part(
     recording: &mut PreparedPart,
+    model: &mut Transform,
     box_mesh: &Mesh,
-    model: &mut Model,
     material: &Material,
     view: &TextureView,
     part: PadPart,
@@ -234,7 +232,7 @@ pub fn draw_pad_part(
             } else {
                 fix32::from_words(32604, 0)
             };
-            model.set_pose(Transform::new(
+            model.set_pose(Pose::new(
                 Vec3::new(cx, fix32::zero(), cz),
                 Vec3::zero(),
                 Vec3::new(scale, half, scale),
@@ -250,7 +248,7 @@ pub fn draw_pad_part(
             let sign = if panel & 1 == 0 { -one } else { one };
             let offset = sign * (one + value) * fix32::from_words(16384, 0);
             let width = (one - value) * half;
-            model.set_pose(Transform::new(
+            model.set_pose(Pose::new(
                 Vec3::new(
                     cx + if along_x { offset } else { fix32::zero() },
                     fix32::from_words(524, 0),
@@ -267,7 +265,7 @@ pub fn draw_pad_part(
         cache[0u16].prepared_mask |= bit;
     }
     if role >= 3 {
-        counted_part_draw(recording, box_mesh, model, material, view);
+        counted_part_draw(recording, model, box_mesh, material, view);
     } else {
         let mut first = TILE0_FIRST;
         if role == 2 {
@@ -276,11 +274,17 @@ pub fn draw_pad_part(
             first = GOAL_HATCH_FIRST + cache[0u16].goal_frame;
         }
         let mesh = game_mesh_part(first, 1);
-        counted_part_draw(recording, &mesh, model, material, view);
+        counted_part_draw(recording, model, &mesh, material, view);
     }
 }
 
-pub fn draw_pad_well(pass: &mut Pass, model: &mut Model, material: &mut Material, start: bool) {
+pub fn draw_pad_well(
+    pass: &mut Pass,
+    model: &mut Transform,
+    material: &mut Material,
+    start: bool,
+    atlas_view: &TextureView,
+) {
     let x = if start {
         GAME_SESSION.level.start_x
     } else {
@@ -295,8 +299,6 @@ pub fn draw_pad_well(pass: &mut Pass, model: &mut Model, material: &mut Material
         return;
     }
     let half = fix!(0.5);
-    let texture = game_texture();
-    let view = clamped_texture_view(&texture);
     let mesh = game_mesh_part(WELL_FIRST, WELL_COUNT);
     if start {
         material.set_uniform_color(Rgba8 {
@@ -313,7 +315,7 @@ pub fn draw_pad_well(pass: &mut Pass, model: &mut Model, material: &mut Material
             a: 255,
         });
     }
-    model.set_pose(Transform::new(
+    model.set_pose(Pose::new(
         Vec3::new(
             fix32::from_int(x as i16) - fix32::from_int(GAME_SESSION.level.width as i16) * half
                 + half,
@@ -324,5 +326,5 @@ pub fn draw_pad_well(pass: &mut Pass, model: &mut Model, material: &mut Material
         Vec3::zero(),
         Vec3::one(),
     ));
-    counted_draw(pass, &mesh, model, material, &view);
+    counted_draw(pass, model, &mesh, material, atlas_view);
 }

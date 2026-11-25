@@ -1,4 +1,4 @@
-//! One mutable Model, two recorded snapshots, explicit GPU and Display retirement.
+//! One mutable Transform, two recorded snapshots, explicit GPU and Display retirement.
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
@@ -17,8 +17,8 @@ fn report_byte(value: u16) {
 fn draw_pair(
     pass: &mut Pass,
     camera: &Camera,
+    model: &mut Transform,
     mesh: &Mesh,
-    model: &mut Model,
     material: &Material,
     texture: &TextureView,
 ) {
@@ -30,13 +30,13 @@ fn draw_pair(
         demo_zero(),
         demo_scale(),
     ));
-    pass.draw(mesh.ptr(), model.ptr(), material.ptr(), texture.ptr());
+    pass.draw(model.ptr(), mesh.ptr(), material.ptr(), &texture);
     model.set_pose(demo_pose(
         demo_point(half, z, fix32::from_int(-3)),
         demo_zero(),
         demo_scale(),
     ));
-    pass.draw(mesh.ptr(), model.ptr(), material.ptr(), texture.ptr());
+    pass.draw(model.ptr(), mesh.ptr(), material.ptr(), &texture);
 }
 fn run(limit: u16) {
     let mut gpu = Gpu::init(board_gpu_config());
@@ -47,7 +47,7 @@ fn run(limit: u16) {
     let mut display = Display::open();
     let camera = demo_camera();
     let mesh = demo_mesh();
-    let mut model = Model::new(demo_pose(demo_zero(), demo_zero(), demo_scale()));
+    let mut model = Transform::new(demo_pose(demo_zero(), demo_zero(), demo_scale()));
     let material = demo_material(demo_white(), true);
     let texture = demo_texture();
     let view = texture.view();
@@ -66,7 +66,7 @@ fn run(limit: u16) {
                 DepthLoad::clear(65535),
             );
             pass.set_state(state.ptr());
-            draw_pair(&mut pass, &camera, &mesh, &mut model, &material, &view);
+            draw_pair(&mut pass, &camera, &mut model, &mesh, &material, &view);
         } else {
             let mut pass = buffer.pass(
                 color_a.ptr(),
@@ -75,7 +75,7 @@ fn run(limit: u16) {
                 DepthLoad::clear(65535),
             );
             pass.set_state(state.ptr());
-            draw_pair(&mut pass, &camera, &mesh, &mut model, &material, &view);
+            draw_pair(&mut pass, &camera, &mut model, &mesh, &material, &view);
         }
         gpu.submit(buffer);
         buffer = gpu.wait();

@@ -51,7 +51,7 @@ pub(super) fn shadow_reference_prepare(case: &serde_json::Value) -> String {
         ));
     }
     format!(
-        "fn prepare_block(model:&mut Model){{model.set_matrices(Mat3x4{{{}}},Mat3x3{{{}}});}}",
+        "fn prepare_block(model:&mut Transform){{model.set_matrices(Mat3x4{{{}}},Mat3x3{{{}}});}}",
         world.join(","),
         normal.join(",")
     )

@@ -324,20 +324,18 @@ pub fn gpu_scene_texture_init(mut out: Array<u16>, desc: TextureDesc) -> bool {
     true
 }
 
-pub fn gpu_scene_texture_view(mut out: Array<u16>, source: Array<u16>) -> bool {
+pub fn gpu_scene_texture_view(mut out: Array<u16>, source: Array<u16>) {
     let mut at: u16 = 0;
-    while at < GPU_API_SMALL_WORDS {
+    while at <= GPU_VIEW_HEIGHT {
         out[at] = source[at];
         at += 1;
     }
-    true
 }
 
 pub fn gpu_scene_color_view(mut out: Array<u16>, memory: GpuMemory) -> bool {
     if memory.first_sector() & 511 != 0 || memory.sector_count() < GPU_API_PLANE_SECTORS {
         return false;
     }
-    gpu_scene_zero(out, GPU_API_SMALL_WORDS);
     out[GPU_VIEW_BASE] = memory.first_sector();
     out[GPU_VIEW_COUNT] = memory.sector_count();
     out[GPU_VIEW_EXPONENT] = 9;

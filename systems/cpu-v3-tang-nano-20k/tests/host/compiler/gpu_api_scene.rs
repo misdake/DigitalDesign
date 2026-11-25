@@ -13,9 +13,9 @@ fn make_camera()->Camera{
 
  camera
 }
-fn make_model()->Model{
- let mut model=Model::new(Transform{position:v(0,0,-3),angles:v(0,0,0),scale:v(1,1,1)});
- model.set_pose(Transform{position:v(0,0,-3),angles:v(0,0,0),scale:v(1,1,1)});let world=model.world();
+fn make_model()->Transform{
+ let mut model=Transform::new(Pose{position:v(0,0,-3),angles:v(0,0,0),scale:v(1,1,1)});
+ model.set_pose(Pose{position:v(0,0,-3),angles:v(0,0,0),scale:v(1,1,1)});let world=model.world();
  let normal:Mat3x3=Mat3x3{row0:v(1,0,0),row1:v(0,1,0),row2:v(0,0,1)};model.set_matrices(world,normal);
 
  model
@@ -47,7 +47,7 @@ fn main(){
  let texture_view=texture.view();drop(texture);check(texture_view.width()==64&&texture_view.height()==64);
  let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
  let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
- let rtt=color.texture_view();check(rtt.width()==400&&rtt.height()==240);drop(rtt);
+ let rtt=color.texture_view();check(rtt.width()==400&&rtt.height()==240);
  let mesh=Mesh::from_native(MeshDesc{directory_sector:0xa000,directory_word:0,meshlet_count:1,storage:unsafe{GpuMemory::from_sectors(0xa000,16)}});
  let empty=mesh.subset(0,0);
  let atlas=UiAtlas::from_native(unsafe{GpuMemory::from_sectors(0xb000,6)},3);
@@ -56,12 +56,12 @@ fn main(){
  grid.write(CellRect{x:1,y:1,width:3,height:1},b"\0\x01\x02");
  {let mut pass=cb.pass(color.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::load());
   pass.set_camera(camera.ptr());pass.set_state(state.ptr());
-  pass.draw(mesh.ptr(), model.ptr(), material.ptr(), texture_view.ptr());pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr());
-  pass.draw_colored(empty.ptr(), model.ptr(), material.ptr());
+  pass.draw(model.ptr(), mesh.ptr(), material.ptr(), &texture_view);pass.draw_colored(model.ptr(), mesh.ptr(), material.ptr());
+  pass.draw_colored(model.ptr(), empty.ptr(), material.ptr());
   pass.draw_ui(grid.ptr(), CellRect{x:1,y:1,width:3,height:1});
  }
  check(cb.command_words()>20&&cb.push_words()>80);
- drop(empty);drop(mesh);drop(grid);drop(texture_view);drop(camera);drop(model);drop(material);drop(state);drop(color);drop(depth);drop(cb);drop(gpu);halt(0x600d);
+ drop(empty);drop(mesh);drop(grid);drop(camera);drop(model);drop(material);drop(state);drop(color);drop(depth);drop(cb);drop(gpu);halt(0x600d);
 }"#;
 
 #[test]
@@ -204,7 +204,7 @@ fn main(){
  let mut gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:memory,command_b:Some(other)});
  let mut a=gpu.command_buffer();let mut b=gpu.command_buffer();
  let mut cam=Camera::new(CameraDesc::new(Vec3::zero(),Vec3::zero(),Projection::from_focal_pixels(fix32::from_int(200),fix32::from_int(120))));
- let model=Model::new(Transform::identity());
+ let model=Transform::new(Pose::identity());
  let red=Material::new(MaterialDesc::diffuse(Rgba8{r:220,g:10,b:20,a:255}).with_unlit(true));
  let blue=Material::new(MaterialDesc::diffuse(Rgba8{r:10,g:20,b:220,a:128}).with_unlit(true));
  let state=RenderState::new(RenderStateDesc::opaque(Lighting::ambient(fix32::one())));
@@ -221,7 +221,7 @@ fn main(){
  cam.set_pose(Vec3::new(fix32::one(),fix32::zero(),fix32::zero()),Vec3::zero());
  a.patch_unlit(&bank,cam.ptr(),color.ptr(),depth.ptr());
  {let mut p=b.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());p.set_camera(cam.ptr());p.set_state(state.ptr());
- p.draw_colored(mesh.ptr(),model.ptr(),red.ptr());p.draw_colored(mesh.ptr(),model.ptr(),blue.ptr());p.draw_colored(mesh.ptr(),model.ptr(),red.ptr());}
+ p.draw_colored(model.ptr(),mesh.ptr(),red.ptr());p.draw_colored(model.ptr(),mesh.ptr(),blue.ptr());p.draw_colored(model.ptr(),mesh.ptr(),red.ptr());}
  halt(0x600d);
 }"#;
     for debug in [false, true] {
@@ -322,7 +322,7 @@ fn main(){
         assert!(finished);
         let expected_prefix =
             snapshots(baseline_cpu.physical_memory_mut(), baseline_records, 1)[..2].to_vec();
-        for command in ["p.draw_colored(mesh.ptr(),model.ptr(),blue.ptr());"] {
+        for command in ["p.draw_colored(model.ptr(),mesh.ptr(),blue.ptr());"] {
             let mixed = BANK_SOURCE.replace(
                 "p.draw_unlit(&bank,r,0,1);p.draw_unlit(&bank,u,0,1);",
                 &format!("p.draw_unlit(&bank,r,0,1);{command}p.draw_unlit(&bank,r,0,1);"),

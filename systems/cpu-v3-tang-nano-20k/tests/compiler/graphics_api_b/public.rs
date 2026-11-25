@@ -278,7 +278,7 @@ pub fn run(
         let a = draws(&stages[0][0], 0x9a00);
         let b = draws(&stages[0][1], 0xfe00);
         assert_eq!(a.len(), 2);
-        assert_eq!(a[0], a[1], "equal-value Model changed native binding");
+        assert_eq!(a[0], a[1], "equal-value Transform changed native binding");
         assert_eq!(b.len(), 1);
         let camera = rotation([-0.375, 0.625, -0.25]);
         let euler = std::array::from_fn(|r| std::array::from_fn(|c| camera[c][r]));
@@ -367,7 +367,7 @@ pub fn run(
         reports.push(data);
         for (label,body,expected) in [
             ("projection-private","let p=Projection::from_focal_pixels(fix32::from_int(384),fix32::from_int(128));halt(p.far.to_int() as u16);","E0616"),
-            ("model-use-after-drop","let m=Model::new(Transform{position:Vec3{x:fix32::zero(),y:fix32::zero(),z:fix32::zero()},angles:Vec3{x:fix32::zero(),y:fix32::zero(),z:fix32::zero()},scale:Vec3{x:fix32::from_int(1),y:fix32::from_int(1),z:fix32::from_int(1)}});drop(m);let w=m.world();","moved"),
+            ("model-use-after-drop","let m=Transform::new(Pose{position:Vec3{x:fix32::zero(),y:fix32::zero(),z:fix32::zero()},angles:Vec3{x:fix32::zero(),y:fix32::zero(),z:fix32::zero()},scale:Vec3{x:fix32::from_int(1),y:fix32::from_int(1),z:fix32::from_int(1)}});drop(m);let w=m.world();","moved"),
             ("helper-private","let s=Shininess::nearest(18);halt(gpu_scene_shininess_exponent(s));","private"),
         ] {
             let input=format!("mod gpu_api;fn main(){{{body}}}");let output=folder.join(label);

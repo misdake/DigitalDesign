@@ -71,7 +71,8 @@ fn prepared_storage_declares_independent_capacities() {
     let source = r#"mod gpu_api;use gpu_api::*;
 #[static_buffer] const STORAGE:PreparedMemory=PreparedMemory::allocate(1024,4096);
 fn main(){let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});
-let gpu=Gpu::init(GpuConfig::single(memory));let draws=PreparedDraws::new(STORAGE);drop(draws);drop(gpu);halt(0x600d);}"#;
+let gpu=Gpu::init(GpuConfig::single(memory));let draws=PreparedDraws::new(STORAGE);drop(draws);
+let reused=PreparedDraws::new(STORAGE);drop(reused);drop(gpu);halt(0x600d);}"#;
     for enabled in [false, true] {
         let parsed = parse(source, "prepared-storage", enabled).unwrap();
         assert_eq!(parsed.assets.buffers.len(), 2);
@@ -89,6 +90,71 @@ let gpu=Gpu::init(GpuConfig::single(memory));let draws=PreparedDraws::new(STORAG
             cpu.run(500_000).unwrap(),
             cpu_v3::RunOutcome::Halted { signal: 0x600d, .. }
         ));
+    }
+}
+
+#[test]
+fn prepared_writable_extents_are_exclusive() {
+    let source = r#"mod gpu_api;use gpu_api::*;
+#[static_buffer] const STORAGE:PreparedMemory=PreparedMemory::allocate(1024,4096);
+fn main(){
+ let backing=STORAGE;
+ let other=unsafe{GpuMemory::from_sectors(0x9820,8)};
+ SETUP
+ signal(7,1);
+ CONFLICT
+ halt(0xbad);
+}"#;
+    let static_cb = "let gpu=Gpu::init(GpuConfig::single(CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,8)},other)));";
+    let standalone = "let first=PreparedDraws::new(backing);";
+    for (label, setup, conflict) in [
+        (
+            "duplicate",
+            format!("{static_cb}{standalone}"),
+            "let second=PreparedDraws::new(backing);",
+        ),
+        (
+            "pool-overlap",
+            format!("{static_cb}{standalone}"),
+            "let pool=PreparedPool::new(backing.push);",
+        ),
+        (
+            "part-over-pool",
+            format!("{static_cb}let pool=PreparedPool::new(backing.commands);"),
+            "let second=PreparedDraws::new(backing);",
+        ),
+        (
+            "pool-over-cb-push",
+            static_cb.into(),
+            "let pool=PreparedPool::new(other);",
+        ),
+        (
+            "part-over-cb",
+            "let gpu=Gpu::init(GpuConfig::single(CommandMemory::new(backing.commands,other)));"
+                .into(),
+            "let first=PreparedDraws::new(backing);",
+        ),
+    ] {
+        let source = source
+            .replace("SETUP", &setup)
+            .replace("CONFLICT", conflict);
+        let ir = parse(&source, label, false).unwrap();
+        let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        cpu.attach_device(4, Box::new(IdleGpu));
+        let mut ready = false;
+        let halt = (0..500_000).find_map(|_| match cpu.step().unwrap() {
+            StepOutcome::Signaled(event) if event.signal_type == 7 => {
+                ready = true;
+                None
+            }
+            StepOutcome::Halted { signal } => Some(signal),
+            _ => None,
+        });
+        assert!(ready, "{label}: setup must succeed");
+        assert_eq!(halt, Some(0xe001), "{label}");
     }
 }
 
@@ -125,13 +191,13 @@ fn main(){
  let mesh=Mesh::from_native(MeshDesc::from_memory(unsafe{GpuMemory::from_sectors(0xa000,128)},0,3));
  let all=mesh.ptr();let window=all.slice(1,2);let span=window.slice(1,1);assert!(span.meshlet_count()==1);
  let empty=span.slice(1,0);assert!(empty.meshlet_count()==0);
- let model=Model::new(Transform::identity());let material=Material::new(MaterialDesc::unlit(Rgba8::white()));
+ let model=Transform::new(Pose::identity());let material=Material::new(MaterialDesc::unlit(Rgba8::white()));
  let camera=Camera::new(CameraDesc::new(Vec3::zero(),Vec3::zero(),Projection::from_focal_pixels(fix!(200),fix!(80))));
  let state=RenderState::new(RenderStateDesc::opaque(Lighting::ambient(fix!(1))));
  let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});
  let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
  {let mut pass=cb.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());pass.set_camera(camera.ptr());pass.set_state(state.ptr());
- pass.draw_colored(empty,model.ptr(),material.ptr());pass.draw_colored(span,model.ptr(),material.ptr());}
+ pass.draw_colored(model.ptr(),empty,material.ptr());pass.draw_colored(model.ptr(),span,material.ptr());}
  drop(mesh);halt(0x600d);
 }"#;
     for enabled in [false, true] {
@@ -204,14 +270,14 @@ fn main(){
 #[test]
 fn copy_pointers_share_the_object_without_owning_its_lifetime() {
     let source = r#"mod gpu_api;use gpu_api::*;
-#[derive(Copy,Clone)]pub struct Pointers{first:ModelPtr,second:ModelPtr}
+#[derive(Copy,Clone)]pub struct Pointers{first:TransformPtr,second:TransformPtr}
 fn main(){
  let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});
  let gpu=Gpu::init(GpuConfig::single(memory));
- let model=Model::new(Transform::identity());
+ let model=Transform::new(Pose::identity());
  let pointer=model.ptr();let alias=pointer;
  let pair=Pointers{first:pointer,second:alias};let another=pair;
- another.second.set_pose(Transform::translation(Vec3::new(fix!(3),fix!(0),fix!(-4))));
+ another.second.set_pose(Pose::translation(Vec3::new(fix!(3),fix!(0),fix!(-4))));
  let first_world=pair.first.world();let second_world=pointer.world();
  assert!(first_world.row0.w==fix!(3));assert!(second_world.row2.w==fix!(-4));
  model.release();drop(gpu);halt(0x600d);
@@ -240,12 +306,12 @@ fn stale_handle_faults_after_release_reuse_and_gpu_reinitialization() {
             ("released", "", 0),
             (
                 "reused",
-                "let replacement=Model::new(Transform::identity());let pointer=replacement.ptr();let world=pointer.world();assert!(world.row0.w==fix!(0));",
+                "let replacement=Transform::new(Pose::identity());let pointer=replacement.ptr();let world=pointer.world();assert!(world.row0.w==fix!(0));",
                 2,
             ),
             (
                 "reinitialized",
-                "drop(gpu);let fresh=Gpu::init(GpuConfig::single(memory));let replacement=Model::new(Transform::identity());let pointer=replacement.ptr();let world=pointer.world();assert!(world.row0.w==fix!(0));",
+                "drop(gpu);let fresh=Gpu::init(GpuConfig::single(memory));let replacement=Transform::new(Pose::identity());let pointer=replacement.ptr();let world=pointer.world();assert!(world.row0.w==fix!(0));",
                 2,
             ),
             (
@@ -259,11 +325,11 @@ fn stale_handle_faults_after_release_reuse_and_gpu_reinitialization() {
 fn main(){{
  let memory=CommandMemory::new(unsafe{{GpuMemory::from_sectors(0x9800,512)}},unsafe{{GpuMemory::from_sectors(0x9a00,512)}});
  let gpu=Gpu::init(GpuConfig::single(memory));
- let owner=Model::new(Transform::identity());
+ let owner=Transform::new(Pose::identity());
  let stale=owner.ptr();
  owner.release();
  {replacement}
- stale.set_pose(Transform::identity());
+ stale.set_pose(Pose::identity());
  halt(0xbad);
 }}"#
             );
@@ -756,7 +822,7 @@ fn main(){
 #[test]
 fn public_value_builders_work_in_static_and_runtime_paths() {
     let source = r#"mod gpu_api;use gpu_api::*;
-const POSE:Transform=Transform::identity().with_position(Vec3::new(fix32::from_int(1),fix32::zero(),fix32::zero()));
+const POSE:Pose=Pose::identity().with_position(Vec3::new(fix32::from_int(1),fix32::zero(),fix32::zero()));
 static TEXTURE:TextureDesc=unsafe{TextureDesc::from_asset(AssetBytes{first_sector:0xa800,sector_count:100,byte_len_lo:12800,byte_len_hi:0},TextureLayout::square(64,TextureFormat::Rgba4444,Mipmaps::Full))};
 static MESH_DESC:MeshDesc=unsafe{MeshDesc::from_asset(AssetBytes{first_sector:0xa000,sector_count:16,byte_len_lo:2048,byte_len_hi:0},130,2)};
 static MATERIAL:MaterialDesc=MaterialDesc::diffuse(Rgba8::rgb(80,120,160)).with_response(fix32::from_ratio(1,2),fix32::one());
@@ -839,7 +905,7 @@ fn main(){
  let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});
  let mut gpu=Gpu::init(GpuConfig::single(memory));let mut cb=gpu.command_buffer();
  let camera=Camera::new(CameraDesc{eye:v(0,0,0),angles:v(0,0,0),projection:Projection::from_focal_pixels(fix!(200),fix!(100))});
- let model=Model::new(Transform::identity());
+ let model=Transform::new(Pose::identity());
  let material=Material::new(MaterialDesc{uniform_color:Rgba8::white(),specular:Rgb8{r:0,g:0,b:0},ambient_response:fix!(2),directional_response:fix!(1),shininess:Shininess::S16,unlit:false});
  let mut state=RenderState::new(RenderStateDesc{depth:DepthFunc::Less,depth_write:true,blend:BlendMode::Replace,filter:TextureFilter::Nearest,lighting:light(fix!(0.25))});
  let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
@@ -855,9 +921,9 @@ fn main(){
     for (prepared, overflow) in [(false, false), (true, false), (false, true)] {
         let source = source
             .replace("PREPARE", if prepared {
-                "let mut prepared=PreparedDraws::new(PreparedMemory::new(unsafe{GpuMemory::from_sectors(0xb800,8)},unsafe{GpuMemory::from_sectors(0xb900,32)}));{let mut part=prepared.record();part.set_state(state.ptr());part.draw_colored(mesh.ptr(),model.ptr(),material.ptr());part.finish();}"
+                "let mut prepared=PreparedDraws::new(PreparedMemory::new(unsafe{GpuMemory::from_sectors(0xb800,8)},unsafe{GpuMemory::from_sectors(0xb900,32)}));{let mut part=prepared.record();part.set_state(state.ptr());part.draw_colored(model.ptr(),mesh.ptr(),material.ptr());part.finish();}"
             } else { "" })
-            .replace("DRAW", if prepared { "p.draw_prepared(prepared.ptr());" } else { "p.draw_colored(mesh.ptr(),model.ptr(),material.ptr());" });
+            .replace("DRAW", if prepared { "p.draw_prepared(prepared.ptr());" } else { "p.draw_colored(model.ptr(),mesh.ptr(),material.ptr());" });
         let source = if overflow {
             source
                 .replace("ambient_response:fix!(2)", "ambient_response:fix!(32767)")

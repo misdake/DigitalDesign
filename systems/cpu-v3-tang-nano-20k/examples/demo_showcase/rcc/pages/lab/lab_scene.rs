@@ -124,13 +124,13 @@ pub struct LabScene {
     torus: Mesh,
     rgb_torus: Mesh,
     axes: Mesh,
-    axes_model: Model,
+    axes_model: Transform,
     axes_camera: Camera,
     axes_state: RenderState,
     light_arrow: Mesh,
-    floor: Model,
-    object: Model,
-    arrow: Model,
+    floor: Transform,
+    object: Transform,
+    arrow: Transform,
     material: Material,
     floor_material: Material,
     arrow_material: Material,
@@ -163,7 +163,7 @@ impl LabScene {
             torus: Mesh::from_native(LAB_TORUS),
             rgb_torus: Mesh::from_native(LAB_RGB_TORUS),
             axes: Mesh::from_native(LAB_AXES),
-            axes_model: Model::new(Transform::identity()),
+            axes_model: Transform::new(Pose::identity()),
             axes_camera: Camera::new(CameraDesc::new(
                 Vec3::zero(),
                 Vec3::zero(),
@@ -174,16 +174,16 @@ impl LabScene {
                     .with_depth(DepthFunc::Always, false),
             ),
             light_arrow: Mesh::from_native(LAB_LIGHT_ARROW),
-            floor: Model::new(
-                Transform::translation(Vec3::new(fix!(0), LAB_FLOOR_Y, fix!(0)))
+            floor: Transform::new(
+                Pose::translation(Vec3::new(fix!(0), LAB_FLOOR_Y, fix!(0)))
                     .with_rotation(Vec3::new(fix!(-90).to_radians(), fix!(0), fix!(0)))
                     .with_scale(Vec3::splat(LAB_FLOOR_HALF_SIZE)),
             ),
-            object: Model::new(
-                Transform::rotation(Vec3::new(fix!(0), fix!(0.4), fix!(0)))
+            object: Transform::new(
+                Pose::rotation(Vec3::new(fix!(0), fix!(0.4), fix!(0)))
                     .with_scale(Vec3::splat(LAB_OBJECT_HALF_SIZE)),
             ),
-            arrow: Model::new(Transform::identity()),
+            arrow: Transform::new(Pose::identity()),
             material: Material::new(MaterialDesc::diffuse(Rgba8::white())),
             floor_material: Material::new(MaterialDesc::diffuse(Rgba8::gray(180))),
             arrow_material: Material::new(MaterialDesc::unlit(Rgba8::white())),
@@ -242,8 +242,11 @@ impl LabScene {
         );
         // The mesh points along +Z; this rotation yields the same vector as L.
         self.arrow.set_pose(
-            Transform::translation(Vec3::new(fix!(-1.4), fix!(0.4), fix!(0)))
-                .with_rotation(Vec3::new(-light.pitch, light.yaw, fix!(0))),
+            Pose::translation(Vec3::new(fix!(-1.4), fix!(0.4), fix!(0))).with_rotation(Vec3::new(
+                -light.pitch,
+                light.yaw,
+                fix!(0),
+            )),
         );
         // Rotation is the same world-to-view basis used by the orbit camera.
         // Translation and projection are fixed, so pan/FOV cannot lose the gizmo.
@@ -297,33 +300,33 @@ impl LabScene {
         pass.set_camera(self.camera.ptr());
         pass.set_state(self.state.ptr());
         pass.draw(
-            self.plane.ptr(),
             self.floor.ptr(),
+            self.plane.ptr(),
             self.floor_material.ptr(),
-            self.view.ptr(),
+            &self.view,
         );
         let mesh = self.object_mesh();
         if self.color == LabColor::VertexRgb {
-            pass.draw_colored(mesh, self.object.ptr(), self.material.ptr());
+            pass.draw_colored(self.object.ptr(), mesh, self.material.ptr());
         } else {
-            let texture: TextureViewPtr = if self.color == LabColor::Texture {
-                self.view.ptr()
+            let texture: &TextureView = if self.color == LabColor::Texture {
+                &self.view
             } else {
-                self.white_view.ptr()
+                &self.white_view
             };
-            pass.draw(mesh, self.object.ptr(), self.material.ptr(), texture);
+            pass.draw(self.object.ptr(), mesh, self.material.ptr(), texture);
         }
         // The direction marker remains part of the same scene on every tab.
         pass.draw_colored(
-            self.light_arrow.ptr(),
             self.arrow.ptr(),
+            self.light_arrow.ptr(),
             self.arrow_material.ptr(),
         );
         pass.set_camera(self.axes_camera.ptr());
         pass.set_state(self.axes_state.ptr());
         pass.draw_colored(
-            self.axes.ptr(),
             self.axes_model.ptr(),
+            self.axes.ptr(),
             self.arrow_material.ptr(),
         );
     }

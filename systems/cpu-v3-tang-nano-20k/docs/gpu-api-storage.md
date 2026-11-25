@@ -27,7 +27,7 @@ indexed sets, such as the small/large free lists and Global/Render validity.
 | Owning source | State type | Words | Role |
 | --- | --- | ---: | --- |
 | `gpu_arena.rs` | `GpuArenaControl`, `GpuObjectGeneration` | 9 + 2 | Backing, capacity, free lists and monotonic allocation serial |
-| `gpu_execute.rs` | `GpuExecutionState` | 9 | Controller admission, issued slots and in-flight submission |
+| `gpu_execute.rs` | `GpuExecutionState` | 10 | Controller admission, issued slots and in-flight submission, including the owned list allocation |
 | `gpu_present.rs` | `GpuPresentState` | 8 | Independent dynamic presentation request and first error |
 | `gpu_api_fault.rs` | `GpuFaultRecord` | 16 | Stable UART first-fault wire record, including reserved words |
 | `gpu_builder.rs` | `GpuBuildState` | 9 | Legacy recorder ownership, staging and binding validity |
@@ -55,7 +55,7 @@ metadata still store numeric `RecordPhase`, `PreparedState`, and
 
 ## Configuration and public recording resources
 
-`Mesh`, `Model`, `Camera`, `Material`, `RenderState`, `Texture`, `TextureView`,
+`Mesh`, `Transform`, `Camera`, `Material`, `RenderState`, `Texture`,
 `UiAtlas`, `UiGrid`, `ColorBuffer` and `DepthBuffer` are resource bodies. Each
 owns its arena registration, supports consuming `release()`, and drops that
 registration at scope exit. External asset, pixel and working-storage bytes
@@ -76,8 +76,12 @@ the generation before dereferencing; GPU debug also checks the resource kind.
 The allocation serial persists across GPU initialization and refuses to wrap.
 Creation/static `*Desc` values remain plain copyable values.
 
+`TextureView` stores its six words directly. `Pass`, `PreparedPart` and
+`UnlitBank::add` borrow it only while recording or registering a binding.
+The recorded binding retains the physical extent and sampling fields.
+
 For example, `let mesh = Mesh::from_native(desc); let mesh_ptr = mesh.ptr();`
-creates one owner and a copyable reference. Calls to `pass.draw(mesh_ptr, ...)`
+creates one owner and a copyable reference. Calls to `pass.draw(transform_ptr, mesh_ptr, ...)`
 reuse the reference; `mesh.release()` consumes the owner after its last use.
 `Gpu`, `Display`, `CommandBuffer` and `Pass` retain their existing ownership and
 borrowing protocols. In particular, submit still consumes the command buffer.
@@ -101,17 +105,26 @@ Validation precedes driver/arena mutation. Initialization checks GPU idle and
 does not read Display, wait for work, or recover from an active/faulted context.
 Normal reinitialization requires the caller to finish prior use. Initialization
 rejects a context with live object registrations before resetting driver state.
-It also rejects a live public Gpu controller, a driver-held CB, or any issued CB
+It also rejects a live public Gpu controller, a driver-held submission, or any issued CB
 whose record has not been dropped. These checks precede arena/record mutation.
-Dropping Gpu releases only controller admission, not an outstanding CB. Once
+Dropping Gpu releases only controller admission and keeps any outstanding submission. Once
 all old owners exit, normal reinitialization may reuse the configured slots;
 no context check is added to individual draw calls.
 
-`Gpu::command_buffer` hands out each configured slot once, in A/B order. Drop or
-completion does not make it an unissued slot. A CPU-owned CB Drop disables its
-record without submitting or waiting. `Gpu` Drop does not release driver-owned
-work. These identities use existing execution metadata words 6 and 7 for the
-configured count and issued mask, with no second queue or allocator.
+`Gpu::command_buffer` hands out available configured slots in A/B order.
+Dropping a CPU-owned CB disables its record. Flat completion returns its CB
+directly. When a list is dropped before submission or retires normally, each
+CB consumed by the list is reset and marked available for reacquisition.
+Execution metadata words 6 and 7 hold the configured count and issued mask.
+
+A `CommandList` is an owning heap handle. Four CPU words store its planned
+count, written count, consumed CB mask and the slot that establishes Target
+and View. The table occupies 64 CPU words starting at the next 128-byte
+boundary after that metadata. Its 32-bit descriptors are written at their
+final offsets. One CPU-only word per segment follows the table and tracks its
+Prepared reference. The GPU fetches only the table sector. During execution,
+the driver keeps the heap allocation in word 9 of `GpuExecutionState` through
+retirement.
 
 `ColorBuffer` and `DepthBuffer` use 16-word arena descriptors. Their registered
 extent must be 64-KiB aligned and contain at least the 1,600-sector physical
@@ -164,8 +177,8 @@ ordinary grid/glyph debug checks and external-memory publication contract.
 | `PreparedMemory` | Four Copy words: command first sector/count, push first sector/count |
 | `PreparedDraws` / `PreparedPool` owner | One word holding an arena registration |
 | `PreparedDrawsPtr` | Three Copy words: slot plus two generation words |
-| Prepared arena payload | 16 words: command base/capacity0..1, push base/capacity2..3, metadata pointer4, state5 (empty0/recording1/ready2), pool owner/next6..7; remaining words reserved |
-| Pool arena payload | 16 words: external first sector0, capacity1, sorted child head2; remaining words reserved |
+| Prepared arena payload | 16 words: command base/capacity0..1, push base/capacity2..3, metadata pointer4, state5 (empty0/recording1/ready2), pool owner/next6..7, slice bitmap pointer8, live list reference count9, backing list link and kind10..11, debug slice responses12 |
+| Pool arena payload | 16 words: external first sector0, capacity1, sorted child head2, backing list link and kind10..11 |
 | Transient recorder | 160 record words plus 256 fact words, heap-owned only during recording |
 
 Payload capacities above use CPU u16 words; external bases/counts use 128-byte
@@ -178,6 +191,12 @@ requests two 128-byte-aligned allocations. `PreparedDraws::new(memory)` owns
 the CPU registration; `record()` returns a mesh-only recorder. There is no fixed
 part count, special part ID, layout enum or reservation inside a frame CB.
 Each command and push extent may contain 1..512 sectors (up to 64 KiB).
+
+The driver checks physical sector overlaps when a standalone part or pool is
+created. Standalone parts claim their command and push extents. A pool claims
+its whole extent and assigns disjoint subranges to its children. These claims
+must be disjoint from one another and from the configured frame CB backing.
+Record and invalidate keep the claim. Dropping the owner releases it.
 
 `PreparedPool::new(memory)` supports runtime allocation from an application-owned
 external span. `allocate(command_bytes, push_bytes)` rounds each nonzero u16 byte
@@ -205,16 +224,23 @@ unchanged. Both ordinary Mesh and unlit Billboard use the same encoder here.
 The caller keeps recorded external inputs unchanged and allocated until all
 consuming executions finish and every referring CB is reset, dropped or otherwise
 permanently discarded. Completion alone does not end this obligation if the CB
-will replay. Multiple CBs may read the same immutable part. There are no CB
-occupancy bits, reference lists or unlock walks; append and reset do not update
-the part's state. Generation checks validate CPU Ptr uses, not recorded addresses.
-Re-record, invalidate, free or owner Drop during an open recording fail before
-mutation; Pool Drop preflights recording state for every child. These state
-checks do not detect a violation of the caller's external-input lifetime contract.
+will replay. Multiple CBs may read the same immutable part. Ordinary CB append
+and reset leave the part's reference state alone. Generation checks validate
+CPU Ptr uses, and the application preserves externally supplied storage.
 
-Heap metadata stores command length, fact count, the 12-word final material
-snapshot and four-word resource facts; debug adds response maxima for validating
-the current Pass light. Nonempty append includes the part's persistent push
+`mark_slice()` lazily allocates a bitmap with one bit per command slot and a
+bit for the endpoint of a full command buffer. An in-place list slice starts
+and ends at explicitly marked offsets. The last whole CB must have published
+Target and View before the slice, and the list reserves a later segment for
+termination. Re-record, invalidate, free and owner Drop reject an open recording or a live list
+reference before mutation. Pool Drop checks all children before releasing
+any. List retirement and unsubmitted list Drop release their references.
+
+Heap metadata stores padded command length in CPU words, fact count, and the
+unpadded 32-bit instruction count in header word 2. It also holds the 12-word
+final material snapshot and four-word resource facts. Debug tracks response maxima
+for the whole part and for each nonempty marked group. A range validates only
+its selected groups against the installed scene light. Nonempty append includes the part's persistent push
 extent in the frame facts, so target-only relocation cannot overlap it. Commands
 contain no END. A failed transport poisons the destination before submission.
 
@@ -234,7 +260,7 @@ publish a fresh complete View; light/far/ray-only changes publish only its tail,
 including unchanged Billboard basis values. Earlier A/B/A payloads are never
 rewritten. Changed scene/material state retains the whole-render WAIT boundary.
 
-A matching Model revision, Material24 and raw material responses prove World
+A matching Transform revision, Material24 and raw material responses prove World
 residency while valid bit2 is set. A prepared append clears this proof.
 Camera/State setters compare their captured source values and invalidate the
 affected encoding directly: matrix/focal changes mark View and Scene dirty and
@@ -275,7 +301,7 @@ chunks through vector registers as raw bits. A scalar tail handles shorter
 ranges, and copies with a destination inside the source at a higher address
 keep forward word order.
 
-Native World preparation writes each coefficient only when the Model binding
+Native World preparation writes each coefficient only when the Transform binding
 changes. Material fields are encoded directly at native scratch116..127, the
 final World tail, rather than copied from a separate Render span. Only defined
 padding and the homogeneous constant are explicitly initialized.
@@ -284,14 +310,14 @@ Public matrix operations retain value arguments and their isolated snapshots.
 Scene scalar and three-component reads and writes use exact two- and six-word
 FPU transfers for the existing low-word-first layout.
 Euler rotation prepares three padded Q16.16 rows using vector stores. Camera
-pose reads the columns of that scratch matrix; Model pose reads the rows.
+pose reads the columns of that scratch matrix; Transform pose reads the rows.
 Ordinary and prepared draw headers share the view-light encoder. It
 reads each complete camera row with a vector load and transforms the light
 direction with its first three components, using the Pass Camera and State.
 Internal camera/model writers borrow those snapshots through typed CPU views:
 three vec4 imports/exports copy a 24-word world/view matrix, and two vec4 pairs
 plus two scalar word copies write exactly eighteen normal-matrix words. No row
-value snapshots, arithmetic, rounding or overread are introduced. Model padding
+value snapshots, arithmetic, rounding or overread are introduced. Transform padding
 initialization and source validation remain part of the operation.
 
 The private same-page copy helper rejects misalignment, overlap and window overflow
@@ -340,11 +366,11 @@ capture MEMCPY dependency discovery and replay formats are unchanged.
 
 ### Target-only replay binding
 
-`target_binding()` seals one target block independently of Camera, Model and
+`target_binding()` seals one target block independently of Camera, Transform and
 Material identity. It accepts immutable draw groups and at most one leading
 full-plane color copy, but no UI commands. `retarget_target(binding, color, depth)`
 changes Target32 and that copy's destination together; its source remains fixed.
-Scene/Model packet patching is not a public operation; use prepared draws for
+Scene/Transform packet patching is not a public operation; use prepared draws for
 a moving Camera and target-only rebinding for an unchanged sealed scene.
 
 Recording saves the color/depth resource-plan indices when a Pass succeeds, and
@@ -385,16 +411,15 @@ parsers consume the same published Target32/MEMCPY bytes and updated facts.
 
 ## Public prepared scene adapters
 
-Camera and Model each occupy one48-word slot. Model contains only its source
-World/normal matrices and a private64-bit source revision; no per-Model Camera
+Camera and Transform each occupy one48-word slot. Transform contains only its source
+World/normal matrices and a private64-bit source revision; no per-Transform Camera
 cache or persistent native World packet is allocated.
-Material, RenderState, Texture, TextureView, UiAtlas and UiGrid occupy16-word
-slots, with kinds1,2,3,4,6,7,10,11 across these resource classes. Each Drop releases
+Material, RenderState, Texture, UiAtlas and UiGrid occupy 16-word slots. Each Drop releases
 its one owning slot. Projection's prepared values and transform conventions are
 specified in [scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md).
 
 Pass setters copy Camera and RenderState values into desired snapshots; later
-source-object changes cannot alter them. Draw preparation reads Model, Material
+source-object changes cannot alter them. Draw preparation reads Transform, Material
 and texture descriptions, creates static World/material bytes and prepares the
 shared View only when its revision changes. The same whole-Mesh preflight and
 binding encoder serves ordinary draws, Billboard and prepared recording.
@@ -489,7 +514,7 @@ World responses and Material packets. Up to 256 World keys share the same world
 lighting. The native mesh and texture bytes stay resident through retirement.
 
 `prepare_unlit` on an empty command buffer reserves its push prefix: a 64-word
-View packet, then one 64-word World slot per unique binding. The Model snapshot
+View packet, then one 64-word World slot per unique binding. The Transform snapshot
 is taken once for that recording. `draw_unlit` fills each used World slot once
 and uses the same binding and meshlet command encoders as ordinary draws.
 Vertical billboard offsets use the shared View basis and the existing DRAW
@@ -508,7 +533,7 @@ draw or replay requires reset and preparation.
 There are two persistent160-word frame records and one transient heap record
 while recording a prepared allocation. Each contains control0..31,
 desired Camera32..63, desired State64..79, Scene80..95, debug response maxima96..99,
-Model revision100..103, color-copy source fact104, spare105, View location/count106..107,
+Transform revision100..103, color-copy source fact104, spare105, View location/count106..107,
 reserved108..111, Material24 at112..123, raw responses124..127 and UI128..143.
 Word149 identifies the open allocation in the transient prepared recorder; it
 is zero in frame CBs. Words29..31 are reserved. There is no duplicate World matrix,
@@ -715,8 +740,8 @@ the producer descriptor cannot change the saved values. Desired flags and
 last-bound flags are independent: equal source snapshots preserve their proofs;
 changed snapshots invalidate only the dependent encodings.
 
-`gpu_bind_plan` receives the source Model and final material fields. Its seven-word
-local plan stores changes, the borrowed Model pointer, one View-or-Scene offset,
+`gpu_bind_plan` receives the source Transform and final material fields. Its seven-word
+local plan stores changes, the borrowed Transform pointer, one View-or-Scene offset,
 World offset, final push cursor, command count and DRAW mode (zero for scene-only).
 Change bit16 selects a full View128 upload; otherwise a Scene update uses32 bytes
 at the same plan field. Allocation, DMA encoding and payload writing each share
@@ -725,7 +750,7 @@ The plan is consumed synchronously by the same operation; it is not an
 asynchronous reservation. The complete Mesh command count and final push cursor
 are checked before the first external write.
 
-Scene dirty state, Model revision and Material24/raw-response comparisons decide
+Scene dirty state, Transform revision and Material24/raw-response comparisons decide
 which snapshots are necessary. View and World are128-byte aligned and share the
 final WAIT(data). A light-only update uses the32-byte View tail. Material is
 already in World, so there is no independent material DMA. Only CP-consumed

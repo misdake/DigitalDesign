@@ -8,13 +8,12 @@ pub use gpu_limits::*;
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum GpuObjectKind {
     Camera = 1,
-    Model,
+    Transform,
     Material,
     State,
     Mesh,
     Texture,
-    View,
-    Color,
+    Color = 8,
     Depth,
     UiAtlas,
     UiGrid,
@@ -38,7 +37,7 @@ pub const GPU_CAMERA_RAY: u16 = 28;
 pub const GPU_CAMERA_WORDS: u16 = 32;
 // Private Camera identity for view/focal dependencies; not part of native data.
 pub const GPU_CAMERA_REVISION: u16 = 32;
-// Model: source-world affine and inverse-transpose; private revision at44..47.
+// Transform: source-world affine and inverse-transpose; private revision at44..47.
 pub const GPU_MODEL_WORLD: u16 = 0;
 pub const GPU_MODEL_NORMAL: u16 = 24;
 pub const GPU_MODEL_WORDS: u16 = 42;
@@ -93,12 +92,15 @@ pub const GPU_SCRATCH_WORLD_MODE: u16 = 31;
 pub const GPU_PREPARED_RECORD: u16 = 2;
 pub const GPU_RECORD_COUNT: u16 = 3;
 pub const GPU_GROUP_RECORDING: u16 = 149;
+#[cfg(gpu_debug)]
+pub const GPU_GROUP_SLICE_START: u16 = 150;
 #[cfg(not(gpu_debug))]
 pub const GPU_GROUP_META_HEADER_WORDS: u16 = 4;
 #[cfg(gpu_debug)]
 pub const GPU_GROUP_META_HEADER_WORDS: u16 = 8;
 pub const GPU_GROUP_META_EXIT: u16 = GPU_GROUP_META_HEADER_WORDS;
 pub const GPU_GROUP_META_FACTS: u16 = GPU_GROUP_META_EXIT + 12;
+pub const GPU_GROUP_META_COMMAND_COUNT: u16 = 2;
 #[cfg(gpu_debug)]
 pub const GPU_GROUP_RESPONSE_MAX: u16 = GPU_CB_GLOBAL + 16;
 #[repr(u16)]
@@ -117,7 +119,7 @@ pub enum DisplayFormat {
 }
 
 // Prepared allocation payload. State is empty=0, recording=1 or ready=2.
-// External input lifetimes are caller-owned; CBs retain no locks or list links.
+// Command lists protect the registration. External backing stays caller-owned.
 pub const GPU_PREPARED_COMMAND: u16 = 0;
 pub const GPU_PREPARED_COMMAND_CAPACITY: u16 = 1;
 pub const GPU_PREPARED_PUSH: u16 = 2;
@@ -126,6 +128,12 @@ pub const GPU_PREPARED_META: u16 = 4;
 pub const GPU_PREPARED_STATE: u16 = 5;
 pub const GPU_PREPARED_POOL: u16 = 6;
 pub const GPU_PREPARED_NEXT: u16 = 7;
+pub const GPU_PREPARED_SLICE_MARKS: u16 = 8;
+pub const GPU_PREPARED_LIST_REFS: u16 = 9;
+pub const GPU_GROUP_BACKING_NEXT: u16 = 10;
+pub const GPU_GROUP_BACKING_KIND: u16 = 11;
+#[cfg(gpu_debug)]
+pub const GPU_PREPARED_SLICE_RESPONSES: u16 = 12;
 pub const GPU_POOL_BASE: u16 = 0;
 pub const GPU_POOL_CAPACITY: u16 = 1;
 pub const GPU_POOL_HEAD: u16 = 2;

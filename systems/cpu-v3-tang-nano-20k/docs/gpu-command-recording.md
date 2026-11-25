@@ -11,7 +11,7 @@ For application startup, state sampling/lifetimes and reuse choices, read the
 
 ## Start from the consumer
 
-The GPU does not read a Rust `Model`, `Pass`, object handle, CPU mesh directory,
+The GPU does not read a Rust `Transform`, `Pass`, object handle, CPU mesh directory,
 or resource-fact table. It fetches a flat array of 32-bit instructions and follows
 the physical addresses encoded in them. For a draw it needs:
 
@@ -19,6 +19,15 @@ the physical addresses encoded in them. For a draw it needs:
 2. A complete World block and a complete View block in local uniform RAM.
 3. Material/scene state in command-processor (CP) registers.
 4. Meshlet metadata and vertex/index payload in one of two input pages.
+
+The command processor can also fetch an ordered table of
+physical command slices. A slice can start and end inside a sector. Its last
+instruction advances to the next slice with the same live state. Each slice's
+DMA instructions retain their physical source addresses. The caller must
+preserve the entry bindings and DMA dependencies when selecting a slice. The
+RCC recorder can submit a flat CB or use `CommandList` to submit explicit spans.
+See the
+[segmented Device4 ABI](/ip/gpu-v2/docs/commands.md#segmented-submission).
 
 Geometry composes World and View into derived uniform22, then runs the normal
 vertex and triangle programs. The source blocks remain unchanged. This
@@ -47,7 +56,7 @@ The minimum depends on changes and the hardware's fixed transfer units.
 | First target | Encode Target32 once | 32 B to staging; SET_TARGET reads it |
 | First View or changed Camera | Encode one projected View128 for this view state | 128 B into View23 |
 | Only scene light / far / rays change | Encode the tail; preserve its billboard basis | 32 B into the tail of the already valid View23 |
-| First World or changed Model/material combination | Assemble World128 once for that source combination | 128 B into World20; material is already inside it |
+| First World or changed Transform/material combination | Assemble World128 once for that source combination | 128 B into World20; material is already inside it |
 | Same World and View on next draw | Append commands referencing the existing resident bindings | No uniform DMA; meshlet input DMA still occurs |
 | New meshlet | Read its prepared compact directory entry to emit a command | 32 B metadata + 1..8 × 128 B payload |
 | Append a prepared part | Copy its aligned command words; merge its resource facts | World payload is reused in place; the part's DMA commands load it when executed |
@@ -77,7 +86,7 @@ The source-to-consumer path has one native encoding and one external snapshot:
 ```text
 Camera / State update ──> desired Pass snapshot ──> changed View / Scene tail ─┐
                                                                           │
-Model + Material ──> final World packet fields ──> changed World128 ──────────┼─> GPU local RAM
+Transform + Material ──> final World packet fields ──> changed World128 ──────────┼─> GPU local RAM
                                                                           │
 Mesh registration / explicit refresh ──> CPU directory entries ──> commands ─┘
 ```
@@ -87,7 +96,7 @@ Mesh registration / explicit refresh ──> CPU directory entries ──> comma
   two CPU u16 words per meshlet, plus allocator overhead. A child subset owns
   its own entries. Vertex/index payload remains external. Refresh affects
   future recordings; previously recorded commands retain their old addresses.
-- Camera/Model carry monotonic source revisions. A draw checks a small token,
+- Camera/Transform carry monotonic source revisions. A draw checks a small token,
   rather than assembling and comparing a full matrix packet. The recorder
   retains the current binding, not a global deduplication table: A/B/A can
   append a fresh A snapshot. Old A data must remain immutable.
@@ -126,8 +135,8 @@ one 128-byte payload sector after the record prefix. The CPU captures that
     let mut pass = cb.pass(back, depth, clear_black, clear_far);
     pass.set_camera(camera);
     pass.set_state(daylight);
-    pass.draw_colored(mesh, model, material);
-    pass.draw_colored(mesh, model, material);
+    pass.draw_colored(transform, mesh, material);
+    pass.draw_colored(transform, mesh, material);
 }   // WAIT(all), FLUSH are recorded by Pass drop.
 gpu.submit(cb); // Appends END/padding, publishes, then sends COUNT/START.
 ```
@@ -184,11 +193,11 @@ Offsets below are **bytes inside the block**, not CPU u16 indices.
 
 | World128 offset | Fields | Producer |
 | --- | --- | --- |
-| 0..47 | Position 3×4, Q16.16 | Source Model |
+| 0..47 | Position 3×4, Q16.16 | Source Transform |
 | 48..51 | Q16.16 one | Encoder |
 | 52..59 | Ambient / directional material responses | Material |
 | 60..63 | Zero padding | Encoder |
-| 64..99 | Normal 3×3, Q16.16 | Source Model |
+| 64..99 | Normal 3×3, Q16.16 | Source Transform |
 | 100..103 | Zero padding | Encoder |
 | 104..127 | Texture descriptor, specular, raster controls, padding, RGBA, lighting kind | Material + raster State |
 

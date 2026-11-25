@@ -112,7 +112,7 @@ fn model_initial() {
         y: zero,
         z: zero,
     };
-    let transform: Transform = Transform {
+    let transform: Pose = Pose {
         position: Vec3 {
             x: fix32::from_int(10),
             y: fix32::from_int(20),
@@ -418,7 +418,7 @@ fn model_matrix_checks() {
         y: zero,
         z: zero,
     };
-    let rotated: Transform = Transform {
+    let rotated: Pose = Pose {
         position: origin,
         angles: Vec3 {
             x: zero,
@@ -454,7 +454,7 @@ fn model_matrix_checks() {
         gpu_scene_model_matrices(MODEL.as_array(), view_of(&mut world), view_of(&mut normal)),
         26,
     );
-    let singular: Transform = Transform {
+    let singular: Pose = Pose {
         position: origin,
         angles: origin,
         scale: Vec3 {
@@ -471,7 +471,7 @@ fn model_matrix_checks() {
 }
 fn mutate_after_draw() {
     let zero = fix32::zero();
-    let transform: Transform = Transform {
+    let transform: Pose = Pose {
         position: Vec3 {
             x: fix32::from_int(50),
             y: zero,

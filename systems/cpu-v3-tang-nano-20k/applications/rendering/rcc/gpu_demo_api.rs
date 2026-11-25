@@ -8,7 +8,7 @@ mod boot_resources;
 use boot_resources::*;
 
 // Compatibility value factories for frozen recording/qualification fixtures.
-// New application code uses Vec3/Transform and the public descriptor builders.
+// New application code uses Vec3/Pose and the public descriptor builders.
 pub fn demo_point(x: fix32, y: fix32, z: fix32) -> Vec3 {
     Vec3 { x: x, y: y, z: z }
 }
@@ -19,8 +19,8 @@ pub fn demo_scale() -> Vec3 {
     let one = fix32::from_int(1);
     demo_point(one, one, one)
 }
-pub fn demo_pose(position: Vec3, angles: Vec3, scale: Vec3) -> Transform {
-    Transform {
+pub fn demo_pose(position: Vec3, angles: Vec3, scale: Vec3) -> Pose {
+    Pose {
         position: position,
         angles: angles,
         scale: scale,

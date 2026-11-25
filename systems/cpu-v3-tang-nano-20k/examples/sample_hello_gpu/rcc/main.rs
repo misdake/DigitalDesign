@@ -1,13 +1,17 @@
 //! Main owns submission, retirement and presentation; scene owns its resources.
-use crate::dsl_rt::*;
-mod gpu_api;
-use gpu_api::*;
-mod surface;
-use surface::*;
 mod boot_resources;
-use boot_resources::*;
+mod gpu_api;
 mod scene;
-use scene::Scene;
+mod surface;
+
+use crate::boot_resources::{HELLO_ATLAS, HELLO_FRAMES};
+use crate::dsl_rt::*;
+use crate::gpu_api::{
+    ColorBuffer, ColorBufferPtr, ColorLoad, DepthBuffer, DepthLoad, Display, Gpu, Rgb565, UiAtlas,
+    UiGrid,
+};
+use crate::scene::Scene;
+use crate::surface::{DepthSurface, Rgb565Surface, UiGridStorage};
 
 #[static_buffer]
 const COLOR_A: Rgb565Surface = Rgb565Surface::allocate();

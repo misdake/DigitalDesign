@@ -1,9 +1,6 @@
 //! Classic first-person motion; gamepad owns acquisition and stick conversion.
 use crate::dsl_rt::*;
-mod gpu_api;
-use gpu_api::*;
-mod gamepad;
-use gamepad::*;
+use crate::gamepad::{GamepadFrame, DS2_L1, DS2_R1};
 
 pub struct DemoMotion {
     pub eye: Vec3,

@@ -481,7 +481,7 @@ impl BloxorzSession {
                     self.rules.bridge_mask,
                 );
                 let falling = if first { 1u16 } else { 0u16 };
-                let pose: Transform = if falling != self.rules.active_cube {
+                let pose: Pose = if falling != self.rules.active_cube {
                     self.idle_cube_transform()
                 } else {
                     self.block_transform()
@@ -972,7 +972,7 @@ impl BloxorzSession {
         }
     }
 
-    pub fn idle_cube_transform(&self) -> Transform {
+    pub fn idle_cube_transform(&self) -> Pose {
         let old = (self.animation.phase == AnimationPhase::Roll
             || self.animation.phase == AnimationPhase::Fall)
             && self.motion.from_split != 0;
@@ -1005,7 +1005,7 @@ impl BloxorzSession {
         }
         let half = fix!(0.5);
         let scale = self.split_pop_scale();
-        Transform::new(
+        Pose::new(
             Vec3::new(
                 fix32::from_int(x as i16) - fix32::from_int(self.level.width as i16) * half + half,
                 half,
@@ -1016,7 +1016,7 @@ impl BloxorzSession {
         )
     }
 
-    pub fn idle_cube_pose(&self, model: &mut Model) {
+    pub fn idle_cube_pose(&self, model: &mut Transform) {
         let old = (self.animation.phase == AnimationPhase::Roll
             || self.animation.phase == AnimationPhase::Fall)
             && self.motion.from_split != 0;
@@ -1054,7 +1054,7 @@ impl BloxorzSession {
         fix32::zero()
     }
 
-    pub fn block_transform(&self) -> Transform {
+    pub fn block_transform(&self) -> Pose {
         let mode = self.animation.phase;
         let t = self.animation.elapsed;
         let zero = fix32::zero();
@@ -1066,7 +1066,7 @@ impl BloxorzSession {
             let seconds = ratio(t, 1000);
             let f = ratio(t, 600);
             let angle = state.angle + state.spin * seconds;
-            return Transform::new(
+            return Pose::new(
                 Vec3::new(
                     state.position.x + state.velocity.x * seconds,
                     state.position.y + state.velocity.y * seconds - fix32::from_int(16) * f * f,
@@ -1082,7 +1082,7 @@ impl BloxorzSession {
         }
         if mode == AnimationPhase::SplitPop && t < 70 {
             let size = one - fraction(t, 70);
-            return Transform::new(
+            return Pose::new(
                 Vec3::new(
                     fix32::from_int(self.motion.landing_x as i16)
                         - fix32::from_int(self.level.width as i16) * half
@@ -1194,7 +1194,7 @@ impl BloxorzSession {
                 -fix32::from_words(5243, 2) * (f * fix32::from_words(26214, 0) + f * f * fix!(0.6));
             squeeze = one - fix32::from_words(6554, 0) * f;
         }
-        Transform::new(
+        Pose::new(
             Vec3::new(
                 cx + fix32::from_int(x as i16) - fix32::from_int(self.level.width as i16) * half,
                 cy + vertical,
@@ -1209,7 +1209,7 @@ impl BloxorzSession {
         )
     }
 
-    pub fn block_pose(&self, model: &mut Model) {
+    pub fn block_pose(&self, model: &mut Transform) {
         rotation_pose(model, self.block_transform(), self.block_orientation());
     }
 

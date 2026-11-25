@@ -27,6 +27,7 @@ enum GpuFault {
     SubmissionRejected = 0x0602,
     ExecutionFault = 0x0603,
     WaitWithoutSubmission = 0x0604,
+    CommandList = 0x0605,
     ObjectAllocation = 0x0701,
     ObjectValidation = 0x0702,
     ObjectRelease = 0x0703,

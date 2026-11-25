@@ -13,7 +13,7 @@ use time::*;
 
 fn reset_scene(
     camera: &mut Camera,
-    left: &mut Model,
+    left: &mut Transform,
     opaque: &mut Material,
     state: &mut RenderState,
     alpha: &mut RenderState,
@@ -46,7 +46,7 @@ fn reset_scene(
         Shininess::S12,
     );
 }
-fn edit_scene(camera: &mut Camera, left: &mut Model, opaque: &mut Material) {
+fn edit_scene(camera: &mut Camera, left: &mut Transform, opaque: &mut Material) {
     let z = fix32::zero();
     let one = fix32::from_int(1);
     camera.set_pose(
@@ -92,12 +92,12 @@ fn run(limit: u16) {
     let scale = demo_scale();
     let mut camera = demo_camera();
     let mesh = demo_mesh();
-    let mut left = Model::new(demo_pose(
+    let mut left = Transform::new(demo_pose(
         demo_point(-one, z, fix32::from_int(-3)),
         zero,
         scale,
     ));
-    let right = Model::new(demo_pose(
+    let right = Transform::new(demo_pose(
         demo_point(one, z, fix32::from_int(-4)),
         zero,
         scale,
@@ -169,14 +169,14 @@ fn run(limit: u16) {
                 );
                 pass.set_camera(camera.ptr());
                 pass.set_state(state.ptr());
-                pass.draw(mesh.ptr(), left.ptr(), opaque.ptr(), view.ptr());
+                pass.draw(left.ptr(), mesh.ptr(), opaque.ptr(), &view);
                 pass.set_state(alpha.ptr());
-                pass.draw(mesh.ptr(), right.ptr(), glass.ptr(), view.ptr());
+                pass.draw(right.ptr(), mesh.ptr(), glass.ptr(), &view);
                 if phase == 4 {
                     // This Pass keeps its installed Camera while its successor sees the edit.
                     edit_scene(&mut camera, &mut left, &mut opaque);
                     pass.set_state(state.ptr());
-                    pass.draw(mesh.ptr(), left.ptr(), opaque.ptr(), view.ptr());
+                    pass.draw(left.ptr(), mesh.ptr(), opaque.ptr(), &view);
                 }
             }
             if phase == 4 {
@@ -188,7 +188,7 @@ fn run(limit: u16) {
                 );
                 next.set_camera(camera.ptr());
                 next.set_state(alpha.ptr());
-                next.draw(mesh.ptr(), right.ptr(), glass.ptr(), view.ptr());
+                next.draw(right.ptr(), mesh.ptr(), glass.ptr(), &view);
             }
             {
                 let mut ui = buffer.pass(
@@ -217,14 +217,14 @@ fn run(limit: u16) {
                 );
                 pass.set_camera(camera.ptr());
                 pass.set_state(state.ptr());
-                pass.draw(mesh.ptr(), left.ptr(), opaque.ptr(), view.ptr());
+                pass.draw(left.ptr(), mesh.ptr(), opaque.ptr(), &view);
                 pass.set_state(alpha.ptr());
-                pass.draw(mesh.ptr(), right.ptr(), glass.ptr(), view.ptr());
+                pass.draw(right.ptr(), mesh.ptr(), glass.ptr(), &view);
                 if phase == 4 {
                     // This Pass keeps its installed Camera while its successor sees the edit.
                     edit_scene(&mut camera, &mut left, &mut opaque);
                     pass.set_state(state.ptr());
-                    pass.draw(mesh.ptr(), left.ptr(), opaque.ptr(), view.ptr());
+                    pass.draw(left.ptr(), mesh.ptr(), opaque.ptr(), &view);
                 }
             }
             if phase == 4 {
@@ -236,7 +236,7 @@ fn run(limit: u16) {
                 );
                 next.set_camera(camera.ptr());
                 next.set_state(alpha.ptr());
-                next.draw(mesh.ptr(), right.ptr(), glass.ptr(), view.ptr());
+                next.draw(right.ptr(), mesh.ptr(), glass.ptr(), &view);
             }
             {
                 let mut ui = buffer.pass(

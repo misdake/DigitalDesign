@@ -1,11 +1,11 @@
 //! Explicit two-stage RTT; GPU completion precedes texture consumption and presentation.
 use crate::dsl_rt::*;
-mod gpu_api;
-use gpu_api::*;
-mod gpu_board;
-mod gpu_demo_api;
-use gpu_board::*;
-use gpu_demo_api::*;
+use crate::gpu_api::{
+    Camera, ColorBuffer, ColorBufferPtr, ColorLoad, DepthBuffer, DepthLoad, Display, Gpu, Material,
+    RenderState, Rgb565, Transform,
+};
+use crate::gpu_board::{board_color_a, board_color_b, board_depth, board_gpu_config};
+use crate::gpu_demo_api::{demo_mesh, demo_texture};
 
 // Sector = 128 bytes; both 256 KiB reservations are excluded by tools/assets.py.
 const OFFSCREEN_COLOR_SECTOR: u16 = 0xc000;
@@ -35,24 +35,20 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
     let parts = mesh.ptr();
     let pattern = parts.slice(0, 1);
     let screen = parts.slice(1, 1);
-    let producer = Model::new(Transform::translation(Vec3::new(
-        fix!(0),
-        fix!(0),
-        fix!(-3),
-    )));
-    let mut pose = Transform::new(
+    let producer = Transform::new(Pose::translation(Vec3::new(fix!(0), fix!(0), fix!(-3))));
+    let mut pose = Pose::new(
         Vec3::new(fix!(0), fix!(0), fix!(-1)),
         Vec3::zero(),
         Vec3::new(fix!(1), fix!(0.6), fix!(1)),
     );
     if ordinary {
-        pose = Transform::new(
+        pose = Pose::new(
             Vec3::new(fix!(0.125), fix!(0), fix!(-1.25)),
             Vec3::new(fix!(0), fix!(0.125), fix!(0)),
             Vec3::new(fix!(0.75), fix!(0.5), fix!(1)),
         );
     }
-    let consumer = Model::new(pose);
+    let consumer = Transform::new(pose);
     let material = Material::new(
         MaterialDesc::lit(Rgba8::white(), Rgb8::black(), Shininess::S16)
             .with_response(fix!(0.5), fix!(0.5))
@@ -80,7 +76,7 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
             );
             pass.set_camera(camera.ptr());
             pass.set_state(state.ptr());
-            pass.draw(pattern, producer.ptr(), material.ptr(), ordinary_view.ptr());
+            pass.draw(producer.ptr(), pattern, material.ptr(), &ordinary_view);
         }
 
         gpu.submit(buffer);
@@ -105,7 +101,7 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
             pass.set_camera(camera.ptr());
             pass.set_state(state.ptr());
             // The sampling view is persistent; only its backing pixels change.
-            pass.draw(screen, consumer.ptr(), material.ptr(), offscreen_view.ptr());
+            pass.draw(consumer.ptr(), screen, material.ptr(), &offscreen_view);
         }
 
         gpu.submit(buffer);

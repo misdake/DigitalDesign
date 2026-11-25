@@ -14,22 +14,22 @@ pub static DRAW_STATS: DrawStatistics = DrawStatistics {
 };
 pub fn counted_draw(
     pass: &mut Pass,
+    transform: &Transform,
     mesh: &Mesh,
-    model: &Model,
     material: &Material,
     view: &TextureView,
 ) {
-    pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
+    pass.draw(transform.ptr(), mesh.ptr(), material.ptr(), view);
     DRAW_STATS.draw_calls += mesh.meshlet_count();
 }
 pub fn counted_part_draw(
     recording: &mut PreparedPart,
+    transform: &Transform,
     mesh: &Mesh,
-    model: &Model,
     material: &Material,
     view: &TextureView,
 ) {
-    recording.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
+    recording.draw(transform.ptr(), mesh.ptr(), material.ptr(), view);
     DRAW_STATS.draw_calls += mesh.meshlet_count();
 }
 pub fn counted_ui(pass: &mut Pass, grid: &UiGrid, rect: CellRect) {

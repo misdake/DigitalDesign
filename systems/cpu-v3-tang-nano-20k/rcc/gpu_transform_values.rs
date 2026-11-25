@@ -39,7 +39,7 @@ const fn transform_rotation(angles: Vec3) -> Mat3x3 {
         Vec3::new(sy.wrapping_neg(), cy.wrapping_mul(sx), cy.wrapping_mul(cx)),
     )
 }
-impl Transform {
+impl Pose {
     /// Rz * Ry * Rx with scale applied to columns, then source-world translation.
     pub const fn world_matrix(self) -> Mat3x4 {
         let r = transform_rotation(self.angles);

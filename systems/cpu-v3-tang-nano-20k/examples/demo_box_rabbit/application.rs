@@ -32,7 +32,7 @@ pub const APPLICATIONS: &[Definition] = &[
         options: &[BuildOption::environment(
             "motion",
             "BOX_RABBIT_MOTION",
-            OptionValues::Choices(&["manual", "orbit"]),
+            OptionValues::Choices(&["manual", "orbit", "slices", "ring"]),
         )],
         assets: Some(Assets {
             script: "examples/demo_box_rabbit/tools/public_assets.py",

@@ -1,9 +1,14 @@
-//! Single-CB ownership, publication and Device4 execution.
+//! Submission ownership, publication and Device4 execution.
 use crate::dsl_rt::*;
 mod device_abi;
 use device_abi::*;
 mod gpu_record;
 use gpu_record::*;
+
+const GPU_LIST_OWNER: u16 = 3;
+const GPU_LIST_MAX_SEGMENTS: u16 = 32;
+const GPU_LIST_TABLE_WORDS: u16 = 64;
+const GPU_LIST_METADATA_WORDS: u16 = 4;
 
 #[repr(u16)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,7 +33,6 @@ enum ExecutionError {
     NotInitialized = 8,
 }
 
-// phase/owner/base/count/page/error; configured/taken; live public controller.
 #[repr(C)]
 struct GpuExecutionState {
     phase: ExecutionPhase,
@@ -40,6 +44,7 @@ struct GpuExecutionState {
     configured_slots: u16,
     taken_slots: u16,
     controller: u16,
+    list_allocation: u16,
 }
 static GPU_EXECUTION: GpuExecutionState = GpuExecutionState {
     phase: ExecutionPhase::Uninitialized,
@@ -51,6 +56,7 @@ static GPU_EXECUTION: GpuExecutionState = GpuExecutionState {
     configured_slots: 0,
     taken_slots: 0,
     controller: 0,
+    list_allocation: 0,
 };
 
 fn gpu_execute_fail(code: ExecutionError) -> bool {
@@ -71,7 +77,7 @@ fn gpu_execute_can_init() -> bool {
 fn gpu_execute_init() {
     // Bulk reset of the repr(C) word layout; ordinary access uses named fields.
     let mut i: u16 = 0;
-    while i < 9 {
+    while i < 10 {
         unsafe {
             addr_of(&GPU_EXECUTION).write(i as i16, 0);
         }
@@ -81,15 +87,11 @@ fn gpu_execute_init() {
     GPU_EXECUTION.phase = ExecutionPhase::Idle;
 }
 fn gpu_execute_publish(slot: u16) -> bool {
-    if GPU_EXECUTION.phase != ExecutionPhase::Idle || slot >= 2 {
+    if slot >= 2 {
         return gpu_execute_fail(ExecutionError::InvalidSubmission);
     }
-    // Ownership is retained even if seal/publication/status validation fails.
-    GPU_EXECUTION.owner = slot + 1;
-    GPU_EXECUTION.phase = ExecutionPhase::Held;
-    let status = dev_recv(GPU_DEVICE, GPU_STATUS);
-    if status & (GPU_STATUS_BUSY | GPU_STATUS_TRANSPORT_ERROR) != 0 {
-        return gpu_execute_fail(ExecutionError::UnexpectedDeviceStatus);
+    if !gpu_execute_hold(slot + 1) {
+        return false;
     }
     if !gpu_record_seal(slot) {
         return gpu_execute_fail(ExecutionError::InvalidCommandStream);
@@ -101,6 +103,24 @@ fn gpu_execute_publish(slot: u16) -> bool {
     }
     GPU_EXECUTION.base_sector = c[GPU_RECORD_COMMAND_BASE];
     GPU_EXECUTION.count_minus_one = (words >> 1) - 1;
+    gpu_execute_publish_memory()
+}
+
+fn gpu_execute_hold(owner: u16) -> bool {
+    if GPU_EXECUTION.phase != ExecutionPhase::Idle {
+        return gpu_execute_fail(ExecutionError::InvalidSubmission);
+    }
+    // Retain ownership through faults after admission.
+    GPU_EXECUTION.owner = owner;
+    GPU_EXECUTION.phase = ExecutionPhase::Held;
+    let status = dev_recv(GPU_DEVICE, GPU_STATUS);
+    if status & (GPU_STATUS_BUSY | GPU_STATUS_TRANSPORT_ERROR) != 0 {
+        return gpu_execute_fail(ExecutionError::UnexpectedDeviceStatus);
+    }
+    true
+}
+
+fn gpu_execute_publish_memory() -> bool {
     if read_dseg_page(3) != GPU_EXECUTION.dseg3 {
         return gpu_execute_fail(ExecutionError::DsegMappingMismatch);
     }
@@ -110,6 +130,40 @@ fn gpu_execute_publish(slot: u16) -> bool {
     if dev_recv(GPU_DEVICE, GPU_STATUS) & (GPU_STATUS_BUSY | GPU_STATUS_TRANSPORT_ERROR) != 0 {
         return gpu_execute_fail(ExecutionError::UnexpectedDeviceStatus);
     }
+    true
+}
+
+// CPU pointers are word addresses. A 64-word aligned table fits inside one
+// DSEG page, so its physical 128-byte sector needs only that page's mapping.
+fn gpu_list_table_address(allocation: u16) -> u16 {
+    (allocation + GPU_LIST_METADATA_WORDS + GPU_LIST_TABLE_WORDS - 1) & 0xffc0
+}
+
+fn gpu_execute_submit_list(allocation: u16, count: u16) -> bool {
+    if !gpu_execute_hold(GPU_LIST_OWNER) {
+        return false;
+    }
+    GPU_EXECUTION.list_allocation = allocation;
+    let table = gpu_list_table_address(allocation);
+    let bank = table >> 14;
+    let page = if bank == 0 {
+        read_dseg_page(0)
+    } else if bank == 1 {
+        read_dseg_page(1)
+    } else if bank == 2 {
+        read_dseg_page(2)
+    } else {
+        256
+    };
+    if page >= 256 {
+        return gpu_execute_fail(ExecutionError::DsegMappingMismatch);
+    }
+    GPU_EXECUTION.base_sector = (page << 8) | ((table & 0x3fff) >> 6);
+    GPU_EXECUTION.count_minus_one = 0x8000 | (count - 1);
+    if !gpu_execute_publish_memory() {
+        return false;
+    }
+    gpu_execute_launch();
     true
 }
 // Publication owns every check before the sole COUNT/START pair.
@@ -125,7 +179,7 @@ fn gpu_execute_launch() {
     dev_send(GPU_DEVICE, GPU_COMMAND_COUNT, GPU_EXECUTION.count_minus_one);
     dev_send(GPU_DEVICE, GPU_COMMAND_START, GPU_EXECUTION.base_sector);
 }
-// Internal result: 0=no completion, slot+1=retired, 65535=fault with owner retained.
+// 0=no completion, slot+1 or GPU_LIST_OWNER=retired, 65535=fault.
 fn gpu_execute_poll() -> u16 {
     if GPU_EXECUTION.phase == ExecutionPhase::Fault {
         return 65535;

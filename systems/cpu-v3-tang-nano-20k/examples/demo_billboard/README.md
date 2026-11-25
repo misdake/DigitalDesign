@@ -47,6 +47,11 @@ rebuilding. `MeshPtr::slice` selects a published batch without a new resource.
 The GPU expands the tree along horizontal camera right and effects in the
 camera plane.
 
+The application entry declares the generated resources, GPU API, and
+Billboard writer. The stream imports its asset constants and writer through
+their crate paths. Shared GPU value types are available through the SDK's
+compatibility namespace.
+
 Opaque geometry, tree and effects use static World with a shared View. Geometry
 ROM prepares position and the selected Billboard basis before entering the
 unchanged expansion program. Camera changes update only View; no per-Billboard

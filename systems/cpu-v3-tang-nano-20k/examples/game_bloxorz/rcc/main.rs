@@ -44,7 +44,7 @@ struct HudState {
     previous_draws: u16,
     valid: u16,
 }
-// One caller-owned block Model lives for this run; retain only its resting key.
+// One caller-owned block Transform lives for this run; retain only its resting key.
 struct RestingBlockKey {
     cell: u16,
     generation: u16,
@@ -119,9 +119,9 @@ fn bit_channel(mut bit: u16) -> u16 {
     }
     channel
 }
-fn tile_pose(index: u16, y: fix32) -> Transform {
+fn tile_pose(index: u16, y: fix32) -> Pose {
     let half = fix!(0.5);
-    Transform::new(
+    Pose::new(
         Vec3::new(
             fix32::from_int((index % GAME_SESSION.level.width) as i16)
                 - fix32::from_int(GAME_SESSION.level.width as i16) * half
@@ -136,14 +136,35 @@ fn tile_pose(index: u16, y: fix32) -> Transform {
     )
 }
 
-fn draw_ground_batches(pass: &mut Pass, model: &mut Model, material: &mut Material) {
+struct AtlasViews {
+    atlas: TextureView,
+    marker: TextureView,
+}
+
+impl AtlasViews {
+    fn new() -> Self {
+        let atlas = game_texture();
+        let marker = marker_texture();
+        Self {
+            atlas: clamped_texture_view(&atlas),
+            marker: clamped_texture_view(&marker),
+        }
+    }
+}
+
+fn draw_ground_batches(
+    pass: &mut Pass,
+    model: &mut Transform,
+    material: &mut Material,
+    views: &AtlasViews,
+) {
     let half = fix!(0.5);
     let y_scale = if ground_global_quantization() {
         fix!(0.125)
     } else {
         half
     };
-    model.set_pose(Transform::new(
+    model.set_pose(Pose::new(
         Vec3::zero(),
         Vec3::zero(),
         Vec3::new(half, y_scale, half),
@@ -176,10 +197,6 @@ fn draw_ground_batches(pass: &mut Pass, model: &mut Model, material: &mut Materi
         );
     }
     material.set_unlit(false);
-    let atlas = game_texture();
-    let view = clamped_texture_view(&atlas);
-    let marker = marker_texture();
-    let marker_view = clamped_texture_view(&marker);
     let mut group: u16 = 0;
     while group < 3 {
         if ground_count(group) != 0 {
@@ -202,17 +219,17 @@ fn draw_ground_batches(pass: &mut Pass, model: &mut Model, material: &mut Materi
                 });
             }
             if group == 1 {
-                counted_draw(pass, &mesh, model, material, &marker_view);
+                counted_draw(pass, model, &mesh, material, &views.marker);
             } else {
-                counted_draw(pass, &mesh, model, material, &view);
+                counted_draw(pass, model, &mesh, material, &views.atlas);
             }
         }
         group += 1;
     }
 }
-fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
+fn draw_floor(pass: &mut Pass, model: &mut Transform, material: &mut Material, views: &AtlasViews) {
     if ground_enabled() {
-        draw_ground_batches(pass, model, material);
+        draw_ground_batches(pass, model, material, views);
         return;
     }
     material.set_uniform_color(Rgba8 {
@@ -221,10 +238,6 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
         b: 121,
         a: 255,
     });
-    let texture = game_texture();
-    let view = clamped_texture_view(&texture);
-    let marker_texture = marker_texture();
-    let marker_view = clamped_texture_view(&marker_texture);
     let half = fix!(0.5);
     let carrier = goal_carrier_enabled();
     let count = level_face_count();
@@ -259,7 +272,7 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
             },
             1,
         );
-        model.set_pose(Transform::new(
+        model.set_pose(Pose::new(
             Vec3::new(
                 fix32::from_int(x as i16) - fix32::from_int(GAME_SESSION.level.width as i16) * half
                     + half,
@@ -274,7 +287,7 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
         material.set_unlit(false);
         if top {
             material.set_uniform_color(Rgba8::white());
-            counted_draw(pass, &mesh, model, material, &marker_view);
+            counted_draw(pass, model, &mesh, material, &views.marker);
         } else {
             if GAME_SESSION.level_field(index, 0) == TileKind::Splitter as u16 {
                 material.set_uniform_color(Rgba8 {
@@ -291,11 +304,11 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
                     a: 255,
                 });
             }
-            counted_draw(pass, &mesh, model, material, &view);
+            counted_draw(pass, model, &mesh, material, &views.atlas);
         }
         i += 1;
     }
-    model.set_pose(Transform::new(
+    model.set_pose(Pose::new(
         Vec3::zero(),
         Vec3::zero(),
         Vec3::new(half, half, half),
@@ -356,7 +369,12 @@ fn sync_bridge_group(parts: Array<PreparedDrawsPtr>) {
 }
 // The stage owns the mapping: opaque bridges0, up to thirteen switches,
 // pads14 and translucent bridge hints15.
-fn prepare_bridges(parts: Array<PreparedDrawsPtr>, scene: &mut SceneResources, transparent: bool) {
+fn prepare_bridges(
+    parts: Array<PreparedDrawsPtr>,
+    scene: &mut SceneResources,
+    transparent: bool,
+    atlas_view: &TextureView,
+) {
     let part = if transparent { 15u16 } else { 0u16 };
     if parts[part].ready() {
         return;
@@ -373,6 +391,7 @@ fn prepare_bridges(parts: Array<PreparedDrawsPtr>, scene: &mut SceneResources, t
         &mut scene.floor_model,
         &mut scene.floor_material,
         transparent,
+        atlas_view,
     );
     recording.finish();
     let count = DRAW_STATS.draw_calls - before;
@@ -398,12 +417,11 @@ fn visible_tile_side(i: u16) -> u16 {
 }
 fn draw_bridges(
     recording: &mut PreparedPart,
-    model: &mut Model,
+    model: &mut Transform,
     material: &mut Material,
     transparent: bool,
+    atlas_view: &TextureView,
 ) {
-    let texture = game_texture();
-    let view = clamped_texture_view(&texture);
     let mut i: u16 = 0;
     while i < GAME_SESSION.level.cell_count {
         let selected = if transparent {
@@ -430,7 +448,7 @@ fn draw_bridges(
             }
             material.set_uniform_color(color);
             model.set_pose(tile_pose(i, fix32::zero()));
-            counted_part_draw(recording, &mesh, model, material, &view);
+            counted_part_draw(recording, model, &mesh, material, atlas_view);
         }
         i += 1;
     }
@@ -443,35 +461,38 @@ fn marker_texture() -> Texture {
         full_mip: false,
     })
 }
-fn draw_fragile_batches(pass: &mut Pass, model: &mut Model, material: &mut Material, owner: Ptr) {
+fn draw_fragile_batches(
+    pass: &mut Pass,
+    model: &mut Transform,
+    material: &mut Material,
+    owner: Ptr,
+    marker_view: &TextureView,
+) {
     if fragile_count(owner) == 0 {
         return;
     }
-    let texture = marker_texture();
-    let view = clamped_texture_view(&texture);
     material.set_unlit(false);
     material.set_uniform_color(Rgba8::white());
     let half = fix!(0.5);
-    model.set_pose(Transform::new(
+    model.set_pose(Pose::new(
         Vec3::zero(),
         Vec3::zero(),
         Vec3::new(half, half, half),
     ));
     let mesh = fragile_mesh(owner);
-    counted_draw(pass, &mesh, model, material, &view);
+    counted_draw(pass, model, &mesh, material, marker_view);
 }
 fn draw_switch_tile(
     recording: &mut PreparedPart,
-    model: &mut Model,
+    model: &mut Transform,
     material: &mut Material,
     i: u16,
-    kind: u16,
     channel: u16,
+    marker_view: &TextureView,
 ) {
-    let marked = marker_texture();
-    let marked_view = clamped_texture_view(&marked);
     material.set_unlit(false);
     let one = fix32::from_int(1);
+    let kind = GAME_SESSION.level_field(i, 0);
     if kind == TileKind::SoftSwitch as u16 || kind == TileKind::HeavySwitch as u16 {
         let bit = 1u16 << channel;
         let active = GAME_SESSION.visual_mask() & bit != 0;
@@ -501,7 +522,7 @@ fn draw_switch_tile(
             }
             material.set_uniform_color(Rgba8::white());
             model.set_pose(tile_pose(i, y));
-            counted_part_draw(recording, &mesh, model, material, &marked_view);
+            counted_part_draw(recording, model, &mesh, material, marker_view);
         } else {
             let base = game_mesh_part(
                 MARKED_HEAVY_FIRST + (channel & 7) * 2 + if active { 1u16 } else { 0u16 },
@@ -509,7 +530,7 @@ fn draw_switch_tile(
             );
             material.set_uniform_color(Rgba8::white());
             model.set_pose(tile_pose(i, fix32::zero()));
-            counted_part_draw(recording, &base, model, material, &marked_view);
+            counted_part_draw(recording, model, &base, material, marker_view);
         }
     }
 }
@@ -517,6 +538,7 @@ fn prepare_switches(
     parts: Array<PreparedDrawsPtr>,
     scene: &mut SceneResources,
     material: &mut Material,
+    marker_view: &TextureView,
 ) {
     let mut cache = button_cache_data();
     let mask = GAME_SESSION.visual_mask();
@@ -546,8 +568,8 @@ fn prepare_switches(
                 &mut scene.pad_model,
                 material,
                 i,
-                kind,
                 channel,
+                marker_view,
             );
             recording.finish();
             cache[2 + j * 3] = key;
@@ -567,7 +589,7 @@ fn draw_switches(pass: &mut Pass, parts: Array<PreparedDrawsPtr>) {
         j += 1;
     }
 }
-fn prepare_block(model: &mut Model) {
+fn prepare_block(model: &mut Transform) {
     if !GAME_SESSION.block_visible() {
         RENDER_STATE.resting_block.cell = 0;
         return;
@@ -595,11 +617,15 @@ fn prepare_block(model: &mut Model) {
     RENDER_STATE.resting_block.orientation = GAME_SESSION.block_orientation();
 }
 
-fn draw_block(pass: &mut Pass, block: &Mesh, model: &mut Model, material: &Material) {
+fn draw_block(
+    pass: &mut Pass,
+    model: &mut Transform,
+    block: &Mesh,
+    material: &Material,
+    atlas_view: &TextureView,
+) {
     if GAME_SESSION.block_visible() {
-        let texture = game_texture();
-        let view = clamped_texture_view(&texture);
-        counted_draw(pass, block, model, material, &view);
+        counted_draw(pass, model, block, material, atlas_view);
     }
 }
 fn level_eye(which: u16) -> Vec3 {
@@ -654,6 +680,7 @@ fn record_static_scene(
     background: &ColorBuffer,
     camera: &Camera,
     fragile: Ptr,
+    views: &AtlasViews,
 ) {
     let state = game_solid_state();
     let mut floor_model = game_floor_model();
@@ -664,10 +691,28 @@ fn record_static_scene(
     let mut pass = commands.pass(target.color, target.depth, load, DepthLoad::clear(65535));
     pass.set_camera(camera.ptr());
     pass.set_state(state.ptr());
-    draw_floor(&mut pass, &mut floor_model, &mut floor_material);
-    draw_pad_well(&mut pass, &mut pad_model, &mut pad_material, true);
-    draw_pad_well(&mut pass, &mut pad_model, &mut pad_material, false);
-    draw_fragile_batches(&mut pass, &mut floor_model, &mut floor_material, fragile);
+    draw_floor(&mut pass, &mut floor_model, &mut floor_material, views);
+    draw_pad_well(
+        &mut pass,
+        &mut pad_model,
+        &mut pad_material,
+        true,
+        &views.atlas,
+    );
+    draw_pad_well(
+        &mut pass,
+        &mut pad_model,
+        &mut pad_material,
+        false,
+        &views.atlas,
+    );
+    draw_fragile_batches(
+        &mut pass,
+        &mut floor_model,
+        &mut floor_material,
+        fragile,
+        &views.marker,
+    );
 }
 
 fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
@@ -763,6 +808,7 @@ fn advance_gameplay(clock: &mut FrameClock) {
 }
 
 struct StaticScene {
+    views: AtlasViews,
     background: ColorBuffer,
     valid: bool,
     generation: u16,
@@ -776,6 +822,7 @@ impl StaticScene {
             GpuMemory::from_sectors(BLOX_BACKGROUND_SECTOR, 1600)
         });
         Self {
+            views: AtlasViews::new(),
             background: background,
             valid: false,
             generation: 0,
@@ -827,6 +874,7 @@ fn refresh_static_scene(
             &cache.background,
             camera,
             fragile_owner,
+            &cache.views,
         );
         cache.valid = true;
         cache.draws = DRAW_STATS.draw_calls - previous_draws;
@@ -841,7 +889,7 @@ fn prepare_pads(
     parts: Array<PreparedDrawsPtr>,
     scene: &mut SceneResources,
     mut pad_cache: Array<PadCache>,
-    pad_view: &TextureView,
+    atlas_view: &TextureView,
     carrier_view: &TextureView,
 ) {
     if parts[14u16].ready()
@@ -856,10 +904,10 @@ fn prepare_pads(
     recording.set_state(scene.state.ptr());
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.entry_hatch_model,
+        &scene.pad,
         &scene.entry_hatch_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 0,
@@ -867,10 +915,10 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.entry0,
+        &scene.pad,
         &scene.entry_ring_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 3,
@@ -878,10 +926,10 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.entry1,
+        &scene.pad,
         &scene.entry_ring_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 4,
@@ -889,10 +937,10 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.entry2,
+        &scene.pad,
         &scene.entry_ring_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 5,
@@ -900,10 +948,10 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.entry3,
+        &scene.pad,
         &scene.entry_ring_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 6,
@@ -911,10 +959,10 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.goal_hatch_model,
+        &scene.pad,
         &scene.goal_hatch_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 1,
@@ -922,8 +970,8 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.carrier_model,
+        &scene.pad,
         &scene.carrier_material,
         carrier_view,
         PadPart {
@@ -933,10 +981,10 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.goal0,
+        &scene.pad,
         &scene.goal_ring_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 7,
@@ -944,10 +992,10 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.goal1,
+        &scene.pad,
         &scene.goal_ring_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 8,
@@ -955,10 +1003,10 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.goal2,
+        &scene.pad,
         &scene.goal_ring_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 9,
@@ -966,10 +1014,10 @@ fn prepare_pads(
     );
     draw_pad_part(
         &mut recording,
-        &scene.pad,
         &mut scene.goal3,
+        &scene.pad,
         &scene.goal_ring_material,
-        pad_view,
+        atlas_view,
         PadPart {
             cache: pad_cache,
             role: 10,
@@ -988,6 +1036,7 @@ fn record_dynamic_scene(
     scene: &mut SceneResources,
     pad_cache: &PadCache,
     parts: Array<PreparedDrawsPtr>,
+    atlas_view: &TextureView,
 ) {
     pass.set_camera(scene.camera.ptr());
     pass.set_state(scene.state.ptr());
@@ -1001,8 +1050,8 @@ fn record_dynamic_scene(
     pass.set_state(scene.shadow_state.ptr());
     draw_shadow(
         pass,
-        &scene.shadow_mesh,
         &mut scene.shadow_model,
+        &scene.shadow_mesh,
         &scene.shadow_material,
         &scene.block_model,
     );
@@ -1010,20 +1059,27 @@ fn record_dynamic_scene(
         GAME_SESSION.idle_cube_pose(&mut scene.idle_model);
         draw_shadow(
             pass,
-            &scene.shadow_mesh,
             &mut scene.shadow_model,
+            &scene.shadow_mesh,
             &scene.shadow_material,
             &scene.idle_model,
         );
     }
     pass.set_state(scene.state.ptr());
-    draw_block(pass, &scene.block, &mut scene.block_model, &scene.material);
+    draw_block(
+        pass,
+        &mut scene.block_model,
+        &scene.block,
+        &scene.material,
+        atlas_view,
+    );
     if GAME_SESSION.split_visual() {
         draw_block(
             pass,
-            &scene.block,
             &mut scene.idle_model,
+            &scene.block,
             &scene.idle_material,
+            atlas_view,
         );
     }
     // Opaque geometry and receiver shadows are complete. Inactive
@@ -1059,8 +1115,8 @@ fn record_overlay(
         pass.set_state(scene.screen_state.ptr());
         counted_draw(
             pass,
-            &scene.screen,
             &scene.screen_model,
+            &scene.screen,
             &overlay.tint_material,
             &overlay.offscreen_view,
         );
@@ -1103,8 +1159,6 @@ fn run(limit: u16) {
     let mut camera_level: u16 = 0;
     let mut scene = SceneResources::new(camera);
     let mut pad_cache = PadCache::new();
-    let pad_texture = game_texture();
-    let pad_view = clamped_texture_view(&pad_texture);
     let mut hatch_material = game_material(Rgba8::white(), false);
     let mut overlay = FrameOverlay {
         offscreen_view: offscreen_view,
@@ -1154,7 +1208,6 @@ fn run(limit: u16) {
             commands.reset();
             sync_bridge_group(parts.as_array());
             if pad_cache.generation != GAME_SESSION.generation {
-                drop(carrier_view);
                 drop(carrier_texture);
                 carrier_texture = pad_carrier_texture();
                 carrier_view = clamped_texture_view(&carrier_texture);
@@ -1174,16 +1227,31 @@ fn run(limit: u16) {
             );
             gpu.submit(scene_commands);
             commands.reset();
-            prepare_bridges(parts.as_array(), &mut scene, false);
-            prepare_switches(parts.as_array(), &mut scene, &mut hatch_material);
+            prepare_bridges(
+                parts.as_array(),
+                &mut scene,
+                false,
+                &static_scene.views.atlas,
+            );
+            prepare_switches(
+                parts.as_array(),
+                &mut scene,
+                &mut hatch_material,
+                &static_scene.views.marker,
+            );
             prepare_pads(
                 parts.as_array(),
                 &mut scene,
                 view_of(&mut pad_cache),
-                &pad_view,
+                &static_scene.views.atlas,
                 &carrier_view,
             );
-            prepare_bridges(parts.as_array(), &mut scene, true);
+            prepare_bridges(
+                parts.as_array(),
+                &mut scene,
+                true,
+                &static_scene.views.atlas,
+            );
             {
                 let mut pass = commands.pass(
                     target.ptr(),
@@ -1191,7 +1259,13 @@ fn run(limit: u16) {
                     ColorLoad::load(),
                     DepthLoad::load(),
                 );
-                record_dynamic_scene(&mut pass, &mut scene, &pad_cache, parts.as_array());
+                record_dynamic_scene(
+                    &mut pass,
+                    &mut scene,
+                    &pad_cache,
+                    parts.as_array(),
+                    &static_scene.views.atlas,
+                );
             }
             // The other CB is CPU-owned while the immutable static CB runs.
             // Its Load dependency is checked only after static completion,

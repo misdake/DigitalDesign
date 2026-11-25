@@ -67,7 +67,7 @@ use gpu_api_fault::*;
 mod gpu_target;
 use gpu_target::*;
 
-/// A sealed single-frame target, independent of model/material preparation.
+/// A sealed single-frame target, independent of transform/material preparation.
 #[derive(Copy, Clone)]
 pub struct TargetBinding {
     slot: u16,
@@ -141,8 +141,8 @@ impl PreparedDrawsPtr {
     pub fn invalidate(self) {
         gpu_api_checked(gpu_group_invalidate(self.data()), GpuCheck::Prepared);
     }
-    /// Caller must retire and discard all CBs that reference this part first.
-    /// References are not tracked; generation and recorder-state checks remain.
+    /// Retire and discard ordinary CBs that reference this part first.
+    /// A live command list also prevents recording through this reference.
     pub fn record(self) -> PreparedPart {
         gpu_api_checked(gpu_group_part_begin(self.data()), GpuCheck::Prepared);
         PreparedPart {
@@ -372,6 +372,15 @@ pub struct Gpu {
 pub struct CommandBuffer {
     slot: u16,
 }
+/// An ordered submission table stored directly in CPU-visible SDRAM.
+#[rcc_resource]
+pub struct CommandList {
+    allocation: u16,
+}
+const GPU_LIST_COUNT: u16 = 0;
+const GPU_LIST_USED: u16 = 1;
+const GPU_LIST_SLOTS: u16 = 2;
+const GPU_LIST_SCENE_SLOT: u16 = 3;
 #[rcc_resource(parent=CommandBuffer)]
 pub struct Pass {
     slot: u16,
@@ -417,7 +426,27 @@ impl Gpu {
         resource_disarm(buffer);
         gpu_api_submit(slot);
     }
+    /// Consume and submit the list as an ordered batch.
+    pub fn submit_list(&mut self, list: CommandList) {
+        let allocation = list.allocation;
+        let meta = gpu_api_list_metadata(allocation);
+        let count = meta[GPU_LIST_COUNT];
+        if meta[GPU_LIST_USED] != count {
+            gpu_api_fail(GpuFault::CommandList, meta[GPU_LIST_USED], count);
+        }
+        resource_disarm(list);
+        if !gpu_execute_submit_list(allocation, count) {
+            gpu_api_fail(
+                GpuFault::SubmissionRejected,
+                GPU_EXECUTION.error as u16,
+                count,
+            );
+        }
+    }
     pub fn try_wait(&mut self) -> Option<CommandBuffer> {
+        if GPU_EXECUTION.owner == GPU_LIST_OWNER {
+            return None;
+        }
         let completed = gpu_execute_poll();
         if completed == 65535 {
             gpu_api_fail(
@@ -442,7 +471,7 @@ impl Gpu {
                 GPU_EXECUTION.owner,
             );
         }
-        if GPU_EXECUTION.phase != ExecutionPhase::Running {
+        if GPU_EXECUTION.phase != ExecutionPhase::Running || GPU_EXECUTION.owner == GPU_LIST_OWNER {
             gpu_api_fail(
                 GpuFault::WaitWithoutSubmission,
                 GPU_EXECUTION.phase as u16,
@@ -464,6 +493,20 @@ impl Gpu {
             slot: completed - 1,
         }
     }
+    /// Reclaim a completed list and make any consumed CB slots available again.
+    pub fn try_wait_list(&mut self) -> bool {
+        gpu_api_poll_list()
+    }
+    pub fn wait_list(&mut self) {
+        if GPU_EXECUTION.owner != GPU_LIST_OWNER {
+            gpu_api_fail(
+                GpuFault::WaitWithoutSubmission,
+                GPU_EXECUTION.phase as u16,
+                GPU_EXECUTION.owner,
+            );
+        }
+        while !gpu_api_poll_list() {}
+    }
 }
 fn gpu_api_submit(slot: u16) {
     if !gpu_execute_submit(slot) {
@@ -473,6 +516,168 @@ fn gpu_api_submit(slot: u16) {
             slot,
         );
     }
+}
+fn gpu_api_poll_list() -> bool {
+    if GPU_EXECUTION.owner != GPU_LIST_OWNER {
+        return false;
+    }
+    let completed = gpu_execute_poll();
+    if completed == 65535 {
+        gpu_api_fail(
+            GpuFault::ExecutionFault,
+            GPU_EXECUTION.error as u16,
+            GPU_EXECUTION.owner,
+        );
+    }
+    if completed == 0 {
+        return false;
+    }
+    gpu_api_release_list(GPU_EXECUTION.list_allocation);
+    GPU_EXECUTION.list_allocation = 0;
+    true
+}
+fn gpu_api_release_list(allocation: u16) {
+    let meta = gpu_api_list_metadata(allocation);
+    let slots = meta[GPU_LIST_SLOTS];
+    let mut slot: u16 = 0;
+    while slot < 2 {
+        let mask: u16 = 1 << slot;
+        if slots & mask != 0 {
+            if !gpu_record_reset(slot) {
+                gpu_api_fail(GpuFault::RecorderReset, slot, 0);
+            }
+            GPU_EXECUTION.taken_slots &= 65535 ^ mask;
+        }
+        slot += 1;
+    }
+    let parts = gpu_api_list_parts(allocation);
+    let count = meta[GPU_LIST_USED];
+    let mut index: u16 = 0;
+    while index < count {
+        let owner = parts[index];
+        if owner != 0 {
+            let mut data = gpu_arena_data(owner);
+            data[GPU_PREPARED_LIST_REFS] -= 1;
+        }
+        index += 1;
+    }
+    free(Ptr::from_addr(allocation));
+}
+
+impl CommandList {
+    /// Declare the final segment count so entries can be placed right-aligned
+    /// as they are added. The table can then be submitted without a copy.
+    pub fn new(segment_count: u16) -> Self {
+        if segment_count == 0 || segment_count > GPU_LIST_MAX_SEGMENTS {
+            gpu_api_fail(GpuFault::CommandList, segment_count, GPU_LIST_MAX_SEGMENTS);
+        }
+        let words = GPU_LIST_METADATA_WORDS + 2 * GPU_LIST_TABLE_WORDS - 1 + segment_count;
+        let allocation = try_malloc(words).addr();
+        if allocation == 0 {
+            gpu_api_fail(GpuFault::CommandList, segment_count, 0);
+        }
+        let mut meta = gpu_api_list_metadata(allocation);
+        meta[GPU_LIST_COUNT] = segment_count;
+        meta[GPU_LIST_USED] = 0;
+        meta[GPU_LIST_SLOTS] = 0;
+        meta[GPU_LIST_SCENE_SLOT] = 0;
+        Self { allocation }
+    }
+
+    /// Consume one recorded CB. It must fit in one segment (8 KiB).
+    pub fn push(&mut self, buffer: CommandBuffer) {
+        let slot = buffer.slot;
+        if !gpu_record_seal(slot) {
+            gpu_api_fail(GpuFault::CommandList, slot, 0);
+        }
+        let record = gpu_record_data(slot);
+        let memory = GpuMemory {
+            first_sector: record[GPU_RECORD_COMMAND_BASE],
+            sector_count: record[GPU_RECORD_COMMAND_CAPACITY] >> 6,
+        };
+        gpu_api_list_append(
+            self.allocation,
+            memory,
+            0,
+            record[GPU_RECORD_COMMAND_USED] >> 1,
+            0,
+        );
+        let mut meta = gpu_api_list_metadata(self.allocation);
+        meta[GPU_LIST_SLOTS] |= 1u16 << slot;
+        meta[GPU_LIST_SCENE_SLOT] = if record[GPU_RECORD_TARGET_WORD] != 0
+            && record[GPU_CB_VIEW_WORD] != 0
+            && gpu_bind_scene_current(slot)
+        {
+            slot + 1
+        } else {
+            0
+        };
+        resource_disarm(buffer);
+    }
+
+    /// Append a raw command span. Offsets and lengths count 32-bit commands.
+    /// The caller supplies valid commands, entry state, synchronization and END
+    /// for the final span, and retains all backing data until list retirement.
+    pub unsafe fn push_slice(&mut self, commands: GpuMemory, first: u16, length: u16) {
+        gpu_api_list_append(self.allocation, commands, first, length, 0);
+        let mut meta = gpu_api_list_metadata(self.allocation);
+        meta[GPU_LIST_SCENE_SLOT] = 0;
+    }
+
+    /// Replay whole marked draw groups in `[first, end)` from a finished part.
+    /// A recorded CB establishes Target and View before the range, and a later
+    /// segment ends the batch. The list protects the part until it retires or is dropped.
+    pub fn push_prepared_range(&mut self, part: PreparedDrawsPtr, first: u16, end: u16) {
+        let owner = part.data();
+        let meta = gpu_api_list_metadata(self.allocation);
+        if meta[GPU_LIST_USED] + 1 >= meta[GPU_LIST_COUNT]
+            || !gpu_group_slice_valid(owner, first, end, meta[GPU_LIST_SCENE_SLOT])
+        {
+            gpu_api_fail(GpuFault::CommandList, first, end);
+        }
+        let mut data = gpu_arena_data(owner);
+        let commands = GpuMemory {
+            first_sector: data[GPU_PREPARED_COMMAND],
+            sector_count: data[GPU_PREPARED_COMMAND_CAPACITY] >> 6,
+        };
+        gpu_api_list_append(self.allocation, commands, first, end - first, owner);
+        data[GPU_PREPARED_LIST_REFS] += 1;
+    }
+}
+impl Drop for CommandList {
+    fn drop(&mut self) {
+        gpu_api_release_list(self.allocation);
+    }
+}
+fn gpu_api_list_metadata(allocation: u16) -> Array<u16> {
+    unsafe { Ptr::from_addr(allocation).as_u16_array() }
+}
+fn gpu_api_list_parts(allocation: u16) -> Array<u16> {
+    // CPU-only part references follow the DMA-visible table.
+    let address = gpu_list_table_address(allocation) + GPU_LIST_TABLE_WORDS;
+    unsafe { Ptr::from_addr(address).as_u16_array() }
+}
+fn gpu_api_list_append(allocation: u16, commands: GpuMemory, first: u16, length: u16, owner: u16) {
+    let mut meta = gpu_api_list_metadata(allocation);
+    let count = meta[GPU_LIST_COUNT];
+    let used = meta[GPU_LIST_USED];
+    let first_sector = first >> 5;
+    let first_slot = first & 31;
+    if used >= count || length == 0 || length > 2048 || first_sector >= commands.sector_count {
+        gpu_api_fail(GpuFault::CommandList, first, length);
+    }
+    let last = first_slot + length - 1;
+    let sectors_minus_one = last >> 5;
+    if sectors_minus_one >= 64 || sectors_minus_one >= commands.sector_count - first_sector {
+        gpu_api_fail(GpuFault::CommandList, first, length);
+    }
+    let mut table = unsafe { Ptr::from_addr(gpu_list_table_address(allocation)).as_u16_array() };
+    let index = (GPU_LIST_MAX_SEGMENTS - count + used) << 1;
+    table[index] = commands.first_sector + first_sector;
+    table[index + 1] = first_slot | ((last & 31) << 5) | (sectors_minus_one << 10);
+    let mut parts = gpu_api_list_parts(allocation);
+    parts[used] = owner;
+    meta[GPU_LIST_USED] = used + 1;
 }
 impl Drop for Gpu {
     // No implicit wait, context reset or reclamation of a driver-owned CB.
@@ -503,6 +708,25 @@ impl ColorBuffer {
             slot: gpu_api_new_surface(memory, GpuObjectKind::Color),
         }
     }
+
+    pub fn texture_view(&self) -> TextureView {
+        let source = gpu_arena_data(self.slot);
+        let memory = unsafe { GpuMemory::from_sectors(source[0u16], source[1u16]) };
+        let view = TextureView {
+            words: Buf::new([0; 6]),
+        };
+        gpu_api_checked(gpu_scene_color_view(view.data(), memory), GpuCheck::View);
+        view
+    }
+
+    pub fn ptr(&self) -> ColorBufferPtr {
+        ColorBufferPtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
 }
 impl DepthBuffer {
     pub fn from_surface(surface: DepthSurface) -> Self {
@@ -512,6 +736,15 @@ impl DepthBuffer {
         DepthBuffer {
             slot: gpu_api_new_surface(memory, GpuObjectKind::Depth),
         }
+    }
+
+    pub fn ptr(&self) -> DepthBufferPtr {
+        DepthBufferPtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn release(self) {
+        drop(self);
     }
 }
 impl Drop for ColorBuffer {
@@ -573,6 +806,17 @@ impl Mesh {
     pub fn meshlet_count(&self) -> u16 {
         let ptr = self.ptr();
         ptr.meshlet_count()
+    }
+
+    pub fn ptr(&self) -> MeshPtr {
+        MeshPtr {
+            handle: gpu_arena_handle(self.slot),
+            first: 0,
+            count: gpu_arena_data(self.slot)[GPU_MESH_COUNT],
+        }
+    }
+    pub fn release(self) {
+        drop(self);
     }
 }
 impl Drop for Mesh {
@@ -730,6 +974,43 @@ impl CommandBuffer {
     pub fn push_words(&self) -> u16 {
         gpu_record_data(self.slot)[GPU_RECORD_PUSH_USED]
     }
+
+    /// Reserve the bank prefix in an empty CB before opening its Pass.
+    pub fn prepare_unlit(
+        &mut self,
+        bank: &mut UnlitBank,
+        camera: CameraPtr,
+        transform: TransformPtr,
+    ) {
+        gpu_api_checked(
+            gpu_unlit_prepare(
+                self.slot,
+                unsafe { Ptr::from_addr(bank.data).as_u16_array() },
+                camera.data(),
+                transform.data(),
+            ),
+            GpuCheck::Mesh,
+        );
+    }
+    /// Update View and Target for a completed bank-only recording.
+    pub fn patch_unlit(
+        &mut self,
+        bank: &UnlitBank,
+        camera: CameraPtr,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
+    ) {
+        gpu_api_checked(
+            gpu_unlit_patch(
+                self.slot,
+                unsafe { Ptr::from_addr(bank.data).as_u16_array() },
+                camera.data(),
+                color.data(),
+                depth.data(),
+            ),
+            GpuCheck::TargetBinding,
+        );
+    }
 }
 impl Drop for CommandBuffer {
     fn drop(&mut self) {
@@ -755,6 +1036,96 @@ impl Pass {
         if !gpu_packet_invalidate_textures(self.slot) {
             gpu_api_fail(GpuFault::PassPhase, self.slot, 0);
         }
+    }
+
+    pub fn set_camera(&mut self, camera: CameraPtr) {
+        gpu_api_set_camera(self.slot, camera);
+    }
+    pub fn set_state(&mut self, state: RenderStatePtr) {
+        gpu_api_set_state(self.slot, state);
+    }
+    pub fn draw(
+        &mut self,
+        transform: TransformPtr,
+        mesh: MeshPtr,
+        material: MaterialPtr,
+        view: &TextureView,
+    ) {
+        gpu_api_draw_textured(self.slot, transform, mesh, material, view);
+    }
+    pub fn draw_colored(&mut self, transform: TransformPtr, mesh: MeshPtr, material: MaterialPtr) {
+        gpu_api_draw_colored(self.slot, transform, mesh, material);
+    }
+    /// Draw unlit native Billboard meshlets with offsets in units of 1/512.
+    pub fn draw_billboard(
+        &mut self,
+        transform: TransformPtr,
+        mesh: MeshPtr,
+        material: MaterialPtr,
+        view: &TextureView,
+        facing: BillboardFacing,
+    ) {
+        gpu_api_draw(
+            self.slot,
+            gpu_arena_resolve(transform.handle, GpuObjectKind::Transform),
+            mesh,
+            gpu_arena_resolve(material.handle, GpuObjectKind::Material),
+            view.words.as_ptr(),
+            facing as u16 + 1,
+        );
+    }
+    pub fn draw_ui(&mut self, grid: UiGridPtr, clip: CellRect) {
+        gpu_unlit_end(self.slot);
+        gpu_api_checked(
+            gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0,
+            GpuCheck::Prepared,
+        );
+        if clip.width == 0 || clip.height == 0 {
+            return;
+        }
+        let data = grid.data();
+        let facts: Buf<u16, 8> = Buf::new([
+            data[GPU_UI_GRID_BASE],
+            data[GPU_UI_GRID_COUNT],
+            ResourceFactKind::Grid as u16,
+            GPU_FACT_READ,
+            data[GPU_UI_GRID_ATLAS_BASE],
+            data[GPU_UI_GRID_ATLAS_COUNT],
+            ResourceFactKind::Atlas as u16,
+            GPU_FACT_READ,
+        ]);
+        let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
+        gpu_api_checked(
+            gpu_record_resource_room(self.slot, facts.as_array(), 2, fact_plan.as_array()),
+            GpuCheck::UiGrid,
+        );
+        let native = unsafe {
+            gpu_native_scratch()
+                .as_ptr()
+                .add(GPU_SCRATCH_UI as i16)
+                .as_u16_array()
+        };
+        gpu_api_checked(gpu_ui_descriptor_prepare(data, native), GpuCheck::UiGrid);
+        gpu_api_checked(
+            gpu_ui_packet_draw(self.slot, native, clip.x, clip.y, clip.width, clip.height),
+            GpuCheck::UiGrid,
+        );
+        gpu_record_resource_commit(self.slot, facts.as_array(), 2, fact_plan.as_array());
+    }
+
+    /// Draw a meshlet range with the prepared Transform and View and a fixed binding.
+    /// Ordinary draw, prepared part, UI or copy commands end the bank phase.
+    pub fn draw_unlit(&mut self, bank: &UnlitBank, binding: u16, first: u16, count: u16) {
+        gpu_api_checked(
+            gpu_unlit_draw(
+                self.slot,
+                unsafe { Ptr::from_addr(bank.data).as_u16_array() },
+                binding,
+                first,
+                count,
+            ),
+            GpuCheck::Mesh,
+        );
     }
 }
 impl Drop for Pass {
@@ -829,7 +1200,7 @@ use gpu_ui_packet::*;
 #[derive(Copy, Clone)]
 enum GpuCheck {
     Camera = 1,
-    Model = 2,
+    Transform = 2,
     Material = 3,
     State = 4,
     Mesh = 5,
@@ -887,6 +1258,52 @@ impl Camera {
         gpu_api_checked(gpu_camera_revision(gpu_arena_data(slot)), GpuCheck::Camera);
         Camera { slot: slot }
     }
+
+    pub fn look_at(eye: Vec3, target: Vec3, up: Vec3, projection: Projection) -> Self {
+        let slot = gpu_api_object(true, GpuObjectKind::Camera);
+        gpu_api_checked(
+            gpu_scene_camera_init_look_at(gpu_arena_data(slot), eye, target, up, projection),
+            GpuCheck::Camera,
+        );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(slot)), GpuCheck::Camera);
+        Camera { slot: slot }
+    }
+    pub fn view(&self) -> Mat3x4 {
+        gpu_api_camera_view(gpu_arena_data(self.slot))
+    }
+
+    pub fn set_pose(&mut self, eye: Vec3, angles: Vec3) {
+        gpu_api_camera_set_pose(gpu_arena_data(self.slot), eye, angles)
+    }
+
+    pub fn set_projection(&mut self, projection: Projection) {
+        gpu_api_camera_set_projection(gpu_arena_data(self.slot), projection)
+    }
+
+    pub fn set_look_at(&mut self, eye: Vec3, target: Vec3, up: Vec3) {
+        gpu_api_camera_set_look_at(gpu_arena_data(self.slot), eye, target, up)
+    }
+
+    pub fn set_look_at_y_up(&mut self, eye: Vec3, target: Vec3) {
+        gpu_api_camera_set_look_at_y_up(gpu_arena_data(self.slot), eye, target)
+    }
+
+    pub fn set_look_to(&mut self, eye: Vec3, direction: Vec3, up: Vec3) {
+        gpu_api_camera_set_look_to(gpu_arena_data(self.slot), eye, direction, up)
+    }
+
+    pub fn set_view(&mut self, view: Mat3x4) {
+        gpu_api_camera_set_view(gpu_arena_data(self.slot), view)
+    }
+
+    pub fn ptr(&self) -> CameraPtr {
+        CameraPtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
 }
 impl Drop for Camera {
     fn drop(&mut self) {
@@ -901,39 +1318,69 @@ impl Drop for Camera {
 }
 
 #[rcc_resource]
-pub struct Model {
+pub struct Transform {
     slot: u16,
 }
-impl Model {
-    pub fn new(transform: Transform) -> Self {
-        let slot = gpu_api_object(true, GpuObjectKind::Model);
+impl Transform {
+    pub fn new(pose: Pose) -> Self {
+        let slot = gpu_api_object(true, GpuObjectKind::Transform);
         gpu_api_checked(
-            gpu_scene_model_init(gpu_arena_data(slot), transform),
-            GpuCheck::Model,
+            gpu_scene_model_init(gpu_arena_data(slot), pose),
+            GpuCheck::Transform,
         );
-        gpu_api_checked(gpu_model_revision(gpu_arena_data(slot)), GpuCheck::Model);
-        Model { slot: slot }
+        gpu_api_checked(
+            gpu_model_revision(gpu_arena_data(slot)),
+            GpuCheck::Transform,
+        );
+        Transform { slot: slot }
     }
     pub fn from_matrices(mut world: Mat3x4, mut normal: Mat3x3) -> Self {
-        let slot = gpu_api_object(true, GpuObjectKind::Model);
+        let slot = gpu_api_object(true, GpuObjectKind::Transform);
         gpu_api_checked(
             gpu_scene_model_matrices(
                 gpu_arena_data(slot),
                 view_of(&mut world),
                 view_of(&mut normal),
             ),
-            GpuCheck::Model,
+            GpuCheck::Transform,
         );
-        gpu_api_checked(gpu_model_revision(gpu_arena_data(slot)), GpuCheck::Model);
-        Model { slot: slot }
+        gpu_api_checked(
+            gpu_model_revision(gpu_arena_data(slot)),
+            GpuCheck::Transform,
+        );
+        Transform { slot: slot }
+    }
+
+    pub fn world(&self) -> Mat3x4 {
+        gpu_api_model_world(gpu_arena_data(self.slot))
+    }
+    pub fn normal(&self) -> Mat3x3 {
+        gpu_api_model_normal(gpu_arena_data(self.slot))
+    }
+
+    pub fn set_pose(&mut self, pose: Pose) {
+        gpu_api_model_set_pose(gpu_arena_data(self.slot), pose)
+    }
+
+    pub fn set_matrices(&mut self, world: Mat3x4, normal: Mat3x3) {
+        gpu_api_model_set_matrices(gpu_arena_data(self.slot), world, normal)
+    }
+
+    pub fn ptr(&self) -> TransformPtr {
+        TransformPtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn release(self) {
+        drop(self);
     }
 }
-impl Drop for Model {
+impl Drop for Transform {
     fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, true, GpuObjectKind::Model) {
+        if !gpu_arena_free(self.slot, true, GpuObjectKind::Transform) {
             gpu_api_fail(
                 GpuFault::ObjectRelease,
-                GpuObjectKind::Model as u16,
+                GpuObjectKind::Transform as u16,
                 self.slot,
             );
         }
@@ -952,6 +1399,31 @@ impl Material {
             GpuCheck::Material,
         );
         Material { slot: slot }
+    }
+
+    pub fn set_uniform_color(&mut self, color: Rgba8) {
+        gpu_api_material_set_uniform_color(gpu_arena_data(self.slot), color)
+    }
+
+    pub fn set_specular(&mut self, color: Rgb8, shininess: Shininess) {
+        gpu_api_material_set_specular(gpu_arena_data(self.slot), color, shininess)
+    }
+
+    pub fn set_response(&mut self, ambient: fix32, directional: fix32) {
+        gpu_api_material_set_response(gpu_arena_data(self.slot), ambient, directional)
+    }
+
+    pub fn set_unlit(&mut self, unlit: bool) {
+        gpu_api_material_set_unlit(gpu_arena_data(self.slot), unlit)
+    }
+
+    pub fn ptr(&self) -> MaterialPtr {
+        MaterialPtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn release(self) {
+        drop(self);
     }
 }
 impl Drop for Material {
@@ -979,6 +1451,31 @@ impl RenderState {
         );
         RenderState { slot: slot }
     }
+
+    pub fn set_depth(&mut self, func: DepthFunc, write: bool) {
+        gpu_api_render_state_set_depth(gpu_arena_data(self.slot), func, write)
+    }
+
+    pub fn set_blend(&mut self, mode: BlendMode) {
+        gpu_api_render_state_set_blend(gpu_arena_data(self.slot), mode)
+    }
+
+    pub fn set_filter(&mut self, filter: TextureFilter) {
+        gpu_api_render_state_set_filter(gpu_arena_data(self.slot), filter)
+    }
+
+    pub fn set_lighting(&mut self, light: Lighting) {
+        gpu_api_render_state_set_lighting(gpu_arena_data(self.slot), light)
+    }
+
+    pub fn ptr(&self) -> RenderStatePtr {
+        RenderStatePtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
 }
 impl Drop for RenderState {
     fn drop(&mut self) {
@@ -1004,6 +1501,23 @@ impl Texture {
             GpuCheck::Texture,
         );
         Texture { slot: slot }
+    }
+
+    pub fn view(&self) -> TextureView {
+        let view = TextureView {
+            words: Buf::new([0; 6]),
+        };
+        gpu_scene_texture_view(view.data(), gpu_arena_data(self.slot));
+        view
+    }
+
+    pub fn ptr(&self) -> TexturePtr {
+        TexturePtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn release(self) {
+        drop(self);
     }
 }
 impl Drop for Texture {
@@ -1054,6 +1568,15 @@ impl UiAtlas {
         );
         UiAtlas { slot: slot }
     }
+
+    pub fn ptr(&self) -> UiAtlasPtr {
+        UiAtlasPtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
 }
 impl Drop for UiAtlas {
     fn drop(&mut self) {
@@ -1087,198 +1610,11 @@ impl UiGrid {
         );
         UiGrid { slot: slot }
     }
-}
-impl Drop for UiGrid {
-    fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GpuObjectKind::UiGrid) {
-            gpu_api_fail(
-                GpuFault::ObjectRelease,
-                GpuObjectKind::UiGrid as u16,
-                self.slot,
-            );
-        }
-    }
-}
 
-#[rcc_resource]
-pub struct TextureView {
-    slot: u16,
-}
-impl Drop for TextureView {
-    fn drop(&mut self) {
-        if !gpu_arena_free(self.slot, false, GpuObjectKind::View) {
-            gpu_api_fail(
-                GpuFault::ObjectRelease,
-                GpuObjectKind::View as u16,
-                self.slot,
-            );
-        }
-    }
-}
-impl TextureView {
-    pub fn set_address_mode(&mut self, mode: TextureAddressMode) {
-        let ptr = self.ptr();
-        ptr.set_address_mode(mode)
-    }
-}
-impl Texture {
-    pub fn view(&self) -> TextureView {
-        let slot = gpu_api_object(false, GpuObjectKind::View);
-        gpu_api_checked(
-            gpu_scene_texture_view(gpu_arena_data(slot), gpu_arena_data(self.slot)),
-            GpuCheck::View,
-        );
-        TextureView { slot: slot }
-    }
-}
-impl ColorBuffer {
-    pub fn texture_view(&self) -> TextureView {
-        let source = gpu_arena_data(self.slot);
-        let memory = unsafe { GpuMemory::from_sectors(source[0u16], source[1u16]) };
-        let slot = gpu_api_object(false, GpuObjectKind::View);
-        gpu_api_checked(
-            gpu_scene_color_view(gpu_arena_data(slot), memory),
-            GpuCheck::View,
-        );
-        TextureView { slot: slot }
-    }
-}
-impl TextureView {
-    pub fn width(&self) -> u16 {
-        let ptr = self.ptr();
-        ptr.width()
-    }
-    pub fn height(&self) -> u16 {
-        let ptr = self.ptr();
-        ptr.height()
-    }
-}
-impl Camera {
-    pub fn look_at(eye: Vec3, target: Vec3, up: Vec3, projection: Projection) -> Self {
-        let slot = gpu_api_object(true, GpuObjectKind::Camera);
-        gpu_api_checked(
-            gpu_scene_camera_init_look_at(gpu_arena_data(slot), eye, target, up, projection),
-            GpuCheck::Camera,
-        );
-        gpu_api_checked(gpu_camera_revision(gpu_arena_data(slot)), GpuCheck::Camera);
-        Camera { slot: slot }
-    }
-    pub fn view(&self) -> Mat3x4 {
-        gpu_api_camera_view(gpu_arena_data(self.slot))
-    }
-}
-impl Model {
-    pub fn world(&self) -> Mat3x4 {
-        gpu_api_model_world(gpu_arena_data(self.slot))
-    }
-    pub fn normal(&self) -> Mat3x3 {
-        gpu_api_model_normal(gpu_arena_data(self.slot))
-    }
-}
-
-impl Camera {
-    pub fn set_pose(&mut self, eye: Vec3, angles: Vec3) {
-        gpu_api_camera_set_pose(gpu_arena_data(self.slot), eye, angles)
-    }
-}
-
-impl Camera {
-    pub fn set_projection(&mut self, projection: Projection) {
-        gpu_api_camera_set_projection(gpu_arena_data(self.slot), projection)
-    }
-}
-
-impl Camera {
-    pub fn set_look_at(&mut self, eye: Vec3, target: Vec3, up: Vec3) {
-        gpu_api_camera_set_look_at(gpu_arena_data(self.slot), eye, target, up)
-    }
-}
-
-impl Camera {
-    pub fn set_look_at_y_up(&mut self, eye: Vec3, target: Vec3) {
-        gpu_api_camera_set_look_at_y_up(gpu_arena_data(self.slot), eye, target)
-    }
-}
-
-impl Camera {
-    pub fn set_look_to(&mut self, eye: Vec3, direction: Vec3, up: Vec3) {
-        gpu_api_camera_set_look_to(gpu_arena_data(self.slot), eye, direction, up)
-    }
-}
-
-impl Camera {
-    pub fn set_view(&mut self, view: Mat3x4) {
-        gpu_api_camera_set_view(gpu_arena_data(self.slot), view)
-    }
-}
-
-impl Model {
-    pub fn set_pose(&mut self, transform: Transform) {
-        gpu_api_model_set_pose(gpu_arena_data(self.slot), transform)
-    }
-}
-
-impl Model {
-    pub fn set_matrices(&mut self, world: Mat3x4, normal: Mat3x3) {
-        gpu_api_model_set_matrices(gpu_arena_data(self.slot), world, normal)
-    }
-}
-
-impl Material {
-    pub fn set_uniform_color(&mut self, color: Rgba8) {
-        gpu_api_material_set_uniform_color(gpu_arena_data(self.slot), color)
-    }
-}
-
-impl Material {
-    pub fn set_specular(&mut self, color: Rgb8, shininess: Shininess) {
-        gpu_api_material_set_specular(gpu_arena_data(self.slot), color, shininess)
-    }
-}
-
-impl Material {
-    pub fn set_response(&mut self, ambient: fix32, directional: fix32) {
-        gpu_api_material_set_response(gpu_arena_data(self.slot), ambient, directional)
-    }
-}
-
-impl Material {
-    pub fn set_unlit(&mut self, unlit: bool) {
-        gpu_api_material_set_unlit(gpu_arena_data(self.slot), unlit)
-    }
-}
-
-impl RenderState {
-    pub fn set_depth(&mut self, func: DepthFunc, write: bool) {
-        gpu_api_render_state_set_depth(gpu_arena_data(self.slot), func, write)
-    }
-}
-
-impl RenderState {
-    pub fn set_blend(&mut self, mode: BlendMode) {
-        gpu_api_render_state_set_blend(gpu_arena_data(self.slot), mode)
-    }
-}
-
-impl RenderState {
-    pub fn set_filter(&mut self, filter: TextureFilter) {
-        gpu_api_render_state_set_filter(gpu_arena_data(self.slot), filter)
-    }
-}
-
-impl RenderState {
-    pub fn set_lighting(&mut self, light: Lighting) {
-        gpu_api_render_state_set_lighting(gpu_arena_data(self.slot), light)
-    }
-}
-
-impl UiGrid {
     pub fn fill(&mut self, glyph: u8) {
         gpu_api_ui_fill(gpu_arena_data(self.slot), glyph)
     }
-}
 
-impl UiGrid {
     /// Write one row without repeating its length in a CellRect.
     pub fn write_text(&mut self, x: u16, y: u16, glyphs: &[u8]) {
         self.write(
@@ -1297,6 +1633,49 @@ impl UiGrid {
     }
     pub fn write(&mut self, rect: CellRect, glyphs: &[u8]) {
         gpu_api_ui_write(gpu_arena_data(self.slot), rect, glyphs)
+    }
+
+    pub fn ptr(&self) -> UiGridPtr {
+        UiGridPtr {
+            handle: gpu_arena_handle(self.slot),
+        }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+impl Drop for UiGrid {
+    fn drop(&mut self) {
+        if !gpu_arena_free(self.slot, false, GpuObjectKind::UiGrid) {
+            gpu_api_fail(
+                GpuFault::ObjectRelease,
+                GpuObjectKind::UiGrid as u16,
+                self.slot,
+            );
+        }
+    }
+}
+
+/// A texture sampling description borrowed only during recording.
+pub struct TextureView {
+    words: Buf<u16, 6>,
+}
+impl TextureView {
+    fn data(&self) -> Array<u16> {
+        self.words.as_array()
+    }
+
+    pub fn set_address_mode(&mut self, mode: TextureAddressMode) {
+        let mut data = self.data();
+        gpu_api_checked(data[GPU_VIEW_FLAGS] & 2 == 0, GpuCheck::View);
+        data[GPU_VIEW_FLAGS] = (data[GPU_VIEW_FLAGS] & 7) | ((mode as u16) << 3);
+    }
+
+    pub fn width(&self) -> u16 {
+        gpu_scene_view_width(self.data())
+    }
+    pub fn height(&self) -> u16 {
+        gpu_scene_view_height(self.data())
     }
 }
 
@@ -1317,27 +1696,27 @@ pub enum BillboardFacing {
 
 fn gpu_api_draw_textured(
     slot: u16,
+    transform: TransformPtr,
     mesh: MeshPtr,
-    model: ModelPtr,
     material: MaterialPtr,
-    view: TextureViewPtr,
+    view: &TextureView,
 ) {
     gpu_api_draw(
         slot,
+        gpu_arena_resolve(transform.handle, GpuObjectKind::Transform),
         mesh,
-        gpu_arena_resolve(model.handle, GpuObjectKind::Model),
         gpu_arena_resolve(material.handle, GpuObjectKind::Material),
-        gpu_arena_resolve(view.handle, GpuObjectKind::View),
+        view.words.as_ptr(),
         0,
     );
 }
-fn gpu_api_draw_colored(slot: u16, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
+fn gpu_api_draw_colored(slot: u16, transform: TransformPtr, mesh: MeshPtr, material: MaterialPtr) {
     gpu_api_draw(
         slot,
+        gpu_arena_resolve(transform.handle, GpuObjectKind::Transform),
         mesh,
-        gpu_arena_resolve(model.handle, GpuObjectKind::Model),
         gpu_arena_resolve(material.handle, GpuObjectKind::Material),
-        0,
+        Ptr::from_addr(0),
         0,
     );
 }
@@ -1348,6 +1727,23 @@ impl Drop for PreparedPart {
     }
 }
 impl PreparedPart {
+    /// Mark a range endpoint and return its unpadded instruction offset.
+    /// A draw that follows the mark establishes its own World and material.
+    pub fn mark_slice(&mut self) -> u16 {
+        let mut record = gpu_record_data(self.slot);
+        let first = record[GPU_RECORD_COMMAND_USED] >> 1;
+        gpu_api_checked(
+            gpu_group_mark_slice(record[GPU_GROUP_RECORDING], first),
+            GpuCheck::Prepared,
+        );
+        #[cfg(gpu_debug)]
+        {
+            record[GPU_GROUP_SLICE_START] = first;
+        }
+        record[GPU_RECORD_VALID] &= 65535 ^ (2 | 4 | GPU_BIND_RESPONSE_VALID);
+        first
+    }
+
     /// Publish this part for use in later passes.
     pub fn finish(self) {
         gpu_api_checked(gpu_group_end(self.slot), GpuCheck::Prepared);
@@ -1358,116 +1754,40 @@ impl PreparedPart {
     }
     pub fn draw(
         &mut self,
+        transform: TransformPtr,
         mesh: MeshPtr,
-        model: ModelPtr,
         material: MaterialPtr,
-        view: TextureViewPtr,
+        view: &TextureView,
     ) {
-        gpu_api_draw_textured(self.slot, mesh, model, material, view);
+        gpu_api_draw_textured(self.slot, transform, mesh, material, view);
     }
-    pub fn draw_colored(&mut self, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
-        gpu_api_draw_colored(self.slot, mesh, model, material);
+    pub fn draw_colored(&mut self, transform: TransformPtr, mesh: MeshPtr, material: MaterialPtr) {
+        gpu_api_draw_colored(self.slot, transform, mesh, material);
     }
     pub fn draw_billboard(
         &mut self,
+        transform: TransformPtr,
         mesh: MeshPtr,
-        model: ModelPtr,
         material: MaterialPtr,
-        view: TextureViewPtr,
+        view: &TextureView,
         facing: BillboardFacing,
     ) {
         gpu_api_draw(
             self.slot,
+            gpu_arena_resolve(transform.handle, GpuObjectKind::Transform),
             mesh,
-            gpu_arena_resolve(model.handle, GpuObjectKind::Model),
             gpu_arena_resolve(material.handle, GpuObjectKind::Material),
-            gpu_arena_resolve(view.handle, GpuObjectKind::View),
+            view.words.as_ptr(),
             facing as u16 + 1,
         );
-    }
-}
-impl Pass {
-    pub fn set_camera(&mut self, camera: CameraPtr) {
-        gpu_api_set_camera(self.slot, camera);
-    }
-    pub fn set_state(&mut self, state: RenderStatePtr) {
-        gpu_api_set_state(self.slot, state);
-    }
-    pub fn draw(
-        &mut self,
-        mesh: MeshPtr,
-        model: ModelPtr,
-        material: MaterialPtr,
-        view: TextureViewPtr,
-    ) {
-        gpu_api_draw_textured(self.slot, mesh, model, material, view);
-    }
-    pub fn draw_colored(&mut self, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
-        gpu_api_draw_colored(self.slot, mesh, model, material);
-    }
-    /// Draw unlit native Billboard meshlets with offsets in units of 1/512.
-    pub fn draw_billboard(
-        &mut self,
-        mesh: MeshPtr,
-        model: ModelPtr,
-        material: MaterialPtr,
-        view: TextureViewPtr,
-        facing: BillboardFacing,
-    ) {
-        gpu_api_draw(
-            self.slot,
-            mesh,
-            gpu_arena_resolve(model.handle, GpuObjectKind::Model),
-            gpu_arena_resolve(material.handle, GpuObjectKind::Material),
-            gpu_arena_resolve(view.handle, GpuObjectKind::View),
-            facing as u16 + 1,
-        );
-    }
-    pub fn draw_ui(&mut self, grid: UiGridPtr, clip: CellRect) {
-        gpu_unlit_end(self.slot);
-        gpu_api_checked(
-            gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0,
-            GpuCheck::Prepared,
-        );
-        if clip.width == 0 || clip.height == 0 {
-            return;
-        }
-        let data = grid.data();
-        let facts: Buf<u16, 8> = Buf::new([
-            data[GPU_UI_GRID_BASE],
-            data[GPU_UI_GRID_COUNT],
-            ResourceFactKind::Grid as u16,
-            GPU_FACT_READ,
-            data[GPU_UI_GRID_ATLAS_BASE],
-            data[GPU_UI_GRID_ATLAS_COUNT],
-            ResourceFactKind::Atlas as u16,
-            GPU_FACT_READ,
-        ]);
-        let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
-        gpu_api_checked(
-            gpu_record_resource_room(self.slot, facts.as_array(), 2, fact_plan.as_array()),
-            GpuCheck::UiGrid,
-        );
-        let native = unsafe {
-            gpu_native_scratch()
-                .as_ptr()
-                .add(GPU_SCRATCH_UI as i16)
-                .as_u16_array()
-        };
-        gpu_api_checked(gpu_ui_descriptor_prepare(data, native), GpuCheck::UiGrid);
-        gpu_api_checked(
-            gpu_ui_packet_draw(self.slot, native, clip.x, clip.y, clip.width, clip.height),
-            GpuCheck::UiGrid,
-        );
-        gpu_record_resource_commit(self.slot, facts.as_array(), 2, fact_plan.as_array());
     }
 }
 fn gpu_api_draw(
     slot: u16,
+    transform_slot: u16,
     mesh_ptr: MeshPtr,
-    model_slot: u16,
     material_slot: u16,
-    view_slot: u16,
+    view_address: Ptr,
     billboard: u16,
 ) {
     gpu_unlit_end(slot);
@@ -1477,7 +1797,7 @@ fn gpu_api_draw(
             && mesh_ptr.count <= mesh[GPU_MESH_COUNT] - mesh_ptr.first,
         GpuCheck::Mesh,
     );
-    let textured = view_slot != 0;
+    let textured = view_address.addr() != 0;
     if mesh_ptr.count == 0 {
         return;
     }
@@ -1503,7 +1823,7 @@ fn gpu_api_draw(
     let native = gpu_native_scratch();
     let mut view = native;
     if textured {
-        view = gpu_arena_data(view_slot);
+        view = unsafe { view_address.as_u16_array() };
         facts[4u16] = view[GPU_VIEW_BASE];
         facts[5u16] = view[GPU_VIEW_COUNT];
         facts[6u16] = ResourceFactKind::Texture as u16;
@@ -1524,7 +1844,7 @@ fn gpu_api_draw(
     #[cfg(gpu_debug)]
     {
         if part {
-            gpu_group_note_responses(slot, material);
+            gpu_api_checked(gpu_group_note_responses(slot, material), GpuCheck::Prepared);
         } else {
             gpu_api_checked(
                 gpu_scene_responses_valid(
@@ -1540,7 +1860,7 @@ fn gpu_api_draw(
         gpu_scene_material_prepare(state, material, view, textured, native),
         GpuCheck::Mesh,
     );
-    let model = gpu_arena_data(model_slot);
+    let transform = gpu_arena_data(transform_slot);
     let mut native = native;
     native[GPU_SCRATCH_BILLBOARD] = (billboard != 0) as u16;
     native[GPU_SCRATCH_WORLD_MODE] = 1;
@@ -1555,7 +1875,14 @@ fn gpu_api_draw(
         gpu_api_checked(material[GPU_MATERIAL_FLAGS] & 1 != 0, GpuCheck::Mesh);
     }
     gpu_api_checked(
-        gpu_mesh_draw_range(slot, mesh, model, native, mesh_ptr.first, mesh_ptr.count),
+        gpu_mesh_draw_range(
+            slot,
+            mesh,
+            transform,
+            native,
+            mesh_ptr.first,
+            mesh_ptr.count,
+        ),
         GpuCheck::Mesh,
     );
 
@@ -1576,16 +1903,6 @@ impl Shininess {
 #[derive(Copy, Clone)]
 pub struct CameraPtr {
     handle: GpuObjectHandle,
-}
-impl Camera {
-    pub fn ptr(&self) -> CameraPtr {
-        CameraPtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
 }
 
 impl CameraPtr {
@@ -1673,45 +1990,15 @@ fn gpu_api_camera_set_view(data: Array<u16>, mut view: Mat3x4) {
 pub struct ColorBufferPtr {
     handle: GpuObjectHandle,
 }
-impl ColorBuffer {
-    pub fn ptr(&self) -> ColorBufferPtr {
-        ColorBufferPtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
-}
 
 #[derive(Copy, Clone)]
 pub struct DepthBufferPtr {
     handle: GpuObjectHandle,
 }
-impl DepthBuffer {
-    pub fn ptr(&self) -> DepthBufferPtr {
-        DepthBufferPtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
-}
 
 #[derive(Copy, Clone)]
 pub struct MaterialPtr {
     handle: GpuObjectHandle,
-}
-impl Material {
-    pub fn ptr(&self) -> MaterialPtr {
-        MaterialPtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
 }
 
 impl MaterialPtr {
@@ -1760,18 +2047,6 @@ pub struct MeshPtr {
     first: u16,
     count: u16,
 }
-impl Mesh {
-    pub fn ptr(&self) -> MeshPtr {
-        MeshPtr {
-            handle: gpu_arena_handle(self.slot),
-            first: 0,
-            count: gpu_arena_data(self.slot)[GPU_MESH_COUNT],
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
-}
 
 impl MeshPtr {
     /// Select meshlets without allocating or copying a directory. Retains the
@@ -1801,23 +2076,13 @@ impl MeshPtr {
 }
 
 #[derive(Copy, Clone)]
-pub struct ModelPtr {
+pub struct TransformPtr {
     handle: GpuObjectHandle,
 }
-impl Model {
-    pub fn ptr(&self) -> ModelPtr {
-        ModelPtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
-}
 
-impl ModelPtr {
+impl TransformPtr {
     fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::Model))
+        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::Transform))
     }
     pub fn world(self) -> Mat3x4 {
         gpu_api_model_world(self.data())
@@ -1825,8 +2090,8 @@ impl ModelPtr {
     pub fn normal(self) -> Mat3x3 {
         gpu_api_model_normal(self.data())
     }
-    pub fn set_pose(self, transform: Transform) {
-        gpu_api_model_set_pose(self.data(), transform)
+    pub fn set_pose(self, pose: Pose) {
+        gpu_api_model_set_pose(self.data(), pose)
     }
     pub fn set_matrices(self, world: Mat3x4, normal: Mat3x3) {
         gpu_api_model_set_matrices(self.data(), world, normal)
@@ -1841,9 +2106,9 @@ fn gpu_api_model_normal(data: Array<u16>) -> Mat3x3 {
     gpu_scene_model_normal(data)
 }
 
-fn gpu_api_model_set_pose(mut data: Array<u16>, transform: Transform) {
-    gpu_api_checked(gpu_scene_model_init(data, transform), GpuCheck::Model);
-    gpu_api_checked(gpu_model_revision(data), GpuCheck::Model);
+fn gpu_api_model_set_pose(mut data: Array<u16>, pose: Pose) {
+    gpu_api_checked(gpu_scene_model_init(data, pose), GpuCheck::Transform);
+    gpu_api_checked(gpu_model_revision(data), GpuCheck::Transform);
 }
 
 fn gpu_api_model_set_matrices(mut data: Array<u16>, mut world: Mat3x4, mut normal: Mat3x3) {
@@ -1856,24 +2121,14 @@ fn gpu_api_model_set_matrices(mut data: Array<u16>, mut world: Mat3x4, mut norma
     }
     gpu_api_checked(
         gpu_scene_model_matrices(data, view_of(&mut world), view_of(&mut normal)),
-        GpuCheck::Model,
+        GpuCheck::Transform,
     );
-    gpu_api_checked(gpu_model_revision(data), GpuCheck::Model);
+    gpu_api_checked(gpu_model_revision(data), GpuCheck::Transform);
 }
 
 #[derive(Copy, Clone)]
 pub struct RenderStatePtr {
     handle: GpuObjectHandle,
-}
-impl RenderState {
-    pub fn ptr(&self) -> RenderStatePtr {
-        RenderStatePtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
 }
 
 impl RenderStatePtr {
@@ -1914,77 +2169,15 @@ fn gpu_api_render_state_set_lighting(data: Array<u16>, light: Lighting) {
 pub struct TexturePtr {
     handle: GpuObjectHandle,
 }
-impl Texture {
-    pub fn ptr(&self) -> TexturePtr {
-        TexturePtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct TextureViewPtr {
-    handle: GpuObjectHandle,
-}
-impl TextureView {
-    pub fn ptr(&self) -> TextureViewPtr {
-        TextureViewPtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
-}
-
-impl TextureViewPtr {
-    fn data(self) -> Array<u16> {
-        gpu_arena_data(gpu_arena_resolve(self.handle, GpuObjectKind::View))
-    }
-    pub fn set_address_mode(self, mode: TextureAddressMode) {
-        let mut data = self.data();
-        gpu_api_checked(data[GPU_VIEW_FLAGS] & 2 == 0, GpuCheck::View);
-        data[GPU_VIEW_FLAGS] = (data[GPU_VIEW_FLAGS] & 7) | ((mode as u16) << 3);
-    }
-    pub fn width(self) -> u16 {
-        gpu_scene_view_width(self.data())
-    }
-    pub fn height(self) -> u16 {
-        gpu_scene_view_height(self.data())
-    }
-}
 
 #[derive(Copy, Clone)]
 pub struct UiAtlasPtr {
     handle: GpuObjectHandle,
 }
-impl UiAtlas {
-    pub fn ptr(&self) -> UiAtlasPtr {
-        UiAtlasPtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
-}
 
 #[derive(Copy, Clone)]
 pub struct UiGridPtr {
     handle: GpuObjectHandle,
-}
-impl UiGrid {
-    pub fn ptr(&self) -> UiGridPtr {
-        UiGridPtr {
-            handle: gpu_arena_handle(self.slot),
-        }
-    }
-    pub fn release(self) {
-        drop(self);
-    }
 }
 
 impl UiGridPtr {
@@ -2044,7 +2237,7 @@ impl DepthBufferPtr {
 
 /// Immutable directory and prevalidated unlit material bindings.
 /// Keep the referenced GPU mesh and texture bytes resident through retirement.
-/// A bank uses one lighting environment and one Model snapshot per recording.
+/// A bank uses one lighting environment and one Transform snapshot per recording.
 #[rcc_resource]
 pub struct UnlitBank {
     data: u16,
@@ -2060,7 +2253,7 @@ impl UnlitBank {
         &mut self,
         state: RenderStatePtr,
         material: MaterialPtr,
-        view: TextureViewPtr,
+        view: &TextureView,
         vertical_billboard: bool,
     ) -> u16 {
         let mut flags: u16 = 1;
@@ -2089,54 +2282,5 @@ impl Drop for UnlitBank {
             gpu_unlit_end(1);
         }
         free(Ptr::from_addr(self.data));
-    }
-}
-impl CommandBuffer {
-    /// Reserve the bank prefix in an empty CB before opening its Pass.
-    pub fn prepare_unlit(&mut self, bank: &mut UnlitBank, camera: CameraPtr, model: ModelPtr) {
-        gpu_api_checked(
-            gpu_unlit_prepare(
-                self.slot,
-                unsafe { Ptr::from_addr(bank.data).as_u16_array() },
-                camera.data(),
-                model.data(),
-            ),
-            GpuCheck::Mesh,
-        );
-    }
-    /// Update View and Target for a completed bank-only recording.
-    pub fn patch_unlit(
-        &mut self,
-        bank: &UnlitBank,
-        camera: CameraPtr,
-        color: ColorBufferPtr,
-        depth: DepthBufferPtr,
-    ) {
-        gpu_api_checked(
-            gpu_unlit_patch(
-                self.slot,
-                unsafe { Ptr::from_addr(bank.data).as_u16_array() },
-                camera.data(),
-                color.data(),
-                depth.data(),
-            ),
-            GpuCheck::TargetBinding,
-        );
-    }
-}
-impl Pass {
-    /// Draw a meshlet range with the prepared Model and View and a fixed binding.
-    /// Ordinary draw, prepared part, UI or copy commands end the bank phase.
-    pub fn draw_unlit(&mut self, bank: &UnlitBank, binding: u16, first: u16, count: u16) {
-        gpu_api_checked(
-            gpu_unlit_draw(
-                self.slot,
-                unsafe { Ptr::from_addr(bank.data).as_u16_array() },
-                binding,
-                first,
-                count,
-            ),
-            GpuCheck::Mesh,
-        );
     }
 }

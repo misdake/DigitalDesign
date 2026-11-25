@@ -1,4 +1,4 @@
-//! Monotonic source snapshot identity for Camera and Model updates.
+//! Monotonic source snapshot identity for Camera and Transform updates.
 use crate::dsl_rt::*;
 mod gpu_schema;
 use gpu_schema::*;

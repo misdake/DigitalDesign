@@ -36,7 +36,7 @@ normal, UV, winding and variant, and constructs native records in its own heap.
 Cells are grouped into3x3 spatial buckets and at most three complete cells per
 meshlet:20/40/60 vertices and10/20/30 triangles. Native positions use unsigned
 delta10 with quant_shift9 and signed F16 origins; a common positive half-scale
-Model preserves the original world grid and bottom-13056/65536 exactly. This
+Transform preserves the original world grid and bottom-13056/65536 exactly. This
 does not promise identical projection rounding to individual translated Models.
 The payload remains within8 sectors; its128-byte metadata prefix is additional.
 One/two/three-cell records occupy4/6/8 sectors including that prefix.

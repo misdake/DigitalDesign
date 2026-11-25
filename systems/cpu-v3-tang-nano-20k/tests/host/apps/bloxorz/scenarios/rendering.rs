@@ -164,8 +164,15 @@ pub(in super::super) fn hint_order(early: bool) -> ApplicationCase {
         if early {
             let hint =
                 "    pass.draw_prepared(parts[15u16]);\n    DRAW_STATS.draw_calls += RENDER_STATE.bridges.transparent_draws;\n";
-            let block =
-                "    draw_block(pass, &scene.block, &mut scene.block_model, &scene.material);";
+            let block = concat!(
+                "    draw_block(\n",
+                "        pass,\n",
+                "        &mut scene.block_model,\n",
+                "        &scene.block,\n",
+                "        &scene.material,\n",
+                "        atlas_view,\n",
+                "    );",
+            );
             source = source.required_replace(hint, "");
             source = source.required_replace(block, &format!("{hint}{block}"));
         }

@@ -7,7 +7,7 @@ last-verified: 2026-11-24
 # GPU resource API callers
 
 Read the [public GPU guide](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-guide.md)
-before the larger callers. Applications own draw order, Camera/Model/Material,
+before the larger callers. Applications own draw order, Camera/Transform/Material,
 input/time, external working allocations, GPU completion and Display handoff.
 The driver owns resource registration, native encoding and device protocols;
 it contains no demo asset selection, Bloxorz rules or transparency sorter.
@@ -27,6 +27,11 @@ Each application preserves a writable Back and confirms presentation before
 reusing the former Front. This is application scheduling, not an implicit wait
 inside `set_next_swap`. Two CPU CBs allow preparation/execution overlap; the
 hardware still executes only one submitted CB at a time.
+
+Hello GPU, Billboard, RTT, and the public Box/Rabbit and RGBA4444 entries
+declare their application dependencies at the entry point. Their scene and
+input modules import the items they use through crate paths. The shared GPU SDK
+supplies scene value types through its compatibility namespace.
 
 ## Resource generation is application input
 

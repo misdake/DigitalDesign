@@ -231,7 +231,7 @@ let owner=fragile_begin();fragile_rebuild(owner);
 let mut gpu=Gpu::init(board_gpu_config());let mut commands=gpu.command_buffer();
 let color=board_color_b();let depth=board_depth();let camera=game_camera();let state=game_solid_state();
 let model=game_floor_model();let material=game_material(Rgba8::white(),true);let texture=marker_texture();let view=texture.view();let mesh=fragile_mesh(owner);
-{let mut pass=commands.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0)), DepthLoad::clear(65535));pass.set_camera(camera.ptr());pass.set_state(state.ptr());pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());}
+{let mut pass=commands.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0)), DepthLoad::clear(65535));pass.set_camera(camera.ptr());pass.set_state(state.ptr());pass.draw(model.ptr(), mesh.ptr(), material.ptr(), &view);}
 let mut n:u16=0;while n<3 {
  GAME_SESSION.fracture_cell=if n==1 {0u16}else{65535u16};GAME_SESSION.animation.phase=if n==1 {AnimationPhase::Crack}else{AnimationPhase::Play};
  fragile_sync(owner);gpu.submit(commands);commands=gpu.wait();signal(2,n);n+=1;
@@ -854,7 +854,7 @@ fn compact_ground_normal_basis_matches_original_axial_inverse_transpose() {
     let body = r#"
 GAME_SESSION.begin();GAME_SESSION.reset_level(3);let owner=ground_begin();ground_rebuild();
 let mut gpu=Gpu::init(board_gpu_config());let mut commands=gpu.command_buffer();let color=board_color_b();let depth=board_depth();let camera=game_camera();let state=game_solid_state();let mut model=game_floor_model();let mut material=game_material(Rgba8::white(),false);let texture=game_texture();let view=texture.view();
-{let mut pass=commands.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0)), DepthLoad::clear(65535));pass.set_camera(camera.ptr());pass.set_state(state.ptr());draw_ground_batches(&mut pass,&mut model,&mut material);let half=fix32::from_words(32768,0);model.set_pose(Transform::new(Vec3::zero(),Vec3::zero(),Vec3::new(half,half,half)));let mesh=ground_mesh(0);pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());}
+{let mut pass=commands.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0)), DepthLoad::clear(65535));pass.set_camera(camera.ptr());pass.set_state(state.ptr());let views=AtlasViews::new();draw_ground_batches(&mut pass,&mut model,&mut material,&views);let half=fix32::from_words(32768,0);model.set_pose(Pose::new(Vec3::zero(),Vec3::zero(),Vec3::new(half,half,half)));let mesh=ground_mesh(0);pass.draw(model.ptr(), mesh.ptr(), material.ptr(), &view);}
 gpu.submit(commands);commands=gpu.wait();drop(commands);ground_end(owner);
 "#;
     let (program, resources, out) = application_case(

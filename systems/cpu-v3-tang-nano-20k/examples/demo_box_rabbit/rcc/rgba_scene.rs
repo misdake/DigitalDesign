@@ -1,11 +1,8 @@
 //! Persistent resources; recording selects opaque/transparent state without mutation.
+use crate::boot_resources::{DEMO_ALPHA_SECTOR, DEMO_ALPHA_SECTORS};
 use crate::dsl_rt::*;
-mod gpu_api;
-use gpu_api::*;
-mod gpu_demo_api;
-use gpu_demo_api::*;
-mod boot_resources;
-use boot_resources::*;
+use crate::gpu_api::{Camera, Material, Mesh, Pass, RenderState, Texture, TextureView, Transform};
+use crate::gpu_demo_api::{demo_mesh, demo_texture};
 
 const ROOM_FIRST: u16 = 0;
 const ROOM_COUNT: u16 = 6;
@@ -16,9 +13,9 @@ const PANEL_FIRST: u16 = 24;
 
 pub struct RgbaScene {
     mesh: Mesh,
-    model: Model,
-    full_panel: Model,
-    half_panel: Model,
+    model: Transform,
+    full_panel: Transform,
+    half_panel: Transform,
     unlit: Material,
     lit: Material,
     half: Material,
@@ -53,13 +50,13 @@ impl RgbaScene {
             .with_unlit(true);
         Self {
             mesh: demo_mesh(),
-            model: Model::new(Transform::identity()),
-            full_panel: Model::new(Transform::translation(Vec3::new(
+            model: Transform::new(Pose::identity()),
+            full_panel: Transform::new(Pose::translation(Vec3::new(
                 fix!(-1.05),
                 fix!(-0.6),
                 fix!(1),
             ))),
-            half_panel: Model::new(Transform::translation(Vec3::new(
+            half_panel: Transform::new(Pose::translation(Vec3::new(
                 fix!(0.05),
                 fix!(-0.6),
                 fix!(1),
@@ -94,33 +91,23 @@ impl RgbaScene {
         let rabbit = mesh.slice(RABBIT_FIRST, RABBIT_COUNT);
         pass.set_camera(camera.ptr());
         pass.set_state(self.opaque.ptr());
-        pass.draw(
-            room,
-            self.model.ptr(),
-            self.unlit.ptr(),
-            self.brick_view.ptr(),
-        );
-        pass.draw_colored(rgb, self.model.ptr(), self.unlit.ptr());
-        pass.draw(
-            rabbit,
-            self.model.ptr(),
-            self.lit.ptr(),
-            self.brick_view.ptr(),
-        );
+        pass.draw(self.model.ptr(), room, self.unlit.ptr(), &self.brick_view);
+        pass.draw_colored(self.model.ptr(), rgb, self.unlit.ptr());
+        pass.draw(self.model.ptr(), rabbit, self.lit.ptr(), &self.brick_view);
         // Transparent geometry follows all opaque draws and never writes depth.
         pass.set_state(self.transparent.ptr());
         let panel = mesh.slice(PANEL_FIRST, 1);
         pass.draw(
-            panel,
             self.full_panel.ptr(),
+            panel,
             self.unlit.ptr(),
-            self.alpha_view.ptr(),
+            &self.alpha_view,
         );
         pass.draw(
-            panel,
             self.half_panel.ptr(),
+            panel,
             self.half.ptr(),
-            self.alpha_view.ptr(),
+            &self.alpha_view,
         );
     }
 }

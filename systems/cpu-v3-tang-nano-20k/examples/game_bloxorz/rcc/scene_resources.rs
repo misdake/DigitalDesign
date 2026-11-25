@@ -18,16 +18,16 @@ pub struct SceneResources {
     pub block: Mesh,
     pub pad: Mesh,
     pub shadow_mesh: Mesh,
-    pub shadow_model: Model,
+    pub shadow_model: Transform,
     pub shadow_material: Material,
     pub shadow_state: RenderState,
     pub screen: Mesh,
-    pub floor_model: Model,
-    pub block_model: Model,
-    pub idle_model: Model,
+    pub floor_model: Transform,
+    pub block_model: Transform,
+    pub idle_model: Transform,
     pub idle_material: Material,
-    pub pad_model: Model,
-    pub screen_model: Model,
+    pub pad_model: Transform,
+    pub screen_model: Transform,
     pub material: Material,
     pub floor_material: Material,
     pub entry_hatch_material: Material,
@@ -35,17 +35,17 @@ pub struct SceneResources {
     pub entry_ring_material: Material,
     pub goal_ring_material: Material,
     pub carrier_material: Material,
-    pub entry_hatch_model: Model,
-    pub goal_hatch_model: Model,
-    pub carrier_model: Model,
-    pub entry0: Model,
-    pub entry1: Model,
-    pub entry2: Model,
-    pub entry3: Model,
-    pub goal0: Model,
-    pub goal1: Model,
-    pub goal2: Model,
-    pub goal3: Model,
+    pub entry_hatch_model: Transform,
+    pub goal_hatch_model: Transform,
+    pub carrier_model: Transform,
+    pub entry0: Transform,
+    pub entry1: Transform,
+    pub entry2: Transform,
+    pub entry3: Transform,
+    pub goal0: Transform,
+    pub goal1: Transform,
+    pub goal2: Transform,
+    pub goal3: Transform,
 }
 impl SceneResources {
     pub fn new(camera: Camera) -> Self {
@@ -125,17 +125,17 @@ impl SceneResources {
     }
 }
 
-pub fn game_floor_model() -> Model {
-    Model::new(Transform::uniform_scale(fix!(0.5)))
+pub fn game_floor_model() -> Transform {
+    Transform::new(Pose::uniform_scale(fix!(0.5)))
 }
 
-pub fn game_plain_model() -> Model {
-    Model::new(Transform::identity())
+pub fn game_plain_model() -> Transform {
+    Transform::new(Pose::identity())
 }
 
-pub fn game_screen_model() -> Model {
+pub fn game_screen_model() -> Transform {
     let one = fix32::from_int(1);
-    Model::new(Transform::new(
+    Transform::new(Pose::new(
         Vec3::new(fix32::zero(), fix32::zero(), -one),
         Vec3::zero(),
         Vec3::new(one, fix!(0.6), one),

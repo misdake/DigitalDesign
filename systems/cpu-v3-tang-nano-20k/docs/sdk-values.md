@@ -20,7 +20,7 @@ let half = fix32::from_words(32768, 0);
 // After: constant quantization; no per-frame division.
 let half = fix!(0.5);
 let quarter_turn = fix32::degrees(90);
-let pose = Transform::translation(Vec3::new(fix32::zero(), fix32::zero(), fix32::from_int(-3)))
+let pose = Pose::translation(Vec3::new(fix32::zero(), fix32::zero(), fix32::from_int(-3)))
     .with_rotation(Vec3::new(fix32::zero(), quarter_turn, fix32::zero()));
 let speed = fix!(0.08);
 let color = Rgba8::rgb(80, 120, 160).with_alpha(128);
@@ -46,9 +46,9 @@ pinned bit patterns. FPU arithmetic itself retains its existing rounding rules.
 
 `Vec3` provides `new`, `zero`, `one`, `splat` and the three unit axes; `Vec4`
 provides `new`, `zero` and `splat`. Matrices provide `from_rows` and `identity`.
-`Transform` provides `new`, `identity`, `translation`, `rotation`, `uniform_scale`
+`Pose` provides `new`, `identity`, `translation`, `rotation`, `uniform_scale`
 and `with_position` / `with_rotation` / `with_scale`. Angles are radians, scale
-is source-world scale; `Model::new` derives native world/normal matrices at runtime; explicit
+is source-world scale; `Transform::new` derives native world/normal matrices at runtime; explicit
 `world_matrix` / `normal_matrix` preparation is described below.
 `CameraDesc::new` takes eye, angles and a projection.
 
@@ -60,7 +60,7 @@ has the matching `ui_font.rgba5551` helper. Texture RGBA4444 remains a different
 ## Preparing fixed scene values
 
 ```rust
-const POSE: Transform = Transform::translation(Vec3::new(fix!(0), fix!(0), fix!(-3)))
+const POSE: Pose = Pose::translation(Vec3::new(fix!(0), fix!(0), fix!(-3)))
     .with_rotation(Vec3::new(fix!(0), fix!(22.5).to_radians(), fix!(0)));
 static WORLD: Mat3x4 = POSE.world_matrix();
 static NORMAL: Mat3x3 = POSE.normal_matrix();
@@ -68,7 +68,7 @@ const PROJECTION: Projection =
     Projection::from_vertical_fov(fix!(60).to_radians(), fix!(199));
 
 // Runtime registration; the matrices have already been prepared.
-let model = Model::from_matrices(WORLD, NORMAL);
+let transform = Transform::from_matrices(WORLD, NORMAL);
 let camera = Camera::new(CameraDesc::new(Vec3::zero(), Vec3::zero(), PROJECTION));
 ```
 
@@ -76,8 +76,8 @@ The same `const fn` interfaces accept runtime inputs. `world_matrix` uses
 Rz * Ry * Rx, scales its columns, then adds source-world translation.
 `normal_matrix` uses the inverse-transpose of that linear part, including
 nonuniform/negative scale; zero scale is rejected. Native reflection remains at
-recording. `Model::from_matrices` creates the same runtime model/cache lifecycle
-as `Model::new` and avoids calculating TRS first. Existing live model updates
+recording. `Transform::from_matrices` creates the same runtime model/cache lifecycle
+as `Transform::new` and avoids calculating TRS first. Existing live model updates
 and cache invalidation remain unchanged.
 
 Projection supports focal pixels, vertical FOV and horizontal FOV, with radians
@@ -243,7 +243,7 @@ an independent directory every frame:
 ```rust
 let whole = mesh.ptr();
 let panel = whole.slice(first_meshlet, 1);
-pass.draw_billboard(panel, model.ptr(), material.ptr(), view.ptr(), facing);
+pass.draw_billboard(transform.ptr(), panel, material.ptr(), &view, facing);
 ```
 
 `slice` allocates nothing. Keep the Mesh body alive through recording; encoded

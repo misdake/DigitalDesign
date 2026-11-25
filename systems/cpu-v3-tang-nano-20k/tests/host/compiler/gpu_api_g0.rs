@@ -42,21 +42,21 @@ fn main(){
  let hold=try_malloc(28500);check(hold.addr()!=0);
  check(!gpu_arena_init(8192));check(GPU_OBJECT_CONTROL.storage==backing&&GPU_OBJECT_CONTROL.capacity==64);
  free(hold);
- let small=gpu_arena_alloc(false,GpuObjectKind::Camera);let large=gpu_arena_alloc(true,GpuObjectKind::Model);
+ let small=gpu_arena_alloc(false,GpuObjectKind::Camera);let large=gpu_arena_alloc(true,GpuObjectKind::Transform);
  check(small==1&&large==17);check(gpu_arena_alloc(false,GpuObjectKind::Camera)==0);
  gpu_arena_data(small)[15u16]=0x1234;gpu_arena_data(large)[47u16]=0xabcd;
  check(gpu_arena_data(small).as_ptr().addr()&15==0);check(gpu_arena_data(large).as_ptr().addr()&15==0);
  check(gpu_arena_data(small)[15u16]==0x1234&&gpu_arena_data(large)[47u16]==0xabcd);
  #[cfg(gpu_debug)]{check(!gpu_arena_free(large,true,GpuObjectKind::Material));}
- check(gpu_arena_free(large,true,GpuObjectKind::Model));
- #[cfg(gpu_debug)]{check(!gpu_arena_free(large,true,GpuObjectKind::Model));}
- check(gpu_arena_alloc(true,GpuObjectKind::Model)==large);check(gpu_arena_free(small,false,GpuObjectKind::Camera));check(gpu_arena_alloc(false,GpuObjectKind::Camera)==small);
- check(gpu_arena_init(512));let anchor=gpu_arena_alloc(true,GpuObjectKind::Model);let mut ids:Buf<u16,8>=Buf::new([0;8]);
+ check(gpu_arena_free(large,true,GpuObjectKind::Transform));
+ #[cfg(gpu_debug)]{check(!gpu_arena_free(large,true,GpuObjectKind::Transform));}
+ check(gpu_arena_alloc(true,GpuObjectKind::Transform)==large);check(gpu_arena_free(small,false,GpuObjectKind::Camera));check(gpu_arena_alloc(false,GpuObjectKind::Camera)==small);
+ check(gpu_arena_init(512));let anchor=gpu_arena_alloc(true,GpuObjectKind::Transform);let mut ids:Buf<u16,8>=Buf::new([0;8]);
  let mut n:u16=0;while n<8{ids[n]=gpu_arena_alloc(false,GpuObjectKind::Camera);check(ids[n]!=0);n+=1;}
  check(anchor==209);check(gpu_arena_data(anchor).as_ptr().addr()==GPU_OBJECT_CONTROL.base+208);
  check(gpu_arena_free(ids[3u16],false,GpuObjectKind::Camera));check(gpu_arena_alloc(false,GpuObjectKind::Camera)==ids[3u16]);
- check(gpu_arena_init(192));let l=gpu_arena_alloc(true,GpuObjectKind::Model);let s=gpu_arena_alloc(false,GpuObjectKind::Camera);let s1=gpu_arena_alloc(false,GpuObjectKind::Camera);let s2=gpu_arena_alloc(false,GpuObjectKind::Camera);
- check(l!=0&&s!=0&&s1!=0&&s2!=0);check(gpu_arena_free(s,false,GpuObjectKind::Camera));check(gpu_arena_alloc(true,GpuObjectKind::Model)==0);check(gpu_arena_alloc(false,GpuObjectKind::Camera)==s);
+ check(gpu_arena_init(192));let l=gpu_arena_alloc(true,GpuObjectKind::Transform);let s=gpu_arena_alloc(false,GpuObjectKind::Camera);let s1=gpu_arena_alloc(false,GpuObjectKind::Camera);let s2=gpu_arena_alloc(false,GpuObjectKind::Camera);
+ check(l!=0&&s!=0&&s1!=0&&s2!=0);check(gpu_arena_free(s,false,GpuObjectKind::Camera));check(gpu_arena_alloc(true,GpuObjectKind::Transform)==0);check(gpu_arena_alloc(false,GpuObjectKind::Camera)==s);
  let memory:CommandMemory=CommandMemory{commands:unsafe{admission_memory(0x9800,512)},push:unsafe{admission_memory(0x9a00,512)}};
  let second:CommandMemory=CommandMemory{commands:unsafe{admission_memory(0xfc00,512)},push:unsafe{admission_memory(0xfe00,512)}};
  let config:GpuConfig=GpuConfig{bytes:8192,first:memory,second:Some(second)};

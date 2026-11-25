@@ -2,10 +2,11 @@
 use super::*;
 
 #[test]
-fn texture_views_own_their_description_and_are_consumed_once() {
+fn texture_view_values_keep_an_independent_private_description() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let prefix = r#"mod gpu_api;use gpu_api::*;
+use crate::dsl_rt::*;
 fn consume_color(value:ColorBuffer){} fn consume_view(value:TextureView){}
 fn main(){let b=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0xc000,2048)});
 let view=b.texture_view();"#;
@@ -36,7 +37,7 @@ let view=b.texture_view();"#;
     }
     for body in [
         "consume_view(view);consume_view(view);",
-        "let fabricated=TextureView{slot:1};consume_view(fabricated);",
+        "let fabricated=TextureView{words:Buf::new([0;6])};consume_view(fabricated);",
     ] {
         assert!(parse(body).is_err(), "accepted {body}");
     }

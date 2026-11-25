@@ -1,6 +1,9 @@
 use cpu_v3::{rcc_backend, CpuV3Sim, RunOutcome};
-use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
+use rcc::frontend::rustc_check::RustcCheck;
 use std::path::Path;
+#[allow(dead_code)]
+#[path = "../support/checked_flat_fixture.rs"]
+mod checked_flat_fixture;
 
 #[test]
 fn frozen_shininess_enum_methods_compile() {
@@ -38,7 +41,7 @@ fn main(){
         std::fs::create_dir_all(&output).unwrap();
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = gpu_debug;
-        let result = compile_program_named_checked(
+        let result = checked_flat_fixture::compile(
             "frozen enum value methods",
             source,
             &options,

@@ -1,11 +1,11 @@
 //! Application-selected compatible runs, written after transparent sorting.
+use crate::billboard::{BillboardVertex, BillboardWriter};
+use crate::boot_resources::{
+    SCENE_ANIMATION, SCENE_FRAME_STARTS, SCENE_LAYERS, SCENE_QUAD, SCENE_SPRITE_CAPACITY,
+    SCENE_TRANSPARENT_FIRST,
+};
 use crate::dsl_rt::*;
-mod gpu_api;
-use gpu_api::*;
-mod boot_resources;
-use boot_resources::*;
-mod billboard;
-use billboard::*;
+use crate::gpu_api::Mesh;
 
 const SPRITE_LIMIT: u16 = SCENE_SPRITE_CAPACITY;
 // 0: kind/shade; 1..6: XYZ Q16.16; 7..8: source half-extents;
