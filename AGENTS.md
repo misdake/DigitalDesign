@@ -1,60 +1,13 @@
 # DigitalDesign agent guide
 
-Workspace map, dependency direction, prerequisites, and build/validate commands: `README.md` and
-`ARCHITECTURE.md` (read `ARCHITECTURE.md` before moving code across crates).
+`README.md` describes the workspace and build and validation commands. Read `ARCHITECTURE.md`
+before moving code across crates. Keep implemented interfaces and behavior in the owning crate's
+`docs/` and maintain its document index in that directory's README.
 
-**Read `.agent/README.md` first.** `.agent/` is a local, untracked working area (backed up outside
-git): conventions, the commit checklist, project goals, open tasks, specifications, and daily/weekly
-logs. If it is missing, the tracked documents (`README.md`, `ARCHITECTURE.md`, `ip/*/docs`,
-`systems/*/docs`) are authoritative. `<project>` below means the current project directory reached
-through `.agent/projects/README.md`.
-
-## Working loop
-
-1. **Intake.** Read `.agent/README.md`, the open items in `projects/<project>/todo.md`, and the
-   current `projects/<project>/project.md`.
-2. **Design first.** Develop the top-level, module and software designs in
-   `.agent/projects/<project>/design/<topic>/`, outside Git. Include the target specification,
-   changes from implemented behavior, implementation approach and acceptance conditions. Maintain
-   the project's todo throughout. Design documents contain pending work, not development logs.
-3. **Implement incrementally.** Once the project design is ready, read `.agent/conventions.md`
-   for the development, integration and delivery workflow. After each part is implemented and
-   verified, merge its actual specification and implementation description into the owning tracked
-   `docs/`, remove that completed part from local design, and update todo. The user backs up the
-   design process. Honour the hard constraints and run the mandatory validation for each
-   implementation path touched.
-4. **Document ownership.** `docs/` describes implemented interfaces, formats, behavior, storage,
-   scheduling and brief tradeoffs. Pending specifications stay in local design. Maintain each
-   document list only in its own directory's README; local documents have
-   `id`/`status`/`last-verified` front matter. Do not maintain a global document list or parallel
-   copies of an implemented specification in design and docs.
-5. **Committing.** Read `.agent/commit-checklist.md` before and after a commit. Keep daily and weekly
-   logs current. Historical performance and resource records remain in the user's backup; do not
-   recreate them, append ledger rows, or run legacy logging scripts. Required implementation
-   validation still applies.
-
-Read `.agent/commit-checklist.md` and `.agent/logs.md` on demand. When a document's home, or whether
-a change counts as a finished unit, is unclear, ask instead of deciding silently.
-
-## Worktree lifecycle and integration
-
-- Developer roles persist; feature worktrees are temporary. Reuse a suitable existing feature
-  branch/tree, and do not create a worktree for read-only analysis.
-- Follow the local DigitalDesign conventions for worktree placement. Do not create project
-  worktrees in Codex task directories.
-- One maintainer serializes integration into `code-v0.3`. Use fast-forward integration for small
-  qualified changes and explicit merge boundaries for substantial multi-commit features.
-- Update private branches against accepted canonical dependencies before integration, then run
-  affected regression checks. Avoid repeated cherry-picks of shared fixes; do not rewrite shared
-  history without authorization.
-- After accepted integration, preserve recovery refs and unique evidence, confirm the owner is
-  idle, and close redundant clean checkouts. Delete temporary branches only after confirming
-  mainline inclusion. Preserve the `code-v0.*` version branches.
-- Active builds retain their caches. Authorized cleanup of paused work must first preserve unique
-  evidence outside every disposable `target` directory, with source identities and SHA mappings.
-- Confirm a tree is unused before moving it. Preserve HEAD, index, WIP and untracked files; prefer
-  Git worktree operations and verify file hashes after migration. Never overwrite a destination
-  or discard unique work. Local housekeeping does not authorize remote pushes.
+Work directly on the user's assigned task. Check the current branch and preserve existing work.
+Reuse a suitable checkout for implementation and use the current checkout for read-only analysis.
+Follow the user's branch and integration instructions. Verify inclusion and preserve unique work
+before authorized cleanup of temporary branches, worktrees and build evidence.
 
 ## Hard constraints
 
@@ -84,7 +37,11 @@ Icarus Verilog: `IVERILOG_EXE`, `VVP_EXE` (the ignored co-sim tests and
 
 ## Verification the agent must run
 
-Beyond the baseline `cargo test` / `cargo clippy` / layer / hygiene / docs checks in `README.md`:
+Run Cargo tests for the affected packages and test targets. Skip workspace-wide test runs,
+including validation scripts that invoke `cargo test --workspace`. Use the Clippy, layering,
+source hygiene, and documentation checks described in `README.md`.
+
+### Required co-simulations
 
 - CPU V3 emulator-vs-RTL co-simulation (pipeline, forwarding, retirement, data/handshake):
   ```powershell
@@ -98,8 +55,8 @@ Beyond the baseline `cargo test` / `cargo clippy` / layer / hygiene / docs check
 ## House rules
 
 - Every simulator test must supply a maximum cycle/step count.
-- Project files, comments, and documentation are English; local notes under `.agent/` may be Chinese.
-- Rust changes stay `cargo fmt` clean (see `.agent/conventions.md` for the known pre-existing debt).
-- `.agent/` is untracked: local cleanup requires user authorization. Preserve and continue daily
-  and weekly logs; keep specifications separate from development history.
+- Write project files, comments, and documentation in English.
+- Keep Rust changes `cargo fmt` clean.
+- Keep historical performance and resource records in the user's backup. Use current validation
+  commands for new measurements.
 - Do not commit unless the user explicitly asks for a commit.
