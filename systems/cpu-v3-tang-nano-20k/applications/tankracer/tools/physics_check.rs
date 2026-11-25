@@ -9,6 +9,8 @@ use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
 use serde_json::{json, Value};
 use std::{error::Error, fs, path::Path};
 
+#[path = "collision_check.rs"]
+mod collision_check;
 #[path = "polar_check.rs"]
 mod polar_check;
 #[path = "trig_check.rs"]
@@ -26,9 +28,32 @@ const SUSPENSION: &str = include_str!("../rcc/suspension.rs");
 const DRIVE: &str = include_str!("../rcc/drive.rs");
 const VEHICLE: &str = include_str!("../rcc/vehicle.rs");
 const TRIG_LOOKUP: &str = include_str!("../rcc/trig_lookup.rs");
+const COLLISION: &str = include_str!("../rcc/collision.rs");
+const BODY: &str = include_str!("../rcc/body.rs");
+const RANDOM: &str = include_str!("../rcc/random.rs");
+const DEFORMATION: &str = include_str!("../rcc/deformation.rs");
+const DAMAGE: &str = include_str!("../rcc/damage.rs");
+const EFFECT_POOL: &str = include_str!("../rcc/effect_pool.rs");
+const IMPACT: &str = include_str!("../rcc/impact.rs");
+const GROUND_RESPONSE: &str = include_str!("../rcc/ground_response.rs");
+const TANK_RESPONSE: &str = include_str!("../rcc/tank_response.rs");
+const ORDERED: &str = include_str!("../rcc/ordered.rs");
+const LIFECYCLE: &str = include_str!("../rcc/lifecycle.rs");
+const CRUSH: &str = include_str!("../rcc/crush.rs");
+const SPATIAL: &str = include_str!("../rcc/spatial.rs");
+const FALLING: &str = include_str!("../rcc/falling.rs");
+const BLAST: &str = include_str!("../rcc/blast.rs");
+const SCENE_WORLD: &str = include_str!("../rcc/scene_world.rs");
+const SCENE_CONTACT: &str = include_str!("../rcc/scene_contact.rs");
+const BOUNCE: &str = include_str!("../rcc/bounce.rs");
+const GROUND: &str = include_str!("../rcc/ground.rs");
+const SAMPLING: &str = include_str!("../rcc/sampling.rs");
+const TERRAIN: &str = include_str!("../rcc/terrain.rs");
+const STATIC_ASSETS: &str = include_str!("../../../rcc/static_assets.rs");
+const GPU_LAYOUT: &str = include_str!("../../../rcc/gpu_layout.rs");
+const OBJECT_QUERY: &str = include_str!("../rcc/object_query.rs");
 const TRIG_ASSET_LOOKUP: &str = include_str!("../rcc/trig_asset_lookup.rs");
-const PREAMBLE: &str =
-    "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod trig_lookup;\n";
+const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod crush; mod spatial; mod falling; mod blast; mod scene_world; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window;\n";
 
 fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<dyn Error>> {
     let folder = output.join(label);
@@ -48,6 +73,36 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "drive" => Ok(DRIVE.to_owned()),
             "vehicle" => Ok(VEHICLE.to_owned()),
             "trig_lookup" => Ok(TRIG_LOOKUP.to_owned()),
+            "collision" => Ok(COLLISION.to_owned()),
+            "body" => Ok(BODY.to_owned()),
+            "object_query" => Ok(OBJECT_QUERY.to_owned()),
+            "random" => Ok(RANDOM.to_owned()),
+            "deformation" => Ok(DEFORMATION.to_owned()),
+            "deform_contact" => Ok(include_str!("../rcc/deform_contact.rs").to_owned()),
+            "scene_query" => Ok(include_str!("../rcc/scene_query.rs").to_owned()),
+            "gpu_window" => Ok(include_str!("../../../rcc/gpu_window.rs").to_owned()),
+            "damage" => Ok(DAMAGE.to_owned()),
+            "effect_pool" => Ok(EFFECT_POOL.to_owned()),
+            "impact" => Ok(IMPACT.to_owned()),
+            "impact_capture" => Ok(include_str!("impact_capture.rs").to_owned()),
+            "ground_response" => Ok(GROUND_RESPONSE.to_owned()),
+            "tank_response" => Ok(TANK_RESPONSE.to_owned()),
+            "ordered" => Ok(ORDERED.to_owned()),
+            "lifecycle" => Ok(LIFECYCLE.to_owned()),
+            "crush" => Ok(CRUSH.to_owned()),
+            "spatial" => Ok(SPATIAL.to_owned()),
+            "falling" => Ok(FALLING.to_owned()),
+            "blast" => Ok(BLAST.to_owned()),
+            "scene_world" => Ok(SCENE_WORLD.to_owned()),
+            "scene_contact" => Ok(SCENE_CONTACT.to_owned()),
+            "bounce" => Ok(BOUNCE.to_owned()),
+            "ground" => Ok(GROUND.to_owned()),
+            "sampling" => Ok(SAMPLING.to_owned()),
+            "terrain" => Ok(TERRAIN.to_owned()),
+            "static_assets" => Ok(STATIC_ASSETS.to_owned()),
+            "gpu_layout" | "static_assets/gpu_layout" | "gpu_window/gpu_layout" => {
+                Ok(GPU_LAYOUT.to_owned())
+            }
             _ => Err(format!("unexpected module {name}")),
         },
     )?;
@@ -474,6 +529,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or(600);
         let mode = std::env::args().nth(4);
         let report = match mode.as_deref() {
+            Some("collision") => collision_check::run(&output, Path::new(&fixture))?,
             Some("suspension") => suspension_cases(&output, Path::new(&fixture), limit)?,
             Some("drive") => drive_cases(&output, Path::new(&fixture), limit)?,
             Some("vehicle") => vehicle_cases(&output, Path::new(&fixture), limit)?,

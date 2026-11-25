@@ -115,12 +115,21 @@ pub fn contact(
     p(s, 26, g(s, 26) + x);
     p(s, 27, g(s, 27) + z);
 }
-pub fn step(s: Array<u16>, c: Array<u16>, e: Array<u16>, mut events: Array<u16>) {
-    let dt = g(e, 0);
+pub fn conditions(e: Array<u16>) -> u16 {
     let half = g(e, 1) != n(0) && g(e, 2) == n(0);
     let region =
         g(e, 5) >= g(e, 7) && g(e, 5) <= g(e, 9) && g(e, 6) >= g(e, 8) && g(e, 6) <= g(e, 10);
     let modified = (g(e, 3) == n(5) && region) || half;
+    let mut flags = 0u16;
+    if modified {
+        flags |= 1;
+    }
+    if half {
+        flags |= 2;
+    }
+    flags
+}
+pub fn prepare(s: Array<u16>, c: Array<u16>, mut events: Array<u16>) {
     events[0u16] = 0;
     events[1u16] = 0;
     events[2u16] = 0;
@@ -173,57 +182,60 @@ pub fn step(s: Array<u16>, c: Array<u16>, e: Array<u16>, mut events: Array<u16>)
     p(s, 29, n(0));
     p(s, 38, n(0));
     p(s, 39, n(0));
-    i = 0;
-    // Commit each contact in source order, then aggregate and apply penetration lift.
-    while i < 4 {
-        let at = i * 6;
-        let kind = g(s, at);
-        let mut force = n(0);
-        if kind == n(2) {
-            events[2u16] |= 1u16 << i;
-            if modified {
-                let mut index = 13u16;
-                if g(e, 4) != n(0) {
-                    index = 11;
-                }
-                force = -integer::mul(
-                    integer::sar(
-                        integer::mul(g(e, index), fix32::from_words(0, 75)),
-                        g(e, index + 1).lo_bits(),
-                    ),
-                    dt,
-                );
-                if half {
-                    force = integer::sar(force, 1);
-                }
-            } else {
-                force = integer::mul(fix32::from_words(0, 0xffb5), dt);
+}
+pub fn force(
+    s: Array<u16>,
+    c: Array<u16>,
+    e: Array<u16>,
+    i: u16,
+    flags: u16,
+    mut events: Array<u16>,
+) -> fix32 {
+    let dt = g(e, 0);
+    let modified = flags & 1 != 0;
+    let half = flags & 2 != 0;
+    let at = i * 6;
+    let kind = g(s, at);
+    let mut force = n(0);
+    if kind == n(2) {
+        events[2u16] |= 1u16 << i;
+        if modified {
+            let mut index = 13u16;
+            if g(e, 4) != n(0) {
+                index = 11;
             }
-        }
-        if kind == n(0) {
-            events[2u16] |= 16u16 << i;
-            let penetration = n(-75) - g(s, at + 1);
-            let mut travel = g(s, at + 3) + integer::shl(penetration, g(e, 15).lo_bits());
-            if travel > g(c, 1) {
-                let last = integer::trunc_shift(travel - g(c, 1), g(e, 15).lo_bits());
-                p(s, 39, last);
-                p(s, 38, maximum(g(s, 38), last));
-                travel = g(c, 1);
+            force = -integer::mul(
+                integer::sar(
+                    integer::mul(g(e, index), fix32::from_words(0, 75)),
+                    g(e, index + 1).lo_bits(),
+                ),
+                dt,
+            );
+            if half {
+                force = integer::sar(force, 1);
             }
-            p(s, at + 3, travel);
-            force = force + integer::mul(minimum(penetration, n(400)), n(10240));
-            p(s, 28, g(s, 28) + force);
+        } else {
+            force = integer::mul(fix32::from_words(0, 0xffb5), dt);
         }
-        let side = i / 2;
-        if force <= n(0) && g(s, 36 + side) == n(0) {
-            p(s, 34 + side, g(e, 16 + side));
-            p(s, 36 + side, n(1));
-            events[0u16] |= 1u16 << side;
-        }
-        contact(s, at, c, force, dt, g(s, 34 + side));
-        p(s, 29, g(s, 29) + g(s, at + 3));
-        i += 1;
     }
+    if kind == n(0) {
+        events[2u16] |= 16u16 << i;
+        let penetration = n(-75) - g(s, at + 1);
+        let mut travel = g(s, at + 3) + integer::shl(penetration, g(e, 15).lo_bits());
+        if travel > g(c, 1) {
+            let last = integer::trunc_shift(travel - g(c, 1), g(e, 15).lo_bits());
+            p(s, 39, last);
+            p(s, 38, maximum(g(s, 38), last));
+            travel = g(c, 1);
+        }
+        p(s, at + 3, travel);
+        force = force + integer::mul(minimum(penetration, n(400)), n(10240));
+        p(s, 28, g(s, 28) + force);
+    }
+    force
+}
+pub fn complete(s: Array<u16>, e: Array<u16>, mut events: Array<u16>) {
+    let dt = g(e, 0);
     p(s, 24, g(s, 24) - g(s, 26));
     p(s, 25, g(s, 25) - g(s, 27));
     let a = g(s, 5);
@@ -243,4 +255,25 @@ pub fn step(s: Array<u16>, c: Array<u16>, e: Array<u16>, mut events: Array<u16>)
         p(s, 33, g(s, 33) - dt);
         events[1u16] |= 2;
     }
+}
+
+pub fn step(s: Array<u16>, c: Array<u16>, e: Array<u16>, mut events: Array<u16>) {
+    let dt = g(e, 0);
+    prepare(s, c, events);
+    let flags = conditions(e);
+    let mut i = 0u16;
+    while i < 4 {
+        let at = i * 6;
+        let force = force(s, c, e, i, flags, events);
+        let side = i / 2;
+        if force <= n(0) && g(s, 36 + side) == n(0) {
+            p(s, 34 + side, g(e, 16 + side));
+            p(s, 36 + side, n(1));
+            events[0u16] |= 1u16 << side;
+        }
+        contact(s, at, c, force, dt, g(s, 34 + side));
+        p(s, 29, g(s, 29) + g(s, at + 3));
+        i += 1;
+    }
+    complete(s, e, events);
 }

@@ -7,6 +7,22 @@ The same catalog registers `bench-tankracer-physics`, a separate frozen-contact
 single-vehicle benchmark. Its kernels, resource inputs and execution boundary
 are described in [physical update](/systems/cpu-v3-tang-nano-20k/applications/tankracer/physics.md).
 
+`bench-tankracer-terrain` loads two adjacent collision pages and checks the
+production terrain kernels against reference queries; see
+[cell-local terrain queries](/systems/cpu-v3-tang-nano-20k/applications/tankracer/terrain.md).
+
+`bench-tankracer-driving` connects real primary contacts, surface noise/effects,
+lazy auxiliary queries, track poses and immediate car/ground collisions to
+ordered persistent vehicle updates sharing one RNG and effect pool;
+see [real-map driving](/systems/cpu-v3-tang-nano-20k/applications/tankracer/driving.md).
+
+`bench-tankracer-scene` loads the complete initial ENGLAND collision metadata,
+checks candidates/class slots and runs connected Fall/Bounce contacts and motion; see
+[scene collision assets](/systems/cpu-v3-tang-nano-20k/applications/tankracer/scene.md).
+
+[Collision and body arithmetic](/systems/cpu-v3-tang-nano-20k/applications/tankracer/collision.md)
+describes reflection, pair impulses, body springs, contact hulls and their module checks.
+
 ```powershell
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map target/map.zip --camera target/cameras.json --out target/tankracer-map
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview bench-tankracer-static --snapshot target/tankracer-map --presents 2
@@ -437,8 +453,8 @@ The application-owned [integer module](/systems/cpu-v3-tang-nano-20k/application
 uses `fix32` as a raw signed 32-bit carrier. Addition, subtraction, negation
 and comparisons operate on those bits directly. Call `integer::mul` for a
 wrapping integer product. Ordinary `fix32` multiplication has Q16.16 semantics.
-The current checkout forms the integer product from unsigned 16-bit product
-windows, including the high cross terms.
+The helper uses the CPU's `MUL.LO32` instruction through `fmul_lo32`, keeping
+operands and the wrapped result in the scalar register domain.
 
 | Entry | Contract |
 | --- | --- |

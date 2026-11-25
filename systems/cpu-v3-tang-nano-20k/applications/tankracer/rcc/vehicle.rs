@@ -152,6 +152,10 @@ pub fn attitude_stage(
 }
 // Physical fields of pose::update, then the successful-frame 40/dt rate scale.
 pub fn finish(s: Array<u16>, a: Array<u16>, m: Array<u16>, pose: Array<u16>, f: Array<u16>) {
+    publish_pose(s, a, m, pose);
+    finish_rates(m, g(f, 0));
+}
+pub fn publish_pose(s: Array<u16>, a: Array<u16>, m: Array<u16>, pose: Array<u16>) {
     let mut i = 0u16;
     while i < 9 {
         p(a, i, g(a, 9 + i));
@@ -174,12 +178,14 @@ pub fn finish(s: Array<u16>, a: Array<u16>, m: Array<u16>, pose: Array<u16>, f: 
         i += 1;
     }
     p(m, 10, g(m, 10) + integer::sar(sum, 3));
-    i = 0;
+}
+pub fn finish_rates(m: Array<u16>, dt: fix32) {
+    let mut i = 0;
     while i < 4 {
         p(
             m,
             12 + i,
-            integer::div(integer::mul(g(m, 12 + i), n(40)), g(f, 0)),
+            integer::div(integer::mul(g(m, 12 + i), n(40)), dt),
         );
         i += 1;
     }

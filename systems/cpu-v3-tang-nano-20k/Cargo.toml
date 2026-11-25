@@ -72,6 +72,11 @@ name = "tankracer-native-check"
 path = "applications/tankracer/tools/native_check.rs"
 test = false
 
+[[bin]]
+name = "tankracer-terrain-native"
+path = "applications/tankracer/tools/terrain_native.rs"
+test = false
+
 # apps test contracts; target names remain stable.
 
 [[test]]

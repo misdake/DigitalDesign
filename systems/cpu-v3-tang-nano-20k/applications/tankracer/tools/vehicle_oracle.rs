@@ -1,7 +1,7 @@
 //! Whole physical chain using unmodified suspension, powertrain and motion calls.
 #[allow(dead_code)]
 #[path = "drive_oracle.rs"]
-mod drive_fixture;
+pub mod drive_fixture;
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf};
 use tankracer_assets::{
@@ -18,7 +18,7 @@ use tankracer_game::{
     vehicle_prefix::boost,
     velocity,
 };
-fn spring(s: &suspension::State, load: i32, pivot: [i32; 3]) -> Vec<i32> {
+pub fn spring(s: &suspension::State, load: i32, pivot: [i32; 3]) -> Vec<i32> {
     let mut v = Vec::new();
     for p in s.points {
         v.extend([p.kind, p.gap, p.corner as i32, p.travel, p.rate, p.output]);
@@ -39,7 +39,7 @@ fn spring(s: &suspension::State, load: i32, pivot: [i32; 3]) -> Vec<i32> {
     v.extend(pivot);
     v
 }
-fn attitude_state(m: &motion::State) -> Vec<i32> {
+pub fn attitude_state(m: &motion::State) -> Vec<i32> {
     m.poses
         .reference
         .0
@@ -51,7 +51,7 @@ fn attitude_state(m: &motion::State) -> Vec<i32> {
         .chain(m.pivot)
         .collect()
 }
-fn motion_state(m: &motion::State) -> Vec<i32> {
+pub fn motion_state(m: &motion::State) -> Vec<i32> {
     m.velocity
         .into_iter()
         .chain(m.poses.physical_position)
@@ -65,7 +65,7 @@ fn motion_state(m: &motion::State) -> Vec<i32> {
         ])
         .collect()
 }
-fn boost_state(b: &boost::State) -> Vec<i32> {
+pub fn boost_state(b: &boost::State) -> Vec<i32> {
     vec![b.extra_speed, b.power, b.power_loss, b.timer.into()]
 }
 fn main() {

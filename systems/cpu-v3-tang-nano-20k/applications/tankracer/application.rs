@@ -84,7 +84,19 @@ const STATIC_APPLICATION: Definition = Definition {
     ..DEFAULT
 };
 
+#[path = "driving_application.rs"]
+mod driving;
 #[path = "physics_application.rs"]
 mod physics;
+#[path = "scene_application.rs"]
+mod scene;
+#[path = "terrain_application.rs"]
+mod terrain;
 
-pub const APPLICATIONS: &[Definition] = &[STATIC_APPLICATION, physics::APPLICATION];
+pub const APPLICATIONS: &[Definition] = &[
+    STATIC_APPLICATION,
+    physics::APPLICATION,
+    terrain::APPLICATION,
+    driving::APPLICATION,
+    scene::APPLICATION,
+];

@@ -7,11 +7,28 @@ pub fn from_i16(value: i16) -> fix32 {
 }
 
 pub fn mul(a: fix32, b: fix32) -> fix32 {
-    let alo = a.lo_bits();
-    let ahi = a.hi_bits();
-    let blo = b.lo_bits();
-    let bhi = b.hi_bits();
-    fix32::from_words(alo * blo, mul16(alo, blo) + ahi * blo + alo * bhi)
+    fmul_lo32(a, b)
+}
+
+pub fn rate_step(value: fix32, force: fix32, dt: fix32) -> fix32 {
+    let amount = fmul_lo32(force, dt);
+    if value > amount {
+        return value - amount;
+    }
+    if value < -amount {
+        return value + amount;
+    }
+    fix32::zero()
+}
+
+pub fn decay(value: fix32, shift: u16, dt: fix32) -> fix32 {
+    let result = value - sar(fmul_lo32(value, dt), shift);
+    if (value < fix32::zero() && result > fix32::zero())
+        || (value > fix32::zero() && result < fix32::zero())
+    {
+        return fix32::zero();
+    }
+    result
 }
 
 pub fn shl(value: fix32, count: u16) -> fix32 {
