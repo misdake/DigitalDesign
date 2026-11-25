@@ -147,7 +147,56 @@ impl World {
                 byte_len_lo: 32768,
                 byte_len_hi: 0,
             });
+        } else {
+            self.terrain.rebind();
         }
+    }
+    // Single-query scenery calls borrow DSEG3, then return to the caller's
+    // property/geometry stage. Four-contact sampling keeps its batched binding.
+    pub fn height(&mut self, x: fix32, z: fix32) -> terrain::Plane {
+        let saved = read_dseg_page(3);
+        self.bind(x, z);
+        let result = self.terrain.height(x, z);
+        if read_dseg_page(3) != saved {
+            unsafe {
+                write_dseg_page(3, saved);
+            }
+        }
+        result
+    }
+    pub fn normal_height(
+        &mut self,
+        x: fix32,
+        z: fix32,
+        normal: &mut terrain::Normal,
+    ) -> terrain::Plane {
+        let saved = read_dseg_page(3);
+        self.bind(x, z);
+        let result = self.terrain.normal_height(x, z, normal);
+        if read_dseg_page(3) != saved {
+            unsafe {
+                write_dseg_page(3, saved);
+            }
+        }
+        result
+    }
+    pub fn fallback(
+        &mut self,
+        x: fix32,
+        y: fix32,
+        z: fix32,
+        mode: u16,
+        normal: &mut terrain::Normal,
+    ) -> u16 {
+        let saved = read_dseg_page(3);
+        self.bind(x, z);
+        let result = self.terrain.fallback(x, y, z, mode, normal);
+        if read_dseg_page(3) != saved {
+            unsafe {
+                write_dseg_page(3, saved);
+            }
+        }
+        result
     }
 }
 pub fn effect_step(state: &mut State, world: &mut World, dt: fix32, frame: u16) {

@@ -81,6 +81,7 @@ fn run_live_contact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle:
         properties: p,
         count: 1,
         grid: spatial::Grid {
+            page: 65535,
             origin: origin.as_array(),
             shift_x: 12,
             shift_z: 12,

@@ -25,6 +25,10 @@ application_catalog! {
 }
 
 pub struct ApplicationSource {
+    /// Optional application-owned heap reservation, in 16-bit words.
+    pub heap_words: Option<u16>,
+    /// Optional initial stack pointer, in CPU word addresses.
+    pub stack_top: Option<u16>,
     pub sector_relocations: Vec<asset_metadata::SectorRelocation>,
     pub entry: &'static str,
     pub ordinary_dirs: Vec<PathBuf>,
@@ -160,6 +164,8 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
         constants: option_constants,
         extra_assets: vec![],
         source: ApplicationSource {
+            heap_words: None,
+            stack_top: None,
             sector_relocations: vec![],
             entry: definition.entry,
             ordinary_dirs: definition

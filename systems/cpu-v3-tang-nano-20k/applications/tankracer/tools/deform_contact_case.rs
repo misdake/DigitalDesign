@@ -4,7 +4,10 @@ fn empty_deform(
     data: Array<u16>,
     records: Array<deformation::Record>,
 ) -> deform_contact::Component {
+    let empty: Buf<crate::scene_meshes::Store, 0> = Buf::new([]);
     deform_contact::Component {
+        resources: empty.as_array(),
+        resource: 65535,
         object: 65535,
         state: deformation::HitState {
             dirty: fix32::zero(),
@@ -61,6 +64,7 @@ fn run_car_deform(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: A
         properties: props,
         count: 1,
         grid: spatial::Grid {
+            page: 65535,
             origin: input,
             shift_x: 0,
             shift_z: 0,

@@ -2,9 +2,13 @@
 use crate::dsl_rt::*;
 use crate::{
     attitude, collision, deformation, impact, integer, object_query, random, scene_contact,
-    scene_query, scene_world,
+    scene_meshes, scene_query, scene_world,
 };
 pub struct Component {
+    // Unbound RAM fixtures use 65535. Live surfaces resolve the one stable
+    // CPU-resident owner on each access; this view never copies slot state.
+    pub resources: Array<scene_meshes::Store>,
+    pub resource: u16,
     pub object: u16,
     pub state: deformation::HitState,
     pub config: deformation::HitConfig,
@@ -14,8 +18,8 @@ pub struct Component {
 fn field(row: Array<u16>, word: u16) -> fix32 {
     fix32::from_words(row[word], row[word + 1])
 }
-// Converter rows are followed by mutable vertices and flags widened to u16.
-// Hit and sampling views address the same vertex storage.
+// Rows are followed by vertex flags widened to u16. RAM fixture packets also
+// contain vertices at row[3]; live loading replaces that view with its resource.
 pub fn component(
     data: Array<u16>,
     world: &scene_world::World,
@@ -32,7 +36,11 @@ pub fn component(
             .as_u16_array()
     };
     let vertices = unsafe { data.as_ptr().add(row[3u16] as i16).as_i16_array() };
+    // The empty owner view is never indexed until a live binding replaces it.
+    let empty: Buf<scene_meshes::Store, 0> = Buf::new([]);
     Component {
+        resources: empty.as_array(),
+        resource: 65535,
         object: object,
         state: deformation::HitState {
             dirty: field(row, 30),
@@ -67,6 +75,20 @@ pub fn component(
             dirty: row[36u16],
         },
     }
+}
+pub fn refresh(component: &mut Component, mutable: bool) -> bool {
+    if component.resource == 65535 {
+        return true;
+    }
+    let view = scene_meshes::view(&component.resources[0u16], component.resource, mutable);
+    if !view.valid || view.page != 65535 {
+        return false;
+    }
+    component.mesh.vertices = view.mesh.vertices;
+    component.mesh.vertex_count = view.mesh.vertex_count;
+    component.sampling.vertices = view.mesh.vertices;
+    component.sampling.vertex_count = view.mesh.vertex_count;
+    true
 }
 pub fn find(components: Array<Component>, count: u16, object: u16) -> u16 {
     let mut i = 0u16;
@@ -269,6 +291,9 @@ pub fn respond(
             dt: vehicle.dt,
         };
         let c = &mut components[component];
+        if !refresh(c, true) {
+            return n(-1);
+        }
         if deformation::hit(&mut c.state, &c.config, &collider, &c.mesh, &mut view) >= 2 {
             return n(-1);
         }

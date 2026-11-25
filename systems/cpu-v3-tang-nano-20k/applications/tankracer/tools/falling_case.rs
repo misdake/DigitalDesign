@@ -43,6 +43,7 @@ fn run_falling(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: Arra
     attitude::put(items.as_array(), 252, id);
     let origin: Buf<u16, 4> = Buf::new([0; 4]);
     let mut grid = spatial::Grid {
+        page: 65535,
         origin: origin.as_array(),
         shift_x: 12,
         shift_z: 12,

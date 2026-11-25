@@ -45,6 +45,7 @@ fn run_spatial(input: Array<u16>, out: Array<u16>) {
     ranges[190u16] = 1;
     attitude::put(items.as_array(), 8, integer::from_i16(1));
     let mut grid = spatial::Grid {
+        page: 65535,
         origin: unsafe { input.as_ptr().add(6).as_u16_array() },
         shift_x: attitude::get(input, 5).lo_bits(),
         shift_z: attitude::get(input, 6).lo_bits(),

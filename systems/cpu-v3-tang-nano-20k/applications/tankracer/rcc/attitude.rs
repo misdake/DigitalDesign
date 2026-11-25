@@ -20,7 +20,7 @@ fn abs(v: fix32) -> fix32 {
     }
     v
 }
-fn length2(x: fix32, y: fix32) -> fix32 {
+pub fn length2(x: fix32, y: fix32) -> fix32 {
     let a = abs(x);
     let b = abs(y);
     if b <= a {

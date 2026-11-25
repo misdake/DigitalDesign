@@ -115,6 +115,8 @@ mod bounce_hit_cases;
 mod bounce_tick_cases;
 #[path = "crush_oracle.rs"]
 mod crush_cases;
+#[path = "entities_oracle.rs"]
+mod entities_cases;
 #[path = "fall_hit_oracle.rs"]
 mod fall_hit_cases;
 #[path = "falling_oracle.rs"]
@@ -741,6 +743,7 @@ fn main() {
     ground_cases::append(&mut cases);
     tank_cases::append(&mut cases);
     lifecycle_cases::append(&mut cases);
+    entities_cases::append(&mut cases);
     crush_cases::append(&mut cases);
     spatial_cases::append(&mut cases);
     let root = PathBuf::from(std::env::args_os().nth(2).expect("reference root"));
@@ -752,7 +755,7 @@ fn main() {
     fall_hit_cases::append(&mut cases, &root);
     bounce_hit_cases::append(&mut cases, &root);
     bounce_tick_cases::append(&mut cases, &root, &out);
-    fs::write(out.join("collision.json"),serde_json::to_vec_pretty(&json!({"cases":cases,"scope":"unmodified collision/body/queries, deformation, damage, impacts, blast impulse, ordered ground/tank response, live spatial/lifecycle and real Fall class motion"})).unwrap()).unwrap();
+    fs::write(out.join("collision.json"),serde_json::to_vec_pretty(&json!({"cases":cases,"scope":"unmodified collision/body/queries, deformation, damage, impacts, blast impulse, ordered ground/tank response, live spatial/lifecycle, entity allocation/binding/free links and original destructor record accounting, and real Fall class motion"})).unwrap()).unwrap();
 }
 
 fn impact_error(e: impact::Error) -> i32 {

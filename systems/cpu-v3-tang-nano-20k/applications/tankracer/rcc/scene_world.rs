@@ -22,6 +22,7 @@ pub struct World {
 // Source order selects the first hit. Every candidate reads current geometry;
 // moving, rotating or removing an earlier object is visible to the next query.
 pub fn query(world: &World, q: &object_query::Query, out: &mut object_query::Hit) -> u16 {
+    spatial::select(&world.grid);
     let mut row = ordered::List {
         items: world.deformables.items,
         count: world.deformables.count,

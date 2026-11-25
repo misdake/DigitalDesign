@@ -74,6 +74,9 @@ pub fn two_cars(root: &Path, vehicle: u32) -> SinglePlayer {
     world
 }
 pub fn complete(root: &Path) -> tankracer_game::session::Session {
+    constructed(root).into_session().unwrap().0
+}
+pub fn constructed(root: &Path) -> tankracer_game::world_startup::Constructed {
     let read = |name: &str| {
         let path = root.join("assets/game").join(name).join("FASTFILE.DAT");
         assert!(
@@ -101,7 +104,4 @@ pub fn complete(root: &Path) -> tankracer_game::session::Session {
         Selection::default_cup(0, 1).unwrap(),
     )
     .unwrap()
-    .into_session()
-    .unwrap()
-    .0
 }

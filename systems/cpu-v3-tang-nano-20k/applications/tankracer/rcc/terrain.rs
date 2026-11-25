@@ -97,7 +97,7 @@ impl Terrain {
             halt(0x7c01);
         }
         let page = asset.first_sector >> 8;
-        if self.page == page {
+        if self.page == page && read_dseg_page(3) == page {
             return;
         }
         unsafe {
@@ -115,6 +115,18 @@ impl Terrain {
         self.switches += 1;
     }
 
+    // Re-select a previously validated cell after another stage borrowed DSEG3.
+    pub fn rebind(&mut self) {
+        if self.page == 65535 {
+            halt(0x7c04);
+        }
+        if read_dseg_page(3) != self.page {
+            unsafe {
+                write_dseg_page(3, self.page);
+            }
+            self.switches += 1;
+        }
+    }
     pub fn finish(&mut self) {
         unsafe {
             write_dseg_page(3, self.saved);

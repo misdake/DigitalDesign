@@ -24,6 +24,7 @@ mod sampling;
 mod scene_contact;
 mod scene_query;
 mod scene_world;
+mod scenery_contact;
 mod spatial;
 mod terrain;
 mod trig_lookup;
@@ -122,6 +123,7 @@ fn main() {
         properties: properties.as_array(),
         count: 240,
         grid: spatial::Grid {
+            page: 65535,
             origin: origin.as_array(),
             shift_x: 0,
             shift_z: 0,
@@ -491,14 +493,18 @@ fn check_hits(scene: &scene_query::Scene, world: &mut scene_world::World) {
     };
     let velocity: Buf<u16, 6> = Buf::new([0; 6]);
     let counters: Buf<u16, 4> = Buf::new([0; 4]);
+    let previous: Buf<u16, 6> = Buf::new([0; 6]);
+    let bindings: Buf<u16, 1920> = Buf::new([0; 1920]);
+    let mut rows = bindings.as_array();
+    i = 0;
+    while i < 4 {
+        let id = h[60 + i * 4];
+        rows[id * 8] = 1;
+        rows[id * 8 + 1] = i * 10;
+        i += 1;
+    }
     let record: Buf<u16, 597> = Buf::new([0; 597]);
     let result: Buf<u16, 572> = Buf::new([0; 572]);
-    let env = scene_contact::Environment {
-        mode: fix32::zero(),
-        breakable_class: fix32::from_words(h[5u16], 0),
-        sine: unsafe { addr_of(&SCENE_SINE).as_i16_array() },
-        angle: unsafe { addr_of(&SCENE_ANGLE).as_i16_array() },
-    };
     i = 0;
     while i < SCENE_HIT_COUNT {
         unsafe {
@@ -515,13 +521,6 @@ fn check_hits(scene: &scene_query::Scene, world: &mut scene_world::World) {
         if selected >= 4 {
             halt(0x7e22);
         }
-        let q = object_query::Query {
-            start: unsafe { data.as_ptr().add(5).as_u16_array() },
-            end: unsafe { data.as_ptr().add(11).as_u16_array() },
-            self_entity: attitude::get(h, 3),
-            object_count: world.count,
-            deformable: false,
-        };
         let mut j = 0u16;
         while j < 3 {
             attitude::put(
@@ -529,19 +528,48 @@ fn check_hits(scene: &scene_query::Scene, world: &mut scene_world::World) {
                 j,
                 attitude::get(unsafe { data.as_ptr().add(17).as_u16_array() }, j),
             );
+            attitude::put(
+                previous.as_array(),
+                j,
+                fmul_lo32(
+                    attitude::get(unsafe { data.as_ptr().add(5).as_u16_array() }, j),
+                    integer::from_i16(2),
+                ) - attitude::get(unsafe { data.as_ptr().add(11).as_u16_array() }, j),
+            );
             j += 1;
         }
         let mut hit = object_query::hit_zero();
-        let status = scene_contact::obstacles(
-            world,
-            &q,
-            velocity.as_array(),
-            counters.as_array(),
-            &env,
-            &mut hit,
-        );
+        let vehicle = scenery_contact::Vehicle {
+            entity: attitude::get(h, 3),
+            position: unsafe { data.as_ptr().add(5).as_u16_array() },
+            previous: previous.as_array(),
+            base_position: unsafe { data.as_ptr().add(5).as_u16_array() },
+            velocity: velocity.as_array(),
+            forward: attitude::get(unsafe { data.as_ptr().add(23).as_u16_array() }, 0),
+            reference: unsafe { h.as_ptr().add(40).as_u16_array() },
+            external: unsafe { h.as_ptr().add(40).as_u16_array() },
+            has_external: true,
+            counters: counters.as_array(),
+            dt: attitude::get(unsafe { data.as_ptr().add(1).as_u16_array() }, 0),
+            mode: fix32::zero(),
+        };
+        let components = scenery_contact::Components {
+            records: rows,
+            state: states.as_array(),
+            config: unsafe { h.as_ptr().add(32).as_u16_array() },
+            fall_class: fix32::from_words(h[5u16], 0),
+            minimum_turn: attitude::get(h, 4),
+            maximum_turn: attitude::get(h, 5),
+            work_limit: attitude::get(unsafe { data.as_ptr().add(3).as_u16_array() }, 0),
+            tables: scenery_contact::Tables {
+                sine: unsafe { addr_of(&SCENE_SINE).as_i16_array() },
+                angle: unsafe { addr_of(&SCENE_ANGLE).as_i16_array() },
+            },
+        };
+        let status =
+            scenery_contact::respond(&vehicle, scene, world, &components, &mut runtime, &mut hit);
         let id = h[60 + selected * 4];
-        if hit.object != fix32::from_words(id, 0) || status != 1 {
+        if hit.object != fix32::from_words(id, 0) || status != fix32::zero() {
             halt(0x7e23);
         }
         let properties = unsafe {
@@ -558,35 +586,8 @@ fn check_hits(scene: &scene_query::Scene, world: &mut scene_world::World) {
                 .add((selected * 10) as i16)
                 .as_u16_array()
         };
-        let method = scene.method(properties[0u16], 24);
-        let activation = scene.method(properties[0u16], 4);
-        if method.status != 1 || method.id != 1 || activation.status != 1 || activation.id != 2 {
-            halt(0x7e24);
-        }
-        let saved = attitude::get(current.as_array(), 0);
-        attitude::put(current.as_array(), 0, integer::from_i16(24));
-        let fall_hit = falling::Hit {
-            velocity: velocity.as_array(),
-            forward: attitude::get(unsafe { data.as_ptr().add(23).as_u16_array() }, 0),
-            vehicle: q.self_entity,
-            entity: hit.entity,
-            minimum_turn_rate: attitude::get(h, 4),
-            maximum_turn_rate: attitude::get(h, 5),
-        };
-        let hit_status = falling::strike(
-            state,
-            properties,
-            &fall_hit,
-            &mut runtime.ticks,
-            runtime.slot,
-            attitude::get(unsafe { data.as_ptr().add(3).as_u16_array() }, 0),
-        );
-        if hit_status >= 2 {
-            halt(0x7e25);
-        }
-        attitude::put(current.as_array(), 0, saved);
         let output = result.as_array();
-        attitude::put(output, 0, fix32::from_words(status, 0));
+        attitude::put(output, 0, integer::from_i16(1));
         let raw = unsafe { view_of(&mut hit).as_ptr().as_u16_array() };
         j = 0;
         while j < 9 {

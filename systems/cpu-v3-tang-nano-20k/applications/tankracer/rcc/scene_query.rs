@@ -99,6 +99,7 @@ impl Scene {
         read(&self, self.header[5u16] + index * 76, dst, 76)
     }
     pub fn load_world(&self, world: &mut scene_world::World) -> u16 {
+        spatial::select(&world.grid);
         if !self.valid {
             return 7;
         }

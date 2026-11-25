@@ -1,16 +1,26 @@
 //! Persistent two-car trajectories through the original private collision entries.
+mod debris_scene_assets;
 mod deform_assets;
 mod driving_capture;
+mod driving_devices;
+mod driving_step;
+mod identity_assets;
 mod impact_snapshot;
 #[allow(dead_code)]
 #[path = "terrain_assets.rs"]
 mod pages;
+mod parent_scene_assets;
+mod pickup_scene_assets;
+mod pickup_snapshot;
+mod prefix_scene_assets;
 #[allow(dead_code, clippy::needless_range_loop, clippy::manual_range_contains)]
 #[path = "vehicle_oracle.rs"]
 mod reference;
 mod reference_world;
 mod scene_export;
-use serde_json::{json, Value};
+mod scenery_assets;
+mod scenery_frame;
+use serde_json::{Value, json};
 use std::{fs, path::Path};
 use tankracer_assets::{config::Part, terrain::TerrainData};
 use tankracer_game::{
@@ -19,7 +29,7 @@ use tankracer_game::{
     motion, pose, powertrain,
     sampling::Transform,
     suspension, terrain,
-    vehicle_runtime::{rcc_car_probe, rcc_probe, SinglePlayer},
+    vehicle_runtime::{SinglePlayer, rcc_car_probe, rcc_probe},
     vehicle_startup::Player,
     velocity,
 };
@@ -87,7 +97,145 @@ fn snapshot(world: &SinglePlayer, stages: &[Vec<i32>; 2]) -> Vec<i32> {
         ]);
     }
     out.push(world.identity.current_slot as i32);
+    for p in [a, b] {
+        out.extend([
+            p.physics.collision.collision_size as i32,
+            p.physics.collision.obstacle_impulse,
+        ]);
+    }
     out
+}
+
+struct PhysicalFrame<'a, 'b> {
+    world: &'a mut SinglePlayer,
+    setup: &'a driving_step::Setup<'b>,
+    input: drive::Input,
+    number: u32,
+    result: Option<driving_step::Step>,
+    scenery_ticks: usize,
+}
+impl tankracer_game::entity_factory::Methods<tankracer_game::scene_entity::Handle>
+    for PhysicalFrame<'_, '_>
+{
+    fn invoke(
+        &mut self,
+        method: tankracer_game::dispatch::MethodId,
+        mut call: tankracer_game::entity_factory::Invocation<
+            '_,
+            tankracer_game::scene_entity::Handle,
+        >,
+        env: tankracer_game::entity_factory::Environment<'_>,
+    ) -> Result<(), i32> {
+        if method.0 == 74 {
+            assert_eq!(
+                call.entity,
+                self.world.vehicles.entries[0]
+                    .as_ref()
+                    .unwrap()
+                    .physics
+                    .entity
+            );
+            self.result = Some(driving_step::step(
+                self.world,
+                self.setup,
+                0,
+                self.input,
+                self.number,
+                Some(&mut call.context),
+            ));
+            return Ok(());
+        }
+        if matches!(method.0, 65 | 80 | 83 | 114) {
+            self.scenery_ticks += 1;
+        }
+        tankracer_game::entity_factory::Methods::invoke(
+            &mut tankracer_game::scene_objects::View {
+                execution: tankracer_game::scene_objects::Execution::Simulation {
+                    random: &mut self.world.shared.random,
+                },
+                world: &mut self.world.objects.world,
+                components: &mut self.world.objects.components,
+                vehicles: Some(&mut self.world.vehicles),
+                effect_pool: Some(&mut self.world.shared.pool),
+                temporary: Some(&mut self.world.shared.temporary),
+            },
+            method,
+            call,
+            env,
+        )
+    }
+}
+fn ordered_frame(
+    world: &mut SinglePlayer,
+    setup: &driving_step::Setup<'_>,
+    input: drive::Input,
+    number: u32,
+    event: Option<usize>,
+) -> driving_step::Step {
+    use tankracer_game::{entity_factory as factory, scene_loading};
+    let mut identity = std::mem::replace(&mut world.identity, factory::State::new(2).unwrap());
+    let classes = world.objects.world.classes.clone();
+    let template = world.registry.environment(100000);
+    let env = factory::Environment {
+        classes: &classes,
+        ..template
+    };
+    world.objects.components.dt = 33;
+    let target = event.map(|id| world.objects.world.colliders[id].entity);
+    let mut methods = PhysicalFrame {
+        world,
+        setup,
+        input,
+        number,
+        result: None,
+        scenery_ticks: 0,
+    };
+    let mut context = identity.context();
+    if let Some(target) = target {
+        context
+            .queues
+            .queue(context.ticks, target, true, 100000)
+            .unwrap();
+    }
+    context
+        .tick(scene_loading::TICK, env, &mut methods)
+        .unwrap();
+    context
+        .drain(scene_loading::STOP, env, &mut methods)
+        .unwrap();
+    let mut result = methods.result.take().unwrap();
+    result.scenery_ticks = methods.scenery_ticks;
+    world.identity = identity;
+    result
+}
+fn obstacle_segment(world: &SinglePlayer, target: usize) -> ([i32; 3], [i32; 3]) {
+    use tankracer_game::object_query;
+    let grid = &world.objects.world.grid;
+    for axis in [0, 2] {
+        let mut a = world.objects.world.colliders[target].pose.position;
+        let mut b = a;
+        let reach = if target == 181 { 2000 } else { 10000 };
+        a[axis] += reach;
+        b[axis] -= reach;
+        let mut hit = object_query::Hit::default();
+        object_query::obstacles(
+            &object_query::Grid {
+                origin: grid.origin,
+                shifts: grid.shifts,
+                cells: grid.cells.each_ref().map(Vec::as_slice),
+            },
+            &world.objects.world.colliders,
+            world.vehicles.entries[0].as_ref().unwrap().physics.entity,
+            a,
+            b,
+            &mut hit,
+        )
+        .unwrap();
+        if hit.object == Some(object_query::ObstacleId(target)) {
+            return (a, b);
+        }
+    }
+    panic!("missing ordinary segment {target}");
 }
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
@@ -118,11 +266,318 @@ fn main() {
     ];
     let mut exported = Vec::<Value>::new();
     let mut cells = std::collections::BTreeSet::new();
-    for (name, velocities, separation, object) in [
-        ("pair-chase", [100000, 0], 1600, None),
-        ("pair-head-on", [300000, -300000], 1600, None),
-        ("deform-wide", [300000, 0], 1600, Some(124)),
-        ("deform-reverse", [-300000, 0], 1600, Some(173)),
+    let (mut asset_session, resources) = reference_world::constructed(root).into_session().unwrap();
+    let authored = asset_session.world_mut_at_load().unwrap();
+    let bindings = parent_scene_assets::configuration(authored);
+    let pickup_bindings = pickup_scene_assets::configuration(authored);
+    fs::write(
+        out.join("pickup-bindings.json"),
+        serde_json::to_vec(&pickup_bindings).unwrap(),
+    )
+    .unwrap();
+    let geometry = *authored.objects.components.actors.pickup_geometry();
+    let pickup_tuning =
+        rcc_car_probe::pickup_tuning(authored, tankracer_game::object_query::TankId(0));
+    let mut pickup_config = vec![
+        geometry.separation,
+        geometry.diameter as i32,
+        pickup_tuning.outer_growth,
+        pickup_tuning.inner_growth,
+        pickup_tuning.flare_growth,
+    ];
+    pickup_config.extend(pickup_tuning.palette.into_iter().flatten().map(i32::from));
+    pickup_config.extend(
+        authored
+            .objects
+            .components
+            .actors
+            .pickup_amounts()
+            .map(i32::from),
+    );
+    fs::write(
+        out.join("pickup-config.json"),
+        serde_json::to_vec(&pickup_config).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        out.join("parent-bindings.json"),
+        serde_json::to_vec(&bindings).unwrap(),
+    )
+    .unwrap();
+    for (name, words) in [
+        ("debris.bin", debris_scene_assets::encode(authored)),
+        ("symbols.bin", debris_scene_assets::bindings(authored)),
+    ] {
+        fs::write(
+            out.join(name),
+            words
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    }
+    let mut models = Vec::new();
+    for row in bindings.iter().chain(&pickup_bindings) {
+        let name = row["name"].as_str().unwrap();
+        if !name.is_empty() && !models.iter().any(|(key, _)| key == name) {
+            models.push((name.to_string(), resources.auxiliary_model(name).unwrap()));
+        }
+    }
+    for (name, velocities, separation, object, ordinary, retire, transient) in [
+        (
+            "pickup-186",
+            [300000, 0],
+            1600,
+            Some(186),
+            true,
+            false,
+            false,
+        ),
+        (
+            "pickup-187",
+            [300000, 0],
+            1600,
+            Some(187),
+            true,
+            false,
+            false,
+        ),
+        (
+            "pickup-189",
+            [300000, 0],
+            1600,
+            Some(189),
+            true,
+            false,
+            false,
+        ),
+        (
+            "prefix-boost",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        ("pair-chase", [100000, 0], 1600, None, false, false, false),
+        (
+            "debris-169",
+            [300000, 0],
+            1600,
+            Some(169),
+            true,
+            false,
+            false,
+        ),
+        (
+            "debris-170",
+            [300000, 0],
+            1600,
+            Some(170),
+            true,
+            false,
+            false,
+        ),
+        (
+            "debris-171",
+            [300000, 0],
+            1600,
+            Some(171),
+            true,
+            false,
+            false,
+        ),
+        (
+            "debris-179",
+            [300000, 0],
+            1600,
+            Some(179),
+            true,
+            false,
+            false,
+        ),
+        (
+            "debris-180",
+            [300000, 0],
+            1600,
+            Some(180),
+            true,
+            false,
+            false,
+        ),
+        (
+            "debris-181",
+            [300000, 0],
+            1600,
+            Some(181),
+            true,
+            false,
+            false,
+        ),
+        (
+            "debris-peer-blast",
+            [300000, 0],
+            1600,
+            Some(181),
+            true,
+            false,
+            false,
+        ),
+        (
+            "debris-retire",
+            [300000, 0],
+            1600,
+            Some(170),
+            true,
+            true,
+            false,
+        ),
+        (
+            "pair-head-on",
+            [300000, -300000],
+            1600,
+            None,
+            false,
+            false,
+            false,
+        ),
+        (
+            "deform-wide",
+            [300000, 0],
+            1600,
+            Some(124),
+            false,
+            false,
+            false,
+        ),
+        (
+            "deform-reverse",
+            [-300000, 0],
+            1600,
+            Some(173),
+            false,
+            false,
+            false,
+        ),
+        (
+            "scenery-fall",
+            [300000, 0],
+            1600,
+            Some(60),
+            true,
+            false,
+            false,
+        ),
+        (
+            "scenery-bounce",
+            [300000, 0],
+            1600,
+            Some(58),
+            true,
+            false,
+            false,
+        ),
+        (
+            "retire-fall",
+            [300000, 0],
+            1600,
+            Some(60),
+            true,
+            true,
+            false,
+        ),
+        (
+            "retire-bounce",
+            [300000, 0],
+            1600,
+            Some(58),
+            true,
+            true,
+            true,
+        ),
+        (
+            "auxiliary-bench",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
+            "auxiliary-gate",
+            [300000, 0],
+            1600,
+            Some(141),
+            true,
+            false,
+            false,
+        ),
+        (
+            "auxiliary-closer",
+            [300000, 0],
+            1600,
+            Some(172),
+            true,
+            false,
+            false,
+        ),
+        (
+            "auxiliary-bench-peer",
+            [300000, 0],
+            1600,
+            Some(70),
+            true,
+            false,
+            false,
+        ),
+        (
+            "auxiliary-gate-peer",
+            [300000, 0],
+            1600,
+            Some(142),
+            true,
+            false,
+            false,
+        ),
+        (
+            "auxiliary-gate-north",
+            [300000, 0],
+            1600,
+            Some(237),
+            true,
+            false,
+            false,
+        ),
+        (
+            "auxiliary-gate-south",
+            [300000, 0],
+            1600,
+            Some(238),
+            true,
+            false,
+            false,
+        ),
+        (
+            "auxiliary-retire-bench",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            true,
+            false,
+        ),
+        (
+            "auxiliary-retire-closer",
+            [300000, 0],
+            1600,
+            Some(172),
+            true,
+            true,
+            false,
+        ),
     ] {
         let mut session = reference_world::complete(root);
         let mut empty = reference_world::two_cars(root, 1);
@@ -132,7 +587,25 @@ fn main() {
             &mut empty
         };
         let entity = world.vehicles.entries[0].as_ref().unwrap().physics.entity;
+        let segment = if ordinary {
+            object.map(|index| {
+                if name.starts_with("pickup-") {
+                    let mut a = world.objects.world.colliders[index].pose.position;
+                    let mut b = a;
+                    a[0] += 500;
+                    b[0] -= 500;
+                    (a, b)
+                } else {
+                    obstacle_segment(world, index)
+                }
+            })
+        } else {
+            None
+        };
         let start = object.map(|index| {
+            if let Some((a, _)) = segment {
+                return a;
+            }
             let c = &world.objects.world.colliders[index];
             let component = world.objects.components.surfaces.entries[index]
                 .as_ref()
@@ -166,6 +639,24 @@ fn main() {
             }
             fs::write(out.join("scene.bin"), bytes(&scene)).unwrap();
             fs::write(out.join("deform.bin"), bytes(&config)).unwrap();
+            fs::write(
+                out.join("deform-bound.bin"),
+                bytes(&deform_assets::encode_bound(world)),
+            )
+            .unwrap();
+            let mut mesh_ids = Vec::new();
+            for id in &world.objects.world.deformables {
+                let surface = world.objects.components.surfaces.entries[id.0]
+                    .as_ref()
+                    .unwrap();
+                mesh_ids.push(surface.mesh.index() as u16);
+            }
+            let encoded = bytes(&mesh_ids);
+            let path = out.join("deform-mesh-ids.bin");
+            if path.exists() {
+                assert_eq!(fs::read(&path).unwrap(), encoded);
+            }
+            fs::write(path, encoded).unwrap();
         }
         for (i, original) in originals.iter().enumerate() {
             let mut p = original.clone();
@@ -187,12 +678,28 @@ fn main() {
             let z = start.map_or(9072, |p| p[2]) + i as i32 * separation;
             let x = start.map_or(-235, |p| p[0]);
             let mut height = 0;
-            assert!(terrain::height(&terrain, x, z, &mut height).unwrap());
+            let sampled = terrain::height(&terrain, x, z, &mut height).unwrap();
+            assert!(ordinary || sampled);
             v.motion.poses.physical_position = [
                 x,
                 height - p.model.primary_local[0][1] - v.pose.track_offsets[0][1],
                 z,
             ];
+            if let Some((a, b)) = segment {
+                if i == 0 || name == "debris-peer-blast" {
+                    v.motion.poses.physical_position = a;
+                    if i == 1 {
+                        v.motion.poses.physical_position[2] += 1600;
+                    }
+                    v.motion.previous_position =
+                        std::array::from_fn(|axis| a[axis].wrapping_mul(2).wrapping_sub(b[axis]));
+                    // The post-contact car center is above this low barrier.
+                    // A descending swept segment reaches its actual hit volume.
+                    if object == Some(169) {
+                        v.motion.previous_position[1] += 2000;
+                    }
+                }
+            }
             v.motion.poses.body.matrix = Matrix::IDENTITY;
             v.motion.poses.reference = Matrix::IDENTITY;
             v.motion
@@ -214,6 +721,12 @@ fn main() {
                 )
                 .unwrap();
             v.motion.velocity = [0, 0, velocities[i]];
+            if ordinary && i == 0 {
+                v.motion.velocity = [-400000, -100000, 200000];
+            }
+            if name.starts_with("pickup-") {
+                v.motion.velocity = [0; 3];
+            }
             v.pose_input.external = pose::ExternalBasis::Body;
             for j in 0..4 {
                 v.contact.sampling.primary.points[j].local = p.model.primary_local[j];
@@ -224,20 +737,115 @@ fn main() {
         world.vehicles.racers = [None; 9];
         world.vehicles.racers[0] = Some(tankracer_game::object_query::TankId(0));
         world.vehicles.racers[1] = Some(tankracer_game::object_query::TankId(1));
-        if object.is_some() {
+        if object.is_some() && name != "debris-peer-blast" {
             world.vehicles.racers[1] = None;
         }
         world.shared.random = 0x1234abcd;
         world.shared.noise = ground::initialize_noise(&mut world.shared.random);
         world.shared.pool = effect_pool::Pool::default();
         world.shared.impacts = impact_particles::State::default();
-        let noise = world.shared.noise;
+        if transient {
+            let id = object.unwrap();
+            world.objects.components.objects[id]
+                .as_mut()
+                .unwrap()
+                .transient = true;
+            let entity = world.objects.world.colliders[id].entity;
+            world.identity.ticks.flags[entity.0 as usize] &= !8;
+        }
+        if ordinary {
+            let retained = object
+                .filter(|id| {
+                    (name.starts_with("auxiliary-") && *id == 172) || name.starts_with("pickup-")
+                })
+                .and_then(|id| {
+                    let entity = world.objects.world.colliders[id].entity;
+                    (world.identity.ticks.flags[entity.0 as usize] & 16 != 0).then_some(entity)
+                });
+            // The physical qualifier freezes unrelated actors in its initial
+            // snapshot; live car activation still follows the real scheduler.
+            for flags in &mut world.identity.ticks.flags {
+                *flags &= !16;
+            }
+            world.identity.ticks.order.clear();
+            world.identity.ticks.enable(entity).unwrap();
+            if let Some(entity) = retained {
+                world.identity.ticks.enable(entity).unwrap();
+            }
+            world.identity.ticks.next = None;
+            let live = scenery_frame::initial(world);
+            let bytes = live
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>();
+            if name == "scenery-fall" {
+                fs::write(out.join("scenery.bin"), &bytes).unwrap();
+            }
+            fs::write(out.join(format!("scenery-initial-{name}.bin")), &bytes).unwrap();
+            for (filename, words) in [
+                (
+                    "identity.bin",
+                    identity_assets::encode(&world.identity.entities),
+                ),
+                ("lifetime.bin", scenery_frame::initial_lists(world)),
+            ] {
+                let bytes = words
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>();
+                if out.join(filename).exists() {
+                    assert_eq!(fs::read(out.join(filename)).unwrap(), bytes);
+                }
+                fs::write(out.join(filename), bytes).unwrap();
+            }
+        }
         let initial_seed = world.shared.random;
+        let pickup_initial = if name.starts_with("pickup-") {
+            pickup_scene_assets::capture(world)
+        } else {
+            Vec::new()
+        };
+        let mut prefix_initial = Vec::new();
+        if name.starts_with("prefix-") {
+            let s = &mut world.vehicles.entries[0].as_mut().unwrap().prefix;
+            s.boost.start(entity, false, 0, &mut world.shared.boost);
+            s.boost.camera_timer = 199;
+            world.shared.camera = tankracer_game::vehicle_prefix::boost::Camera {
+                pitch: -1638,
+                height: 5500,
+                distance: -7000,
+            };
+            s.temporary_timer = 33;
+            s.temporary_slot = 0;
+            world.shared.temporary.timestamps[0] = 1;
+            world.shared.boost.source_uv = [0, 65535];
+            world.shared.view.enabled = true;
+            world.shared.view.position = [800, 1600, 2400];
+            prefix_initial = prefix_scene_assets::encode(world);
+            world.vehicles.entries[0]
+                .as_mut()
+                .unwrap()
+                .prefix
+                .spin
+                .start(true, 0, &mut world.shared.spin, &mut world.shared.random);
+            let cfg = rcc_car_probe::prefix_config(world, tankracer_game::object_query::TankId(0));
+            fs::write(
+                out.join("prefix-config.bin"),
+                cfg.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+            )
+            .unwrap();
+        }
+        let noise = world.shared.noise;
         let mut stages = std::array::from_fn(|i| {
             let p = world.vehicles.entries[i].as_ref().unwrap();
             reference::drive_fixture::flatten(&p.physics.powertrain.drive_state(&p.physics.motion))
         });
         let initial = snapshot(&world, &stages);
+        let car_bindings = debris_scene_assets::cars(world);
+        let racer_slots = world
+            .vehicles
+            .racers
+            .map(|v| v.map_or(65535, |v| v.0 as u16));
         let entities: Vec<_> = world.vehicles.entries[..2]
             .iter()
             .map(|p| p.as_ref().unwrap().physics.entity.0)
@@ -247,240 +855,116 @@ fn main() {
         let mut deform_hits = 0;
         let mut sampled_points = 0;
         let mut spark_events = 0;
+        let mut ordinary_hits = 0;
+        let mut scenery_ticks = 0;
+        let mut activated = false;
         let before_mesh = deform_assets::capture(world);
+        let baseline = (0..world.objects.world.objects.len())
+            .map(|i| scene_export::record(&world.objects.world, i))
+            .collect::<Vec<_>>();
         let actors = if object.is_some() { 1 } else { 2 };
         let mut visited = std::collections::BTreeSet::new();
-        for frame in 0..steps {
+        if name.starts_with("auxiliary-")
+            || name.starts_with("debris-")
+            || name.starts_with("prefix-")
+            || name.starts_with("pickup-")
+        {
+            let origin = world.objects.world.colliders[object.unwrap()].pose.position;
+            let x = ((origin[0] >> 3) - terrain.origin[0]) >> terrain.shifts[0];
+            let z = ((origin[2] >> 3) - terrain.origin[1]) >> terrain.shifts[1];
+            assert!((0..8).contains(&x) && (0..8).contains(&z));
+            visited.insert((x + z * 8) as usize);
+        }
+        let setup = driving_step::Setup {
+            terrain: &terrain,
+            surfaces: &surfaces,
+            tank,
+            tuning: &tuning,
+            contact: &contact,
+            layout,
+            environment: env,
+            deform: object.is_some(),
+            ordinary,
+            prepare: name.starts_with("prefix-"),
+            pickups: name.starts_with("pickup-"),
+            models: if name.starts_with("auxiliary-")
+                || name.starts_with("debris-")
+                || name.starts_with("prefix-")
+                || name.starts_with("pickup-")
+            {
+                &models
+            } else {
+                &[]
+            },
+        };
+        let case_steps = if retire {
+            steps.clamp(3, 4)
+        } else if name.starts_with("pickup-") {
+            steps.clamp(2, 4)
+        } else if ordinary {
+            steps.min(4)
+        } else {
+            steps
+        };
+        for frame in 0..case_steps {
             let number = frame as u32 + 1;
             world.frame = number;
             for own in 0..actors {
                 let input = drive::Input {
-                    throttle: if velocities[own] < 0 { -65535 } else { 65535 },
-                    ..Default::default()
-                };
-                let p = world.vehicles.entries[own].as_mut().unwrap();
-                let v = &mut p.physics;
-                let mut deformable = rcc_probe::surface(
-                    &mut world.objects.components.surfaces,
-                    &world.objects.world.colliders,
-                    v.collision.deformable,
-                )
-                .unwrap();
-                let dt = 33;
-                let se = suspension::Environment {
-                    dt,
-                    is_player: v.player,
-                    session_active: 1,
-                    player_multiplier: env[11].as_u64().unwrap() as u16,
-                    player_shift: env[12].as_u64().unwrap() as u32,
-                    other_multiplier: env[13].as_u64().unwrap() as u16,
-                    other_shift: env[14].as_u64().unwrap() as u32,
-                    penetration_shift: tank.suspension.susp_to_shape.shift as u8 as u32,
-                    base: [
-                        v.motion.poses.base_position[0],
-                        v.motion.poses.base_position[2],
-                    ],
-                    ..Default::default()
-                };
-                let sampling = ground::Environment {
-                    tracks: v.motion.poses.tracks.map(|t| Transform {
-                        basis: t.matrix.0,
-                        origin: t.position,
-                    }),
-                    auxiliary_local: p.model.auxiliary_local,
-                    force_surface: false,
-                    effect_gain: contact::Coefficient {
-                        multiplier: 3,
-                        shift: 9,
+                    throttle: if name.starts_with("pickup-") {
+                        0
+                    } else if velocities[own] < 0 {
+                        -65535
+                    } else {
+                        65535
                     },
-                    load: (&tank.suspension).into(),
-                    dt,
-                    frame: number,
-                    player: u32::from(v.player),
+                    ..Default::default()
                 };
-                v.contact
-                    .step_vehicle(
-                        ground::Vehicle {
-                            motion: &mut v.motion,
-                            powertrain: &mut v.powertrain,
-                            pose: &mut v.pose,
-                        },
-                        &ground::World {
-                            terrain: &terrain,
-                            surface_bumps: &surfaces.entries.map(|s| s.bump.into()),
-                            noise,
-                        },
-                        &ground::Config {
-                            sampling: &sampling,
-                            suspension: &se,
-                            contact: &contact,
-                            layout,
-                        },
-                        &mut world.shared.random,
-                        deformable.as_mut(),
-                        |_| true,
+                let result = if ordinary {
+                    ordered_frame(
+                        world,
+                        &setup,
+                        input,
+                        number,
+                        if retire && frame == 1 { object } else { None },
                     )
-                    .unwrap();
-                // Coverage only: sampling a cloned diagnostic state does not
-                // alter the live record/dirty writes used by the next frame.
-                if let Some(surface) = deformable.as_mut() {
-                    let mut state = surface.state.clone();
-                    for point in &v.contact.sampling.primary.points {
-                        sampled_points +=
-                            usize::from(state.sample(&surface.geometry, point.world).offset != 0);
-                    }
-                }
-                for point in v
-                    .contact
-                    .sampling
-                    .primary
-                    .points
-                    .iter()
-                    .map(|p| p.world)
-                    .chain(
-                        v.contact
-                            .sampling
-                            .auxiliary
-                            .iter()
-                            .filter(|p| p.cached != 0)
-                            .map(|p| p.world),
-                    )
+                } else {
+                    driving_step::step(world, &setup, own, input, number, None)
+                };
+                if ordinary
+                    && !name.starts_with("auxiliary-")
+                    && !name.starts_with("debris-")
+                    && !name.starts_with("prefix-")
+                    && !name.starts_with("pickup-")
+                    && frame == 0
                 {
-                    let x = ((point[0] >> 3) - terrain.origin[0]) >> terrain.shifts[0];
-                    let z = ((point[2] >> 3) - terrain.origin[1]) >> terrain.shifts[1];
-                    if (0..8).contains(&x) && (0..8).contains(&z) {
-                        visited.insert((x + z * 8) as usize);
-                    }
+                    assert_eq!(result.scenery_ticks, 0);
                 }
-                let de = drive::Environment {
-                    dt,
-                    mode: 0,
-                    player: v.player,
-                    active: true,
-                    launch_eligible: false,
-                    materials: v.contact.sampling.materials.map(|m| m as usize),
-                    kinds: v.contact.sampling.primary.points.each_ref().map(|p| p.kind),
-                    contact_y: v
-                        .contact
-                        .sampling
-                        .primary
-                        .points
-                        .each_ref()
-                        .map(|p| p.world[1]),
-                    airborne: v.contact.sampling.primary.airborne_count as i8,
-                    boost_charge: 0,
-                    boost_power: 0,
-                    extra_drive: 0,
-                };
-                let mut control = reference::drive_fixture::frame(&input, &de);
-                control.extend([number as i32, 0, own as i32, 0]);
-                v.powertrain
-                    .step(
-                        &mut v.motion,
-                        &powertrain::Config {
-                            drive: &tank.drive,
-                            surfaces: &surfaces,
-                            tuning: &tuning,
-                            yaw: velocity::YawConfig::from(&tank.drive),
-                        },
-                        &powertrain::Frame {
-                            input: &input,
-                            drive: &de,
-                            vertical_delta: v.contact.response.vertical_delta,
-                            yaw_lock: 0,
-                        },
-                    )
-                    .unwrap();
-                stages[own] =
-                    reference::drive_fixture::flatten(&v.powertrain.drive_state(&v.motion));
-                let before_timer = v.collision.timer;
-                let id = tankracer_game::object_query::TankId(own);
-                rcc_probe::tanks(world, id, dt, 0).unwrap();
-                hits += usize::from(
-                    world.vehicles.entries[own]
-                        .as_ref()
-                        .unwrap()
-                        .physics
-                        .collision
-                        .timer
-                        != before_timer,
-                );
-                if object.is_some() {
-                    let before = world.vehicles.entries[own]
-                        .as_ref()
-                        .unwrap()
-                        .physics
-                        .collision
-                        .impact_accumulator;
-                    rcc_probe::deformables(world, id, dt, 0).unwrap();
-                    deform_hits += usize::from(
-                        world.vehicles.entries[own]
-                            .as_ref()
-                            .unwrap()
-                            .physics
-                            .collision
-                            .deformable
-                            .is_some(),
-                    );
-                    spark_events += ((world.vehicles.entries[own]
-                        .as_ref()
-                        .unwrap()
-                        .physics
-                        .collision
-                        .impact_accumulator
-                        - before)
-                        / dt) as usize;
+                if ordinary
+                    && !name.starts_with("auxiliary-")
+                    && !name.starts_with("debris-")
+                    && !name.starts_with("prefix-")
+                    && !name.starts_with("pickup-")
+                    && frame == 1
+                {
+                    assert_eq!(result.scenery_ticks, 1);
                 }
-                rcc_car_probe::ground(world, id, dt, number).unwrap();
-                let p = world.vehicles.entries[own].as_mut().unwrap();
-                let v = &mut p.physics;
-                let indices = p.model.gun_vertices;
-                let original_z = p.model.gun_original_z;
-                p.model.parts[Part::Gun.slot()]
-                    .as_mut()
-                    .unwrap()
-                    .edit(|mesh| {
-                        v.motion.integrate_and_pose(
-                            &motion::Config {
-                                attitude: &attitude::Config::from(&tank.suspension),
-                                body: &body::Tuning::default(),
-                                pose: &v.pose,
-                            },
-                            &motion::Frame {
-                                dt,
-                                number,
-                                player: v.player,
-                                mode: 0,
-                                pose: motion::PoseInput {
-                                    session_active: true,
-                                    external: pose::ExternalBasis::Body,
-                                    ..Default::default()
-                                },
-                            },
-                            Some(body::GunMesh {
-                                vertices: &mut mesh.vertices,
-                                indices,
-                                original_z,
-                            }),
-                        )
-                    })
-                    .unwrap()
-                    .unwrap();
-                world
-                    .shared
-                    .impacts
-                    .tick(
-                        v,
-                        dt,
-                        &mut impact_particles::Context {
-                            frame: number,
-                            random: &mut world.shared.random,
-                            pool: &mut world.shared.pool,
-                            tuning: impact_particles::Tuning::default(),
-                        },
-                    )
-                    .unwrap();
-                v.motion.finish_frame(dt);
+                if name.starts_with("auxiliary-") {
+                    activated |= world.objects.components.objects[object.unwrap()]
+                        .as_ref()
+                        .is_some_and(|o| {
+                            o.auxiliary_mesh.is_some() && o.auxiliary_motion.is_some()
+                        });
+                }
+                let control = result.control;
+                stages[own] = result.stage;
+                visited.extend(result.cells);
+                hits += result.tank_hits;
+                deform_hits += result.deform_hits;
+                sampled_points += result.sampled_points;
+                spark_events += result.spark_events;
+                ordinary_hits += result.ordinary_hits;
+                scenery_ticks += result.scenery_ticks;
                 let mut expected = snapshot(&world, &stages);
                 expected.push(world.shared.random as i32);
                 let surface = if object.is_some() {
@@ -488,7 +972,58 @@ fn main() {
                 } else {
                     Vec::new()
                 };
-                frames.push(json!({"control":control,"expected":expected,"surface":surface}));
+                let mut resource_versions = Vec::new();
+                if object.is_some() {
+                    for id in &world.objects.world.deformables {
+                        let component = world.objects.components.surfaces.entries[id.0]
+                            .as_ref()
+                            .unwrap();
+                        let version = world
+                            .objects
+                            .components
+                            .surfaces
+                            .meshes
+                            .info(component.mesh)
+                            .unwrap()
+                            .version;
+                        for shift in [0, 16, 32, 48] {
+                            resource_versions.push((version >> shift) as u16);
+                        }
+                    }
+                }
+                let live = if ordinary {
+                    scenery_frame::capture(world, &baseline)
+                } else {
+                    Vec::new()
+                };
+                frames.push(
+                    json!({"control":control,"expected":expected,"surface":surface,"scenery":live,"resource_versions":resource_versions,
+                        "prefix": if name.starts_with("prefix-") {prefix_scene_assets::encode(world)}else{Vec::new()},
+                        "pickup":if name.starts_with("pickup-"){pickup_scene_assets::capture(world)}else{Vec::new()},
+                        "debris": if name.starts_with("debris-") {debris_scene_assets::capture(world)} else {Vec::new()},
+                        "parents": if name.starts_with("auxiliary-") || name.starts_with("debris-") || name.starts_with("prefix-") || name.starts_with("pickup-") { parent_scene_assets::capture(world, &bindings) } else { Vec::new() }}),
+                );
+                if retire && frame >= 1 {
+                    let id = object.unwrap();
+                    assert!(world.objects.components.objects[id].is_none());
+                    assert!(
+                        world
+                            .identity
+                            .entities
+                            .record(world.objects.world.colliders[id].entity)
+                            .is_none()
+                    );
+                    assert!(
+                        world
+                            .objects
+                            .world
+                            .grid
+                            .cells
+                            .iter()
+                            .all(|cell| !cell
+                                .contains(&tankracer_game::object_query::ObstacleId(id)))
+                    );
+                }
             }
         }
         let after_mesh = deform_assets::capture(world);
@@ -515,19 +1050,116 @@ fn main() {
             }
         }
         assert!(
-            hits > 0 || (deform_hits > 0 && changed_vertices > 0),
-            "paired trajectories must exercise real car collisions"
+            hits > 0
+                || (deform_hits > 0 && changed_vertices > 0)
+                || ordinary_hits > 0
+                || name.starts_with("pickup-"),
+            "paired trajectories must exercise real car collisions: {name}, ordinary {ordinary_hits}"
         );
-        if object.is_some() && steps >= 2 {
+        if object.is_some() && !ordinary && steps >= 2 {
             assert!(
                 sampled_points > 0,
                 "deformed height must reach next-frame contacts"
             );
         }
+        if name.starts_with("auxiliary-") {
+            assert!(
+                activated,
+                "{name}: expected actual mesh fragment activation"
+            );
+            assert!(scenery_ticks > 0, "{name}: expected actual parent ticks");
+        }
+        if name.starts_with("debris-") {
+            if !retire {
+                assert_ne!(
+                    world.objects.components.objects[object.unwrap()]
+                        .as_ref()
+                        .unwrap()
+                        .data
+                        .debris
+                        .as_ref()
+                        .unwrap()
+                        .flags
+                        & 1,
+                    0,
+                    "{name}: debris never activated"
+                );
+            }
+            if object == Some(169) {
+                assert!(
+                    world.objects.components.objects[172]
+                        .as_ref()
+                        .unwrap()
+                        .auxiliary_mesh
+                        .is_some(),
+                    "attached binding must activate the real Closer"
+                );
+            }
+            if object == Some(181) {
+                assert!(
+                    world.vehicles.entries[0]
+                        .as_ref()
+                        .unwrap()
+                        .physics
+                        .collision
+                        .collision_size
+                        >= 300,
+                    "current car must receive a blast in actual force range"
+                );
+            }
+            if name == "debris-peer-blast" {
+                let peer = &world.vehicles.entries[1].as_ref().unwrap().physics;
+                assert_ne!(
+                    peer.motion.angular, [0; 3],
+                    "peer must receive the real blast"
+                );
+            }
+        }
+        if name.starts_with("prefix-") {
+            let s = &world.vehicles.entries[0].as_ref().unwrap().prefix;
+            assert_eq!(
+                s.boost.applied, 1,
+                "boost slot must apply to the live player"
+            );
+            assert!(
+                s.boost.timer > 0 && s.boost.extra_speed > 0,
+                "boost must reach power integration"
+            );
+            assert_eq!(
+                s.temporary_timer, 0,
+                "temporary effect must expire before physics"
+            );
+            assert_eq!(world.shared.temporary.available, 0);
+            assert!(
+                s.spin.speed > 0 && world.shared.random != initial_seed,
+                "shared prefix RNG must advance"
+            );
+        }
+        if name.starts_with("pickup-") {
+            let p = world.vehicles.entries[0].as_ref().unwrap();
+            let Some(tankracer_game::actor_startup::Actor::Powerup(pickup)) = world
+                .objects
+                .components
+                .actors
+                .get(tankracer_game::object_query::ObstacleId(object.unwrap()))
+            else {
+                panic!("pickup actor")
+            };
+            assert_eq!(
+                p.inventory.weapon, pickup.kind,
+                "pickup must collect its authored inventory"
+            );
+            assert!(
+                world.shared.pool.quad_count > 0,
+                "collection must allocate its live lights"
+            );
+        }
         cells.extend(visited.iter().copied());
-        exported.push(json!({"name":name,"cars":actors,"entities":entities,"initial":initial,"seed_after_noise":initial_seed,"noise":noise,
+        exported.push(json!({"name":name,"cars":actors,"car_bindings":car_bindings,"prefix_initial":prefix_initial,"pickup_initial":pickup_initial,"racer_slots":racer_slots,"entities":entities,"initial":initial,"seed_after_noise":initial_seed,"noise":noise,
             "frames":frames,"cells":visited,"fallback_contacts":0,"tank_contacts":hits,"deform_contacts":deform_hits,
-            "deformed_vertices":changed_vertices,"surface_sample_points":sampled_points,"deform_spark_events":spark_events,"scene":object.is_some()}));
+            "deformed_vertices":changed_vertices,"surface_sample_points":sampled_points,"deform_spark_events":spark_events,"scene":object.is_some(),"scenery":ordinary,"ordinary_contacts":ordinary_hits,"scenery_ticks":scenery_ticks,
+            "retirement":retire,"transient":transient,"retire_object":if retire {object.unwrap()+1} else {0},
+            "retire_frame":if retire {1} else {65535},"scenery_initial":format!("scenery-initial-{name}.bin")}));
     }
     fs::write(
         out.join("paired.json"),

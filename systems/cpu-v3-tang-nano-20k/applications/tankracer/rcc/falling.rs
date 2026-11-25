@@ -22,6 +22,26 @@ pub fn strike(
     slot: Array<u16>,
     limit: fix32,
 ) -> u16 {
+    if begin_strike(state, properties, hit) == 0 {
+        return 0;
+    }
+    attitude::put(properties, 3, n(1));
+    let saved = attitude::get(slot, 0);
+    attitude::put(slot, 0, n(4));
+    if limit == n(0) {
+        return 2;
+    }
+    let status = lifecycle::enable(ticks, hit.entity);
+    if status >= 2 {
+        return status;
+    }
+    attitude::put(slot, 0, saved);
+    finish_strike(state, properties, hit);
+    1
+}
+// Class entry inserts its actual object/audio and activation calls between
+// these two phases. Ordinary Fall uses the same phases above.
+pub fn begin_strike(state: Array<u16>, properties: Array<u16>, hit: &Hit) -> u16 {
     let flags = attitude::get(properties, 4);
     if attitude::get(properties, 3) != n(0) || flags.lo_bits() & 1 != 0 {
         return 0;
@@ -36,17 +56,9 @@ pub fn strike(
         low |= 8;
         attitude::put(properties, 4, fix32::from_words(low, flags.hi_bits()));
     }
-    attitude::put(properties, 3, n(1));
-    let saved = attitude::get(slot, 0);
-    attitude::put(slot, 0, n(4));
-    if limit == n(0) {
-        return 2;
-    }
-    let status = lifecycle::enable(ticks, hit.entity);
-    if status >= 2 {
-        return status;
-    }
-    attitude::put(slot, 0, saved);
+    1
+}
+pub fn finish_strike(state: Array<u16>, properties: Array<u16>, hit: &Hit) {
     let flags = attitude::get(properties, 4);
     attitude::put(
         properties,
@@ -59,7 +71,7 @@ pub fn strike(
     if speed < n(0) {
         speed = -speed;
     }
-    rate = integer::trunc_shift(speed, 3);
+    let mut rate = integer::trunc_shift(speed, 3);
     if rate < hit.minimum_turn_rate {
         rate = hit.minimum_turn_rate;
     } else if rate > hit.maximum_turn_rate {
@@ -71,7 +83,6 @@ pub fn strike(
         4,
         fix32::from_words((flags.lo_bits() | 2) & 65519, flags.hi_bits()),
     );
-    1
 }
 
 pub struct Motion {
@@ -108,6 +119,11 @@ pub struct Step {
     pub sine: Array<i16>,
     pub angle: Array<i16>,
 }
+pub struct Body {
+    pub state: Array<u16>,
+    pub properties: Array<u16>,
+    pub collider: Array<u16>,
+}
 // Plain Fall tick on the live world. The owner resolves last_vehicle at the
 // original use point, then dispatches any authored auxiliary/debris methods.
 // 0 success; 2 invalid limit, 3 work, 4 object/capacity, 5 arithmetic,
@@ -140,6 +156,26 @@ pub fn tick(
             .add((id * 60) as i16)
             .as_u16_array()
     };
+    let body = Body {
+        state: state,
+        properties: properties,
+        collider: collider,
+    };
+    tick_body(&body, step, runtime, map, &mut world.grid)
+}
+pub fn tick_body(
+    body: &Body,
+    step: &Step,
+    runtime: &mut scene_world::Runtime,
+    map: &mut ground::World,
+    grid: &mut spatial::Grid,
+) -> u16 {
+    if step.limit == n(0) {
+        return 2;
+    }
+    let state = body.state;
+    let properties = body.properties;
+    let collider = body.collider;
     let active = attitude::get(properties, 3) != n(0);
     let aligning = attitude::get(properties, 4).lo_bits() & 2 != 0;
     if active && aligning && !step.peer_valid {
@@ -183,8 +219,7 @@ pub fn tick(
         status = 5;
     }
     if status == 0 && action.terrain {
-        map.bind(action.x, action.z);
-        let height = map.terrain.height(action.x, action.z);
+        let height = map.height(action.x, action.z);
         if height.status >= 2 {
             status = 8;
             if height.status == 2 {
@@ -195,7 +230,7 @@ pub fn tick(
         }
     }
     if status == 0 && action.retire {
-        status = spatial::remove(&mut world.grid, step.id, &step.cell, step.limit);
+        status = spatial::remove(grid, step.id, &step.cell, step.limit);
         if status == 0 {
             status = lifecycle::queue(
                 &mut runtime.queues,

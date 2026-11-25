@@ -16,7 +16,8 @@ impl scene_objects::collision::Services for NoIo {
         _: obstacle::Invocation<'_>,
     ) -> Result<(), i32> {
         match sound {
-            scene_objects::collision::Sound::Deformable => Ok(()),
+            scene_objects::collision::Sound::Deformable
+            | scene_objects::collision::Sound::Obstacle => Ok(()),
             _ => panic!("unexpected collision audio"),
         }
     }
@@ -41,10 +42,22 @@ pub fn geometry(world: &SinglePlayer, id: usize) -> object_query::Tank {
     tank_geometry(world.vehicles.entries[id].as_ref().unwrap())
 }
 pub fn tanks(world: &mut SinglePlayer, id: TankId, dt: i32, mode: i32) -> Result<(), i32> {
-    collide(world, id, dt, mode, false)
+    collide(world, id, dt, mode, 0, 100000)
 }
 pub fn deformables(world: &mut SinglePlayer, id: TankId, dt: i32, mode: i32) -> Result<(), i32> {
-    collide(world, id, dt, mode, true)
+    collide(world, id, dt, mode, 1, 100000)
+}
+pub fn obstacles(world: &mut SinglePlayer, id: TankId, dt: i32, mode: i32) -> Result<(), i32> {
+    collide(world, id, dt, mode, 2, 100000)
+}
+pub fn obstacles_limit(
+    world: &mut SinglePlayer,
+    id: TankId,
+    dt: i32,
+    mode: i32,
+    limit: u32,
+) -> Result<(), i32> {
+    collide(world, id, dt, mode, 2, limit)
 }
 pub fn surface<'a>(
     surfaces: &'a mut crate::scene_collision::Surfaces,
@@ -58,12 +71,39 @@ fn collide(
     id: TankId,
     dt: i32,
     mode: i32,
-    deformable: bool,
+    kind: u16,
+    work_limit: u32,
 ) -> Result<(), i32> {
+    contacts(world, id, dt, mode, kind, work_limit, None)
+}
+/// A scheduler invocation supplies its live Context. Standalone qualification
+/// borrows the same fields directly from the world's identity owner instead.
+pub fn contacts(
+    world: &mut SinglePlayer,
+    id: TankId,
+    dt: i32,
+    mode: i32,
+    kind: u16,
+    work_limit: u32,
+    context: Option<&mut factory::Context<'_, Handle>>,
+) -> Result<(), i32> {
+    contacts_with_devices(world, id, dt, mode, kind, work_limit, context, &mut NoIo)
+}
+pub fn contacts_with_devices<D: Devices>(
+    world: &mut SinglePlayer,
+    id: TankId,
+    dt: i32,
+    mode: i32,
+    kind: u16,
+    work_limit: u32,
+    context: Option<&mut factory::Context<'_, Handle>>,
+    devices: &mut D,
+) -> Result<(), i32> {
+    assert!(kind <= 2);
     let hit = world
         .registry
         .hit_environment(world.objects.components.fall_tuning, false, 65536);
-    let environment = world.registry.environment(100000);
+    let environment = world.registry.environment(work_limit);
     let mut execution = Execution {
         input: Default::default(),
         keys: None,
@@ -88,13 +128,35 @@ fn collide(
         },
         camera: ([0; 3], [0; 3]),
         camera_basis: crate::math::Matrix::IDENTITY,
-        devices: &mut NoIo,
+        devices,
         hit,
         breakable_class: world.registry.fall,
     };
-    if deformable {
-        execution.deformables(id, &mut world.identity.context(), environment)
+    if kind == 0 {
+        return execution.tanks(id);
+    }
+    if let Some(context) = context {
+        contact_entry(&mut execution, context, environment, id, kind)
     } else {
-        execution.tanks(id)
+        contact_entry(
+            &mut execution,
+            &mut world.identity.context(),
+            environment,
+            id,
+            kind,
+        )
+    }
+}
+fn contact_entry<D: Devices>(
+    execution: &mut Execution<'_, D>,
+    context: &mut factory::Context<'_, Handle>,
+    environment: factory::Environment<'_>,
+    id: TankId,
+    kind: u16,
+) -> Result<(), i32> {
+    if kind == 1 {
+        execution.deformables(id, context, environment)
+    } else {
+        execution.obstacles(id, context, environment)
     }
 }

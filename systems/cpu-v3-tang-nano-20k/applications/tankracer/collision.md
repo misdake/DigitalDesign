@@ -112,6 +112,40 @@ slot and committed mesh prefix, and invalid spark resources retain status -4.
 
 ## Scenery contact response
 
+`scenery_contact::respond` is the ordinary car entry: build the physical-position
+segment, query current memberships, reflect/blend velocity and update the live
+impact accumulator/collision size before resolving class slot 24. It dispatches
+plain Fall and Bounce methods against authoritative component buffers and the
+shared tick flags/order, slot and seed. Null methods retain their normal success
+behavior. The caller supplies a fresh hit record; its metadata and failure
+prefix remain available after the call.
+
+Component bindings use eight u16 words per object: kind (1 plain Fall, 2 Bounce),
+state/config word offsets, alias/mesh flags, current cell X/Z/present, reserved.
+Fall state/config use five/four i32 values. Bounce uses eleven state values and
+eleven configuration values: the ten original gains and its independent
+settling threshold. The record, state and configuration views address stable
+CPU-owned storage across nested asset-window reads. Work limits and trig views
+are explicit parts of the component context.
+
+`scenery_contact::tick` resolves slot 12, then runs the corresponding live
+Fall/Bounce update with the current terrain, peer basis and shared runtime.
+Bounce publishes its updated cell even on a later error. `drain` consumes the
+original LIFO queues and resolves Stop slot 5 using the current entity-class
+table. Successful in-range calls restore the saved slot; errors and out-of-range
+calls retain their source prefix. A destruction event reaches its destructor
+boundary after Stop; further destruction and additional gameplay bindings
+currently return -5. The complete world owner supplies those remaining methods.
+
+Ordinary-entry qualification calls the original private car entry and real scene
+dispatch, using original ENGLAND records, class tables and terrain. It covers
+high/low speed, reverse motion, mode 4, active objects, missing tick storage and
+zero work limits, then several actual ticks and Stop processing. Each stage
+compares matrices, live properties, component state, cells, queues, tick order,
+RNG and car counters; the final comparison includes every tick flag. The module
+fixture isolates the selected candidate and memberships. The normal scene
+application also exercises the common entry on its complete mutable world.
+
 `scene_contact::obstacles` connects the ordered live-world query to this response.
 It reads the hit object's current property row and collider radius, then returns
 miss 0, synchronous method boundary 1, threshold-only reflection 2, arithmetic
@@ -226,6 +260,107 @@ distance-band boundaries, out-of-range returns, zero force, health errors,
 angular overflow and all combinations of damage, axes, marking and visibility.
 This qualifies the impulse kernel; projectile traversal, blast eligibility and
 world dispatch are separate call sites.
+
+## Mutable mesh fragments
+
+`rcc/mesh_break.rs` activates and advances auxiliary triangle fragments directly
+in caller-owned geometry. State has four i32 header values (retired count,
+ground height, prepared and lifetime), then sixteen words per face: three i32
+velocity values, three i32 angular values, i32 life, i16 extra vertex and u16
+mode. Mesh views address strided vertices, triangle indices/flags, three center
+columns and the radius. The loader reserves these spans and keeps word offsets
+within the CPU's signed pointer range.
+
+Activation transforms the captured incoming velocity, applies the configured
+push, then initializes every face in source order. Scatter deliberately draws
+twice: the first wrapped product selects the sign branch and the second product
+is shifted. Angular scatter takes two RNG draws for each sample. Pair detection
+preserves the carried extra-vertex tail and its missing-tail error. Geometry
+flags, random consumption and completed faces remain committed on work failure.
+
+Updates apply gravity once per update, then the source friction/bounce policy
+across all six velocity/angular words. Each visible face moves its existing
+vertices and center directly; a paired head also moves the tail's extra vertex.
+Pairs spend one loop step and retire two faces. Missing geometry or center
+columns fail at the original access, retaining earlier writes. Return values
+are active 0, complete 1 and original negative errors. Resource allocation and
+virtual completion belong to the owning scene methods.
+
+```powershell
+$reference = Read-Host 'TankRacerCUP Cargo.toml'
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/mesh_break_assets.py --reference $reference --output target/mesh-break-reference
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/mesh-break-check target/mesh-break-reference 0 mesh-break
+```
+
+The oracle calls unmodified `mesh_break::activate` and `tick`. Authored cases
+obtain each auxiliary model from the actual constructed ENGLAND resource owner;
+they retain its vertices, triangle indices, centers and parameters. Additional
+cases cover integer limits, degenerate pairs, missing columns, invalid geometry,
+partial activation/retirement and repeated updates. The RCC instruction checker
+compares every mutable face, vertex, center, triangle flag, header, radius and
+seed with a bounded run per case. This is module qualification; loading and
+scene/factory calls have their own integration boundary.
+
+`bench-tankracer-fragments` runs a bounded representative set through the normal
+CB06 application path. Inputs include authored bench/barrier/gate/pickup geometry
+and committed work, pairing, center and retirement failures. Its generated
+buffers reserve the actual input, output, mutable geometry and shared scene sizes.
+It also retains a live auxiliary owner across repeated class calls, including
+completion dispatch, resource-version wrapping and errors after earlier writes.
+The module checker and normal owner share qualification decoders/captures;
+production fragment kernels remain independent of that format. Trig lookups use
+the ordinary immutable asset window with raw i16 sign extension, and every case
+checks restoration of the incoming DSEG3 mapping.
+
+```powershell
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-fragments --reference $reference --out target/fragments-app
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/fragments_check.py target/fragments-app target/fragments-check --runtime target/release/cpu-v3-display-sim.exe
+```
+
+Add `--backend native` to the checker for bounded native CPU/cache execution
+with a functional GPU. This qualification includes normal asset loading and
+verification, with no GPU submissions or rendering contention. Auxiliary update
+bindings and completion use the production scene entry. Stable resource
+creation/copy/release and the auxiliary-contact method run against complete
+authored geometry and real terrain; see [mutable mesh ownership](scene.md#mutable-mesh-ownership)
+and [auxiliary activation](scene.md#auxiliary-mesh-activation). Outer car collision
+dispatch and full-world scheduling are separate call sites.
+
+## Closing barrier arithmetic
+
+`rcc/inverse_basis.rs` implements the original inverse Q12 basis lookup. Its
+output is four i32 values: pitch, yaw, roll and a nonzero-cosine flag. Failure
+leaves the output unchanged. The lookup retains the explicit zero at magnitude
+4096, pitch singularities, wrapping products, signed division and quadrant
+selection. Its 4096-entry inverse-cosine table comes directly from the original
+Rust data file; the sine table uses the common exact exporter.
+
+`rcc/closer.rs` borrows three i32 state fields (speed, flags and phase), the live
+matrix and shared scene queues. `poll` checks the original eight-frame identity
+gate and strict X/Z proximity bounds before selecting the closing phase.
+`advance` derives roll from the complete inverse-basis calculation, applies the
+original acceleration and rebound branches, and queues Stop at the same point.
+Queue failure retains preceding state changes and skips rotation. Normalization
+uses a temporary matrix, preserving the committed rotation on arithmetic error.
+Work limits use unsigned comparison; time, speed and wrapped matrix arithmetic
+retain signed i32 semantics. Neither kernel consumes RNG.
+
+These are arithmetic and queue contracts. The scene owner supplies the actual
+phase dispatch, external/reference alias publication and fragment methods.
+
+```powershell
+$reference = Read-Host 'TankRacerCUP Cargo.toml'
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/closer_assets.py --reference $reference --output target/closer-reference
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/closer-check target/closer-reference 0 closer
+```
+
+The source oracle calls original `Matrix::angles`, `closer::poll` and the private
+closing movement through an appended visibility bridge. Cases cover every Q12
+pitch lookup input, singularities, integer limits, proximity boundaries, queue
+failures and snapshots from repeated movement. The checker compiles the actual
+RCC modules, checks transactional outputs and full queue/flag prefixes, and
+places an explicit instruction bound on every case. This establishes module
+correctness, separate from normal loading and world scheduling.
 
 ## Qualification
 

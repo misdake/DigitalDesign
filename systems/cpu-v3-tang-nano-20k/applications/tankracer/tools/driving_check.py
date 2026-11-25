@@ -42,6 +42,10 @@ def main():
         raise ValueError(f'driving failed: {diagnostic}')
     report = dict(passed=True, backend=args.backend, cases=assets['cases'], steps_per_case=steps,
                   checked_i32_values=assets['updates'] * assets['checked_i32_per_frame'] + assets.get('checked_surface_i32', 0), startup_noise_words=16,
+                  resource_version_words=assets.get('resource_version_words', 0),
+                  checked_parent_words=assets.get('checked_parent_words', 0),
+                  checked_pickup_words=assets.get('checked_pickup_words',0), checked_debris_words=assets.get('checked_debris_words', 0), checked_prefix_words=assets.get('checked_prefix_words',0), qualification_scope=assets.get('qualification_scope','full'),
+                  scenery_frames=assets.get('scenery_frames', 0), checked_scenery_words=assets.get('checked_scenery_words', 0),
                   artifact_id=artifact.manifest['artifact_id'], scope=assets['scope'], runtime_summary=result)
     (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({k: report[k] for k in ['passed', 'backend', 'steps_per_case', 'checked_i32_values']}))

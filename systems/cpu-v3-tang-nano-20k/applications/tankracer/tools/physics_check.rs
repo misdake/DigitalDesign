@@ -1,18 +1,40 @@
 //! Reproducible arithmetic qualification through rustc, RCC, sim and core emu.
 use cpu_v3::{
-    rcc_backend::{self, CompilerOptions, CpuV3Program},
     CpuV3Core, CpuV3CoreInput, CpuV3CoreInputValue, CpuV3Sim, StepOutcome,
+    rcc_backend::{self, CompilerOptions, CpuV3Program},
 };
 use digital_design_circuit::build_circuit;
 use digital_design_hardware::{Module, ModuleIo};
 use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{error::Error, fs, path::Path};
 
+#[path = "auxiliary_hit_check.rs"]
+mod auxiliary_hit_check;
+#[path = "closer_check.rs"]
+mod closer_check;
 #[path = "collision_check.rs"]
 mod collision_check;
+#[path = "mesh_break_check.rs"]
+mod mesh_break_check;
+#[path = "mesh_store_check.rs"]
+mod mesh_store_check;
+#[path = "parent_auxiliary_check.rs"]
+mod parent_auxiliary_check;
+#[path = "pickup_light_check.rs"]
+mod pickup_light_check;
 #[path = "polar_check.rs"]
 mod polar_check;
+#[path = "powerup_check.rs"]
+mod powerup_check;
+#[path = "prefix_check.rs"]
+mod prefix_check;
+#[path = "scene_fragment_check.rs"]
+mod scene_fragment_check;
+#[path = "shatter_check.rs"]
+mod shatter_check;
+#[path = "spin_check.rs"]
+mod spin_check;
 #[path = "trig_check.rs"]
 mod trig_check;
 #[path = "vehicle_core_check.rs"]
@@ -53,14 +75,34 @@ const STATIC_ASSETS: &str = include_str!("../../../rcc/static_assets.rs");
 const GPU_LAYOUT: &str = include_str!("../../../rcc/gpu_layout.rs");
 const OBJECT_QUERY: &str = include_str!("../rcc/object_query.rs");
 const TRIG_ASSET_LOOKUP: &str = include_str!("../rcc/trig_asset_lookup.rs");
-const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod crush; mod spatial; mod falling; mod blast; mod scene_world; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window;\n";
+const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
 
 fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<dyn Error>> {
     let folder = output.join(label);
     fs::create_dir_all(&folder)?;
     let source = format!("{PREAMBLE}{body}");
     fs::write(folder.join("input.rs"), &source)?;
-    let options = CompilerOptions::for_separate_code_and_data_segments(0);
+    let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
+    if label == "collision" {
+        // Resource-aware surface access makes the allocator reachable, even
+        // when RAM-only fixtures never allocate. Keep its startup tags above
+        // the angle table and outside the fixed input/snapshot areas.
+        options.heap_begin = 0x8200;
+        options.heap_size = 32;
+    }
+    if label == "mesh-store" || label == "mesh-store-oom" || label == "auxiliary-hit" {
+        // Raw fixture arenas occupy 0x0100..0x873f. Keep their persistent
+        // payload heap separate from inputs, snapshots and fragment scratch.
+        options.heap_begin = 0x9000;
+        options.heap_size = 0x2000;
+        if label == "mesh-store-oom" {
+            options.heap_size = 32;
+        }
+    }
+    if label == "parent-auxiliary" || label == "powerup" || label == "pickup-light" {
+        options.heap_begin = 0x7000;
+        options.heap_size = 0x2000;
+    }
     let ir = compile_program_named_checked(
         label,
         &source,
@@ -69,18 +111,47 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         &mut |name| match name {
             "integer" => Ok(INTEGER.to_owned()),
             "attitude" => Ok(ATTITUDE.to_owned()),
+            "inverse_basis" => Ok(include_str!("../rcc/inverse_basis.rs").to_owned()),
+            "closer" => Ok(include_str!("../rcc/closer.rs").to_owned()),
+            "mesh_break" => Ok(include_str!("../rcc/mesh_break.rs").to_owned()),
+            "scene_meshes" => Ok(include_str!("../rcc/scene_meshes.rs").to_owned()),
+            "mesh_storage" => Ok(include_str!("../rcc/mesh_storage.rs").to_owned()),
+            "scene_fragments" => Ok(include_str!("../rcc/scene_fragments.rs").to_owned()),
             "suspension" => Ok(SUSPENSION.to_owned()),
             "drive" => Ok(DRIVE.to_owned()),
             "vehicle" => Ok(VEHICLE.to_owned()),
-            "trig_lookup" => Ok(TRIG_LOOKUP.to_owned()),
+            "trig_lookup" => Ok(if label == "parent-auxiliary"
+                || label == "prefix"
+                || label == "powerup"
+                || label == "pickup-light"
+            {
+                TRIG_ASSET_LOOKUP
+            } else {
+                TRIG_LOOKUP
+            }
+            .to_owned()),
+            "mesh_catalog" => Ok(include_str!("../rcc/mesh_catalog.rs").to_owned()),
+            "symbols" => Ok(include_str!("../rcc/symbols.rs").to_owned()),
+            "scene_debris" => Ok(include_str!("../rcc/scene_debris.rs").to_owned()),
+            "powerup" => Ok(include_str!("../rcc/powerup.rs").to_owned()),
+            "quad_pool" => Ok(include_str!("../rcc/quad_pool.rs").to_owned()),
+            "pickup_light" => Ok(include_str!("../rcc/pickup_light.rs").to_owned()),
+            "inventory" => Ok(include_str!("../rcc/inventory.rs").to_owned()),
+            "prefix" => Ok(include_str!("../rcc/prefix.rs").to_owned()),
+            "spin" => Ok(include_str!("../rcc/spin.rs").to_owned()),
+            "shatter" => Ok(include_str!("../rcc/shatter.rs").to_owned()),
+            "scene_parent" => Ok(include_str!("../rcc/scene_parent.rs").to_owned()),
             "collision" => Ok(COLLISION.to_owned()),
             "body" => Ok(BODY.to_owned()),
             "object_query" => Ok(OBJECT_QUERY.to_owned()),
             "random" => Ok(RANDOM.to_owned()),
             "deformation" => Ok(DEFORMATION.to_owned()),
             "deform_contact" => Ok(include_str!("../rcc/deform_contact.rs").to_owned()),
+            "scenery_contact" => Ok(include_str!("../rcc/scenery_contact.rs").to_owned()),
             "scene_query" => Ok(include_str!("../rcc/scene_query.rs").to_owned()),
-            "gpu_window" => Ok(include_str!("../../../rcc/gpu_window.rs").to_owned()),
+            "gpu_window" | "trig_lookup/gpu_window" | "mesh_catalog/gpu_window" => {
+                Ok(include_str!("../../../rcc/gpu_window.rs").to_owned())
+            }
             "damage" => Ok(DAMAGE.to_owned()),
             "effect_pool" => Ok(EFFECT_POOL.to_owned()),
             "impact" => Ok(IMPACT.to_owned()),
@@ -89,10 +160,14 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "tank_response" => Ok(TANK_RESPONSE.to_owned()),
             "ordered" => Ok(ORDERED.to_owned()),
             "lifecycle" => Ok(LIFECYCLE.to_owned()),
+            "entities" => Ok(include_str!("../rcc/entities.rs").to_owned()),
+            "scene_lifecycle" => Ok(include_str!("../rcc/scene_lifecycle.rs").to_owned()),
+            "identity_capture" => Ok(include_str!("identity_capture.rs").to_owned()),
             "crush" => Ok(CRUSH.to_owned()),
             "spatial" => Ok(SPATIAL.to_owned()),
             "falling" => Ok(FALLING.to_owned()),
             "blast" => Ok(BLAST.to_owned()),
+            "driving" => Ok(include_str!("../rcc/driving.rs").to_owned()),
             "scene_world" => Ok(SCENE_WORLD.to_owned()),
             "scene_contact" => Ok(SCENE_CONTACT.to_owned()),
             "bounce" => Ok(BOUNCE.to_owned()),
@@ -100,9 +175,11 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "sampling" => Ok(SAMPLING.to_owned()),
             "terrain" => Ok(TERRAIN.to_owned()),
             "static_assets" => Ok(STATIC_ASSETS.to_owned()),
-            "gpu_layout" | "static_assets/gpu_layout" | "gpu_window/gpu_layout" => {
-                Ok(GPU_LAYOUT.to_owned())
-            }
+            "gpu_layout"
+            | "static_assets/gpu_layout"
+            | "gpu_window/gpu_layout"
+            | "trig_lookup/gpu_window/gpu_layout"
+            | "mesh_catalog/gpu_window/gpu_layout" => Ok(GPU_LAYOUT.to_owned()),
             _ => Err(format!("unexpected module {name}")),
         },
     )?;
@@ -530,6 +607,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mode = std::env::args().nth(4);
         let report = match mode.as_deref() {
             Some("collision") => collision_check::run(&output, Path::new(&fixture))?,
+            Some("closer") => closer_check::run(&output, Path::new(&fixture))?,
+            Some("powerup") => powerup_check::run(&output, Path::new(&fixture))?,
+            Some("pickup-light") => pickup_light_check::run(&output, Path::new(&fixture))?,
+            Some("prefix") => prefix_check::run(&output, Path::new(&fixture))?,
+            Some("spin") => spin_check::run(&output, Path::new(&fixture))?,
+            Some("shatter") => shatter_check::run(&output, Path::new(&fixture))?,
+            Some("mesh-break") => mesh_break_check::run(&output, Path::new(&fixture))?,
+            Some("mesh-store") => mesh_store_check::run(&output, Path::new(&fixture))?,
+            Some("auxiliary-hit") => auxiliary_hit_check::run(&output, Path::new(&fixture))?,
+            Some("parent-auxiliary") => parent_auxiliary_check::run(&output, Path::new(&fixture))?,
+            Some("scene-fragments") => scene_fragment_check::run(&output, Path::new(&fixture))?,
             Some("suspension") => suspension_cases(&output, Path::new(&fixture), limit)?,
             Some("drive") => drive_cases(&output, Path::new(&fixture), limit)?,
             Some("vehicle") => vehicle_cases(&output, Path::new(&fixture), limit)?,
@@ -959,10 +1047,12 @@ fn feed_drive(m: &mut [u16], input: &Value) {
 }
 
 fn read_i32(memory: &[u16], address: usize, count: usize) -> Value {
-    json!(memory[address..address + count * 2]
-        .chunks_exact(2)
-        .map(|p| (u32::from(p[0]) | (u32::from(p[1]) << 16)) as i32)
-        .collect::<Vec<_>>())
+    json!(
+        memory[address..address + count * 2]
+            .chunks_exact(2)
+            .map(|p| (u32::from(p[0]) | (u32::from(p[1]) << 16)) as i32)
+            .collect::<Vec<_>>()
+    )
 }
 fn write_i32(memory: &mut [u16], address: usize, values: &Value) {
     for (i, v) in values.as_array().unwrap().iter().enumerate() {

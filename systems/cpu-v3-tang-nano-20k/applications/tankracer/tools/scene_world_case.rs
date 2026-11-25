@@ -26,6 +26,7 @@ fn run_scene_world(input: Array<u16>, out: Array<u16>, sine: Array<i16>) {
         properties: properties.as_array(),
         count: 2,
         grid: spatial::Grid {
+            page: 65535,
             origin: origin.as_array(),
             shift_x: 12,
             shift_z: 12,

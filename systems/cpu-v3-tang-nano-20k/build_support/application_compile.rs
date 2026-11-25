@@ -41,6 +41,12 @@ pub(super) fn compile_program(
         reserved,
     } = request;
     let mut options = options.clone();
+    if let Some(words) = policy.heap_words {
+        options.heap_size = words;
+    }
+    if let Some(top) = policy.stack_top {
+        options.stack_init = top;
+    }
     options.asset_banks = asset_banks(reserved);
     options.asset_dependencies = policy
         .sector_relocations

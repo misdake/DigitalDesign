@@ -23,6 +23,10 @@ checks candidates/class slots and runs connected Fall/Bounce contacts and motion
 [Collision and body arithmetic](/systems/cpu-v3-tang-nano-20k/applications/tankracer/collision.md)
 describes reflection, pair impulses, body springs, contact hulls and their module checks.
 
+`bench-tankracer-fragments` qualifies authored auxiliary mesh activation,
+real-terrain contact, vertex/center updates and live class completion through normal asset loading; see
+[mutable mesh fragments](collision.md#mutable-mesh-fragments).
+
 ```powershell
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map target/map.zip --camera target/cameras.json --out target/tankracer-map
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview bench-tankracer-static --snapshot target/tankracer-map --presents 2

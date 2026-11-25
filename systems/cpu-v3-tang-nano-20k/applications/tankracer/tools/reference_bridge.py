@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 
-def prepare(root: Path, output: Path, driving=False) -> Path:
+def prepare(root: Path, output: Path, driving=False, lifecycle=False, closer=False, meshes=False, symbols=False) -> Path:
     source = root / 'crates/game/src'
     owner = Path(__file__).resolve().parent
     bridge = owner / 'reference_tanks.rs'
@@ -17,6 +17,31 @@ def prepare(root: Path, output: Path, driving=False) -> Path:
             '\n#[path=' + json.dumps(bridge.as_posix()) + '] pub mod rcc_probe;\n').encode(),
     }
     car_bridge = owner / 'reference_car.rs'
+    scene_bridge = owner / 'reference_scene.rs'
+    if lifecycle:
+        if not scene_bridge.is_file():
+            raise FileNotFoundError(scene_bridge)
+        suffixes['scene_objects.rs'] = (
+            '\n#[path=' + json.dumps(scene_bridge.as_posix()) + '] pub mod rcc_lifecycle_probe;\n').encode()
+    closer_bridge = owner / 'reference_closer.rs'
+    meshes_bridge = owner / 'reference_meshes.rs'
+    if meshes:
+        if not meshes_bridge.is_file():
+            raise FileNotFoundError(meshes_bridge)
+        suffixes['scene_meshes.rs'] = (
+            '\n#[path=' + json.dumps(meshes_bridge.as_posix()) + '] pub mod rcc_probe;\n').encode()
+    if closer:
+        if not closer_bridge.is_file():
+            raise FileNotFoundError(closer_bridge)
+        suffixes['scene_objects.rs'] = suffixes.get('scene_objects.rs', b'') + b'\npub use closing::rcc_probe as rcc_closer_probe;\n'
+        suffixes['scene_objects/closing.rs'] = (
+            '\n#[path=' + json.dumps(closer_bridge.as_posix()) + '] pub mod rcc_probe;\n').encode()
+    if symbols:
+        symbol_bridge = owner / 'reference_symbols.rs'
+        if not symbol_bridge.is_file():
+            raise FileNotFoundError(symbol_bridge)
+        suffixes['symbols.rs'] = (
+            '\n#[path=' + json.dumps(symbol_bridge.as_posix()) + '] pub mod rcc_probe;\n').encode()
     if driving:
         if not car_bridge.is_file():
             raise FileNotFoundError(car_bridge)
@@ -47,5 +72,9 @@ def prepare(root: Path, output: Path, driving=False) -> Path:
         scope='Original implementation bytes preserved; appended private-call bridge only.',
         bridge=dict(file=str(bridge), sha256=hashlib.sha256(bridge.read_bytes()).hexdigest()),
         car_bridge=dict(file=str(car_bridge), sha256=hashlib.sha256(car_bridge.read_bytes()).hexdigest()) if driving else None,
+        scene_bridge=dict(file=str(scene_bridge), sha256=hashlib.sha256(scene_bridge.read_bytes()).hexdigest()) if lifecycle else None,
+        closer_bridge=dict(file=str(closer_bridge), sha256=hashlib.sha256(closer_bridge.read_bytes()).hexdigest()) if closer else None,
+        meshes_bridge=dict(file=str(meshes_bridge), sha256=hashlib.sha256(meshes_bridge.read_bytes()).hexdigest()) if meshes else None,
+        symbol_bridge=dict(file=str(symbol_bridge), sha256=hashlib.sha256(symbol_bridge.read_bytes()).hexdigest()) if symbols else None,
         sources=records), indent=2) + '\n')
     return destination

@@ -11,6 +11,8 @@ pub struct Insert {
     pub cell: Cell,
 }
 pub struct Grid {
+    // 65535 selects CPU arrays; otherwise origin/items/ranges share DSEG3.
+    pub page: u16,
     pub origin: Array<u16>,
     pub shift_x: u16,
     pub shift_z: u16,
@@ -21,6 +23,16 @@ pub struct Grid {
 fn n(v: i16) -> fix32 {
     integer::from_i16(v)
 }
+pub fn select(grid: &Grid) -> u16 {
+    let saved = read_dseg_page(3);
+    if grid.page != 65535 && grid.page != saved {
+        unsafe {
+            write_dseg_page(3, grid.page);
+        }
+    }
+    saved
+}
+// A returned list borrows the selected page until its caller finishes reading.
 pub fn list(grid: &Grid, index: u16) -> ordered::List {
     ordered::List {
         items: unsafe {
@@ -38,10 +50,27 @@ fn count(grid: &mut Grid, index: u16, value: u16) {
     ranges[index * 3 + 1] = value;
 }
 pub fn candidates(grid: &Grid, start: Array<u16>) -> ordered::List {
+    select(grid);
     let index = object_query::cell(start, grid.origin, grid.shift_x, grid.shift_z);
     list(grid, index)
 }
 pub fn insert(
+    grid: &mut Grid,
+    id: fix32,
+    position: Array<u16>,
+    shape_present: bool,
+    shape_radius: u16,
+) -> Insert {
+    let saved = select(grid);
+    let result = insert_cells(grid, id, position, shape_present, shape_radius);
+    if grid.page != 65535 && saved != grid.page {
+        unsafe {
+            write_dseg_page(3, saved);
+        }
+    }
+    result
+}
+fn insert_cells(
     grid: &mut Grid,
     id: fix32,
     position: Array<u16>,
@@ -102,6 +131,16 @@ pub fn remove(grid: &mut Grid, id: fix32, cell: &Cell, limit: fix32) -> u16 {
     if !cell.present {
         return 0;
     }
+    let saved = select(grid);
+    let status = remove_cells(grid, id, cell, limit);
+    if grid.page != 65535 && saved != grid.page {
+        unsafe {
+            write_dseg_page(3, saved);
+        }
+    }
+    status
+}
+fn remove_cells(grid: &mut Grid, id: fix32, cell: &Cell, limit: fix32) -> u16 {
     let x = n(cell.x);
     let z = fix32::from_words(cell.z, 0);
     let mut row = z - n(1);

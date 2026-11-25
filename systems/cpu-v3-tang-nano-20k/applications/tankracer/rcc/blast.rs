@@ -1,6 +1,6 @@
 //! Synchronous blast impulse and health writes on the shared random stream.
 use crate::dsl_rt::*;
-use crate::{attitude, collision, integer, random};
+use crate::{attitude, collision, driving, integer, random};
 pub struct Target {
     // Health, health timer/color, protection timer, angular enabled, hit axes X/Z.
     pub state: Array<u16>,
@@ -129,4 +129,37 @@ pub fn apply(target: &mut Target, input: &Input, seed: Array<u16>) -> u16 {
         target.marker = n(300);
     }
     1
+}
+// The non-AI racer entry publishes visibility before the range test, and marks
+// the same collision-size word used by ordinary contacts.
+pub fn racer(car: &mut driving::Car, origin: Array<u16>, mode: fix32, seed: Array<u16>) -> fix32 {
+    let mut angular_enabled = n(0);
+    if car.visible {
+        angular_enabled = n(1);
+    }
+    attitude::put(car.blast, 4, angular_enabled);
+    let mut target = Target {
+        state: car.blast,
+        velocity: car.motion,
+        angular: unsafe { car.attitude.as_ptr().add(42).as_u16_array() },
+        marker: attitude::get(car.marker, 0),
+    };
+    let input = Input {
+        position: unsafe { car.motion.as_ptr().add(6).as_u16_array() },
+        source: origin,
+        mode: mode,
+        damage: false,
+        max_health: fix32::from_words(40000, 0),
+        record_axes: false,
+        mark: car.player,
+    };
+    let status = apply(&mut target, &input, seed);
+    attitude::put(car.marker, 0, target.marker);
+    if status == 2 {
+        return n(-2);
+    }
+    if status == 1 && car.player {
+        return n(1);
+    }
+    n(0)
 }

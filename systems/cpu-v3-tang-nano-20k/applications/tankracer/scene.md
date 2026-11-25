@@ -75,6 +75,14 @@ Ordinary queries read the current start-cell list. Deformable queries read their
 independent global list. Invalid 32-bit IDs fail before narrowing or row access.
 No window pointer or pre-update collider snapshot is retained between queries.
 
+`Grid.page` is 65535 for ordinary CPU arrays or the DSEG3 page shared by origin,
+membership rows and ranges. External properties share that page; colliders keep
+a stable mapping while another owner borrows DSEG3. Queries and scene loading
+select the scene page. A returned candidate list borrows that selection until
+the caller finishes reading it. Grid mutations restore their incoming page on
+every returned success or error. The persistent driving owner uses this contract
+with the [collision working region](driving.md#collision-working-region).
+
 The ENGLAND qualification entry reserves 28,800 bytes for all 240 colliders,
 7,680 bytes for their mutable properties,
 8,192 bytes for 32 IDs per cell, 384 bytes for row ranges, eight bytes for the
@@ -153,6 +161,22 @@ before the caller invokes Stop then, for a destruction item, Destroy. Both empty
 terminal pops spend work budget. Notifications added during destruction wait
 for the next drain. Buffers have caller-supplied capacities; capacity failures
 are explicit, while normal state transitions retain the reference ordering.
+
+`scene_lifecycle::dispatch` also resolves the actual deactivation and
+auxiliary-completion slots. An obstacle's deactivation first invokes its
+Generic parent at the current slot, then removes its collider, first ordinary
+list occurrence and first special-list occurrence in that order. A parent
+destruction request therefore commits before membership removal can fail.
+Completion's DestroyRequest method performs a nested deactivation dispatch;
+success restores the caller's slot, while failure retains the inner slot and
+all completed queue/list writes. These methods schedule retirement; they do
+not release components or IDs themselves. Shared metadata is read directly,
+including objects with auxiliary resources.
+
+The lifecycle qualifier checks actual Fall, Bounce and Closer class tables,
+duplicate memberships, missing objects/classes/handles, missing flags and small
+work budgets. `bench-tankracer-retirement` includes normal-loader cases for
+deactivation and completion alongside Stop/destruction and slot recycling.
 
 `rcc/crush.rs` advances the existing deformable records and siren, then queues
 retirement on that same scheduler. It compares red as a signed byte, narrows
@@ -299,7 +323,333 @@ Fixtures assert landing-to-rolling, Stop/destruction, real fallback reflection
 and the late missing-basis error actually occur. This is instruction qualification;
 normal whole-world loading, scheduling and system timing are separate boundaries.
 
+## Mutable mesh ownership
+
+`rcc/scene_meshes.rs` keeps stable u16 resource slots in caller-owned metadata.
+Each slot has thirteen logical words plus source, index, mutable-payload address
+and payload-page tag. The caller reserves record, free-stack and name-binding
+arrays. Mutable spans use the ordinary target heap or a configured external
+region and remain at the same address until release. `slot_words` bounds one resource, rather than reserving that many words
+for every slot. Payload and slot capacity, name capacity and heap failure are
+checked before publishing an allocation. Allocation exhaustion returns -4.
+
+The logical record is `[flags,hint,radius,materials,revision[4],geometry_words,
+center_lengths[3],center_stride]`. Flags are live geometry 1 and shared 2.
+An absent center length is 65535; a present empty column has length zero.
+Mutable storage contains vertex XYZ, face flags and three strided center columns.
+Triangle indices and attributes retain their immutable source identity. A model
+supplies explicit index and current-column views. RAM models retain their full
+original geometry root; catalog models use the descriptor described below.
+
+`bind` preserves the first case-insensitive name binding. `private_copy` copies
+current vertices, flags and centers, keeping hint, radius and material association.
+A copy of a modified private mesh remains independent after its source slot is
+released and reused. A new slot starts at revision one; LIFO slot reuse increments
+its preceding wrapping u64 revision. Shared meshes are protected from private
+release. Release frees the mutable span and clears geometry, centers and materials,
+while preserving radius, hint and revision. Mutable resolution increments an
+existing slot before checking its live payload. Invalid resource access returns -1.
+
+Catalog-backed shared slots initially retain cold columns. A private copy streams
+those columns directly into its final allocation. Resolving the shared geometry
+itself materializes the same columns once, after which copies observe its current
+values. The descriptor and index roots remain stable throughout. Source metadata
+alone is staged during loading; vertices and flags do not pass through a second
+full geometry buffer. External cold imports use a 64-word staging buffer because
+the asset reader temporarily maps the same DSEG3 window. Allocation failure during resolution leaves the slot unchanged
+apart from the original mutable-access revision increment.
+
+`finish` frees every materialized shared or private span and resets the owner
+counts. The caller retains ownership of metadata, immutable index storage and the
+cold asset. Session teardown finishes the resource owner before retiring those
+backing allocations. Original geometry fields are retained for rendering and
+qualification: counts, signed XYZ, triangle indices, flags, then nineteen attribute
+words per face (source offset, normal, color, sides, UV, material, material offset
+and billboard fields). Material tables use loader-assigned keys, with zero for the
+empty table.
+
+The resource oracle compares full geometry and metadata after aliases, mutations,
+private copies, release/reuse, version wrapping, empty geometry and independently
+missing center columns. A bounded-heap check verifies -4 with unchanged slot/name
+metadata on allocation failure. Auxiliary-contact qualification continues to use
+the same owner and persistent payloads.
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/mesh_store_assets.py --reference $reference --output target/mesh-store-reference
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/mesh-store-check target/mesh-store-reference 0 mesh-store
+```
+
+## Constructed mesh catalog
+
+`rcc/mesh_catalog.rs` imports all constructed ENGLAND resource slots and original
+name bindings. `tools/mesh_catalog_assets.rs` exports the authoritative original
+resource owner, including current private geometry, centers and full revisions.
+Initial IDs are retained. Lazy auxiliary model prototypes extend the same source
+directory and use the original first-binding rules.
+
+The version-one little-endian word format is:
+
+| Region | Contents |
+| --- | --- |
+| Header, 16 words | Magic 0x4d52, version, slot/source/name counts, index words, maximum mutable span, directory offsets, payload and total u32 word offsets, name-key count |
+| Source, 8 words each | Vertex/face counts, shared-index offset, logical geometry words, u32 packet offset, center stride, reserved |
+| Shared index pool | Deduplicated immutable u16 triangle indices |
+| Initial slot, 14 words each | Source ID followed by the thirteen logical resource words |
+| Name, 2 words each | Normalized name key and original resource slot |
+| Cold packet | Eight model words, complete original geometry, three padded center columns |
+
+The eight model words are geometry length, hint, radius, material key, center
+stride and three independent center lengths. Runtime source descriptors use six
+words: counts, u32 cold packet offset, shared-index offset and geometry length.
+The source descriptors and indices are CPU-addressable; full immutable attributes
+stay in the external asset. Cold reads preserve DSEG3 and validate the asset extent.
+`Catalog.models` holds the independent read-only `Sources` view: asset, source
+count, maximum span, descriptor array and index array. `Catalog.store` is the
+unique mutable slot owner. Moving that owner into final level state leaves the
+source view usable; callers bind mutable component views after the move.
+`mesh-catalog.json` retains material names/spellings and auxiliary-model source IDs
+for offline consumers; target code uses the corresponding integer keys.
+
+The ENGLAND catalog has 63 initial slots and 72 source descriptors. Its fixed
+128-slot metadata, source descriptors and shared indices require 10,616 bytes.
+Initial materialized columns require 5,932 bytes; shared columns remain cold.
+The whole-owner qualification creates all 37 authored auxiliary copies, changes
+private and shared geometry, detaches another copy and recycles a released slot.
+That sequence reaches 104 slots with 17,172 bytes of materialized columns.
+These payload figures exclude target-allocator headers and loading/check scratch.
+The normal fragment/resource qualifier reserves an 8-KiB heap beginning at
+0x2000 words; its upper boundary is 0x3000, below the validation stack. The
+application recipe sets `ApplicationSource.heap_words`; other recipes retain
+the compiler default. Heap boundary tags are part of the reservation even when
+only a small fraction of payload capacity is allocated.
+A model descriptor needs eight scratch words; direct column reads fill the final
+allocation. Full game-world residency and fragment motion have separate budgets.
+
+The normal fragment application checks every initial resource and every resource
+after the mixed operations, including immutable attributes, all name bindings,
+free-slot order and revisions. It then tears down/reloads the owner and checks
+fresh shared/private resources and payload allocation totals. Capturing a cold
+shared slot streams its immutable columns without materializing it. This proves
+constructed resource import and ownership; parent scene contacts and the complete
+mixed gameplay scheduler retain their own integration boundary.
+
+### Shared geometry and motion bank
+
+After loading the initial CPU-resident private meshes, `use_arena` directs new
+materialized columns to the unused tail of the level's 32-KiB motion bank.
+`rcc/mesh_storage.rs` uses a sorted free list, one length word per allocation
+and adjacent-block coalescing. The region has one additional free-list head word.
+Allocation failure changes neither the free list nor resource metadata.
+Existing CPU payloads retain page tag 65535. External payloads carry their bank
+page; releasing a slot uses its actual storage origin. `finish` frees both kinds
+before resetting the allocation preference.
+
+`view` resolves pointers without keeping a bank mapped. A direct consumer selects
+the payload page with `select`, consumes the view, then restores its incoming
+DSEG3 page. Fragment activation and motion instead keep their shared motion and
+geometry bank selected for the whole operation. Their entry checks reject a
+geometry binding in another external bank. CPU/external and same-bank copies
+are direct loops; this owner does not support copies between two external banks.
+
+ENGLAND's 37 motion reservations occupy 16,720 bytes. Their private geometry
+occupies 10,272 bytes; including allocation headers and the region head, they
+fit in 27,068 bytes. The catalog's additional mutation/copy/reuse stress sequence
+uses 11,240 external payload bytes in 40 blocks, for 28,042 bytes including motion
+and allocator metadata. CPU payload remains 5,932 bytes. These figures describe
+this auxiliary stage, not the entire physics world's residency.
+
+`--scope residency` selects bounded allocation, window-end access, exhaustion,
+coalescing, motion-prefix preservation, full resource-catalog checkpoints and
+representative parent chains. It checks the actual CPU/external allocation
+totals and restores the bank mapping at each ownership boundary. The existing
+full scope also runs auxiliary activation/update/completion against this layout.
+
+## Auxiliary mesh activation
+
+`scene_fragments::activate` implements AUXILIARY_HIT after the contact owner has
+selected the actual class method. It borrows the object's lifetime row, mesh
+owner, shared RNG, grid and real terrain map. The loaded catalog supplies the
+normalized name, immutable model view and model-resolution outcome. A negative
+outcome retains the device error; an absent model reports -4. Model data is used
+only when the inactive object's motion has not been prepared.
+
+Work validity precedes the active-word guard. A nonzero i16 active word returns
+the collider entity immediately. Preparation binds the first shared name, clones
+its current geometry, then releases the preceding private handle. A release
+error preserves the new allocation. The published private handle and a fresh
+face-state array precede terrain lookup; fresh motion retains the original false
+prepared flag and lifetime 2000. Powerups set lifetime 1500 before sampling.
+The caller reserves enough face words for catalog models; a target capacity
+failure reports -4 at the allocation boundary.
+
+Height sampling uses the same ENGLAND cell queries as driving. Missing terrain
+and arithmetic/residency failures retain preceding resource and state writes.
+The required private/motion bindings are checked next, then mutable geometry
+resolution increments its revision before auxiliary configuration is accessed.
+Activation uses incoming velocity only for a nonzero vehicle entity, transforms
+it through the object's optional external basis and consumes the shared stream
+in the original scatter order. The visible mesh, active word and radius 5120
+publish before ordered spatial removal. A late removal failure preserves this
+activation; a subsequent hit takes the active guard. Result publication occurs
+only on the guard or complete success, and the enclosing contact slot is retained.
+
+The oracle executes the original collision method on authored objects with a
+local persistent mesh arena and actual terrain. It checks complete resource
+geometry, face state, RNG, collider, lifetime flags and all grid members after
+each call. Setup includes prepared bindings, released/shared old handles, missing
+configuration, model I/O failures and first-name geometry mismatches. Explicit
+state probes clear activity before reactivation. Fixture assertions require
+repeat-hit stability and a real late spatial-limit failure. The normal CB06 entry
+runs representative bench and pickup calls, including missing terrain and late
+removal failure. Constructed resource import is covered by the catalog entry;
+outer car collision dispatch and complete gameplay construction remain separate
+integration boundaries.
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/auxiliary_hit_assets.py --reference $reference --output target/auxiliary-hit-reference
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/auxiliary-hit-check target/auxiliary-hit-reference 0 auxiliary-hit
+```
+
+## Auxiliary mesh updates
+
+`rcc/scene_fragments.rs` executes the actual auxiliary-update method (slot 22,
+method 68) on the shared identity, lifetime, grid and runtime views. The caller
+resolves the object's stable private mesh slot and supplies its current motion,
+geometry, original i16 active word, optional render mesh and full u64 revision.
+These are direct views of persistent storage; geometry release is distinct from
+the resource slot's lifetime.
+
+The entry validates class and object identity, checks work and component presence,
+then increments the resource revision before accessing its geometry or auxiliary
+configuration. The increment wraps across four little-endian words, including
+when a released geometry payload makes the subsequent access fail. The fragment
+kernel mutates its current vertex and center arrays. After gravity/bounce and
+center validation, it resolves the six Y/X/Z sine/cosine values once per moving
+fragment and reuses a 24-byte scratch span for its three or four vertices.
+Each vertex retains the original separate axis products, wrapping subtraction
+and signed truncation; shared or repeated indices are still visited in source
+order. This is exact reuse, with no combined rotation matrix or approximation.
+The scratch is reused for every face and does not grow with the mesh.
+Completion clears activity,
+the render mesh and collider radius before nested Deactivate (mode 0/1) or
+AuxiliaryComplete dispatch. Success restores the outer slot; errors retain the
+original committed prefix and innermost slot. The private mesh radius and owner
+binding persist after completion. This method consumes no RNG.
+
+The fixture exporter invokes original class dispatch on all matching auxiliary
+owners from a full ENGLAND construction. Cases retain the world and mesh between
+frames, compare all lifecycle/list/grid state, geometry, resource versions and
+collider words, and exercise completion, missing data, low work limits and revision
+overflow. Only initial setup creates and activates reference resources; native
+creation and collision activation have their own integration boundary. The normal
+fragment application runs representative persistent cases through ordinary CB06
+and immutable scene/sine resources.
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/scene_fragment_assets.py --reference $reference --output target/scene-fragments-reference
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/scene-fragments-check target/scene-fragments-reference 0 scene-fragments
+```
+
+## Fall and Closer auxiliary chains
+
+`rcc/scene_parent.rs` runs the Fall/Closer methods around the shared auxiliary
+activation, update and completion code. `State` owns the lifetime store, runtime,
+mesh resources and terrain cache. The caller retains the spatial grid and supplies
+an `Actor` containing direct views of the selected collider, properties and parent
+component. These views refer to the same rows used by queries; calls do not copy
+vehicle or world state. Inputs include the already selected contact method and
+current peer/player poses. Audio and feedback are successful external operations.
+
+Fall's hit commits flags and angular velocity, selects activation slot 4, then
+publishes its remaining parent state. Its actual auxiliary-contact slot 25 runs
+next; activity becomes zero only after that call succeeds. Fall clears its method
+result on failure as well as success. Closer enables ticking when its flags require
+it, invokes the same auxiliary slot, and changes to the fragment phase only after
+success. Nested failures retain their committed prefix and innermost slot.
+Fall resolves activation from its current object-property class; Closer resolves
+it from the entity's class. A missing identity class therefore does not prevent
+the Fall contact method's property-based activation.
+The ordinary Fall hit and the class entry use the same begin/finish phases.
+
+The tick entry selects the actual class and slot 12, validates its identity, and
+executes Fall motion or the Closer waiting/closing/fragment phase. Fall's motion
+accepts direct body views through `falling::tick_body`; its original world entry
+uses this same implementation. Closer publishes its matrix and authored reference
+alias even if rotation normalization fails. Auxiliary updates resolve the current
+private resource binding, retain slot lifetime separately from geometry lifetime,
+and invoke slot 22 before the original completion policy. A released valid resource
+slot receives its failed-access revision increment; an out-of-range handle does not.
+
+Destruction follows slot 2, the authored Obstacle/Generic parents, and slot 3.
+Owned private geometry is released before auxiliary bindings/configuration are
+cleared and before spatial removal. A late removal failure retains that cleanup.
+The Fall/Closer component retires when the Generic release path removes its owner,
+and factory record accounting finishes after the release slot. Repeated destruction
+of an absent identity succeeds without repeating resource work.
+
+Qualification executes the original methods on ENGLAND's six auxiliary Fall owners
+and its Closer. Persistent sequences cover repeat hits, fragment completion,
+model I/O failures, low work limits, released/invalid resources, Closer waiting and
+closing, and repeated destruction. Each call compares complete identities, ordered
+lists, grid membership, parent state, collider/properties, all local mesh resources,
+face motion and shared RNG. These class-chain cases use a local resource arena;
+the separate catalog entry covers full constructed resource import. The normal
+CB06 entry runs representative chains with externally mapped motion and immutable
+sine/angle/inverse-cosine resources. Debris/attached Fall methods and the complete
+mixed-world vehicle/weapon scheduler remain separate integration boundaries.
+The continuous [driving entry](driving.md) also runs all seven parent objects
+against the constructed resource owner, including resource-aware bench/Closer
+destruction and the next frame. Its stable level state shares identities, seed,
+collision rows and the common auxiliary bank with the car. Component kind 4
+identifies Closer state for complete scene capture and final release.
+The default fragment entry also runs the existing kernel/resource catalog cases.
+Build with `--scope parents` to select only the representative parent chains;
+the checker reports that section separately and does not claim unexecuted cases.
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/parent_auxiliary_assets.py --reference $reference --output target/parent-reference
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/parent-check target/parent-reference 0 parent-auxiliary
+```
+
 ## Qualification
+
+### External fragment motion
+
+The level owns one 32-KiB, 32-KiB-aligned `StaticBuffer` for fragment motion
+and auxiliary mutable geometry.
+`scene_fragments::MotionBank` tracks its DSEG3 page and used word count. Each
+reservation contains an eight-word header followed by sixteen words per face,
+in authored object order. ENGLAND's 37 auxiliary owners require 8,360 words
+(16,720 bytes), including every header. This is mutable runtime state; immutable
+model geometry and compact mesh indices retain their resource-catalog ownership.
+The bank uses neither the CPU heap nor persistent per-object CPU face arrays.
+
+`reserve` checks the remaining capacity before changing storage or the cursor,
+zeroes the reserved span, and returns its word offset. A return of 65535 means
+the reservation failed. The caller publishes the descriptor only on success.
+`motion` forms header/face views for a successful reservation; its count is the
+current live face count, distinct from the object's reserved capacity. Level
+reload starts a new cursor and initializes its reservations again. Individual
+completed objects retain their motion reservation for subsequent activation.
+
+An object's `motion_page` selects this bank; 65535 selects direct CPU-memory
+views used by focused qualification. Activation and update save the incoming
+DSEG3 page, select the object's motion, and restore the incoming page on every
+returned success or failure. Activation reselects motion after its terrain query.
+Resource and sine reads preserve the current mapping. Terrain's cached-cell
+fast path checks the actual DSEG3 page as well as its cached page, so a repeated
+query remains valid after another owner uses that window. No seed or arithmetic
+state changes during these ownership transfers.
+
+The normal fragment entry reserves all authored spans and verifies their offsets,
+initial contents and bounded-allocation failure. It then executes existing
+activation, reactivation, update, completion and committed-failure cases with
+their motion in the external bank. Prepared reference setup is copied once by
+the qualification helper; runtime construction reserves its initial rows directly.
+A targeted repeated-cell query checks terrain reentry after a motion-bank switch.
+The bank supplies level-wide storage and the parent Fall/Closer entry uses it
+for both motion and private columns. The complete mixed-world scheduler remains
+a subsequent integration boundary.
 
 ```powershell
 $reference = Read-Host 'TankRacerCUP Cargo.toml'

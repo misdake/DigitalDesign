@@ -260,8 +260,7 @@ pub fn tick(
     let x = attitude::get(m.collider, 1);
     let z = attitude::get(m.collider, 3);
     if timer % period == 0 {
-        map.bind(x, z);
-        let query = map.terrain.height(x, z);
+        let query = map.height(x, z);
         if query.status >= 2 {
             return query_error(query.status);
         }
@@ -280,13 +279,12 @@ pub fn tick(
         let limit = fmul_lo32(friction, m.impact_threshold);
         attitude::put(m.collider, 2, attitude::get(s, 4));
         if attitude::get(s, 0) <= limit && attitude::get(s, 2) <= limit {
-            map.bind(x, z);
             let mut normal = terrain::Normal {
                 x: n(0),
                 y: n(0),
                 z: n(0),
             };
-            let query = map.terrain.normal_height(x, z, &mut normal);
+            let query = map.normal_height(x, z, &mut normal);
             if query.status >= 2 {
                 return query_error(query.status);
             }
@@ -360,15 +358,12 @@ pub fn tick(
         }
     }
     if ground == miss {
-        map.bind(x, z);
         let mut normal = terrain::Normal {
             x: n(0),
             y: n(0),
             z: n(0),
         };
-        let status = map
-            .terrain
-            .fallback(x, attitude::get(m.collider, 2), z, 0, &mut normal);
+        let status = map.fallback(x, attitude::get(m.collider, 2), z, 0, &mut normal);
         if status >= 2 {
             return 8;
         }

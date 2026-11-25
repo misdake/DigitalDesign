@@ -2,6 +2,12 @@
 use crate::dsl_rt::*;
 use crate::{attitude, body, deformation, ground, integer, sampling, suspension, vehicle};
 pub struct Car {
+    pub entity: fix32,
+    pub slot: u16,
+    pub player: bool,
+    pub visible: bool,
+    pub blast: Array<u16>,
+    pub marker: Array<u16>,
     pub attitude: Array<u16>,
     pub suspension: Array<u16>,
     pub drive: Array<u16>,
@@ -91,6 +97,7 @@ pub fn tick(
     events: Array<u16>,
     surface: &mut deformation::Surface,
 ) -> u16 {
+    vehicle::boost(car.boost, c.drive, f);
     let status = contact_and_power(car, c, world, f, events, surface);
     if status != 0 {
         return status;
@@ -110,7 +117,6 @@ pub fn contact_and_power(
     mut events: Array<u16>,
     surface: &mut deformation::Surface,
 ) -> u16 {
-    vehicle::boost(car.boost, c.drive, f);
     // The original contact adapter commits sampling/response/RNG only on success.
     let mut pending = ground::zero();
     let saved = unsafe { view_of(&mut car.ground).as_ptr().as_u16_array() };

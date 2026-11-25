@@ -4,6 +4,12 @@ fn append(out: &mut Vec<u16>, value: i32) {
     out.extend([value as u16, (value >> 16) as u16]);
 }
 pub fn encode(world: &SinglePlayer) -> Vec<u16> {
+    encode_columns(world, true)
+}
+pub fn encode_bound(world: &SinglePlayer) -> Vec<u16> {
+    encode_columns(world, false)
+}
+fn encode_columns(world: &SinglePlayer, include_vertices: bool) -> Vec<u16> {
     let scene = &world.objects;
     let mut out = vec![0u16; scene.world.deformables.len() * 40];
     for (slot, id) in scene.world.deformables.iter().enumerate() {
@@ -18,8 +24,11 @@ pub fn encode(world: &SinglePlayer) -> Vec<u16> {
             component.sampling.state.records.is_empty(),
             "ENGLAND Crush records"
         );
-        let vertex_offset = out.len();
-        out.extend(mesh.vertices.iter().flatten().map(|v| *v as u16));
+        let mut vertex_offset = 0;
+        if include_vertices {
+            vertex_offset = out.len();
+            out.extend(mesh.vertices.iter().flatten().map(|v| *v as u16));
+        }
         let flag_offset = out.len();
         out.extend(component.vertex_flags.iter().map(|v| u16::from(*v)));
         let mut row = vec![

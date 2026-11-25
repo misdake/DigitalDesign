@@ -45,6 +45,7 @@ fn run_bounce_tick(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: 
         i += 1;
     }
     let mut grid = spatial::Grid {
+        page: 65535,
         origin: unsafe { input.as_ptr().add(124).as_u16_array() },
         shift_x: attitude::get(input, 64).lo_bits(),
         shift_z: attitude::get(input, 65).lo_bits(),

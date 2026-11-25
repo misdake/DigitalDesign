@@ -5,7 +5,7 @@ pub fn run(output: &Path, fixture: &Path) -> Result<Value, Box<dyn Error>> {
     let code = compile(
         "collision",
         &format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             r#"fn main(){
  let input=unsafe{Ptr::from_addr(0x2000).as_u16_array()};let out=unsafe{Ptr::from_addr(0x1000).as_u16_array()};
  let sine=unsafe{Ptr::from_addr(0x3000).as_i16_array()};let angle=unsafe{Ptr::from_addr(0x8000).as_i16_array()};
@@ -42,6 +42,13 @@ pub fn run(output: &Path, fixture: &Path) -> Result<Value, Box<dyn Error>> {
  else if kind==17{run_tank_response(input,out,sine,angle,false);}
  else if kind==29{run_tank_response(input,out,sine,angle,true);}
  else if kind==30{run_car_deform(input,out,sine,angle);}
+ else if kind==31{run_car_scenery(input,out,sine,angle);}
+ else if kind==32{run_entities(input,out);}
+ else if kind==33{
+  let words=attitude::get(input,7).lo_bits();
+  let asset=static_assets::AssetBytes{first_sector:40960,sector_count:(words+63)>>6,byte_len_lo:words<<1,byte_len_hi:words>>15};
+  run_scene_lifecycle(input,out,asset);
+ }
  else if kind==18{run_lifecycle(input,out);}
  else if kind==19{run_crush(input,out);}
  else if kind==20{run_spatial(input,out);}
@@ -125,7 +132,10 @@ status
             include_str!("fall_hit_case.rs"),
             include_str!("bounce_hit_case.rs"),
             include_str!("bounce_tick_case.rs"),
-            include_str!("deform_contact_case.rs")
+            include_str!("deform_contact_case.rs"),
+            include_str!("scenery_contact_case.rs"),
+            include_str!("entities_case.rs"),
+            include_str!("scene_lifecycle_case.rs")
         ),
         output,
     )?;
@@ -136,7 +146,7 @@ status
         .as_array()
         .unwrap()
         .iter()
-        .any(|c| c["kind"].as_u64() == Some(30))
+        .any(|c| matches!(c["kind"].as_u64(), Some(30 | 31 | 33)))
     {
         fs::read(fixture.join("car-deform-scene.bin"))?
     } else {
@@ -154,7 +164,7 @@ status
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&code.words);
         let memory = cpu.physical_memory_mut();
-        if case["kind"].as_u64() == Some(27) {
+        if matches!(case["kind"].as_u64(), Some(27 | 31)) {
             for (i, pair) in cells.chunks_exact(2).enumerate() {
                 memory[0x100000 + i] = u16::from_le_bytes([pair[0], pair[1]]);
             }
@@ -162,6 +172,11 @@ status
         if case["kind"].as_u64() == Some(30) {
             for (i, pair) in scene.chunks_exact(2).enumerate() {
                 memory[0x100000 + i] = u16::from_le_bytes([pair[0], pair[1]]);
+            }
+        }
+        if matches!(case["kind"].as_u64(), Some(31 | 33)) {
+            for (i, pair) in scene.chunks_exact(2).enumerate() {
+                memory[0x280000 + i] = u16::from_le_bytes([pair[0], pair[1]]);
             }
         }
         for (base, bytes) in [(0x3000, &sine), (0x8000, &angle)] {
