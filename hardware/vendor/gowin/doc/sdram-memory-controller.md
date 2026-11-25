@@ -131,6 +131,14 @@ one native edge early; every counter restart resets the predicates with it.
 These registers preserve refresh/chain command edges, checked by a passive
 calendar assertion, and add no transaction latency.
 
+The CPU V3 Tang Nano 20K board build uses one PRE/ACT issuer for
+both read and write preparation windows. The write window also gates the
+remaining payload. An existing beat increment predicts the final write beat
+for the next native edge, keeping the index comparison off the continuation
+decision. All updates to the SDRAM address pins share one explicit register
+enable so Gowin can pack the address registers into the I/O cells. Both
+layouts use the same native command and payload calendar.
+
 The successor window opens when one forwarded line descriptor owns an active
 physical stream and the second descriptor credit is free. It does not wait for
 late read responses: CL3 capture and registered return would otherwise leave too

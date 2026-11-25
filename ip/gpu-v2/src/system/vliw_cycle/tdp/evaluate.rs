@@ -145,15 +145,7 @@ impl Cache {
             s.mt_target
         };
         let linear = if i.serial.active {
-            let mut remainder = i.serial.tile & 511;
-            let mut row = 0;
-            for (step, bit) in [(200, 8), (100, 4), (50, 2), (25, 1)] {
-                if remainder >= step {
-                    remainder -= step;
-                    row |= bit;
-                }
-            }
-            ((remainder & 31) << 4) | row
+            i.serial.tile & 511
         } else {
             ((tile & 31) << 4) | (tile >> 6 & 15)
         };

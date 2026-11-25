@@ -14,7 +14,7 @@ class ExportSelectionTests(unittest.TestCase):
         root.mkdir()
         (root/'rtl.json').write_text(json.dumps(['gpu.v']))
         (root/'layout.json').write_text(json.dumps(dict(schema=1, layout_abi=2, gpu_profile='production')))
-        (root/'gpu.v').write_text('function[8:0]column_ui_tile; clear_sector==1599; wire[11:0]macro_column=0;')
+        (root/'gpu.v').write_text('ui_active?ui_tile:0; clear_sector==1599; wire[11:0]macro_column=0;')
         return root
 
     def test_matching_export_is_used_without_copy_or_replacement(self):
@@ -22,6 +22,13 @@ class ExportSelectionTests(unittest.TestCase):
             root = self.export(Path(temp)/'current')
             self.assertEqual(select_replay_export(COLUMN, root), root)
             self.assertEqual(sorted(p.name for p in root.iterdir()), ['gpu.v', 'layout.json', 'rtl.json'])
+
+    def test_older_column_export_matches_the_same_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.export(Path(temp)/'archived')
+            (root/'gpu.v').write_text(
+                'function[8:0]column_ui_tile; clear_sector==1599; wire[11:0]macro_column=0;')
+            self.assertEqual(select_replay_export(COLUMN, root), root)
 
     def test_legacy_missing_and_false_layout_declarations_are_rejected(self):
         for mode in ['row', 'missing', 'old_profile', 'row_rtl']:

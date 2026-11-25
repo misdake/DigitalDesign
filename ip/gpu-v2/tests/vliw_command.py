@@ -10,7 +10,16 @@ def load(name,path):
  spec=importlib.util.spec_from_file_location(name,path);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
 def main():
- ap=argparse.ArgumentParser(__doc__);ap.add_argument('--export',type=Path,required=True);ap.add_argument('--output',type=Path,required=True);ap.add_argument('--native',action='store_true');ap.add_argument('--system-leaf',action='store_true');args=ap.parse_args()
+ ap=argparse.ArgumentParser(__doc__)
+ ap.add_argument('--export',type=Path,required=True)
+ ap.add_argument('--output',type=Path,required=True)
+ ap.add_argument('--native',action='store_true')
+ ap.add_argument('--system-leaf',action='store_true')
+ ap.add_argument('--segmented',action='store_true')
+ ap.add_argument('--one-draw',action='store_true')
+ args=ap.parse_args()
+ if args.one_draw and not args.segmented:
+  ap.error('--one-draw requires --segmented')
  out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
  O=load('cp32_oracle',HERE/'reference/scene/oracle.py');O=load('cp32_transport',HERE/'transport.py').adapt_oracle(O)
  fixture=json.loads((HERE/'reference/uv-inputs.json').read_text())['scenes'][0]['meshlets'][0]
@@ -44,7 +53,41 @@ def main():
  cb.emit('DMA_MESHLET',1,*records[1]);cb.emit('DRAW_MESHLET',0);cb.emit('WAIT',a=1)
  while len(cb.records)<62:cb.emit('NOP')
  cb.emit('DMA_MESHLET',0,*records[2]);cb.emit('DRAW_MESHLET',1);cb.emit('WAIT',a=1);cb.emit('DMA',280,0x4140,32);cb.emit('WAIT',a=3);cb.emit('SET_RENDER',280);cb.emit('DRAW_MESHLET',0)
- cb.emit('WAIT',a=2);cb.emit('FLUSH');cb.emit('END');data=cb.encode();put(0x1000,data+bytes((-len(data))%128))
+ cb.emit('WAIT',a=2);cb.emit('FLUSH');cb.emit('END');data=cb.encode()
+ table_address=0x1280
+ command_reads=[]
+ segments=[]
+ if args.segmented:
+  # Store four draws in one ring. Select the suffix and the prefix while
+  # skipping the fourth draw between them. Both slices refer to the same
+  # backing bytes. Poison unused slots so accidental retirement is visible.
+  ring=0x1800
+  prefix=data[33*4:-12]
+  skipped=data[10*4:12*4]+data[31*4:32*4]
+  suffix=data[10*4:33*4]
+  def store_sectors(base,size,parts):
+   image=bytearray([0xff])*size
+   for slot,body in parts:
+    image[slot*4:slot*4+len(body)]=body
+   put(base,image)
+  store_sectors(0x1380,128,[(2,data[:40])])
+  store_sectors(ring,384,[(3,prefix),(40,skipped),(63,suffix)])
+  store_sectors(0x1e00,128,[(29,data[-12:])])
+  spans=[(0x1380+2*4,40),(ring+63*4,len(suffix))]
+  if not args.one_draw:
+   spans.append((ring+3*4,len(prefix)))
+  spans.append((0x1e00+29*4,12))
+  command_reads.append(table_address)
+  for address,size in spans:
+   last=address+size-4
+   first_sector,last_sector=address//128,last//128
+   command_reads.extend(sector*128 for sector in range(first_sector,last_sector+1))
+   positions=(address//4&31)|((last//4&31)<<5)|((last_sector-first_sector)<<10)
+   segments.append(struct.pack('<HH',first_sector,positions))
+  put(table_address,bytes(128-4*len(segments))+b''.join(segments))
+ if args.one_draw:
+  data=data[:33*4]+data[-12:]
+ put(0x1000,data+bytes((-len(data))%128))
  (out/'memory.hex').write_text(''.join(f'{v:016x}\n' for v in mem));(out/'vertices.hex').write_text('\n'.join(vectors)+'\n');(out/'commandbuffer.bin').write_bytes(data)
  source=args.export.resolve();rtl=source.read_bytes();
  if args.system_leaf:rtl += b'\n'+(ROOT/'systems/cpu-v3-tang-nano-20k/src/hardware/gpu/gpu.v').read_bytes()
@@ -56,6 +99,10 @@ def main():
   width=f'[{p["bits"]-1}:0]' if p['bits']>1 else ''
   declarations.append(('reg ' if p['direction']=='input' else 'wire ')+width+' '+p['name']+('=0;' if p['direction']=='input' else ';'))
  tb=Path(__file__).with_name('vliw_command_tb.v').read_text().replace('@PORTS@','\n'.join(declarations)).replace('@BYTES@',str(len(data))).replace('@ERROR_ADDRESS@',str((records[1][0]+128)//2))
+ tb=tb.replace('@TABLE_COUNT@',str(len(segments))).replace('@TABLE_ADDRESS@',str(table_address))
+ tb=tb.replace('@DRAWS@','1' if args.one_draw else '3')
+ tb=tb.replace('@COMMAND_READS@',str(len(command_reads))).replace('@COMMAND_READ_INIT@',
+     '\n '.join(f"command_read[{i}]=22'h{address//2:x};" for i,address in enumerate(command_reads)))
  from device_bus import bench as device_bench
  tb=device_bench(tb)
  if args.system_leaf:
@@ -71,7 +118,7 @@ def main():
   tb=tb.replace('dut.', 'dut.core.')
   tb=tb.replace('gpu_v2_vliw_command dut(.*);','CpuV3Gpu dut('+','.join(links)+');')
   tb=tb.replace('ce=!force_ce0&&cycle%7!=2;', 'ce=1;')
-  tb=tb.replace('repeat(3)begin tick();if(dut.core.processor.state!=1||!busy)$fatal(1,"CE0 launch was lost");end','')
+  tb=tb.replace('repeat(3)begin tick();if((dut.core.processor.state!=1&&dut.core.processor.state!=23)||!busy)$fatal(1,"CE0 launch was lost");end','')
  (out/'tb.v').write_text(tb)
  cmd=[os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',str(out/'sim.vvp'),str(out/'dut.v'),str(out/'tb.v')]
  if args.native:cmd.append(str(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'))
@@ -93,6 +140,6 @@ def main():
  run('compile-release',release_cmd)
  run('run-3',[os.environ['VVP_EXE'],out/'release.vvp','+MODE=3'])
  runs.append((out/'run-3.log').read_text().strip())
- receipt=dict(status='pass',native=args.native,system_leaf=args.system_leaf,export_sha256=sha,command_bytes=len(data),cases=runs)
+ receipt=dict(status='pass',native=args.native,system_leaf=args.system_leaf,segmented=args.segmented,draws=1 if args.one_draw else 3,export_sha256=sha,command_bytes=len(data),cases=runs)
  (out/'receipt.json').write_text(json.dumps(receipt,indent=2));print(json.dumps(receipt))
 if __name__=='__main__':main()

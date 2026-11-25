@@ -212,13 +212,24 @@ module SdramController #(
     reg read_chain_slot_q = 0;
     (* syn_keep=1, syn_preserve=1 *) reg read_prepare_window = 0;
     (* syn_keep=1, syn_preserve=1 *) reg write_prepare_window = 0;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+    reg write_last_q = 0;
+    wire [5:0] write_index_next = write_index + 1'b1;
+    wire prepare_write = state == ST_WRITE_STREAM && (CHAIN || PREPARE_NEXT) && write_prepare_window;
+    wire prepare_read = state == ST_READ_STREAM && (READ_CHAIN || PREPARE_NEXT) && read_prepare_window;
+    wire prepare_chain = (prepare_write && CHAIN) || (prepare_read && READ_CHAIN);
+`endif // GOWIN_SDRAM_SHARED_PREPARE
     wire read_chain_issue = READ_CHAIN && read_chain_slot_q && next_valid && (!CONTINUE||next_chainable) && qualified_next_match &&
         !prep_needed && prep_wait == 0;
     assign read_chain_accept = read_chain_issue;
     reg [7:0] launch_age = 0;
     reg observed_chain = 0;
     assign chain_accept = CHAIN && OPEN_ROW && state == ST_WRITE_STREAM &&
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+        write_last_q && write_chain_eligible && next_valid && (!CONTINUE||(next_chainable&&next_write_ready)) && qualified_next_match &&
+`else // GOWIN_SDRAM_SHARED_PREPARE
         write_index == saved_last && write_chain_eligible && next_valid && (!CONTINUE||(next_chainable&&next_write_ready)) && qualified_next_match &&
+`endif // GOWIN_SDRAM_SHARED_PREPARE
         !prep_needed && prep_wait == 0 && chain_refresh_ok && (CONTINUE||group_extra_segments != 3);
     // Address has no ownership on NOP/STOP. Stage the potential next column
     // independently of the final payload-credit decision; only command issue
@@ -275,7 +286,15 @@ module SdramController #(
         O_sdram_dqm <= dqm_next;
         dq_oe_n_pins <= {32{dq_oe_n_next}};
     end
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+    reg address_write;
+    reg [10:0] address_next;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
     always @(posedge clk) begin
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+        address_write = 0;
+        address_next = 0;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
         command <= 7;
         done <= 0;
         next_matches_q <= next_matches;
@@ -325,6 +344,35 @@ module SdramController #(
         if (prep_wait != 0) prep_wait <= prep_wait - 1'b1;
         if (prep_rp != 0) prep_rp <= prep_rp - 1'b1;
         capture_window <= capture_valid;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+        // READ and WRITE use the same spare command port to prepare another
+        // bank. The stream-specific window gives the tail priority.
+        if (prepare_write || prepare_read) begin
+            if (next_valid && next_other_bank && next_needs_prepare && !prep_needed && prep_refresh_ok &&
+                (prepare_chain || !row_valid[mapped_next_address[20:19]])) begin
+                prep_needed <= 1;
+                prep_open <= row_valid[mapped_next_address[20:19]];
+                prep_address <= mapped_next_address;
+            end
+            if (prep_needed && prep_rp == 0) begin
+                O_sdram_ba <= prep_address[20:19];
+                if (prep_open) begin
+                    command <= 2;
+                    address_write = 1; address_next = 0;
+                    row_valid[prep_address[20:19]] <= 0;
+                    prep_rp <= RP_CYCLES - 1;
+                    prep_open <= 0;
+                end else begin
+                    command <= 3;
+                    address_write = 1; address_next = prep_address[18:8];
+                    row_valid[prep_address[20:19]] <= 1;
+                    row[prep_address[20:19]] <= prep_address[18:8];
+                    prep_wait <= RCD_CYCLES - 1;
+                    prep_needed <= 0;
+                end
+            end
+        end
+`endif // GOWIN_SDRAM_SHARED_PREPARE
         case (state)
             ST_POWER_WAIT:
             if (init_count == INIT_CYCLES - 1) begin
@@ -333,7 +381,11 @@ module SdramController #(
             end else init_count <= init_count + 1'b1;
             ST_INIT_PRECHARGE: begin
                 command <= 2;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                address_write = 1; address_next = 11'h400;
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 O_sdram_addr <= 11'h400;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                 wait_count <= RP_CYCLES - 1;
                 after_wait <= ST_INIT_REFRESH_1;
                 state <= ST_TIMING_WAIT;
@@ -356,7 +408,11 @@ module SdramController #(
             ST_LOAD_MODE: begin
                 command <= 0;
                 O_sdram_ba <= 0;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                address_write = 1; address_next = CAS * 16 + 7;
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 O_sdram_addr <= CAS * 16 + 7;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                 wait_count <= 1;
                 after_wait <= ST_INIT_DONE;
                 state <= ST_TIMING_WAIT;
@@ -373,7 +429,11 @@ module SdramController #(
             end else if (refresh_due_q) begin
                 if (row_valid != 0) begin
                     command <= 2;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                    address_write = 1; address_next = 11'h400;
+`else // GOWIN_SDRAM_SHARED_PREPARE
                     O_sdram_addr <= 11'h400;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                     row_valid <= 0;
                     wait_count <= RP_CYCLES - 1;
                     after_wait <= ST_REFRESH;
@@ -397,7 +457,11 @@ module SdramController #(
                         state <= writing ? ST_WRITE_LAUNCH : ST_READ_LAUNCH;
                     else begin
                         command <= 2;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                        address_write = 1; address_next = 0;
+`else // GOWIN_SDRAM_SHARED_PREPARE
                         O_sdram_addr <= 0;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                         row_valid[mapped_address[20:19]] <= 0;
                         wait_count <= RP_CYCLES - 1;
                         after_wait <= ST_ACTIVATE;
@@ -405,7 +469,11 @@ module SdramController #(
                     end
                 end else begin
                     command <= 3;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                    address_write = 1; address_next = mapped_address[18:8];
+`else // GOWIN_SDRAM_SHARED_PREPARE
                     O_sdram_addr <= mapped_address[18:8];
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                     row_valid[mapped_address[20:19]] <= 1;
                     row[mapped_address[20:19]] <= mapped_address[18:8];
                     wait_count <= RCD_CYCLES - 1;
@@ -422,7 +490,11 @@ module SdramController #(
             end
             ST_ACTIVATE: begin
                 command <= 3;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                address_write = 1; address_next = saved_address[18:8];
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 O_sdram_addr <= saved_address[18:8];
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                 row_valid[saved_address[20:19]] <= 1;
                 row[saved_address[20:19]] <= saved_address[18:8];
                 wait_count <= RCD_CYCLES - 1;
@@ -434,22 +506,36 @@ module SdramController #(
             if (write_slot) begin
                 command <= 4;
                 O_sdram_ba <= saved_address[20:19];
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                address_write = 1; address_next = {3'b0, saved_address[7:0]};
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 O_sdram_addr <= {3'b0, saved_address[7:0]};
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                 dqm_state <= saved_mask;
                 dq_drive <= 1;
 
                 write_index <= 1;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                write_last_q <= saved_words == 2;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                 write_prepare_window <= saved_words > 1;
                 state <= ST_WRITE_STREAM;
                 prep_needed <= 0;
             end
             ST_WRITE_STREAM: begin
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                if (write_last_q) write_prepare_window <= 0;
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 if (write_index == saved_last) write_prepare_window <= 0;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                 // Other-bank preparation uses free command slots while current DQ writes.
                 // A separately arbitrated successor may arrive after word 1.
                 // Prepare its other bank when the stable descriptor is available,
                 // including an open conflicting row, rather than missing the
                 // only early sample. The current bank is never disturbed.
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                if (write_prepare_window) begin
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 if ((CHAIN || PREPARE_NEXT) && next_valid && next_other_bank &&
                     next_needs_prepare && !prep_needed && prep_refresh_ok && write_prepare_window &&
                     (CHAIN || !row_valid[mapped_next_address[20:19]])) begin
@@ -476,8 +562,14 @@ module SdramController #(
                     end
                 end
                 if (write_index < saved_words) begin
+`endif // GOWIN_SDRAM_SHARED_PREPARE
 
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                    write_index <= write_index_next;
+                    write_last_q <= write_index_next == saved_last;
+`else // GOWIN_SDRAM_SHARED_PREPARE
                     write_index <= write_index + 1'b1;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                     if (chain_accept) begin
                         saved_address <= mapped_next_address;
                         write_index <= 0;
@@ -498,7 +590,11 @@ module SdramController #(
                     state <= ST_IDLE;
                 end else begin
                     command <= 2;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                    address_write = 1; address_next = 0;
+`else // GOWIN_SDRAM_SHARED_PREPARE
                     O_sdram_addr <= 0;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                     row_valid[saved_address[20:19]] <= 0;
                     wait_count <= RP_CYCLES - 1;
                     after_wait <= ST_COMPLETE;
@@ -508,7 +604,11 @@ module SdramController #(
             ST_READ_LAUNCH: begin
                 read_prepare_window <= saved_words > 1;
                 command <= 5;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                address_write = 1; address_next = {3'b0, saved_address[7:0]};
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 O_sdram_addr <= {3'b0, saved_address[7:0]};
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                 dqm_state <= 0;
                 read_active <= 1;
                 read_age <= 0;
@@ -518,6 +618,8 @@ module SdramController #(
                 prep_needed <= 0;
             end
             ST_READ_STREAM: begin
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 if ((READ_CHAIN || PREPARE_NEXT) && next_valid && next_other_bank &&
                     next_needs_prepare && !prep_needed && prep_refresh_ok && read_prepare_window &&
                     (READ_CHAIN || !row_valid[mapped_next_address[20:19]])) begin
@@ -547,6 +649,7 @@ module SdramController #(
                         prep_needed <= 0;
                     end
                 end
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                 if (command_age == saved_last) begin
                     if (!read_chain_issue && !CAPTURE_FALLING && CAPTURE_LATENCY < CAS)
                         command <= 6;
@@ -565,7 +668,11 @@ module SdramController #(
                         state <= ST_IDLE;
                     end else begin
                         command <= 2;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                        address_write = 1; address_next = 0;
+`else // GOWIN_SDRAM_SHARED_PREPARE
                         O_sdram_addr <= 0;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                         row_valid[saved_address[20:19]] <= 0;
                         wait_count <= RP_CYCLES - 1;
                         after_wait <= ST_COMPLETE;
@@ -586,7 +693,11 @@ module SdramController #(
                     state <= saved_write ? ST_WRITE_LAUNCH : ST_READ_LAUNCH;
                 else begin
                     command <= 2;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                    address_write = 1; address_next = 0;
+`else // GOWIN_SDRAM_SHARED_PREPARE
                     O_sdram_addr <= 0;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                     row_valid[saved_address[20:19]] <= 0;
                     wait_count <= RP_CYCLES - 1;
                     after_wait <= ST_ACTIVATE;
@@ -594,7 +705,11 @@ module SdramController #(
                 end
             end else begin
                 command <= 3;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                address_write = 1; address_next = saved_address[18:8];
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 O_sdram_addr <= saved_address[18:8];
+`endif // GOWIN_SDRAM_SHARED_PREPARE
                 row_valid[saved_address[20:19]] <= 1;
                 row[saved_address[20:19]] <= saved_address[18:8];
                 wait_count <= RCD_CYCLES - 1;
@@ -605,7 +720,11 @@ module SdramController #(
         endcase
         if (column_candidate) begin
             O_sdram_ba <= mapped_next_address[20:19];
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+            address_write = 1; address_next = {3'b0, mapped_next_address[7:0]};
+`else // GOWIN_SDRAM_SHARED_PREPARE
             O_sdram_addr <= {3'b0, mapped_next_address[7:0]};
+`endif // GOWIN_SDRAM_SHARED_PREPARE
         end
         if (read_chain_issue) begin
             read_prepare_window <= 1;
@@ -613,7 +732,11 @@ module SdramController #(
             command <= 5;
             if (!CONTINUE) begin
                 O_sdram_ba <= mapped_next_address[20:19];
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+                address_write = 1; address_next = {3'b0, mapped_next_address[7:0]};
+`else // GOWIN_SDRAM_SHARED_PREPARE
                 O_sdram_addr <= {3'b0, mapped_next_address[7:0]};
+`endif // GOWIN_SDRAM_SHARED_PREPARE
             end
             saved_address <= mapped_next_address;
             command_age <= 0;
@@ -624,6 +747,9 @@ module SdramController #(
             end
             read_chain_pending <= 1;
         end
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+        if (address_write) O_sdram_addr <= address_next;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
         // Reset wins over every state transition and aborts all ownership.
         if (reset) begin
             state <= ST_POWER_WAIT;
@@ -659,6 +785,9 @@ module SdramController #(
             read_chain_slot_q <= 0;stream_left<=0;stream_delay<=0;stream_tail<=0;
             read_prepare_window <= 0;
             write_prepare_window <= 0;
+`ifdef GOWIN_SDRAM_SHARED_PREPARE
+            write_last_q <= 0;
+`endif // GOWIN_SDRAM_SHARED_PREPARE
             read_stop_age <= 0;
         end
     end

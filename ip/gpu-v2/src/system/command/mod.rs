@@ -31,11 +31,9 @@ pub fn verilog(
         "`define GPU_V2_COMMAND_MAINTENANCE\n{numerical}\n`undef GPU_V2_COMMAND_MAINTENANCE\n"
     ));
     source.push_str(include_str!("../command_processor.v"));
-    source.push_str(concat!(
-        "`define GPU_V2_COMMAND_TRANSPORT\n",
-        include_str!("../command_dma.v"),
-        "\n`undef GPU_V2_COMMAND_TRANSPORT\n"
-    ));
+    source.push_str("`define GPU_V2_COMMAND_TRANSPORT\n");
+    source.push_str(include_str!("../command_dma.v"));
+    source.push_str("\n`undef GPU_V2_COMMAND_TRANSPORT\n");
     source.push_str(include_str!("../ui_grid.v"));
     source.push_str(&super::vliw_memory::command_verilog());
     Ok(source.replace("\r\n", "\n"))

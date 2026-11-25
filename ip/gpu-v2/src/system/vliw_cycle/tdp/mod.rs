@@ -19,6 +19,7 @@ pub struct Serial {
     pub command_valid: bool,
     pub writing: bool,
     pub lower_ready: bool,
+    /// Column-major physical UI tile from the UI task queue.
     pub tile: u16,
     pub copy: bool,
     pub copy_address: Bits,

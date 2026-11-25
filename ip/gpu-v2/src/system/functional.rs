@@ -2,7 +2,7 @@
 //!
 //! Uses physical halfwords directly; successful completion means every write is
 //! done. Geometry and shading follow the selected native integer contracts.
-use super::command::{self as abi, Command, DeviceSubmission};
+use super::command::{self as abi, Command, CommandSlice, DeviceSubmission};
 use std::fmt;
 #[path = "functional/geometry.rs"]
 mod geometry;
@@ -168,62 +168,97 @@ impl Executor {
         memory: &mut Memory<'_>,
         submission: DeviceSubmission,
     ) -> Result<Report, ExecutionError> {
-        let base = usize::from(submission.base_sector) * 64;
-        let count = usize::from(submission.count_minus_one) + 1;
         let error = |byte_pc, word, reason: String| ExecutionError {
             byte_pc,
             word,
             reason,
             effects: Effects::default(),
         };
-        abi::DeviceSubmission::new((base * 2) as u32, (count * 4) as u32)
-            .and_then(|_| bounds(memory, base, count.div_ceil(32) * 64).map(|_| ()))
-            .map_err(|reason| error(0, 0, reason.into()))?;
+        let submission =
+            DeviceSubmission::from_device_words(submission.count_minus_one, submission.base_sector)
+                .map_err(|reason| error(0, 0, reason.into()))?;
+        let mut spans = [(0, 0); DeviceSubmission::MAX_SEGMENTS];
+        let span_count = if let Some(count) = submission.segment_count() {
+            let table_base = usize::from(submission.base_sector) * 64;
+            let table = memory
+                .read(table_base..table_base + 64)
+                .map_err(|reason| error(0, 0, reason))?;
+            let entries = table[64 - count * 2..].as_chunks::<2>().0;
+            for (span, pair) in spans.iter_mut().zip(entries) {
+                let slice = CommandSlice::decode(pair[0], pair[1])
+                    .map_err(|reason| error(0, 0, reason.into()))?;
+                *span = (
+                    slice.first_byte as usize / 2,
+                    slice.valid_bytes as usize / 4,
+                );
+            }
+            count
+        } else {
+            spans[0] = (
+                usize::from(submission.base_sector) * 64,
+                usize::from(submission.count_minus_one) + 1,
+            );
+            1
+        };
         let mut state = State::default();
-        let mut pc = 0;
+        let mut pc_base = 0usize;
         #[cfg(feature = "functional-batch")]
         let mut batch_allowed = true;
-        while pc < count {
-            let at = base + pc * 2;
-            let instruction = memory
-                .read(at..at + 2)
-                .map_err(|reason| error((pc * 4) as u32, 0, reason))?;
-            let word = u32::from(instruction[0]) | (u32::from(instruction[1]) << 16);
-            #[cfg(feature = "functional-batch")]
-            if batch_allowed && word >> 28 == 3 {
-                match geometry::batch::try_execute(
-                    memory,
-                    &state,
-                    base,
-                    pc..count,
-                    self.maximum_work,
-                    self.rebin_mode,
-                    &mut self.batch_stats,
-                ) {
-                    geometry::batch::Attempt::Applied(next, next_pc) => {
-                        state = *next;
-                        pc = next_pc;
-                        continue;
+        for (index, &(base, count)) in spans[..span_count].iter().enumerate() {
+            let last_span = index + 1 == span_count;
+            let sector_base = base & !63;
+            let padded_words = (base % 64 + count * 2).next_multiple_of(64);
+            bounds(memory, sector_base, padded_words)
+                .map_err(|reason| error(pc_base as u32, 0, reason.into()))?;
+            let mut pc = 0;
+            while pc < count {
+                let byte_pc = (pc_base + pc * 4) as u32;
+                let at = base + pc * 2;
+                let instruction = memory
+                    .read(at..at + 2)
+                    .map_err(|reason| error(byte_pc, 0, reason))?;
+                let word = u32::from(instruction[0]) | (u32::from(instruction[1]) << 16);
+                #[cfg(feature = "functional-batch")]
+                if batch_allowed && word >> 28 == 3 {
+                    match geometry::batch::try_execute(
+                        memory,
+                        &state,
+                        base,
+                        pc..count,
+                        self.maximum_work,
+                        self.rebin_mode,
+                        &mut self.batch_stats,
+                    ) {
+                        geometry::batch::Attempt::Applied(next, next_pc) => {
+                            state = *next;
+                            pc = next_pc;
+                            continue;
+                        }
+                        geometry::batch::Attempt::Fallback => batch_allowed = false,
+                        geometry::batch::Attempt::Skip => {}
                     }
-                    geometry::batch::Attempt::Fallback => batch_allowed = false,
-                    geometry::batch::Attempt::Skip => {}
                 }
-            }
-            let result = state.command(memory, word, self.maximum_work);
-            let end = result.map_err(|reason| error((pc * 4) as u32, word, reason))?;
-            if end {
-                if pc + 1 != count {
+                if word == Command::END.0 && !last_span && pc + 1 == count {
+                    break;
+                }
+                let end = state
+                    .command(memory, word, self.maximum_work)
+                    .map_err(|reason| error(byte_pc, word, reason))?;
+                if end {
+                    if pc + 1 == count {
+                        return Ok(state.report);
+                    }
                     return Err(error(
-                        (pc * 4) as u32,
+                        byte_pc,
                         word,
                         "END is not the last instruction".into(),
                     ));
                 }
-                return Ok(state.report);
+                pc += 1;
             }
-            pc += 1;
+            pc_base += count * 4;
         }
-        Err(error((count * 4) as u32, 0, "missing final END".into()))
+        Err(error(pc_base as u32, 0, "missing final END".into()))
     }
 }
 

@@ -156,18 +156,7 @@ reg[1:0]compare_bank;
  // the held victim/new 16x16 tile, retaining key bit5 as its half selector.
 `ifdef GPU_V2_COMMAND_MAINTENANCE
  // Raw half-tile tag remains unchanged. UI keeps its logical row-order ABI.
- function[8:0]column_ui_tile;
-  input[8:0]logical_tile;reg[8:0]remainder;reg[3:0]row;
-  begin
-   remainder=logical_tile;row=0;
-   if(remainder>=9'd200)begin remainder=remainder-9'd200;row[3]=1;end
-   if(remainder>=9'd100)begin remainder=remainder-9'd100;row[2]=1;end
-   if(remainder>=9'd50)begin remainder=remainder-9'd50;row[1]=1;end
-   if(remainder>=9'd25)begin remainder=remainder-9'd25;row[0]=1;end
-   column_ui_tile={remainder[4:0],row};
-  end
- endfunction
- wire[8:0]mt_linear_tile=ui_active?column_ui_tile(ui_tile):{mt_tile[4:0],mt_tile[9:6]};
+ wire[8:0]mt_linear_tile=ui_active?ui_tile:{mt_tile[4:0],mt_tile[9:6]};
  wire mt_half=ui_active?mt_issue[1]:mt_tile[5];
  assign ui_cmd_ready=ui_active&&!mt_active&&!flushing;
  assign ui_cmd_done=ui_active&&mt_active&&mem_complete_valid&&(mt_write?retire_last:mt_retire[0]);

@@ -142,7 +142,7 @@ impl Module for CpuV3System {
             return Some(format!(
                 "{text}\n{}\n{}\n{}\n{}",
                 RtlSources::STREAM_GEARBOX,
-                RtlSources::CONTROLLER,
+                RtlSources::controller(true),
                 pins,
                 std::fs::read_to_string(models).unwrap()
             ));

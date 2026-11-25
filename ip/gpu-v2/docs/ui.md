@@ -78,7 +78,7 @@ compatible. See the [driver](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md#in
 
 Each UI tile covers two horizontally adjacent 8x16 character cells. Logical
 tile indices remain row-major: `t=0..374`, with 25 tile columns and 15 rows.
-Framebuffer maintenance maps this index to the
+The UI engine maps this index to the
 [column-ordered surface](/ip/gpu-v2/docs/framebuffer.md#surface-layout):
 
 ```text
@@ -87,9 +87,8 @@ tile_y = t / 25                 // integer division
 physical_macro = (tile_x << 4) | tile_y
 ```
 
-`column_ui_tile` implements the quotient/remainder using conditional
-subtractions of 200, 100, 50 and 25. Indices 0, 24, 25 and 374 map to macros 0,
-384, 1 and 398. The padding macro at row 15 of each column has no logical UI index.
+Indices 0, 24, 25 and 374 map to macros 0, 384, 1 and 398. The padding macro
+at row 15 of each column has no logical UI index.
 This conversion applies to framebuffer destinations; grid ID order and atlas
 encoding retain the formats above.
 
@@ -117,6 +116,13 @@ task never waits for a nonexistent successor. Slots release only at final write
 retirement, so the following atlas group cannot overwrite either live buffer.
 Command prefetch pauses during UI; the checker and char consumer share the
 source read port in fixed phases, with no port-request arbiter.
+
+The UI engine converts the first cell pair to a physical
+tile while the initial grid DMA runs. The logical scan register serves as the
+initial remainder, and the pair-ready bit tracks conversion completion until
+the first grid read. During scanning, the tile column advances for every pair
+and wraps at 25 columns. Task slots store the nine-bit physical tile
+`{column, row}`. Commands continue to identify cells in row-major order.
 
 ```mermaid
 flowchart TD
@@ -165,7 +171,7 @@ The command factory scopes `GPU_V2_COMMAND_MAINTENANCE` around its numerical
 closure and undefines it before emitting the remaining control modules. The
 top and selected postquad wrapper declare the runtime color/depth and serial
 UI/copy ports; the TDP sink forwards them to the cache source. The source owns
-`column_ui_tile`, color-only UI addressing, the raw-copy bypass, alpha/RGB565
+physical tile selection, color-only UI addressing, the raw-copy bypass, alpha/RGB565
 bank writes, lower-half gating and temporary-line nonpublication. These paths
 are declarations of the existing owners, with one shared maintenance FSM.
 No command-source text pass inserts or rewrites their ports or statements.

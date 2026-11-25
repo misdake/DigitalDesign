@@ -12,6 +12,8 @@ integer cycle=0,mode=0,bi=0,bn=0,ba=0,starts=0,done_count=0,vi=0,overlap=0,ce0=0
 integer bursts32=0,bursts64=0,bursts128=0,cachefills=0,material_changes=0,j;
 reg active=0,force_ce0=0;
 integer submission;
+localparam TABLE_COUNT=@TABLE_COUNT@, TABLE_ADDRESS=@TABLE_ADDRESS@, COMMAND_READS=@COMMAND_READS@, DRAWS=@DRAWS@;
+reg[21:0]command_read[0:32];integer read_index=0;
 always @(negedge clk)begin
  ce=!force_ce0&&cycle%7!=2;ro_request_ready=!active&&cycle%5!=1;
  ro_response_valid=active&&cycle%3!=1;ro_data=memory[(ba>>2)+bi];
@@ -27,7 +29,14 @@ always @(posedge clk)begin
    if(active)$fatal(1,"multiple physical RO owners");
    active=1;ba=ro_address;bi=0;bn=ro_count==3?16:ro_count==1?8:4;
    case(ro_count)0:bursts32=bursts32+1;1:bursts64=bursts64+1;3:bursts128=bursts128+1;default:$fatal(1,"burst size");endcase
-   if(ro_address<22'h1000)cachefills=cachefills+1;
+   if(ro_address<22'h1000)begin
+    cachefills=cachefills+1;
+    if(TABLE_COUNT!=0&&submission==0)begin
+     if(read_index>=COMMAND_READS||command_read[read_index]!==ro_address||ro_count!=3)
+      $fatal(1,"segment DMA %0d got %h",read_index,ro_address);
+     read_index=read_index+1;
+    end
+   end
   end else if(ro_response_valid)begin
    if(ro_response_last||ro_response_error)active=0;else bi=bi+1;
   end
@@ -40,7 +49,7 @@ always @(posedge clk)begin
   end
   if(ce&&meshlet_done)begin done_count=done_count+1;if(published_vertices!=3)$fatal(1,"vertex count");end
   if(ce&&emit_valid&&output_ready)begin
-   if((mode==0||mode==3)&&(vi>=45||emit_data!==vertices[vi]))$fatal(1,"V changed at%0d got%h want%h",vi,emit_data,vertices[vi]);
+   if((mode==0||mode==3)&&(vi>=15*DRAWS||emit_data!==vertices[vi]))$fatal(1,"V changed at%0d got%h want%h",vi,emit_data,vertices[vi]);
    vi=vi+1;
   end
   if(ce&&!dut.stop&&dut.processor.state==5&&
@@ -52,20 +61,24 @@ end
 task tick;begin @(negedge clk);#1;end endtask
 initial begin
  j=$value$plusargs("MODE=%d",mode);$readmemh("memory.hex",memory);$readmemh("vertices.hex",vertices);
+ @COMMAND_READ_INIT@
  reset=1;output_ready=1;command_base=32'h1000;command_bytes=@BYTES@;
  tick();tick();reset=0;
  for(submission=0;submission<(mode==0?2:1);submission=submission+1)begin
  starts=0;done_count=0;vi=0;
  force_ce0=1;
- submit_commands(command_base,command_bytes);
- repeat(3)begin tick();if(dut.processor.state!=1||!busy)$fatal(1,"CE0 launch was lost");end
+ if(TABLE_COUNT!=0&&submission==0)begin
+  send_gpu(0,16'h8000|(TABLE_COUNT-1));send_gpu(1,TABLE_ADDRESS/128);
+ end else submit_commands(command_base,command_bytes);
+ repeat(3)begin tick();if((dut.processor.state!=1&&dut.processor.state!=23)||!busy)$fatal(1,"CE0 launch was lost");end
  force_ce0=0;
  if(mode==2)begin
   while(!(dut.processor.state==10&&dut.dma_idle&&!dut.memory_busy))tick();
   if(!busy||!fault)$fatal(1,"abort falsely completed");
  end else while(busy)tick();
  if(mode==0||mode==3)begin
-  if(device_read_data[1]!=(mode==3)||starts!=3||done_count!=3||vi!=45||overlap==0||cachefills<3||bursts32==0||bursts64==0||bursts128==0||material_changes<3)
+  if(TABLE_COUNT!=0&&submission==0&&read_index!=COMMAND_READS)$fatal(1,"missing segment DMA");
+  if(device_read_data[1]!=(mode==3)||starts!=DRAWS||done_count!=DRAWS||vi!=15*DRAWS||overlap==0||cachefills<2||bursts32==0||bursts64==0||bursts128==0||material_changes<(DRAWS==1?2:3))
    $fatal(1,"CP success conservation e%0d starts%0d done%0d V%0d overlap%0d cache%0d",device_read_data[1],starts,done_count,vi,overlap,cachefills);
  end else begin
   if(!fault||dut.processor.page_valid[1])$fatal(1,"failed DMA published a page or lost error");

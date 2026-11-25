@@ -57,7 +57,7 @@ initial begin
  repeat(3)tick;reset=0;tick;
  // CE remains zero throughout: actual request, RAM and retirement must advance.
  for(t=0;t<375;t=t+1)begin
-  ui_tile=t;expected_base=32'h100000+((t%25)*16+t/25)*512;transfer;
+  ui_tile=(t%25)*16+t/25;expected_base=32'h100000+ui_tile*512;transfer;
  end
  copy_active=1;
  for(t=0;t<7;t=t+1)begin

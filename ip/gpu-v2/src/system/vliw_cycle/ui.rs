@@ -45,6 +45,8 @@ pub struct State {
     pub initialized: bool,
     pub scan_done: bool,
     pub scan: u16,
+    pub tile_column: u8,
+    pub tile_row: u8,
     pub window: u16,
     pub pair_valid: bool,
     pub valid: [bool; 2],
@@ -210,8 +212,24 @@ impl Engine {
                 n.window = (i.cp_q >> ((s.scan & 3) * 16)) as u16;
                 n.pair_valid = true;
             }
+            if s.active && !s.initialized && !s.pair_valid && !i.stop {
+                if s.scan >= 25 {
+                    n.scan = s.scan - 25;
+                    n.tile_row = (s.tile_row + 1) & 15;
+                } else {
+                    n.tile_column = s.scan as u8;
+                    n.scan = (i.first_cell & 1023) >> 1;
+                    n.pair_valid = true;
+                }
+            }
             if e.scan_step {
                 n.scan = (s.scan + 1) & 511;
+                if s.tile_column == 24 {
+                    n.tile_column = 0;
+                    n.tile_row = (s.tile_row + 1) & 15;
+                } else {
+                    n.tile_column = (s.tile_column + 1) & 31;
+                }
                 n.pair_valid = false;
                 if e.last_pair {
                     n.scan_done = true;
@@ -220,7 +238,7 @@ impl Engine {
                     let p = usize::from(s.put);
                     n.valid[p] = true;
                     n.loaded[p] = false;
-                    n.task_tile[p] = s.scan;
+                    n.task_tile[p] = u16::from(s.tile_column) << 4 | u16::from(s.tile_row);
                     n.ids[p] = e.selected_ids;
                     n.put = !s.put;
                 }
@@ -233,8 +251,9 @@ impl Engine {
                         (s.init_sector + 1) & 7
                     };
                 }
-                if !s.initialized && !e.init_work && i.dma_idle {
+                if !s.initialized && !e.init_work && i.dma_idle && s.pair_valid {
                     n.initialized = true;
+                    n.pair_valid = false;
                 }
                 if e.atlas_work && (e.skip_part || e.work_take) {
                     n.load_part = (s.load_part + 1) & 7;
@@ -314,6 +333,7 @@ impl Engine {
             n.init_sector = ((i.first_cell & 1023) >> 7) as u8;
             n.initialized = false;
             n.scan = (i.first_cell & 1023) >> 1;
+            n.tile_row = 0;
             n.scan_done = false;
             n.pair_valid = false;
             n.valid = [false; 2];

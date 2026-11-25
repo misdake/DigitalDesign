@@ -71,7 +71,7 @@ module gpu_command_dma(
    if(build)begin
     if(cache_valid)begin
      offer<=1;offer_cache<=1;offer_last<=0;oa<=cache_source[21:4];oc<=3;
-     od<={4'b1110,cache_bank,4'd0};
+     od<={4'b111,cache_source[0],cache_bank&&!cache_source[0],4'd0};
     end else if(issued!=put)begin
      offer<=1;offer_cache<=0;oa<=js[issued[0]];od<={jd[issued[0]],2'd0};
      oc<=jm[issued[0]]?(jh[issued[0]]?2'd0:2'd3):{jz[issued[0]][1],|jz[issued[0]]};
@@ -116,7 +116,7 @@ module gpu_command_dma(
   if(accept_work&&((|work_source[3:0])||(!work_mesh&&
    ((work_size==1&&work_source[4])||(work_size==2&&(|work_source[5:4]))||work_size==3))))
    $fatal(1,"CP copy source is not size aligned");
-  if(cache_valid&&cache_ready&&(|cache_source[5:0]))$fatal(1,"CP command page is not 128-byte aligned");
+  if(cache_valid&&cache_ready&&(|cache_source[5:1]))$fatal(1,"CP command page is not 128-byte aligned");
  end
 `endif
 `ifdef GPU_V2_COMMAND_TRANSPORT

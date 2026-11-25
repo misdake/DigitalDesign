@@ -548,8 +548,7 @@ fn run() -> Result<(), String> {
     if let Some((write, count, memory)) = pause.capture.as_ref() {
         std::fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
         let count = count.ok_or("target START has no preceding COUNT")?;
-        let descriptor =
-            DeviceSubmission::new(u32::from(write.value) * 128, (u32::from(count) + 1) * 4)?;
+        let descriptor = DeviceSubmission::from_device_words(count, write.value)?;
         let raw = options.output.join("physical-pre-submit.bin");
         let mut writer = BufWriter::new(std::fs::File::create(&raw).map_err(|e| e.to_string())?);
         for word in memory {

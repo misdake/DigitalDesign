@@ -65,7 +65,9 @@ def export_layout(rtl, combined):
 
 
 def validate_rtl_layout(layout, combined):
-    column = 'function[8:0]column_ui_tile;' in combined and 'clear_sector==1599' in combined
+    column_ui = ('ui_active?ui_tile:' in combined
+                 or 'function[8:0]column_ui_tile;' in combined)
+    column = column_ui and 'clear_sector==1599' in combined
     if column != (layout.abi == 2):
         raise SnapshotError('RTL structure disagrees with its explicit framebuffer layout')
     if layout.abi == 2 and 'wire[11:0]macro_column=' not in combined:

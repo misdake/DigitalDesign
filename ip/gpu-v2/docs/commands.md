@@ -45,6 +45,38 @@ The driver may immediately submit the next CB after busy clears, without ACK.
 For example, a372 B stream at byte0x40000 submits0x005c on channel0 followed by
 0x0800 on channel1. CPU16-bit word addresses must first be converted to bytes.
 
+### Segmented submission
+
+Segmented submission uses the same two SENDs as a single CB. With COUNT
+bit15 set, bits4:0 hold the descriptor count minus one and bits14:5 are zero.
+START addresses one 128 B table sector. Each little-endian 32-bit descriptor
+contains the first sector in bits15:0, the 32-bit instruction slot within that
+sector in bits20:16, the inclusive final slot in the last sector in bits25:21,
+and the number of sectors minus one in bits31:26. A slice covers at most 64
+sectors (8 KiB). Place the 1–32 entries in execution order at the end of the
+table sector. `CommandSlice::new` checks an address and length, and
+`DeviceSubmission::segment_table` builds the table and its SEND words.
+
+The DMA reads complete sectors. The CP executes only the selected slots and
+advances on retirement of the last instruction of each slice. An optional END
+at the exact end of an intermediate slice also advances the table. Only the
+final slice requires END and the usual drain and flush contract. Slice
+transitions preserve live bindings, resident uniforms, pending work and
+synchronization state. Any slice that omits earlier commands must inherit or
+establish the state and DMA dependencies those commands provided. The driver
+retains the table, all referenced sectors and referenced allocations until BUSY
+clears.
+
+The command DMA stores the table in scratchpad qwords480..495. The same read
+port reads descriptors. The internal command request selects this destination
+with an alignment bit that is discarded from the SDRAM address. Each descriptor
+reuses the flat stream's fetch address, page count and two alternating command
+pages. The CP fetches the next slice after the current slice retires, so
+prefetch overlap is available within a slice. Contiguous-command snapshots and
+cycle profiling cover single-CB submissions.
+
+### Instruction encoding
+
 Each instruction is one little-endian u32. Unlisted/reserved bits are zero.
 The DRAM stream starts directly with its first instruction: it has no file
 header, magic or in-band ABI version. Submission base/count are supplied through
@@ -67,7 +99,7 @@ ABI separately and must not insert their metadata into executable command bytes.
 | 10 | SET_TARGET | 6:0 source local byte address/32; 27:7 zero |
 | 11 | UI_GRID | 6:0 descriptor slot; bit27=0: full grid and26:7 zero; bit27=1: first cell16:7, inclusive last26:17; serial range, described in [UI](/ip/gpu-v2/docs/ui.md) |
 | 12 | MEMCPY | 6:0 descriptor slot66..79; 27:7 zero; serial512-byte-aligned raw copy, described in [memcpy](/ip/gpu-v2/docs/memcpy.md) |
-| 15 | END | Zero; must be the last valid instruction |
+| 15 | END | Zero; final instruction of a submission, optional at the end of an intermediate slice |
 
 DMA_LOCAL size codes0/1/2 mean32/64/128 B. Code3 is invalid. Local destinations
 are staging qwords264..319, one whole128 B uniform block at320/336/352/368,
@@ -239,7 +271,8 @@ END
 | 320..383 | Four existing128 B uniform blocks |
 | 384..447 | Not exposed to CP; logical T workspace selection |
 | 448..463 / 464..479 | Two128 B command pages |
-| 480..511 | Reserved |
+| 480..495 | Segment descriptor table |
+| 496..511 | Reserved |
 
 DMA normally owns both input-RAM write lanes. Resident World/View preparation
 may write one lane of uniform22, yielding to every DMA return and holding a
@@ -356,6 +389,9 @@ Bounded interface checks use `tests/vliw_command.py --export <command.v>
 `CpuV3Gpu` pin binding. They cover two consecutive CBs without ACK, command page
 wrap, meshlet overlap, CE0 submission, passive error detection and reset-only
 RECV error retention in the monitor-free production datapath.
+With the same `command` export, add `--segmented` to compare a
+wrapped selection of three draws from one four-draw command ring against a
+flat reference. Add `--one-draw` to select just one draw from the same ring.
 The shared fitter's `--system-binding` selects the real system constants
 (CE=1, abort=0, output_ready=1) and excludes debug observations in both trials.
 Its CE input gates the measurement boundary only. The default fit preserves

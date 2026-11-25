@@ -82,8 +82,7 @@ is disjoint; capture still requires stable Front before leasing inputs.
 Every production build includes column storage and fixed400x240 views.
 The checked loader pins the canonical layout and command ABI4; local module or
 config replacements cannot select a different format. Version2 capture manifests
-must declare the matching column layout and resource catalog. The optional
-hardware environment setting is`CPU_V3_GPU_PROFILE=production`.
+must declare the matching column layout and resource catalog.
 
 The [GPU view contract](/ip/gpu-v2/docs/framebuffer-texture-view.md) defines bit23,
 exponent9, base-only nearest/bilinear and clamp. A view is not a512-square POT

@@ -114,7 +114,7 @@ class LayoutTests(unittest.TestCase):
             with self.assertRaises(s.SnapshotError): identity.preflight(capture, build, receipt)
 
     def test_explicit_export_cannot_silently_relabel_a_different_gpu(self):
-        body='function[8:0]column_ui_tile; clear_sector==1599 wire[11:0]macro_column='
+        body='ui_active?ui_tile:0; clear_sector==1599 wire[11:0]macro_column='
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp)
             with self.assertRaises(s.SnapshotError): replay.export_layout(folder,body)

@@ -31,10 +31,15 @@ module gpu_command_processor(
  localparam IDLE=0,FETCH=1,EXEC=2,DRAW_WAIT=3,APPLY_R=4,APPLY_W=5,
   WAITING=7,FLUSHING=8,ENDING=9,FAILED=10,LATCH=11,CLEAR_REQUEST=12,CLEAR_WAIT=13,CLEAR_DONE=14,
   COLOR_R=15,COLOR_W=16,DRAW_START=17,UI_WAIT=18,
-  COPY_ADDRESS=19,COPY_REQUEST=20,COPY_WAIT=21,COPY_DONE=22;
+  COPY_ADDRESS=19,COPY_REQUEST=20,COPY_WAIT=21,COPY_DONE=22,
+  TABLE_LOAD=23,TABLE_READ=24,TABLE_LATCH=25;
  reg[4:0]state;
  reg failed,all_fence,global_valid,render_valid,stored,target_valid;
  reg[5:0]pc;reg[15:0]fetch_line;reg[9:0]fetch_left;
+ // The right-aligned table advances to an overflow bit after its last entry.
+ reg segmented;
+ reg[5:0]segment_cursor;
+ reg[4:0]segment_tail;
 `ifndef SYNTHESIS
  reg[16:0]diagnostic_pc,limit;reg count_seen;
 `endif
@@ -43,7 +48,13 @@ module gpu_command_processor(
  reg[1:0]object_index;
  reg[31:0]command;
  reg[1:0]clear_flight;reg clear_offer;
- wire[31:0]read_word=(state==LATCH&&pc[0])?cp_q[63:32]:cp_q[31:0];
+ wire[31:0]read_word=((state==LATCH&&pc[0])||(state==TABLE_LATCH&&segment_cursor[0]))?
+  cp_q[63:32]:cp_q[31:0];
+ wire descriptor_latched=ce&&!stop&&state==TABLE_LATCH;
+ wire[8:0]page_count_minus_one=descriptor_latched?{3'd0,read_word[31:26]}:control_data[13:5];
+ // The last page request toggles fetch_bank. The preceding page may still
+ // execute, so a matching slot alone cannot retire the slice.
+ wire segment_end=segmented&&fetch_left==0&&pc[5]!=fetch_bank&&pc[4:0]==segment_tail;
  wire[3:0]opcode=command[31:28];
  assign billboard_vertical=command[2];
  wire[1:0]wait_mask=command[1:0];
@@ -74,10 +85,12 @@ module gpu_command_processor(
  assign submit_ready=!busy&&!failed&&!abort;
  assign cache_valid=busy&&!stop&&state!=ENDING&&state!=UI_WAIT&&
   !(opcode==UI_GRID&&(state==EXEC||state==APPLY_R||state==APPLY_W))&&fetch_left!=0&&!cache_inflight&&!cache_pages[fetch_bank];
- assign cache_source={fetch_line,6'd0};assign cache_bank=fetch_bank;
- assign cp_re=!stop&&((state==FETCH&&cache_pages[pc[5]])||state==APPLY_R||state==COLOR_R);
+ wire cache_table=state==TABLE_LOAD;
+ assign cache_source={fetch_line,5'd0,cache_table};assign cache_bank=fetch_bank;
+ assign cp_re=!stop&&((state==FETCH&&cache_pages[pc[5]])||state==APPLY_R||state==COLOR_R||state==TABLE_READ);
  assign cp_addr=state==COLOR_R?{3'b101,page_uniform[{command[0],1'b0}+:2],command[1]?4'b1111:4'b1011}:
-  state==APPLY_R?{command[6:0],object_index}:{4'b1110,pc[5],pc[4:1]};
+  state==APPLY_R?{command[6:0],object_index}:
+  state==TABLE_READ?{5'b11110,segment_cursor[4:1]}:{4'b1110,pc[5],pc[4:1]};
  assign work_valid=state==EXEC&&!stop&&(opcode==DMA_LOCAL||opcode==DMA_MESHLET);
  assign work_mesh=opcode==DMA_MESHLET;
  assign work_source=work_mesh?{command[27:12],6'd0}:{command[27:10],4'd0};
@@ -133,17 +146,15 @@ module gpu_command_processor(
  task fail;begin
   failed<=1;if(!clear_active&&!copy_active)state<=FAILED;fetch_left<=0;
  end endtask
- task advance;begin
-  if(pc[4:0]==31)cache_pages[pc[5]]<=0;
-  pc<=pc+1'b1;state<=FETCH;
-`ifndef SYNTHESIS
-  diagnostic_pc<=diagnostic_pc+17'd4;
-`endif
- end endtask
+ // This edge-local flag shares the PC and page updates across all opcodes.
+ reg retire_instruction;
+ task advance;begin retire_instruction=1;end endtask
  always @(posedge clk)begin
+  retire_instruction=0;
   if(reset)begin
    state<=IDLE;command<=0;clear_flight<=0;clear_offer<=0;failed<=0;busy<=0;
    all_fence<=0;global_valid<=0;render_valid<=0;stored<=0;target_valid<=0;pc<=0;
+   segmented<=0;segment_cursor<=0;segment_tail<=0;
 `ifndef SYNTHESIS
    diagnostic_pc<=0;limit<=0;count_seen<=0;
 `endif
@@ -157,13 +168,23 @@ module gpu_command_processor(
   end else begin
    // Device writes are wall-clock events: a one-cycle SEND survives CE0.
    if(load_count&&submit_ready)begin
-    fetch_left<={1'b0,control_data[13:5]}+10'd1;
+    segmented<=control_data[15];
+    segment_cursor<={1'b0,~control_data[4:0]};
 `ifndef SYNTHESIS
     limit<={1'b0,control_data[13:0],2'b00}+17'd4;count_seen<=1;
 `endif
    end
-   if(cache_valid&&cache_ready)begin cache_inflight<=1;fetch_line<=fetch_line+1'b1;fetch_left<=fetch_left-1'b1;fetch_bank<=!fetch_bank;end
-   if(cache_done)begin cache_inflight<=0;cache_pages[cache_done_bank]<=1;end
+   if(cache_valid&&cache_ready)begin
+    cache_inflight<=1;fetch_line<=fetch_line+1'b1;fetch_left<=fetch_left-1'b1;
+    if(!cache_table)fetch_bank<=!fetch_bank;
+   end
+   if((load_count&&submit_ready)||descriptor_latched)
+    fetch_left<={1'b0,page_count_minus_one}+10'd1;
+   if(cache_done)begin
+    cache_inflight<=0;
+    if(cache_table)state<=TABLE_READ;
+    else cache_pages[cache_done_bank]<=1;
+   end
    if(mesh_begin)page_valid[mesh_begin_slot]<=0;
    if(mesh_done)page_valid[mesh_done_slot]<=1;
    if(uniform_done)uniform_valid[uniform_bank]<=1;
@@ -177,10 +198,20 @@ module gpu_command_processor(
      fetch_line<=control_data;
      fetch_bank<=0;cache_inflight<=0;cache_pages<=0;page_valid<=0;uniform_valid<=0;
      all_fence<=0;global_valid<=0;render_valid<=0;stored<=0;target_valid<=0;
-     state<=FETCH;
+     state<=segmented?TABLE_LOAD:FETCH;
     end
    else if(ce&&!stop)case(state)
     FETCH:if(cache_pages[pc[5]]&&cp_ready)state<=LATCH;
+    TABLE_READ:if(cp_ready)state<=TABLE_LATCH;
+    TABLE_LATCH:begin
+     fetch_line<=read_word[15:0];
+     pc<={fetch_bank,read_word[20:16]};segment_tail<=read_word[25:21];
+     segment_cursor<=segment_cursor+1'b1;state<=FETCH;
+`ifndef SYNTHESIS
+     diagnostic_pc<={10'd0,read_word[20:16],2'b00};
+     limit<={4'd0,read_word[31:26],read_word[25:21],2'b00}+17'd4;
+`endif
+    end
     LATCH:begin command<=read_word;state<=EXEC;end
     EXEC:case(opcode)
      NOP:advance();
@@ -192,7 +223,9 @@ module gpu_command_processor(
      CLEAR:begin clear_flight<=0;clear_offer<=0;state<=CLEAR_REQUEST;end
      FLUSH:state<=FLUSHING;
      TEX_INVALIDATE:advance();
-     END:begin fetch_left<=0;state<=ENDING;end
+     END:if(segmented&&!segment_end)fail();
+     else if(segmented&&!segment_cursor[5])advance();
+     else begin fetch_left<=0;state<=ENDING;end
      default:advance();
     endcase
     COLOR_R:if(cp_ready)state<=COLOR_W;
@@ -234,6 +267,14 @@ module gpu_command_processor(
     UI_WAIT:if(ui_done)advance();
     default:begin end
    endcase
+   if(retire_instruction)begin
+    if(pc[4:0]==31||segment_end)cache_pages[pc[5]]<=0;
+    pc<=pc+1'b1;state<=segment_end?TABLE_READ:FETCH;
+    if(segment_end&&segment_cursor[5])fail(); // The final slice must execute END.
+`ifndef SYNTHESIS
+    diagnostic_pc<=diagnostic_pc+17'd4;
+`endif
+   end
    // Accepted physical work follows wall time, including CE0 and failure.
    // A presented request is never withdrawn by abort; stop after its terminal.
    if(state==CLEAR_REQUEST&&!clear_offer&&clear_flight<2&&!stop)clear_offer<=1;
@@ -272,9 +313,14 @@ module gpu_command_processor(
  end
 `ifndef SYNTHESIS
  always @(posedge clk)if(!reset)begin
-  if(load_count&&(!submit_ready||control_data[15:14]!=0))$fatal(1,"CP count SEND contract");
+  if(load_count&&(!submit_ready||control_data[14]||(control_data[15]&&control_data[13:5]!=0)))
+   $fatal(1,"CP count SEND contract");
   if(submit&&(!submit_ready||!count_seen||({1'b0,control_data}+fetch_left)>17'd65536))$fatal(1,"CP base SEND contract");
   if(ce&&!stop&&state==FETCH&&diagnostic_pc>=limit)$fatal(1,"CP missing END");
+  if(ce&&!stop&&state==TABLE_LATCH&&
+    ((read_word[31:26]==0&&read_word[20:16]>read_word[25:21])||
+     ({1'b0,read_word[15:0]}+{11'd0,read_word[31:26]}+17'd1)>17'd65536))
+   $fatal(1,"CP segment descriptor contract");
   if(ce&&!stop&&state==EXEC)case(opcode)
    NOP:if(command[27:0]!=0)$fatal(1,"CP NOP encoding");
    DMA_LOCAL:if(!local_legal)$fatal(1,"CP local DMA contract");
@@ -288,7 +334,9 @@ module gpu_command_processor(
     (!command[27]&&command[26:7]!=0)||!all_fence||!stored||!render_idle||work_busy||!target_valid)$fatal(1,"CP UI drain contract");
    MEMCPY:if(!object_legal||!all_fence||!stored||!render_idle||work_busy)$fatal(1,"CP MEMCPY drain contract");
    FLUSH,TEX_INVALIDATE:if(command[27:0]!=0||!all_fence||!render_idle||work_busy)$fatal(1,"CP drain contract");
-   END:if(command[27:0]!=0||diagnostic_pc+17'd4!=limit||!stored||!all_fence||work_busy)$fatal(1,"CP END contract");
+   END:if(command[27:0]!=0||diagnostic_pc+17'd4!=limit||
+     ((!segmented||segment_cursor[5])&&(!stored||!all_fence||work_busy)))
+    $fatal(1,"CP END contract");
    default:$fatal(1,"CP opcode contract");
   endcase
   if(ce&&!stop&&state==APPLY_W&&opcode!=UI_GRID&&object_bad)$fatal(1,"CP state data contract");

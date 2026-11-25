@@ -4,6 +4,71 @@ use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
 use gpu_v2::system::functional::PLANE_WORDS;
 
 #[test]
+fn command_list_submits_owned_buffers_and_raw_slices() {
+    let application = r#"mod gpu_api;use gpu_api::*;
+fn main(){
+ let a=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,1)},unsafe{GpuMemory::from_sectors(0x9801,1)});
+ let b=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9802,1)},unsafe{GpuMemory::from_sectors(0x9803,1)});
+ let mut gpu=Gpu::init(GpuConfig::double(a,b));
+ let source=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0xa000,2048)});
+ let middle=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
+ let destination=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});
+ let mut first=gpu.command_buffer();
+ let mut second=gpu.command_buffer();
+ first.copy_depth(source.ptr(), middle.ptr());
+ second.copy_depth(middle.ptr(), destination.ptr());
+ let mut list=CommandList::new(2);
+ list.push(first);
+ list.push(second);
+ gpu.submit_list(list);
+ if let Some(unexpected)=gpu.try_wait(){drop(unexpected);halt(0xbad);}
+ if !gpu.try_wait_list() || gpu.try_wait_list(){halt(0xbad);}
+
+ let mut reused=gpu.command_buffer();
+ let other=gpu.command_buffer();
+ reused.copy_depth(source.ptr(), middle.ptr());
+ gpu.submit(reused);
+ reused=gpu.wait();
+ drop(other);
+ drop(reused);
+
+ let commands=unsafe{GpuMemory::from_sectors(0x9900,4)};
+ let mut slices=CommandList::new(2);
+ unsafe{
+  slices.push_slice(commands,31,2);
+  slices.push_slice(commands,94,3);
+ }
+ gpu.submit_list(slices);
+ gpu.wait_list();
+ halt(0x600d);
+}"#;
+    let ir = super::gpu_api_resources::parse(application, "direct-command-list", false).unwrap();
+    let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
+    let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
+    sim.cpu_mut().set_boot_window(&program.words);
+    let pattern = (0..PLANE_WORDS)
+        .map(|i| ((i * 103 + i / 257) ^ 0x735a) as u16)
+        .collect::<Vec<_>>();
+    let memory = sim.cpu_mut().physical_memory_mut();
+    memory[0xa000 * 64..][..PLANE_WORDS].copy_from_slice(&pattern);
+    let raw = &mut memory[0x9900 * 64..];
+    for instruction in [31, 32, 94] {
+        raw[instruction * 2..][..2].copy_from_slice(&[3, 0x4000]);
+    }
+    raw[95 * 2..][..4].copy_from_slice(&[0, 0x7000, 0, 0xf000]);
+    for _ in 0..1_000_000 {
+        if let StepOutcome::Halted { signal } = sim.step().unwrap() {
+            assert_eq!(signal, 0x600d);
+            let memory = sim.cpu_mut().physical_memory_mut();
+            assert_eq!(&memory[0x8800 * 64..][..PLANE_WORDS], &pattern);
+            return;
+        }
+    }
+    panic!("command list fixture exceeded its step budget");
+}
+
+#[test]
 fn typed_depth_copy_preserves_values_padding_and_tail_and_rejects_overlap() {
     for overlap in [false, true] {
         let destination = if overlap { 0xa000 } else { 0x9000 };

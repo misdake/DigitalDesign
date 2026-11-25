@@ -453,6 +453,7 @@ impl TangNano20K {
     fn sdram_stream_binding(
         video_mode: TangNano20KVideoMode,
         ds2: bool,
+        shared_bank_prepare: bool,
     ) -> GowinBoardBinding<Self> {
         let wrapper = include_str!("tang_nano_20k/sdram/service_stream_108m_54m_hdmi.v");
         let mut extension = GowinBoardExtension::new(wrapper)
@@ -573,7 +574,7 @@ impl TangNano20K {
                 ))
                 .add_source_file(
                     "src/generated/target/tang_nano_20k/sdram/sdram_controller.v",
-                    crate::sdram_memory_controller::RtlSources::CONTROLLER,
+                    crate::sdram_memory_controller::RtlSources::controller(shared_bank_prepare),
                 )
                 .add_source_file(
                     "src/generated/target/tang_nano_20k/sdram/native_bridge_108m_54m.v",
@@ -689,19 +690,30 @@ impl TangNano20K {
                 );
         // CLKOUTP is upstream of the forwarded-clock route and OBUF. Audit
         // this envelope against each final routed SDF, not only PLL phase.
+        let (cpu_setup_guard, controller_setup_guard) = if shared_bank_prepare {
+            ("0.371700", "0.203350")
+        } else {
+            ("0.696376", "0.365688")
+        };
         extension = extension
             .add_sdc_constraint("set_clock_latency -source -early 3.75 [get_clocks {sdram_clk}]")
             .add_sdc_constraint("set_clock_latency -source -late 6.25 [get_clocks {sdram_clk}]")
             // Keep the physical 54/108 MHz clocks and SDRAM reference intact.
-            // Full-cycle setup budgets target 56/112 MHz, including the tool's
-            // existing 35 ps allowance. Hold retains that original allowance.
-            .add_sdc_constraint("set_clock_uncertainty 0.696376 -setup -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {cpu_clk}]")
-            .add_sdc_constraint("set_clock_uncertainty 0.365688 -setup -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {controller_clk}]")
+            // The shared controller has a 55/110 MHz setup budget. The
+            // established layout retains its qualified 56/112 MHz budget.
+            // Both incorporate the existing 35 ps allowance.
+            .add_sdc_constraint(format!("set_clock_uncertainty {cpu_setup_guard} -setup -from [get_clocks {{controller_clk cpu_clk sdram_clk}}] -to [get_clocks {{cpu_clk}}]"))
+            .add_sdc_constraint(format!("set_clock_uncertainty {controller_setup_guard} -setup -from [get_clocks {{controller_clk cpu_clk sdram_clk}}] -to [get_clocks {{controller_clk}}]"))
             .add_sdc_constraint("set_clock_uncertainty 0.035 -hold -from [get_clocks {controller_clk cpu_clk sdram_clk}] -to [get_clocks {controller_clk cpu_clk sdram_clk}]")
             // Keep the SDRAM controller and half-cycle bridge paths visible even
             // when the global worst-path list is occupied by pad timing.
             .add_sdc_constraint("\nreport_timing -setup -from [get_clocks {controller_clk}] -to [get_clocks {controller_clk}] -max_paths 20 -max_common_paths 4")
             .add_sdc_constraint("report_timing -setup -from [get_clocks {cpu_clk}] -to [get_clocks {controller_clk}] -max_paths 12 -max_common_paths 4");
+        if shared_bank_prepare {
+            extension = extension.add_cst_constraint(
+                "INS_LOC \"u_sdram_bridge/u_controller/state_0_s0\" R[10:12]C[44:48];",
+            );
+        }
         let mut binding = (if ds2 {
             Self::ds2_user_io_binding()
         } else {
@@ -756,10 +768,9 @@ impl TangNano20K {
             Output = TangNano20KBootHdmiStreamOutputs,
         >,
     {
-        GowinModuleProject::new(
-            GowinProject::new(project_name)
-                .with_board_binding(Self::cold_boot_hdmi_binding_with_ds2(video_mode, false)),
-        )
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(
+            Self::cold_boot_hdmi_binding_with_ds2(video_mode, false, false),
+        ))
     }
     /// Left DS2 port owns pins 17/20/19/18; only LED0/1 remain outputs.
     pub fn cold_boot_hdmi_stream_ds2_memory_project<M>(
@@ -772,10 +783,9 @@ impl TangNano20K {
             Output = TangNano20KBootHdmiStreamDs2Outputs,
         >,
     {
-        GowinModuleProject::new(
-            GowinProject::new(project_name)
-                .with_board_binding(Self::cold_boot_hdmi_binding_with_ds2(video_mode, true)),
-        )
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(
+            Self::cold_boot_hdmi_binding_with_ds2(video_mode, true, true),
+        ))
     }
     fn ds2_user_io_binding() -> GowinBoardBinding<Self> {
         GowinBoardBinding::new("tang_nano_20k_ds2_top", "clk", "clk", Self::CLOCK_27M)
@@ -846,8 +856,9 @@ impl TangNano20K {
     fn cold_boot_hdmi_binding_with_ds2(
         video_mode: TangNano20KVideoMode,
         ds2: bool,
+        shared_bank_prepare: bool,
     ) -> GowinBoardBinding<Self> {
-        Self::sdram_stream_binding(video_mode, ds2)
+        Self::sdram_stream_binding(video_mode, ds2, shared_bank_prepare)
             .bind_port(
                 GowinPortDirection::Output,
                 "flash_clk",

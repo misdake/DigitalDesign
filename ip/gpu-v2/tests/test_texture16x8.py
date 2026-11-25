@@ -6,7 +6,6 @@ import importlib.util
 import json
 import os
 import random
-import re
 import subprocess
 import sys
 
@@ -95,13 +94,6 @@ def main():
     (packetdir/'tb.v').write_text(text)
     execute([os.environ['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-s','tb','-o','sim.vvp',source,'tb.v'],packetdir,'compile')
     execute([os.environ['VVP_EXE'],'sim.vvp'],packetdir,'run')
-    if True:
-        directory=out/'ui-address';directory.mkdir()
-        function=re.search(r' function\[8:0\]column_ui_tile;.*?endfunction',source.read_text(),re.S)[0]
-        tb='module tb;\n'+function+'\ninteger i;initial begin for(i=0;i<375;i=i+1)if(column_ui_tile(i)!==((i%25)*16+i/25))$fatal(1,"UI tile%0d",i);$display("PASS COLUMN_UI_MAPPING tiles=375");$finish;end endmodule\n'
-        (directory/'tb.v').write_text(tb)
-        execute([os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o','sim.vvp','tb.v'],directory,'compile')
-        execute([os.environ['VVP_EXE'],'sim.vvp'],directory,'run')
     cases=[]
     for native,saturated in [(0,False),(1,False),(0,True),(1,True)]:
         directory=out/f'cache-{native}-{int(saturated)}';directory.mkdir()

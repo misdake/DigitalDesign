@@ -260,7 +260,10 @@ fn run(case: usize, abort: bool, double_start: bool) -> (Vec<Vec<Pin>>, Option<&
                     seen,
                     tasks
                         .iter()
-                        .flat_map(|t| [(*t, false), (*t, true)])
+                        .flat_map(|t| {
+                            let tile = (t % 25) * 16 + t / 25;
+                            [(tile, false), (tile, true)]
+                        })
                         .collect::<Vec<_>>()
                 );
                 assert_eq!(

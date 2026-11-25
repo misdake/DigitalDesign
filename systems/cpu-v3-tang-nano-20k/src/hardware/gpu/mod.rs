@@ -124,10 +124,7 @@ impl Module for CpuV3Gpu {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(
-            source_for_profile(option_env!("CPU_V3_GPU_PROFILE"))
-                .expect("CPU_V3_GPU_PROFILE must name a supported explicit hardware profile"),
-        )
+        Some(command_source().expect("GPU command RTL export failed"))
     }
 
     fn verilog_testbench() -> Option<String> {
@@ -136,13 +133,9 @@ impl Module for CpuV3Gpu {
 }
 
 // One production layout serves POT textures and fixed 400x240 framebuffer views.
-fn source_for_profile(profile: Option<&str>) -> Result<String, String> {
-    let export = match profile {
-        None | Some("production") => gpu_v2::system::command::verilog,
-        Some(value) => return Err(format!("unsupported GPU hardware profile: {value}")),
-    };
+fn command_source() -> Result<String, String> {
     let mut source = include_str!("gpu.v").to_owned();
-    source.push_str(&export(
+    source.push_str(&gpu_v2::system::command::verilog(
         gpu_v2::framebuffer::ports::MaterializedSurface {
             color_base_bytes: 0x100000,
             depth_base_bytes: 0x140000,
@@ -168,31 +161,13 @@ fn sample_wires<const W: usize>(wires: &Wires<W>, circuit: &CircuitWires) -> u64
 mod tests {
     use digital_design_hardware::Module;
     #[test]
-    fn explicit_board_profile_keeps_default_and_rejects_unknown_formats() {
-        let baseline = super::source_for_profile(None).unwrap();
-        assert_eq!(
-            baseline,
-            super::source_for_profile(Some("production")).unwrap()
-        );
-        assert!(baseline.contains("texture_fb400240"));
-        assert!(baseline.contains("ui_active?column_ui_tile(ui_tile)"));
-        assert!(baseline.contains("clear_sector==1599"));
-        for old in [
-            "texture16x8-row",
-            "texture16x8-column16",
-            "rtt400x240-column16",
-        ] {
-            assert!(super::source_for_profile(Some(old)).is_err());
-        }
-        assert!(super::source_for_profile(Some("rtt400")).is_err());
-        assert!(super::source_for_profile(Some("")).is_err());
-    }
-    #[test]
     fn production_device_uses_the_command_closure() {
         digital_design_hardware::VerilogProject::generate::<super::CpuV3Gpu>().unwrap();
         let source = super::CpuV3Gpu::verilog_source().unwrap();
         assert!(source.contains("gpu_v2_vliw_command core("));
         assert!(source.contains("module gpu_command_processor("));
+        assert!(source.contains("texture_fb400240"));
+        assert!(source.contains("ui_active?ui_tile"));
         let cp = source
             .split("module gpu_command_processor(")
             .nth(1)
@@ -200,6 +175,8 @@ mod tests {
             .split("endmodule")
             .next()
             .unwrap();
+        assert!(cp.contains("segment_end?TABLE_READ:FETCH"));
+        assert!(cp.contains("clear_sector==1599"));
         assert!(!cp.contains("result_ready"));
         assert!(!cp.contains("result_offset"));
     }

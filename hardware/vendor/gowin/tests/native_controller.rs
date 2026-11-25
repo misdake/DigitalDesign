@@ -275,21 +275,27 @@ fn stimulus(init: u16, total: usize) -> Vec<Sample> {
     }
     trace
 }
-fn oracle(dir: &Path, init: u16, trace: &[Sample], corrupt: bool) -> Vec<Vec<u64>> {
+fn oracle(
+    dir: &Path,
+    init: u16,
+    trace: &[Sample],
+    shared_bank_prepare: bool,
+    corrupt: bool,
+) -> Vec<Vec<u64>> {
     fs::write(
         dir.join("input.txt"),
         trace.iter().map(|s| line(&inputs(s))).collect::<String>(),
     )
     .unwrap();
-    let source = RtlSources::CONTROLLER;
-    fs::write(dir.join("production-controller.v"), source).unwrap();
+    let source = RtlSources::controller(shared_bank_prepare);
+    fs::write(dir.join("production-controller.v"), &source).unwrap();
     let compiled = if corrupt {
         source.replace(
             "state == ST_IDLE && initialized && !refresh_due_q",
             "state == ST_IDLE && !initialized && !refresh_due_q",
         )
     } else {
-        source.to_owned()
+        source.clone()
     };
     if corrupt {
         assert_ne!(source, compiled);
@@ -385,12 +391,16 @@ fn production_controller_matches_rust_at_native_edges() {
             expected.iter().map(|v| line(v)).collect::<String>(),
         )
         .unwrap();
-        let actual = oracle(&dir, init, &trace, false);
+        let actual = oracle(&dir, init, &trace, false, false);
         compare(&expected, &actual).unwrap_or_else(|e| panic!("{e}; {}", dir.display()));
+        let shared = dir.join("shared-bank-prepare");
+        fs::create_dir_all(&shared).unwrap();
+        let actual = oracle(&shared, init, &trace, true, false);
+        compare(&expected, &actual).unwrap_or_else(|e| panic!("{e}; {}", shared.display()));
         if init == 32 {
             let negative = dir.join("mutated-ready");
             fs::create_dir_all(&negative).unwrap();
-            let mutated = oracle(&negative, init, &trace[..64], true);
+            let mutated = oracle(&negative, init, &trace[..64], false, true);
             let mismatch =
                 compare(&expected[..64], &mutated).expect_err("modified MC ready must fail");
             fs::write(negative.join("detected.txt"), mismatch).unwrap();

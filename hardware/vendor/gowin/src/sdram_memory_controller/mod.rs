@@ -18,4 +18,21 @@ impl RtlSources {
     pub const STREAM_GEARBOX: &'static str = include_str!("rtl/stream_bridge.v");
     pub const PIN_MODEL: &'static str = include_str!("rtl/sdram_pin_model.v");
     pub const INPUT_DELAY_MODEL: &'static str = include_str!("rtl/input_delay_model.v");
+
+    pub fn controller(shared_bank_prepare: bool) -> String {
+        let mut source = String::new();
+        let mut selected = true;
+        // Resolve the layout guard before export to keep the established
+        // implementation's synthesis input identical.
+        for line in Self::CONTROLLER.split_inclusive('\n') {
+            match line.trim_end() {
+                "`ifdef GOWIN_SDRAM_SHARED_PREPARE" => selected = shared_bank_prepare,
+                "`else // GOWIN_SDRAM_SHARED_PREPARE" => selected = !shared_bank_prepare,
+                "`endif // GOWIN_SDRAM_SHARED_PREPARE" => selected = true,
+                _ if selected => source.push_str(line),
+                _ => {}
+            }
+        }
+        source
+    }
 }

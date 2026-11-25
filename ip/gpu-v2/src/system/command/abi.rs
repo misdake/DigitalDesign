@@ -213,10 +213,14 @@ pub fn ui_char(pixels: &[[u16; 8]; 16]) -> [u8; 256] {
 /// Driver-validated two-SEND descriptor. All addresses here are bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceSubmission {
+    /// Flat command count minus one, or bit 15 and a table count minus one.
     pub count_minus_one: u16,
     pub base_sector: u16,
 }
 impl DeviceSubmission {
+    const SEGMENTED: u16 = 0x8000;
+    pub const MAX_SEGMENTS: usize = 32;
+
     pub fn new(base_bytes: u32, valid_bytes: u32) -> Result<Self, &'static str> {
         if !base_bytes.is_multiple_of(128)
             || valid_bytes == 0
@@ -233,7 +237,96 @@ impl DeviceSubmission {
             base_sector: (base_bytes / 128) as u16,
         })
     }
+
+    pub const fn valid_count_word(count: u16) -> bool {
+        count < 0x4000 || count & !0x001f == Self::SEGMENTED
+    }
+
+    pub fn from_device_words(count: u16, base_sector: u16) -> Result<Self, &'static str> {
+        if !Self::valid_count_word(count) {
+            return Err("command count SEND encoding");
+        }
+        if count & Self::SEGMENTED == 0 {
+            return Self::new(u32::from(base_sector) * 128, (u32::from(count) + 1) * 4);
+        }
+        Ok(Self {
+            count_minus_one: count,
+            base_sector,
+        })
+    }
+
+    pub fn segment_count(self) -> Option<usize> {
+        (self.count_minus_one & Self::SEGMENTED != 0)
+            .then_some(usize::from(self.count_minus_one & 31) + 1)
+    }
+
+    /// Encode one sector of right-aligned descriptors in execution order.
+    /// Only the last slice requires END.
+    pub fn segment_table(
+        base_bytes: u32,
+        segments: &[CommandSlice],
+    ) -> Result<(Self, [u8; 128]), &'static str> {
+        let root = Self::new(base_bytes, 4)?;
+        if segments.is_empty() || segments.len() > Self::MAX_SEGMENTS {
+            return Err("command table segment count");
+        }
+        let mut bytes = [0; 128];
+        for (row, segment) in bytes
+            .rchunks_exact_mut(4)
+            .take(segments.len())
+            .zip(segments.iter().rev())
+        {
+            row.copy_from_slice(&segment.encode().to_le_bytes());
+        }
+        let count = Self::SEGMENTED | (segments.len() as u16 - 1);
+        Ok((Self::from_device_words(count, root.base_sector)?, bytes))
+    }
 }
+
+/// A nonempty, 4 B-aligned range within at most 64 readable SDRAM sectors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandSlice {
+    pub(crate) first_byte: u32,
+    pub(crate) valid_bytes: u32,
+}
+
+impl CommandSlice {
+    pub fn new(first_byte: u32, valid_bytes: u32) -> Result<Self, &'static str> {
+        if !first_byte.is_multiple_of(4) || !valid_bytes.is_multiple_of(4) || valid_bytes == 0 {
+            return Err("command slice alignment/length");
+        }
+        let end = first_byte
+            .checked_add(valid_bytes)
+            .filter(|&end| end <= 0x800000)
+            .ok_or("command slice address range")?;
+        if (end - 1) / 128 - first_byte / 128 >= 64 {
+            return Err("command slice sector count");
+        }
+        Ok(Self {
+            first_byte,
+            valid_bytes,
+        })
+    }
+
+    fn encode(self) -> u32 {
+        let first_sector = self.first_byte / 128;
+        let last_byte = self.first_byte + self.valid_bytes - 4;
+        let first_slot = (self.first_byte / 4) & 31;
+        let last_slot = (last_byte / 4) & 31;
+        let sectors_minus_one = last_byte / 128 - first_sector;
+        first_sector | (first_slot << 16) | (last_slot << 21) | (sectors_minus_one << 26)
+    }
+
+    pub(crate) fn decode(base_sector: u16, slots: u16) -> Result<Self, &'static str> {
+        let first_slot = u32::from(slots & 31);
+        let through_slot = u32::from(slots >> 5) + 1;
+        let count = through_slot
+            .checked_sub(first_slot)
+            .ok_or("command slice slot order")?;
+        Self::new(u32::from(base_sector) * 128 + first_slot * 4, count * 4)
+    }
+}
+
 /// Runtime plane addresses. Cache maintenance is an explicit driver operation.
 pub fn target_params(surface: MaterializedSurface) -> Result<[u8; 32], String> {
     if surface.width != 400 || surface.height != 240 {
@@ -326,6 +419,21 @@ mod tests {
         ] {
             assert!(DeviceSubmission::new(base, bytes).is_err());
         }
+    }
+    #[test]
+    fn command_slice_bounds_and_packed_slots() {
+        let slice = CommandSlice::new(0x1800 + 63 * 4, 23 * 4).unwrap();
+        let encoded = slice.encode();
+        assert_eq!(encoded, 0x06bf_0031);
+        assert_eq!(
+            CommandSlice::decode(encoded as u16, (encoded >> 16) as u16),
+            Ok(slice)
+        );
+        assert!(CommandSlice::new(0x800000 - 4, 4).is_ok());
+        assert!(CommandSlice::new(0x800000 - 4, 8).is_err());
+        assert!(CommandSlice::new(0, 8192).is_ok());
+        assert!(CommandSlice::new(4, 8192).is_err());
+        assert!(CommandSlice::decode(0, 31).is_err());
     }
     #[test]
     fn compact_encoding_and_ranges() {

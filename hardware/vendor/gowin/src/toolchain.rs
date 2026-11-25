@@ -171,6 +171,7 @@ pub(crate) struct GowinBoardExtension {
     wrapper_source: String,
     logic_clock_signal: Option<String>,
     source_files: BTreeMap<PathBuf, String>,
+    cst_constraints: Vec<String>,
     sdc_constraints: Vec<String>,
 }
 
@@ -210,6 +211,11 @@ impl GowinBoardExtension {
             "duplicate Gowin board-extension source `{}`",
             path.display()
         );
+        self
+    }
+
+    pub(crate) fn add_cst_constraint(mut self, constraint: impl Into<String>) -> Self {
+        self.cst_constraints.push(constraint.into());
         self
     }
 
@@ -595,6 +601,14 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
                     &verilog_bit(&port.board_port, port.pins.len(), index),
                     pin,
                 );
+            }
+        }
+        if let Some(extension) = &self.extension {
+            for constraint in &extension.cst_constraints {
+                output.push_str(constraint);
+                if !constraint.ends_with('\n') {
+                    output.push('\n');
+                }
             }
         }
         output

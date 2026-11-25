@@ -68,17 +68,17 @@ impl Device for GpuDevice {
     fn write(&mut self, memory: &mut [Word], channel: u8, value: Word) {
         match channel {
             GPU_COMMAND_COUNT => {
-                assert!(!self.busy && value < 16384, "GPU count SEND contract");
+                assert!(
+                    !self.busy && DeviceSubmission::valid_count_word(value),
+                    "GPU count SEND contract"
+                );
                 self.count_minus_one = value;
                 self.staged = true;
             }
             GPU_COMMAND_START => {
                 assert!(!self.busy && self.staged, "GPU start SEND contract");
-                let descriptor = DeviceSubmission::new(
-                    u32::from(value) * 128,
-                    (u32::from(self.count_minus_one) + 1) * 4,
-                )
-                .expect("GPU submission range");
+                let descriptor = DeviceSubmission::from_device_words(self.count_minus_one, value)
+                    .expect("GPU submission range");
                 self.pending = Some(descriptor);
                 self.last_effects = Effects::default();
                 self.busy = true;
@@ -107,6 +107,37 @@ impl Device for GpuDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn segmented_submission_keeps_fence_state_and_uses_all_table_rows() {
+        use gpu_v2::system::vliw_command::{Command, CommandSlice};
+        let mut memory = vec![u16::MAX; 192];
+        let wait_pc = 128 + 31 * 4;
+        let flush_pc = 128 + 3 * 4;
+        let wait_word = wait_pc as usize / 2;
+        memory[wait_word] = Command::wait(true, true).0 as u16;
+        memory[wait_word + 1] = (Command::wait(true, true).0 >> 16) as u16;
+        for (index, command) in [Command::FLUSH, Command::END].iter().enumerate() {
+            let word = flush_pc as usize / 2 + index * 2;
+            memory[word] = command.0 as u16;
+            memory[word + 1] = (command.0 >> 16) as u16;
+        }
+        let wait = CommandSlice::new(wait_pc, 4).unwrap();
+        let flush = CommandSlice::new(flush_pc, 8).unwrap();
+        for segment_count in [2, 32] {
+            let mut spans = vec![wait; segment_count];
+            spans[segment_count - 1] = flush;
+            let (submission, table) = DeviceSubmission::segment_table(256, &spans).unwrap();
+            for (word, pair) in memory[128..192].iter_mut().zip(table.as_chunks::<2>().0) {
+                *word = u16::from_le_bytes(*pair);
+            }
+            let mut device = GpuDevice::functional();
+            device.write(&mut memory, GPU_COMMAND_COUNT, submission.count_minus_one);
+            device.write(&mut memory, GPU_COMMAND_START, submission.base_sector);
+            assert_eq!(device.read(&mut memory, GPU_STATUS), 0);
+            assert!(device.last_error().is_none());
+        }
+    }
 
     #[test]
     fn successful_later_submission_preserves_sticky_error_diagnostic() {

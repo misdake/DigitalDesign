@@ -251,7 +251,7 @@ fn run(ui: bool, bad: Option<&str>) -> Run {
             command_valid: wall != 0 && !admitted,
             writing: stage == 1,
             lower_ready: !ui || upper == 32,
-            tile: 47,
+            tile: 353,
             copy: !ui,
             copy_address: Bits::new(if stage == 0 { 16383 } else { 1 }, 14),
             pixels: Bits::new(0, 64),
@@ -406,7 +406,7 @@ fn narrow_tile_port() -> Vec<Vec<Pin>> {
         };
         rows.push(fields(&c, i));
         if wall == 3 {
-            assert_eq!(c.outputs(i).mem_req_address, 0x111e00);
+            assert_eq!(c.outputs(i).mem_req_address, 0x13fe00);
         }
         c.clock(i).unwrap();
     }
