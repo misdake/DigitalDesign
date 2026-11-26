@@ -11,6 +11,14 @@ const ROUTE_INPUT: &str = "TANKRACER_ROUTE_INPUT";
 
 fn inputs(context: &mut Context<'_>) {
     let repository = context.root.join("../..").canonicalize().unwrap();
+    if std::env::var_os(MAP_INPUT).is_none() {
+        std::env::set_var(
+            MAP_INPUT,
+            context
+                .root
+                .join("applications/tankracer/assets/england/scene-opaque-atlas.zip"),
+        );
+    }
     if std::env::var_os(ROUTE_INPUT).is_none() {
         std::env::set_var(
             ROUTE_INPUT,
@@ -70,7 +78,7 @@ const STATIC_APPLICATION: Definition = Definition {
         BuildOption::environment(
             "recording",
             "TANKRACER_RECORDING",
-            OptionValues::Choices(&["always", "reuse"]),
+            OptionValues::Choices(&["always", "reuse", "prepared"]),
         ),
     ],
     assets: Some(Assets {

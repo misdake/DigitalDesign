@@ -1,0 +1,369 @@
+{
+  "format": "tankracer.opaque-atlas.v1",
+  "source_sha256": "a258e6b5ac9d6472d72e616e11b2ebe5653bae34da99b6f8e368207842c6952a",
+  "side": 1024,
+  "bytes": 2798080,
+  "source_count": 38,
+  "regions": {
+    "textures/GRASS3.bin": {
+      "x": 0,
+      "y": 0,
+      "size": 128,
+      "cell": 256,
+      "gutter": 64,
+      "source_sha256": "f6cd5b65a51706d22ba5006705c32a468e9e4a4ee67743cdb1a28578e5ed52c9",
+      "isolated_mip_through": 7
+    },
+    "textures/OFFICE.bin": {
+      "x": 256,
+      "y": 0,
+      "size": 128,
+      "cell": 256,
+      "gutter": 64,
+      "source_sha256": "c02c57dd846a02e8546b6f6c0da1a24f2cb2672a06c535bf8eeaa93155ec413b",
+      "isolated_mip_through": 7
+    },
+    "textures/ROAD2.bin": {
+      "x": 512,
+      "y": 0,
+      "size": 128,
+      "cell": 256,
+      "gutter": 64,
+      "source_sha256": "e54e9a70dba1452fda186d2e8475e0a665909f830a1fee77dbbeb19618ad0bf3",
+      "isolated_mip_through": 7
+    },
+    "textures/ROAD4.bin": {
+      "x": 768,
+      "y": 0,
+      "size": 128,
+      "cell": 256,
+      "gutter": 64,
+      "source_sha256": "3bb5a0f58ff22b54a41756b2f16d91907fb177103b46d97776f401bfa5608792",
+      "isolated_mip_through": 7
+    },
+    "textures/ROAD4C2.bin": {
+      "x": 0,
+      "y": 256,
+      "size": 128,
+      "cell": 256,
+      "gutter": 64,
+      "source_sha256": "6d4919eda2deb6c2fc21664fd46e4a14370c13196ed2ccf9c6b301c2788c8ccf",
+      "isolated_mip_through": 7
+    },
+    "textures/ROCK2.bin": {
+      "x": 256,
+      "y": 256,
+      "size": 128,
+      "cell": 256,
+      "gutter": 64,
+      "source_sha256": "e4da691b38bc1e3ff0c936b7ada11285f4327cd418c62caae6efaa87ff6e7143",
+      "isolated_mip_through": 7
+    },
+    "textures/TUDOR.bin": {
+      "x": 512,
+      "y": 256,
+      "size": 128,
+      "cell": 256,
+      "gutter": 64,
+      "source_sha256": "9a238c7a44d820b914729b27ef0a7de3f0e2d23aff3f2e5858a699e9ee287b09",
+      "isolated_mip_through": 7
+    },
+    "textures/BRIDGE3.bin": {
+      "x": 768,
+      "y": 256,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "96c4d54eaa1f35e52c0ac5444e77cf6fd24c738d2025c379881fedfd14177ec2",
+      "isolated_mip_through": 6
+    },
+    "textures/CHRUCH1.bin": {
+      "x": 896,
+      "y": 256,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "45f7cb3bcfa68752dbb61a87d8dbd52b2031251af7a5464898ee7ce60f2a4457",
+      "isolated_mip_through": 6
+    },
+    "textures/CHRUCH2.bin": {
+      "x": 768,
+      "y": 384,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "9ddb96a07650f548b01c3e7cfc0a0772b4d710f1fa518ad75934db659eb18c7c",
+      "isolated_mip_through": 6
+    },
+    "textures/CHRUCH3.bin": {
+      "x": 896,
+      "y": 384,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "2d4cdda4007f9c9626a491169e80243cecde431981aba1117e8371aad1ff59a8",
+      "isolated_mip_through": 6
+    },
+    "textures/CHRUCHRF.bin": {
+      "x": 0,
+      "y": 512,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "91cb4189776e0a39cb810b6b71a82f7ce4a9b2df0b4bf29b42754f7313ec8af0",
+      "isolated_mip_through": 6
+    },
+    "textures/DKWOOD.bin": {
+      "x": 128,
+      "y": 512,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "b485c30ed588bafebc9d6e8b09cfcb5141018205e2c5d82c93297117316e50e6",
+      "isolated_mip_through": 6
+    },
+    "textures/FIELD.bin": {
+      "x": 256,
+      "y": 512,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "5330d539af13c041e79676f8756d4b94f72fa0d6ed44f557da02500aad2e855f",
+      "isolated_mip_through": 6
+    },
+    "textures/GRAVEL.bin": {
+      "x": 384,
+      "y": 512,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "7c92bbf6b97f0d6f8f93bd06cedee94cb1d75d6c4d4c65b53ff29af7d3ab222e",
+      "isolated_mip_through": 6
+    },
+    "textures/GRID2.bin": {
+      "x": 512,
+      "y": 512,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "cbc955b489ad4cdc5bdaa24b768844a04fc59e0e7960b6b26cc455cb860a9ffc",
+      "isolated_mip_through": 6
+    },
+    "textures/HEDGE1.bin": {
+      "x": 640,
+      "y": 512,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "7a906dd41b811652ce383e7021e54a668dca2ceaa8e39cf9a9f07938d849fc42",
+      "isolated_mip_through": 6
+    },
+    "textures/HOUSE1.bin": {
+      "x": 768,
+      "y": 512,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "6a879fb25eb391df026f46b568138d32b445e5b36e4bc9a25e369ed89f0851c7",
+      "isolated_mip_through": 6
+    },
+    "textures/LSTON1T2.bin": {
+      "x": 896,
+      "y": 512,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "39496a834325ce4a4234b8f6a40beb06b7d6486e98919a92b512ff95e1c9c70d",
+      "isolated_mip_through": 6
+    },
+    "textures/LSTONE.bin": {
+      "x": 0,
+      "y": 640,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "52e476a7331534821b84876cac4268094e602e48281124488b10e4f2f562a0b5",
+      "isolated_mip_through": 6
+    },
+    "textures/LSTONE2.bin": {
+      "x": 128,
+      "y": 640,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "b7b5155034b61ebcb067852f682759f88bddd2671b2588c574ba04c8d7c7cf11",
+      "isolated_mip_through": 6
+    },
+    "textures/MUD2.bin": {
+      "x": 256,
+      "y": 640,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "c108c61106f784120556b9b372502deefa08d35bc76589cb7314d74edd07602a",
+      "isolated_mip_through": 6
+    },
+    "textures/MUD2CRAT.bin": {
+      "x": 384,
+      "y": 640,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "db5c8d9261bec8e98984d4d3c2e463b4e9ca0fb6e521142b21c5be220def0097",
+      "isolated_mip_through": 6
+    },
+    "textures/MUD2HEDG.bin": {
+      "x": 512,
+      "y": 640,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "d652995f16dcf65feb0e28563ef64e0182cca23c11e0a9e086e9ae4f3446db3c",
+      "isolated_mip_through": 6
+    },
+    "textures/R2TOGRCR.bin": {
+      "x": 640,
+      "y": 640,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "91b56f3265524b2d00fa63513f8669b237af95357c8f64a1060676a8fb89c8ac",
+      "isolated_mip_through": 6
+    },
+    "textures/REPLOGO.bin": {
+      "x": 768,
+      "y": 640,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "021f52a6c1715bafd235b4fbc3be6b2b32e56d282f9fb01e88d9b711f8fbde2a",
+      "isolated_mip_through": 6
+    },
+    "textures/ROCK1.bin": {
+      "x": 896,
+      "y": 640,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "ef640474f8d8cc7e67d3ea50f05ba493d68996b4d6f086a5620901fec854c1dd",
+      "isolated_mip_through": 6
+    },
+    "textures/ROCK3.bin": {
+      "x": 0,
+      "y": 768,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "8203bfc13d7db1e47360b9781b967b927d3407b8f8831bcda0b6e5f861c2d8e3",
+      "isolated_mip_through": 6
+    },
+    "textures/ROUGH.bin": {
+      "x": 128,
+      "y": 768,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "8b417c5b5a8e7b5013ecf3f5e4e92f80eedd9fa7adefcaf3491760f01f4fb6c8",
+      "isolated_mip_through": 6
+    },
+    "textures/SIGN1.bin": {
+      "x": 256,
+      "y": 768,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "24e5b6a6999bfa96dcdc795fcb7c3a629373696668f7dd5423a4b79c833cd137",
+      "isolated_mip_through": 6
+    },
+    "textures/SIGN2.bin": {
+      "x": 384,
+      "y": 768,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "85b9e518197028cb77b92b1f9c9fa31b96c475d8eab15efc917d10b84b1d6a29",
+      "isolated_mip_through": 6
+    },
+    "textures/SIGN3.bin": {
+      "x": 512,
+      "y": 768,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "692685fccf1017b834aaf1f54d3dd000fad5148fec12b7dd459275085dbd6cf7",
+      "isolated_mip_through": 6
+    },
+    "textures/STWALL.bin": {
+      "x": 640,
+      "y": 768,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "cb5f5ab6647130054e0b0c7e170afb78e038f7def8845ba8b13b9791e7dcf839",
+      "isolated_mip_through": 6
+    },
+    "textures/W2RD3.bin": {
+      "x": 768,
+      "y": 768,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "04f3f9cd790ddc2735cef32b971e69abb8328fbd92ceb1ad615eeeb28f7ba06c",
+      "isolated_mip_through": 6
+    },
+    "textures/WALL2RD.bin": {
+      "x": 896,
+      "y": 768,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "13a600df4518e1af92505d837b73a15d4277c941fd8e3faef3937d0add21e0da",
+      "isolated_mip_through": 6
+    },
+    "textures/WATER.bin": {
+      "x": 0,
+      "y": 896,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "963fd5e885e4228720c0c1c332987bb3cdf95f561db4031753f0b20429649750",
+      "isolated_mip_through": 6
+    },
+    "textures/WATGRV.bin": {
+      "x": 128,
+      "y": 896,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "60067016a3ec1de675dde763c85f895706f5af9e50a5676b4c9ffc430a2131a9",
+      "isolated_mip_through": 6
+    },
+    "textures/WFENCE1.bin": {
+      "x": 256,
+      "y": 896,
+      "size": 64,
+      "cell": 128,
+      "gutter": 32,
+      "source_sha256": "6f87d16f29328675f3eba920e47809e8d68afad7621541af5b1646c972096018",
+      "isolated_mip_through": 6
+    }
+  },
+  "sampling_contract": "Source texels are isolated through the listed mip levels; deeper atlas levels merge source cells. Validate sampled footprints and rendered quality for the intended content.",
+  "archive_sha256": "12b513adf70dcfc1342567e020d1320d73310ec0ebffa787efbb5254c1f13f55",
+  "producer": {
+    "file": "systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/opaque_atlas.py",
+    "sha256": "5b9210311f844b9a04d12addee90da1943c870198a82678dc2b18df70a488ade"
+  },
+  "retained_sources": {
+    "scene.zip": "14d9936f245ad71ce66b1fd299d8d2758b6e1362e4eee6e431fb94bb9445df2d",
+    "scene-alpha-pages.zip": "3d65ab214cb632eec1709d0e7f0638e29eab2aa4c9b74ad4d116e59a0d955064",
+    "scene-compact.zip": "a258e6b5ac9d6472d72e616e11b2ebe5653bae34da99b6f8e368207842c6952a"
+  },
+  "adopted_content": "ENGLAND static playback",
+  "quality_contract": "Original geometry, depth and transparent inputs are preserved. UV quantization and coarse-mip source-colour mixing are accepted for this content.",
+  "reference_cameras": {
+    "file": "cameras.json",
+    "sha256": "2f8d8c97fdb8901bdc42bfc0e51af1b737fdd80c359fd334fe396723f7c81143",
+    "frames": 118
+  }
+}

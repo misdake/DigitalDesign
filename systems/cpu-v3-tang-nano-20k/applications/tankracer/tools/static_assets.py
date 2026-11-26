@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import heapq
 import io
 import json
 import math
@@ -177,7 +178,10 @@ def read_materials(assets, package, materials):
         tint = vector(material.get("tint", [255]*4), 4, "material tint")
         if any(type(v) is not int or not 0 <= v <= 255 for v in tint):
             raise ValueError("material tint components must be integer bytes")
-        words.extend((int(texture is not None), int(clamp), tint[0] | tint[1] << 8,
+        grid = material.get("atlas_grid_log2", 0)
+        if type(grid) is not int or not 0 <= grid <= 3 or (grid and (not clamp or not material.get('mipmaps'))):
+            raise ValueError("atlas grid requires a two-bit cell exponent, full mips and clamp")
+        words.extend((int(texture is not None), int(clamp) | (grid << 1), tint[0] | tint[1] << 8,
                       tint[2] | tint[3] << 8))
         if texture is None:
             continue
@@ -311,7 +315,65 @@ def opaque_spans(rows, opaque_count, meshlet_count):
     return spans
 
 
+def prepared_ring(rows, opaque_count, ring, position_shift=10, strict=True):
+    """Two matching command rings (fine/coarse), in authored route order."""
+    order = list(range(opaque_count)) if ring is None else [
+        ring[0][at + 12] for at in range(0, len(ring[0]), route_ring.RING_WORDS)
+        if ring[0][at + 12] < opaque_count]
+    if sorted(order) != list(range(opaque_count)):
+        raise ValueError('opaque command ring must contain each opaque group once')
+    # Reorder disjoint groups spatially. Potentially intersecting quantized
+    # surfaces retain native order, including LessEqual depth ties. Fine draws
+    # precede coarse draws at runtime, as in the native meshlet directory.
+    margin = 2 * (1 << position_shift) + 256
+    bounds = []
+    for identity in range(opaque_count):
+        values = struct.unpack('<7i', struct.pack('<14H', *rows[identity * 20:identity * 20 + 14]))
+        bounds.append([(values[axis] - values[axis + 4] - margin,
+                        values[axis] + values[axis + 4] + margin) for axis in range(3)])
+    rank = {identity: ordinal for ordinal, identity in enumerate(order)}
+    successors, incoming = [[] for _ in order], [0] * opaque_count
+    for before in range(opaque_count):
+        for after in range(before + 1, opaque_count):
+            if all(a[0] <= b[1] and b[0] <= a[1]
+                   for a, b in zip(bounds[before], bounds[after])):
+                successors[before].append(after)
+                incoming[after] += 1
+    ready = [(rank[identity], identity) for identity in order if not incoming[identity]]
+    heapq.heapify(ready)
+    order = []
+    while ready:
+        _, identity = heapq.heappop(ready)
+        order.append(identity)
+        for after in successors[identity]:
+            incoming[after] -= 1
+            if not incoming[after]:
+                heapq.heappush(ready, (rank[after], after))
+    directory, index, starts = [], [0] * max(1, opaque_count), [0]
+    commands = [0, 0]
+    groups = 0
+    for ordinal, identity in enumerate(order):
+        at = identity * 20
+        spans = rows[at + 14:at + 18]
+        cost = [4 + 3 * spans[1], 4 + 3 * spans[3]]
+        if strict and max(cost) > 1960:
+            raise ValueError('one opaque group exceeds the prepared command segment budget')
+        if groups == 256 or max(a + b for a, b in zip(commands, cost)) > 1960:
+            starts.append(ordinal)
+            commands, groups = [0, 0], 0
+        page = len(starts) - 1
+        directory.extend([*spans, rows[at + 18], identity, page])
+        index[identity] = ordinal
+        commands = [a + b for a, b in zip(commands, cost)]
+        groups += 1
+    starts.append(opaque_count)
+    return directory or [0] * 7, index, starts
+
+
 def build(output, route_path=None):
+    recording = os.getenv('TANKRACER_RECORDING', 'reuse')
+    if recording not in ('always', 'reuse', 'prepared'):
+        raise ValueError('recording must be always, reuse or prepared')
     map_path = os.getenv("TANKRACER_MAP_INPUT")
     camera_path = os.getenv("TANKRACER_CAMERA_INPUT")
     if not map_path or not camera_path:
@@ -359,7 +421,7 @@ def build(output, route_path=None):
             opaque_count = len(groups)
         for group in groups:
             mat = group["material"]
-            textured = materials[mat].get("texture") is not None
+            textured = materials[mat].get("texture") is not None and not materials[mat].get('vertex_color', False)
             billboard = bool(group.get("billboard", False))
             if billboard and (not textured or not blended):
                 raise ValueError("vertical billboard needs a textured blended material")
@@ -404,7 +466,9 @@ def build(output, route_path=None):
         ring = route_ring.build_ring(route_input[0], packed, opaque_count, origin, scale, display,
                                      include_blended=True)
         assets.bytes("MAP_RING_GROUP_DATA", struct.pack(f"<{len(ring[0])}H", *ring[0]))
-    chunk_groups = CLUSTER_GROUPS * GROUP_WORDS // route_ring.RING_WORDS
+    # Match the spatial cluster count and keep the runtime chunk division a shift.
+    chunk_groups = CLUSTER_GROUPS
+    scratch_words = max(CLUSTER_GROUPS * GROUP_WORDS, chunk_groups * route_ring.RING_WORDS)
     chunk_directory = [0] if ring is None else ring_chunks(ring[0], chunk_groups)
     if ring is not None:
         ring[2].update(coarse_chunk_groups=chunk_groups,
@@ -415,6 +479,9 @@ def build(output, route_path=None):
         [] if ring is None else ring[1], scale, 0 if ring is None else ring[2]['camera_corridor'])
     if ring is not None:
         ring[2]['location_grid'] = location
+    command_ring, command_index, command_pages = prepared_ring(
+        rows, opaque_count, ring, shift, strict=recording == 'prepared')
+    assets.bytes('MAP_OPAQUE_RING', struct.pack(f'<{len(command_ring)}H', *command_ring))
     mesh_asset(assets, records)
     assets.bytes("MAP_GROUP_DATA", struct.pack(f"<{len(packed)}H", *packed))
     cameras = json.loads(camera_data)
@@ -423,9 +490,6 @@ def build(output, route_path=None):
     camera_words = [w for camera in cameras for w in view_words(camera, origin, scale)]
     assets.bytes("MAP_CAMERA_DATA", struct.pack(f"<{len(camera_words)}H", *camera_words))
     extra = "use crate::dsl_rt::*;\n"
-    recording = os.getenv('TANKRACER_RECORDING', 'reuse')
-    if recording not in ('always', 'reuse'):
-        raise ValueError('recording must be always or reuse')
     candidates = os.getenv('TANKRACER_CANDIDATES', 'route')
     if candidates not in ('clusters', 'route'):
         raise ValueError('candidates must be clusters or route')
@@ -450,9 +514,16 @@ def build(output, route_path=None):
         MAP_RING_ACCEPT_SQUARED_LOW=q16(safe_corridor * safe_corridor)[0],
         MAP_RING_ACCEPT_SQUARED_HIGH=q16(safe_corridor * safe_corridor)[1],
         TANKRACER_REUSE=int(recording == 'reuse'),
-        OPAQUE_MASK_WORDS=(len(records) + 15) // 16,
+        TANKRACER_PREPARED=int(recording == 'prepared'),
+        MAP_SHARED_OPAQUE_STATE=int(len({(m.get('texture'), m.get('clamp', False),
+                                           m.get('rgba', m.get('blend', False)), m.get('mipmaps', False), m.get('atlas_grid_log2', 0))
+                                          for m in materials if not m.get('blend', False)}) == 1),
+        OPAQUE_MASK_WORDS=(max(1, (opaque_count * 2 + 15) // 16) if recording == 'prepared'
+                           else (len(records) + 15) // 16),
+        OPAQUE_DRAW_WORDS=5 if recording == 'prepared' else 3,
+        MAP_PREPARED_RING_PAGES=len(command_pages) - 1,
         TANKRACER_POLICY=policy, GROUP_COUNT=len(inventory), GROUP_WORDS=GROUP_WORDS,
-        GROUP_SCRATCH_WORDS=CLUSTER_GROUPS * GROUP_WORDS, OPAQUE_COUNT=opaque_count,
+        GROUP_SCRATCH_WORDS=scratch_words, OPAQUE_COUNT=opaque_count,
         CLUSTER_COUNT=len(cluster_counts), CLUSTER_WORDS=CLUSTER_WORDS,
         CAMERA_COUNT=len(cameras),
         RING_SEGMENT_COUNT=0 if ring is None else ring[2]["segment_count"],
@@ -463,6 +534,10 @@ def build(output, route_path=None):
     )
     for name, value in constants.items():
         extra += f"pub const {name}:u16={value};\n"
+    extra += f"pub const MAP_PREPARED_PAGES:usize={(len(command_pages) - 1) * 2};\n"
+    extra += word_table('MAP_OPAQUE_RING_INDEX', command_index)
+    extra += word_table('MAP_OPAQUE_RING_PAGE', command_ring[6::7] if recording == 'prepared' else [0])
+    extra += word_table('MAP_PREPARED_PAGE_FIRST', command_pages)
     extra += word_table("MAP_CLUSTERS", clusters)
     extra += word_table("MAP_RING_SEGMENTS", [0] if ring is None else ring[1])
     extra += word_table("MAP_RING_CHUNKS", chunk_directory)
@@ -479,7 +554,7 @@ def build(output, route_path=None):
                                    group_asset_bytes=len(packed) * 2,
                                    cluster_count=len(cluster_counts),
                                    cluster_directory_bytes=len(clusters) * 2,
-                                   group_scratch_bytes=CLUSTER_GROUPS * GROUP_WORDS * 2,
+                                   group_scratch_bytes=scratch_words * 2,
                                    cluster_groups=cluster_counts, camera_asset_bytes=len(camera_words) * 2),
                     groups=inventory, camera_cases=[c.get("label", str(i))
                                                    for i, c in enumerate(cameras, 1)])

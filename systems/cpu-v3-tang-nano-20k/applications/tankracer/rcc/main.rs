@@ -3,6 +3,7 @@ use crate::dsl_rt::*;
 mod boot_resources;
 mod gpu_api;
 mod gpu_board;
+mod prepared_map;
 mod world;
 use boot_resources::*;
 use gpu_api::*;
@@ -10,6 +11,10 @@ use gpu_board::*;
 use world::World;
 
 fn main() {
+    if TANKRACER_PREPARED != 0 {
+        prepared_map::run();
+        return;
+    }
     let mut gpu = Gpu::init(board_gpu_config());
     let mut commands = gpu.command_buffer();
     let mut recording = gpu.command_buffer();

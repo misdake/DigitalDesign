@@ -18,6 +18,7 @@ def identity(path):
 
 
 def check(snapshot, output):
+    output = output.resolve()
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
     from application_artifact import Artifact
     artifact = Artifact(snapshot)
@@ -91,8 +92,13 @@ def check(snapshot, output):
             raise ValueError(f"snapshot sidecar rebuild differs: {name}")
         sidecars[name] = identity(rebuilt / name)
     _, bare, bare_resources = produce("without-route", False)
-    expected_bare = {k: v for k, v in expected.items() if k != "map_ring_group_data.bin"}
-    if "route" in bare or "route_ring" in bare or bare_resources != expected_bare:
+    # Route-dependent selection assets may change; native textures, geometry,
+    # compact groups, cameras and direction-sort ranks must remain identical.
+    selection_assets = {"map_ring_group_data.bin", "map_opaque_ring.bin", "map_view_pvs.bin"}
+    expected_bare = {k: v for k, v in expected.items() if k not in selection_assets}
+    actual_bare = {k: v for k, v in bare_resources.items() if k not in selection_assets}
+    if ("route" in bare or "route_ring" in bare or actual_bare != expected_bare
+            or bare.get("view_pvs", {}).get("enabled", False)):
         raise ValueError("standalone no-route pack changed original resources")
     metadata = artifact.files["tankracer-static-assets/map_ring_group_data.bin"]
     resident_group_bytes = len(metadata) if any(metadata in artifact.files[r["file"]]

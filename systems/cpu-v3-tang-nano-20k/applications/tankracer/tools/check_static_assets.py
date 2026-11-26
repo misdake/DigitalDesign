@@ -9,7 +9,7 @@ from pathlib import Path
 from PIL import Image
 from compare_frames import compare
 
-from static_assets import CLUSTER_GROUPS, CLUSTER_WORDS, GROUP_WORDS, cluster_groups, opaque_spans, q16
+from static_assets import CLUSTER_GROUPS, CLUSTER_WORDS, GROUP_WORDS, cluster_groups, opaque_spans, prepared_ring, q16
 
 
 def signed(word):
@@ -22,6 +22,39 @@ def row(center, extent, identity):
 
 
 class SelectionRecords(unittest.TestCase):
+    def test_prepared_ring_uses_route_order_for_disjoint_groups(self):
+        rows = sum((row([i * 4, 0, 0], [1, 1, 1], i) for i in range(3)), [])
+        records = sum(([0] * 12 + [i] + [0] * 3 for i in [2, 0, 1]), [])
+        directory, index, pages = prepared_ring(rows, 3, (records, [], {}))
+        self.assertEqual(directory[5::7], [2, 0, 1])
+        self.assertEqual(index, [1, 2, 0])
+        self.assertEqual(pages, [0, 3])
+        records[12] = 0
+        with self.assertRaisesRegex(ValueError, 'each opaque group once'):
+            prepared_ring(rows, 3, (records, [], {}))
+
+    def test_prepared_ring_preserves_quantized_overlap_order(self):
+        rows = row([0, 0, 0], [1, 1, 1], 0) + row([2.02, 0, 0], [1, 1, 1], 1)
+        records = [0] * 12 + [1] + [0] * 15 + [0] + [0] * 3
+        self.assertEqual(prepared_ring(rows, 2, (records, [], {}))[0][5::7], [0, 1])
+        self.assertEqual(prepared_ring(rows, 2, (records, [], {}), 0)[0][5::7], [1, 0])
+
+    def test_prepared_pages_budget_both_lods_and_push_storage(self):
+        rows = sum((row([i * 4, 0, 0], [1, 1, 1], i) for i in range(260)), [])
+        directory, _, pages = prepared_ring(rows, 260, None)
+        self.assertEqual(pages, [0, 196, 260])
+        self.assertEqual(directory[195 * 7 + 6:197 * 7:7], [0, 1])
+        for i in range(260):
+            rows[i * 20 + 17] = 1
+        self.assertEqual(prepared_ring(rows, 260, None)[2], [0, 256, 260])
+        rows[15] = 700
+        with self.assertRaisesRegex(ValueError, 'one opaque group'):
+            prepared_ring(rows, 260, None)
+        prepared_ring(rows, 260, None, strict=False)
+
+    def test_empty_prepared_ring_has_a_valid_empty_page(self):
+        self.assertEqual(prepared_ring([], 0, None), ([0] * 7, [0], [0, 0]))
+
     def test_opaque_span_order_keeps_sparse_fine_and_coarse_ranges(self):
         rows = row([0, 0, 0], [1, 1, 1], 0) + row([0, 0, 0], [1, 1, 1], 1)
         rows[14:20] = [0, 2, 5, 1, 7, 0]

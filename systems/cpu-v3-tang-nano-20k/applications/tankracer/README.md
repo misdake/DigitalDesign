@@ -1,14 +1,15 @@
 # Tank Racer static-map playback
 
-Build with a static scene archive and a camera sequence staged within the
-repository. The application uses the regular SDK and Display path.
+The default scene is `assets/england/scene-opaque-atlas.zip`. Supply a camera
+sequence staged within the repository; `--map` selects an alternative archive.
+The application uses the regular SDK and Display path.
 
 The same catalog registers `bench-tankracer-physics`, a separate frozen-contact
 single-vehicle benchmark. Its kernels, resource inputs and execution boundary
 are described in [physical update](/systems/cpu-v3-tang-nano-20k/applications/tankracer/physics.md).
 
 ```powershell
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map target/map.zip --camera target/cameras.json --out target/tankracer-map
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --camera systems/cpu-v3-tang-nano-20k/applications/tankracer/assets/england/cameras.json --recording prepared --out target/tankracer-map
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview bench-tankracer-static --snapshot target/tankracer-map --presents 2
 ```
 
@@ -210,6 +211,66 @@ cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-st
 The rebuilt compact package is `$out/silhouette/scene-compact.zip`. The source-quad input
 and comparison packages remain explicit choices in the build's `--map` option.
 
+## Opaque atlas and retained source inputs
+
+The default `scene-opaque-atlas.zip` derives from the retained
+`scene-compact.zip`. All 38 opaque native textures share one 1024-square RGB565
+atlas with full mips. Each original image occupies the middle of a power-of-two
+cell twice its side; clamped edge extension is 32 pixels for a 64-square source
+and 64 for a 128-square source. Geometry, group identity, tint and transparent
+assets remain unchanged. RGB triangles keep their native format and bypass
+sampling while sharing the installed opaque texture state.
+
+`opaque-atlas.json` records the source/archive hashes, producer identity, layout
+and content-quality contract. The original `scene.zip`, `scene-alpha-pages.zip`
+and `scene-compact.zip` remain available, including every original opaque mip.
+The standalone converter consumes those native mips directly; it needs no
+external game checkout. Rebuild into a fresh directory:
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/opaque_atlas.py "$assets/scene-compact.zip" --output "$out/opaque-atlas"
+Get-FileHash "$out/opaque-atlas/scene.zip" -Algorithm SHA256
+```
+
+ZIP entry times, ordering and attributes are fixed. The rebuilt archive hash
+must match `archive_sha256` in `opaque-atlas.json`. Converter checks are in
+`tools/check_opaque_atlas.py`.
+
+Source cells remain isolated through the original image's final mip. Deeper
+atlas levels merge cells, and filtered footprints can cross a cell before that
+merge. The ENGLAND visual comparison accepts these distant colour differences
+and UV requantization; the bordered scene uses ordinary sampling mode. Sampler probes and
+pixel extraction remain available to inspect that content-specific tradeoff.
+
+
+## Optional fixed-grid scene
+
+The bordered archive and its producer remain the default and are not overwritten.
+`tools/grid_atlas.py` builds an independent borderless candidate from the same
+retained source archive. Its two-bit `atlas_grid_log2` field selects1,2,4 or8
+cells per axis. The matching GPU gateware limits LOD and clamps both filtering
+planes inside each selected cell; older gateware does not implement this field.
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/grid_atlas.py "$assets/scene-compact.zip" --side 1024 --grid-log2 3 --output target/tankracer-grid
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map target/tankracer-grid/scene.zip --camera systems/cpu-v3-tang-nano-20k/applications/tankracer/assets/england/cameras.json --recording prepared --out target/tankracer-grid-app
+```
+
+1024/8 gives128-square cells, preserving the128-square sources. The64-square
+sources repeat nearest texels only above their original resolution; their native
+mips are retained below it. A512-square atlas with the same field gives64-square
+cells and uses the128-square sources' existing64-square mip as their base.
+Each primitive must stay inside one cell. The converter moves normalized UV
+endpoints two Q16 units into the cell to cover the interpolator's one-unit
+truncation; no texture gutter is allocated. Complete mip allocations are still
+emitted, even for forbidden coarse levels. Transparent inputs are unchanged.
+
+Run `tools/check_grid_atlas.py` for native mip choice, guarded endpoints and
+deterministic conversion. Use the sampler probe and `tools/check_atlas_probe.py`
+on the intended camera sequence to check actual weighted-tap isolation. A grid
+does not infer arbitrary UV wrapping or primitive ownership from the source.
+
+
 ## Fixed unlit bindings
 
 The world registers the mesh directory and its unlit material bindings once.
@@ -221,6 +282,58 @@ transparent ordering still run before deciding whether the list can be reused.
 
 See [Reusable unlit draw lists](../../docs/gpu-api-storage.md#reusable-unlit-draw-lists)
 for the storage and lifetime contract.
+
+### Prepared opaque command rings
+
+`--recording prepared` selects an application-owned alternative to the default
+`--recording reuse` UnlitBank path. It uses the existing `PreparedPool`,
+`PreparedPart::mark_slice` and the CommandBuffer linked-list APIs.
+If all opaque materials have one identical native texture/filter/raster state,
+recording enables `PreparedPart::share_state()`. Native vertex-colour geometry
+keeps its RGB format while sharing that installed texture state. The prefix's
+real draw establishes the checked state; opaque slice entries upload World
+without additional material SETs, full-render fences or restoration segments.
+
+The producer orders disjoint opaque groups by their authored route-ring order.
+Potentially intersecting bounds retain native order, with padding for position
+and depth quantization. Fine draws precede actual reduced-mesh draws, preserving
+the native ordering at LOD transitions. Without a route, native group order is
+retained. Visibility, display distance and transparent depth sorting keep their
+existing tests; the command ring does not draw rejected candidate groups.
+
+Each command page reserves 8 KiB of commands and 32 KiB of push storage. Offline
+packing bounds both LOD streams to 1,960 instructions and 256 World packets per
+page. A larger individual group is rejected for this recording option. Startup
+records explicit group endpoints once. Groups without reduced geometry reuse
+their fine-ring entry. Mesh directory views are temporary and restricted to the
+group being recorded; the immutable external geometry remains allocated.
+
+Each frame records one real opaque group in its dynamic prefix to establish the
+checked Target/View state. Adjacent selected command ranges then merge into
+safe slices, including the two sides of a wrapped ring selection. Visibility
+holes, page boundaries, and the fine/coarse split can require additional slices.
+Up to 30 slices leave room for dynamic prefix and tail in one 32-entry list. Excess
+opaque groups and the unchanged transparent order use the original UnlitBank
+writer in the tail. If that tail exceeds a list segment's 8-KiB limit, playback
+switches to ordinary double-CB submission with the full 64-KiB CB limit. The
+limit includes the tail's first-sector offset and the final END instruction.
+
+One writable CB owns both dynamic intervals: `begin_list`, closed prefix pass,
+`link_prepared_range`, closed UnlitBank tail pass, then `finish_list`. The tail
+reserves its View/World block after the prefix's aligned push data. The resulting
+list owns only one of the two configured CB slots. After `submit_list`, the CPU
+can select and completely record the next frame in the other slot while the
+GPU runs. Only then does it retire/present the previous frame and submit the
+next list. Prepared command/push data stays immutable throughout playback.
+Reused opaque commands are referenced directly, with no restoration segments.
+
+Compare identical map/camera inputs with `--recording reuse` and
+`--recording prepared` through the workload and cycle-replay commands below.
+Separate startup from warm CPU work, and include consecutive or stationary
+cameras: UnlitBank can patch only View/Target when its complete draw list stays
+unchanged. Native CPU timing with functional GPU and cold GPU/native-SDRAM
+replay are separate costs; neither establishes whole-system frame time.
+
 
 ## Authored route input
 
@@ -254,8 +367,9 @@ the authored graph with positions transformed using the scene origin and scale.
 For the current compact ENGLAND scene, all 1,235 static groups share one ring,
 including 697 opaque and 538 blended sort units. Each record has 16 u16 words:
 39,520 bytes of metadata. The 33-entry segment directory uses 12 u16 words per
-entry (792 bytes); 48 fixed chunks of at most 26 records use a 1,536-byte bound
-directory. The current renderer also keeps a 4-byte render-only position key.
+entry (792 bytes); 39 fixed chunks of at most 32 records use a 1,248-byte bound
+directory. The renderer keeps a 4-byte render-only position key and a 2-byte
+location-grid cell index.
 The ring tables are loaded, including in the explicit clusters comparison build;
 the current compiler retains their resource references. JSON sidecars are
 inspection data and do not add another runtime copy.
@@ -266,7 +380,7 @@ words are reserved. Intervals use X/Z AABBs rather than the radius field.
 The segment directory stores cyclic start/count, X/Z origin and delta, and a
 reciprocal-length hint. Meshlet indices remain logical geometry spans. Each
 chunk encloses both group boxes and visibility spheres; it uses the existing
-coarse classifier before reading metadata into the unchanged 416-word scratch.
+coarse classifier before reading metadata into a shared 512-word scratch.
 Opaque and blended groups then follow their existing visibility/LOD tests,
 opaque coalescing and depth/stable-ID transparent sort.
 
@@ -310,7 +424,7 @@ only the unified ring chunks; it does not make a second transparent-cluster
 pass. Outside the accepted corridor, or without a route table, it uses the
 original complete spatial-cluster path. `--candidates clusters` selects that
 baseline explicitly. `--policy full` always bypasses route coarse filtering.
-CPU command recording, binding and matrix handling are unchanged.
+The candidate path does not alter the draw binding or matrix contract.
 
 Opaque selection marks a meshlet-first bitset and streams its baked span table
 in ascending order. Nonempty buckets reuse the existing group scratch. Adjacent
@@ -336,8 +450,8 @@ python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_classi
 $assets = "systems/cpu-v3-tang-nano-20k/applications/tankracer/assets/england"
 $out = Read-Host "New output root"
 $env:CARGO_TARGET_DIR = "$out/target"
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map "$assets/scene-compact.zip" --camera "$assets/cameras-quick.json" --candidates route --out "$out/route"
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map "$assets/scene-compact.zip" --camera "$assets/cameras-quick.json" --candidates clusters --out "$out/clusters"
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map "$assets/scene-opaque-atlas.zip" --camera "$assets/cameras-quick.json" --candidates route --out "$out/route"
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map "$assets/scene-opaque-atlas.zip" --camera "$assets/cameras-quick.json" --candidates clusters --out "$out/clusters"
 ```
 
 Check the packed real-scene ranges and independently rebuild the producer output
@@ -347,8 +461,8 @@ from a materialized snapshot's frozen inputs (the second output must be new):
 $assets = "systems/cpu-v3-tang-nano-20k/applications/tankracer/assets/england"
 $out = Read-Host "New output root"
 $env:CARGO_TARGET_DIR = "$out/target"
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map "$assets/scene-compact.zip" --camera "$assets/cameras-motion.json" --out "$out/snapshot"
-python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_route_ring.py --scene "$assets/scene-compact.zip" --packed "$out/snapshot/tankracer-static-assets" --output "$out/route-bounds-check.json"
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map "$assets/scene-opaque-atlas.zip" --camera "$assets/cameras-motion.json" --out "$out/snapshot"
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_route_ring.py --scene "$assets/scene-opaque-atlas.zip" --packed "$out/snapshot/tankracer-static-assets" --output "$out/route-bounds-check.json"
 python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_route_location_grid.py --packed "$out/snapshot/tankracer-static-assets" --output "$out/location-grid-check.json"
 python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_route_snapshot.py "$out/snapshot" "$out/rebuilt"
 ```

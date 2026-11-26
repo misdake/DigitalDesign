@@ -21,21 +21,25 @@ struct View {
     absolute: Mat3x3,
 }
 
-struct DrawSpan {
-    first: u16,
-    count: u16,
-    material: u16,
+pub struct DrawSpan {
+    pub first: u16,
+    pub count: u16,
+    pub material: u16,
+    pub item: u16,
+    pub page: u16,
 }
 
 pub struct World {
     unlit: UnlitBank,
     bindings: Ptr,
-    model: Transform,
+    transform: Transform,
     camera: Camera,
     material: Material,
     opaque: RenderState,
     blended: RenderState,
     groups: Ptr,
+    // Prepared: three selected words per ring item, then two ordered words
+    // per visible item. UnlitBank: tightly packed first/count/material triples.
     opaque_draws: Ptr,
     opaque_mask: Ptr,
     blended_draws: Ptr,
@@ -47,9 +51,9 @@ pub struct World {
     previous_blended: u16,
 }
 
-struct Selection {
-    opaque: u16,
-    blended: u16,
+pub struct Selection {
+    pub opaque: u16,
+    pub blended: u16,
 }
 
 impl World {
@@ -59,7 +63,7 @@ impl World {
         let mut blended_draws = Ptr::from_addr(0);
         let mut blended_order = Ptr::from_addr(0);
         if OPAQUE_COUNT != 0 {
-            opaque_draws = malloc(OPAQUE_COUNT * 3);
+            opaque_draws = malloc(OPAQUE_COUNT * OPAQUE_DRAW_WORDS);
         }
         if GROUP_COUNT != OPAQUE_COUNT {
             blended_draws = malloc((GROUP_COUNT - OPAQUE_COUNT) * 6);
@@ -79,7 +83,7 @@ impl World {
         let mut world = Self {
             unlit,
             bindings: Ptr::from_addr(0),
-            model: Transform::new(Pose::identity()),
+            transform: Transform::new(Pose::identity()),
             camera: Camera::new(CameraDesc::new(
                 Vec3::zero(),
                 Vec3::zero(),
@@ -173,6 +177,7 @@ impl World {
                     } else {
                         let texture = map_texture(texture_id - 1);
                         let mut view = texture.view();
+                        view.set_min_mip_size(MAP_MATERIALS[material * 4 + 1] >> 1);
                         if MAP_MATERIALS[material * 4 + 1] != 0 {
                             view.set_address_mode(TextureAddressMode::ClampToEdge);
                         }
@@ -195,6 +200,11 @@ impl World {
         color: ColorBufferPtr,
         depth: DepthBufferPtr,
     ) {
+        let selected = self.select_frame(frame);
+        self.record_unlit(commands, bank, color, depth, &selected);
+    }
+
+    pub fn select_frame(&mut self, frame: u16) -> Selection {
         let at = frame * 24;
         let data: Buf<u16, 24> = Buf::new([0; 24]);
         let rows = data.as_array();
@@ -217,7 +227,17 @@ impl World {
             },
         };
         self.camera.set_view(matrix);
-        let selected = self.select(&view);
+        self.select(&view)
+    }
+
+    fn record_unlit(
+        &mut self,
+        commands: &mut CommandBuffer,
+        bank: u16,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
+        selected: &Selection,
+    ) {
         let count = selected.opaque + selected.blended;
         let mut previous_count = self.count_a;
         let mut cache = self.cache_a;
@@ -227,14 +247,14 @@ impl World {
         }
         if TANKRACER_REUSE != 0 {
             let compare = previous_count != 0 && previous_count == count;
-            let same = self.cache_draws(cache, &selected, compare);
+            let same = self.cache_draws(cache, selected, compare);
             if same {
                 commands.patch_unlit(&self.unlit, self.camera.ptr(), color, depth);
                 return;
             }
         }
         commands.reset();
-        commands.prepare_unlit(&mut self.unlit, self.camera.ptr(), self.model.ptr());
+        commands.prepare_unlit(&mut self.unlit, self.camera.ptr(), self.transform.ptr());
         {
             let mut pass = commands.pass(
                 color,
@@ -244,7 +264,7 @@ impl World {
                 DepthLoad::clear_far(),
             );
             let opaque = unsafe { self.opaque_draws.as_u16_array() };
-            self.draw_list(&mut pass, opaque, selected.opaque, 3);
+            self.draw_list(&mut pass, opaque, selected.opaque, OPAQUE_DRAW_WORDS);
             if GROUP_COUNT != OPAQUE_COUNT {
                 let blended = unsafe { self.blended_draws.as_u16_array() };
                 self.draw_list(&mut pass, blended, selected.blended, 6);
@@ -256,6 +276,117 @@ impl World {
             } else {
                 self.count_b = count;
             }
+        }
+    }
+
+    pub fn opaque_span(&self, index: u16) -> DrawSpan {
+        let words = unsafe { self.opaque_draws.as_u16_array() };
+        let mut at = index * OPAQUE_DRAW_WORDS;
+        let mut item: u16 = 0;
+        let mut page: u16 = 0;
+        if TANKRACER_PREPARED != 0 {
+            let order = OPAQUE_COUNT * 3 + index * 2;
+            item = words[order];
+            page = words[order + 1];
+            at = item * 3;
+        }
+        DrawSpan {
+            first: words[at],
+            count: words[at + 1],
+            material: words[at + 2],
+            item,
+            page,
+        }
+    }
+
+    pub fn record_fallback(
+        &mut self,
+        commands: &mut CommandBuffer,
+        selected: &Selection,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
+    ) {
+        self.record_unlit(commands, 0, color, depth, selected);
+    }
+
+    pub fn record_static_span(&mut self, part: &mut PreparedPart, mesh: MeshPtr, material: u16) {
+        self.set_material(material);
+        part.set_state(self.opaque.ptr());
+        let at = (material & 32767) * 4;
+        let texture_id = MAP_MATERIALS[at];
+        if texture_id == 0 {
+            part.draw_colored(self.transform.ptr(), mesh, self.material.ptr());
+        } else {
+            let texture = map_texture(texture_id - 1);
+            let mut view = texture.view();
+            view.set_min_mip_size(MAP_MATERIALS[at + 1] >> 1);
+            if MAP_MATERIALS[at + 1] != 0 {
+                view.set_address_mode(TextureAddressMode::ClampToEdge);
+            }
+            part.draw(self.transform.ptr(), mesh, self.material.ptr(), &view);
+        }
+    }
+
+    // One actual opaque group establishes the checked Target/View prefix.
+    // Subsequent opaque work comes from immutable, marked Prepared storage.
+    pub fn record_prefix(
+        &mut self,
+        commands: &mut CommandBuffer,
+        mesh: MeshPtr,
+        seed: &DrawSpan,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
+    ) {
+        // The list owner supplies a freshly acquired, empty command buffer.
+        let mut pass = commands.pass(
+            color,
+            depth,
+            ColorLoad::clear(Rgb565::from_raw(0x7cf6)),
+            DepthLoad::clear_far(),
+        );
+        pass.set_camera(self.camera.ptr());
+        pass.set_state(self.opaque.ptr());
+        if seed.count != 0 {
+            self.set_material(seed.material);
+            let at = (seed.material & 32767) * 4;
+            let texture_id = MAP_MATERIALS[at];
+            if texture_id == 0 {
+                pass.draw_colored(self.transform.ptr(), mesh, self.material.ptr());
+            } else {
+                let texture = map_texture(texture_id - 1);
+                let mut view = texture.view();
+                view.set_min_mip_size(MAP_MATERIALS[at + 1] >> 1);
+                if MAP_MATERIALS[at + 1] != 0 {
+                    view.set_address_mode(TextureAddressMode::ClampToEdge);
+                }
+                pass.draw(self.transform.ptr(), mesh, self.material.ptr(), &view);
+            }
+        }
+    }
+
+    // Keep transparent order and overflow work on the original fast writer.
+    pub fn record_tail(
+        &mut self,
+        commands: &mut CommandBuffer,
+        selected: &Selection,
+        first: u16,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
+    ) {
+        // Append after the linked opaque ranges in the same writable CB.
+        commands.prepare_unlit(&mut self.unlit, self.camera.ptr(), self.transform.ptr());
+        let mut pass = commands.pass(color, depth, ColorLoad::load(), DepthLoad::load());
+        let map = unsafe { self.bindings.as_u16_array() };
+        let mut index = first;
+        while index < selected.opaque {
+            let span = self.opaque_span(index);
+            let binding = map[(span.material & 32767) * 2 + (span.material >> 15)];
+            pass.draw_unlit(&self.unlit, binding, span.first, span.count);
+            index += 1;
+        }
+        if selected.blended != 0 {
+            let blended = unsafe { self.blended_draws.as_u16_array() };
+            self.draw_list(&mut pass, blended, selected.blended, 6);
         }
     }
 
@@ -365,7 +496,13 @@ impl World {
                     let bound = group_bound(words, record);
                     let depth = -project(&view.matrix.row2, &bound);
                     if classification == 2 || visible_group(view, words, record, &bound, depth) {
-                        let next = group_span(words, record, depth - bound.w);
+                        let mut span = record + 7;
+                        if TANKRACER_POLICY == 2 && depth - bound.w > LOD_DISTANCE {
+                            span = record + 9;
+                        }
+                        let draw_first = words[span];
+                        let draw_count = words[span + 1];
+                        let draw_material = words[record + 11];
                         if words[record + 12] >= OPAQUE_COUNT {
                             let mut output = blended;
                             let target = result.blended * 6;
@@ -379,12 +516,27 @@ impl World {
                             output[target + 3] = words[record + 12];
                             output[target + 4] = depth.lo_bits();
                             output[target + 5] = depth.hi_bits();
-                            output[target] = next.first;
-                            output[target + 1] = next.count;
-                            output[target + 2] = next.material;
+                            output[target] = draw_first;
+                            output[target + 1] = draw_count;
+                            output[target + 2] = draw_material;
                             result.blended += 1;
                         } else {
-                            mask[next.first >> 4] |= 1u16 << (next.first & 15);
+                            if TANKRACER_PREPARED != 0 {
+                                let item = MAP_OPAQUE_RING_INDEX[words[record + 12]];
+                                let mut bits: u16 = 1;
+                                if draw_first != words[record + 7] {
+                                    bits = 3;
+                                }
+                                mask[item >> 3] |= bits << ((item & 7) * 2);
+                                // Retain the exact selected range already loaded by culling.
+                                // The remaining two words per group hold the ordered indices.
+                                let mut spans = unsafe { self.opaque_draws.as_u16_array() };
+                                spans[item * 3] = draw_first;
+                                spans[item * 3 + 1] = draw_count;
+                                spans[item * 3 + 2] = draw_material;
+                            } else {
+                                mask[draw_first >> 4] |= 1u16 << (draw_first & 15);
+                            }
                         }
                     }
                     index += 1;
@@ -411,6 +563,9 @@ impl World {
     }
 
     fn ordered_opaque(&mut self, words: Array<u16>) -> u16 {
+        if TANKRACER_PREPARED != 0 {
+            return self.ordered_ring();
+        }
         let mask = unsafe { self.opaque_mask.as_u16_array() };
         let mut output = unsafe { self.opaque_draws.as_u16_array() };
         let mut count: u16 = 0;
@@ -448,6 +603,41 @@ impl World {
         count
     }
 
+    fn ordered_ring(&mut self) -> u16 {
+        let mask = unsafe { self.opaque_mask.as_u16_array() };
+        let mut output = unsafe { self.opaque_draws.as_u16_array() };
+        let mut count: u16 = 0;
+        let mut variant: u16 = 0;
+        while variant < 2 {
+            let mut bucket: u16 = 0;
+            while bucket < OPAQUE_MASK_WORDS {
+                let candidates = mask[bucket];
+                let mut bits = candidates & (65535 ^ (candidates >> 1)) & 21845;
+                if variant != 0 {
+                    bits = (candidates >> 1) & 21845;
+                }
+                if bits != 0 {
+                    let mut index: u16 = 0;
+                    while bits != 0 {
+                        if bits & 1 != 0 {
+                            let item = bucket * 8 + index;
+                            let at = OPAQUE_COUNT * 3 + count * 2;
+                            output[at] = item;
+                            output[at + 1] =
+                                MAP_OPAQUE_RING_PAGE[item] + variant * MAP_PREPARED_RING_PAGES;
+                            count += 1;
+                        }
+                        bits >>= 2;
+                        index += 1;
+                    }
+                }
+                bucket += 1;
+            }
+            variant += 1;
+        }
+        count
+    }
+
     fn draw_list(&mut self, pass: &mut Pass, words: Array<u16>, count: u16, stride: u16) {
         let order = unsafe { self.blended_order.as_u16_array() };
         let map = unsafe { self.bindings.as_u16_array() };
@@ -457,9 +647,21 @@ impl World {
             if stride == 6 {
                 at = order[i] * 6;
             }
-            let key = words[at + 2];
+            let mut key: u16 = 0;
+            let mut first: u16 = 0;
+            let mut length: u16 = 0;
+            if TANKRACER_PREPARED != 0 && stride == OPAQUE_DRAW_WORDS {
+                let span = self.opaque_span(i);
+                key = span.material;
+                first = span.first;
+                length = span.count;
+            } else {
+                key = words[at + 2];
+                first = words[at];
+                length = words[at + 1];
+            }
             let binding = map[(key & 32767) * 2 + (key >> 15)];
-            pass.draw_unlit(&self.unlit, binding, words[at], words[at + 1]);
+            pass.draw_unlit(&self.unlit, binding, first, length);
             i += 1;
         }
     }
@@ -519,18 +721,6 @@ fn sort_back_to_front(records: Array<u16>, mut order: Array<u16>, count: u16) {
             i += 1;
         }
         gap /= 3;
-    }
-}
-
-fn group_span(words: Array<u16>, at: u16, near: fix32) -> DrawSpan {
-    let mut range = at + 7;
-    if TANKRACER_POLICY == 2 && near > LOD_DISTANCE {
-        range = at + 9;
-    }
-    DrawSpan {
-        first: words[range],
-        count: words[range + 1],
-        material: words[at + 11],
     }
 }
 
