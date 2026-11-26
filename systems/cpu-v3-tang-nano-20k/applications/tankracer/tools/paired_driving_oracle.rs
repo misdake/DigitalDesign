@@ -14,7 +14,10 @@ mod pages;
 mod parent_scene_assets;
 mod pickup_scene_assets;
 mod pickup_snapshot;
+mod player_scene_assets;
 mod prefix_scene_assets;
+#[allow(dead_code)]
+mod projectile_snapshot;
 #[allow(dead_code, clippy::needless_range_loop, clippy::manual_range_contains)]
 #[path = "vehicle_oracle.rs"]
 mod reference;
@@ -328,6 +331,69 @@ fn main() {
         }
     }
     for (name, velocities, separation, object, ordinary, retire, transient) in [
+        (
+            "complete-player",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
+            "complete-player-homing",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
+            "complete-player-warp",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
+            "complete-player-clock",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
+            "complete-player-horn",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
+            "complete-player-hidden",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
+            "complete-dynamic",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
         ("complete-startup", [0, 0], 1600, None, false, false, false),
         (
             "complete-fast-controls",
@@ -655,7 +721,11 @@ fn main() {
             false,
         ),
     ] {
-        let mut session = reference_world::complete(root);
+        let mut session = if name.starts_with("complete-player") {
+            player_scene_assets::ready(root)
+        } else {
+            reference_world::complete(root)
+        };
         let mut empty = reference_world::two_cars(root, 1);
         let world = if object.is_some() {
             session.world_mut_at_load().unwrap()
@@ -701,7 +771,7 @@ fn main() {
             }
             point
         });
-        if object.is_some() {
+        if object.is_some() && !name.starts_with("complete-player") {
             let (scene, _) = scene_export::encode(&world.objects.world);
             let config = deform_assets::encode(world);
             let bytes = |words: &[u16]| {
@@ -928,6 +998,47 @@ fn main() {
             world.shared.shield.banks[0].tail = 0x12345678;
             world.shared.shield.banks[1].tail = 0x87654321;
         }
+        let player_sequence = name.starts_with("complete-player");
+        let clock_sequence = name == "complete-player-clock";
+        let mut race_clock = tankracer_game::race_clock::Clock::default();
+        if player_sequence {
+            let car = world.vehicles.entries[0].as_mut().unwrap();
+            let vertex = car.model.gun_vertices[0] as usize;
+            let gun = car.model.parts[Part::Gun.slot()].as_mut().unwrap();
+            if name.ends_with("-homing") {
+                gun.rcc_set_revision(65535);
+            } else if name.ends_with("-warp") {
+                gun.rcc_set_revision(u64::from(u32::MAX));
+            } else if name.ends_with("-horn") {
+                gun.edit(|geometry| {
+                    geometry.vertices[vertex][2] = geometry.vertices[vertex][2].wrapping_add(1)
+                });
+                gun.rcc_set_revision(u64::MAX);
+                car.horn_down = true;
+                car.horn_latched = true;
+                car.horn_timer = 34;
+            }
+            let inventory = &mut world.vehicles.entries[0].as_mut().unwrap().inventory;
+            if name.ends_with("-homing") {
+                inventory.weapon = 3;
+                inventory.ammo = 2;
+            } else if name.ends_with("-warp") {
+                inventory.weapon = 10;
+                inventory.ammo = 2;
+            }
+            let (scene, _) = scene_export::encode(&world.objects.world);
+            fs::write(
+                out.join("player-scene.bin"),
+                scene
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+            world.race_active = true;
+            world.vehicles.entries[0].as_mut().unwrap().race.driving = !clock_sequence;
+            tankracer_game::vehicle_runtime::rcc_player_probe::initialize_routes(world).unwrap();
+        }
         let initial_seed = world.shared.random;
         let pickup_initial = if name.starts_with("pickup-") {
             pickup_scene_assets::capture(world)
@@ -1018,15 +1129,45 @@ fn main() {
             assert!((0..8).contains(&x) && (0..8).contains(&z));
             visited.insert((x + z * 8) as usize);
         }
-        let setup = driving_step::Setup {
+        let player_initial = if player_sequence {
+            player_scene_assets::capture(world)
+        } else {
+            Vec::new()
+        };
+        if player_sequence {
+            fs::write(
+                out.join("player-context.bin"),
+                player_scene_assets::context(world)
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        }
+        let dynamic = name == "complete-dynamic";
+        let mut dynamic_entities: Vec<tankracer_game::object_query::EntityId> = Vec::new();
+        let clock_initial = if clock_sequence {
+            player_scene_assets::clock(&race_clock)
+        } else {
+            Vec::new()
+        };
+        let mut setup = driving_step::Setup {
             complete: name.starts_with("complete-"),
-            sample_controls: if name == "complete-controls" {
+            sample_controls: if name.ends_with("-horn") {
+                5
+            } else if clock_sequence {
+                4
+            } else if player_sequence {
+                3
+            } else if name == "complete-controls" {
                 1
             } else if name == "complete-fast-controls" {
                 2
             } else {
                 0
             },
+            dt: 33,
+            start_stage: 0,
             terrain: &terrain,
             surfaces: &surfaces,
             tank,
@@ -1044,13 +1185,19 @@ fn main() {
                 || name.starts_with("pickup-")
                 || name == "complete-wall"
                 || name == "complete-prepare"
+                || dynamic
+                || player_sequence
             {
                 &models
             } else {
                 &[]
             },
         };
-        let case_steps = if name == "complete-fast-controls" {
+        let case_steps = if clock_sequence {
+            5
+        } else if dynamic || player_sequence {
+            3
+        } else if name == "complete-fast-controls" {
             steps.clamp(2, 3)
         } else if name == "complete-controls" {
             steps.max(6)
@@ -1068,10 +1215,61 @@ fn main() {
         for frame in 0..case_steps {
             let number = frame as u32 + 1;
             world.frame = number;
+            let raw_dt = if clock_sequence {
+                [1000, 1000, 1000, 250, 5][frame]
+            } else {
+                33
+            };
+            if clock_sequence {
+                let running = race_clock.countdown == 0;
+                let launch = race_clock.tick_time(raw_dt);
+                for slot in world.vehicles.racers {
+                    let Some(id) = slot else { continue };
+                    let racer = &mut world.vehicles.entries[id.0].as_mut().unwrap().race;
+                    if running {
+                        racer.elapsed = racer.elapsed.wrapping_add(raw_dt);
+                    } else if launch {
+                        racer.driving = true;
+                    }
+                }
+                setup.dt = tankracer_game::race_clock::physics_dt(raw_dt);
+                setup.start_stage = race_clock.display;
+                world.race_active = world.vehicles.entries[0].as_ref().unwrap().race.driving;
+            }
             for own in 0..actors {
+                let mut world_event = [0u16; 4];
+                if dynamic {
+                    if frame == 1 {
+                        let first = dynamic_entities[198];
+                        world_event = [2, 2, first.0 as u16, 0];
+                        for index in 198..200 {
+                            tankracer_game::scene_objects::rcc_lifecycle_probe::release_transient(
+                                world,
+                                dynamic_entities[index],
+                            )
+                            .unwrap();
+                        }
+                    } else {
+                        let count = if frame == 0 { 200 } else { 2 };
+                        let class = world.registry.generic;
+                        world_event = [1, count, 0, class.0 as u16];
+                        for _ in 0..count {
+                            let entity = world.identity.entities.create_record(100000).unwrap();
+                            world.identity.entities.record_mut(entity).unwrap().class = Some(class);
+                            tankracer_game::scene_objects::rcc_lifecycle_probe::allocate_transient(
+                                world, entity,
+                            )
+                            .unwrap();
+                            dynamic_entities.push(entity);
+                        }
+                    }
+                }
                 if name == "complete-visibility" {
                     world.vehicles.entries[own].as_mut().unwrap().visible =
                         !((frame == 1 && own == 0) || (frame == 2 && own == 1));
+                }
+                if name == "complete-player-hidden" {
+                    world.vehicles.entries[own].as_mut().unwrap().visible = frame != 1;
                 }
                 let input = drive::Input {
                     throttle: if name.starts_with("pickup-") {
@@ -1083,7 +1281,7 @@ fn main() {
                     },
                     ..Default::default()
                 };
-                let result = if ordinary {
+                let result = if ordinary && !player_sequence {
                     ordered_frame(
                         world,
                         &setup,
@@ -1100,6 +1298,7 @@ fn main() {
                     && !name.starts_with("prefix-")
                     && !name.starts_with("pickup-")
                     && frame == 0
+                    && !player_sequence
                 {
                     assert_eq!(result.scenery_ticks, 0);
                 }
@@ -1109,6 +1308,8 @@ fn main() {
                     && !name.starts_with("prefix-")
                     && !name.starts_with("pickup-")
                     && frame == 1
+                    && !dynamic
+                    && !player_sequence
                 {
                     assert_eq!(result.scenery_ticks, 1);
                 }
@@ -1119,7 +1320,11 @@ fn main() {
                             o.auxiliary_mesh.is_some() && o.auxiliary_motion.is_some()
                         });
                 }
-                let control = result.control;
+                let mut control = result.control;
+                if clock_sequence {
+                    control[0] = raw_dt;
+                    control[29] &= !(15 << 9);
+                }
                 stages[own] = result.stage;
                 visited.extend(result.cells);
                 hits += result.tank_hits;
@@ -1160,12 +1365,12 @@ fn main() {
                     Vec::new()
                 };
                 frames.push(
-                    json!({"control":control,"expected":expected,"surface":surface,"scenery":live,"resource_versions":resource_versions,
+                    json!({"control":control,"world_event":world_event,"clock":if clock_sequence {player_scene_assets::clock(&race_clock)}else{Vec::new()},"player":if player_sequence {player_scene_assets::capture(world)}else{Vec::new()},"expected":expected,"surface":surface,"scenery":live,"resource_versions":resource_versions,
                         "complete":if setup.complete {complete_scene_assets::capture(world)}else{Vec::new()},
                         "prefix": if setup.prepare {prefix_scene_assets::encode(world)}else{Vec::new()},
                         "pickup":if name.starts_with("pickup-"){pickup_scene_assets::capture(world)}else{Vec::new()},
                         "debris": if name.starts_with("debris-") {debris_scene_assets::capture(world)} else {Vec::new()},
-                        "parents": if name.starts_with("auxiliary-") || name.starts_with("debris-") || name.starts_with("prefix-") || name.starts_with("pickup-") || name=="complete-wall" || name=="complete-prepare" { parent_scene_assets::capture(world, &bindings) } else { Vec::new() }}),
+                        "parents": if name.starts_with("auxiliary-") || name.starts_with("debris-") || name.starts_with("prefix-") || name.starts_with("pickup-") || name=="complete-wall" || name=="complete-prepare" || dynamic || player_sequence { parent_scene_assets::capture(world, &bindings) } else { Vec::new() }}),
                 );
                 if retire && frame >= 1 {
                     let id = object.unwrap();
@@ -1379,7 +1584,7 @@ fn main() {
             );
         }
         cells.extend(visited.iter().copied());
-        exported.push(json!({"name":name,"complete_initial":complete_initial,"cars":actors,"car_bindings":car_bindings,"prefix_initial":prefix_initial,"pickup_initial":pickup_initial,"racer_slots":racer_slots,"entities":entities,"initial":initial,"seed_after_noise":initial_seed,"noise":noise,
+        exported.push(json!({"name":name,"clock_initial":clock_initial,"player_initial":player_initial,"ordered":ordinary && !player_sequence,"complete_initial":complete_initial,"cars":actors,"car_bindings":car_bindings,"prefix_initial":prefix_initial,"pickup_initial":pickup_initial,"racer_slots":racer_slots,"entities":entities,"initial":initial,"seed_after_noise":initial_seed,"noise":noise,
             "frames":frames,"cells":visited,"fallback_contacts":0,"tank_contacts":hits,"deform_contacts":deform_hits,
             "deformed_vertices":changed_vertices,"surface_sample_points":sampled_points,"deform_spark_events":spark_events,"scene":object.is_some(),"scenery":ordinary,"ordinary_contacts":ordinary_hits,"scenery_ticks":scenery_ticks,
             "retirement":retire,"transient":transient,"retire_object":if retire {object.unwrap()+1} else {0},

@@ -8,6 +8,7 @@ pub struct State {
     pub shared: car_effects::Shared,
     pub prefixes: Array<u16>,
     pub prepared: Array<prefix::Shared>,
+    pub racers: Array<u16>,
 }
 fn ptr(w: u16) -> Array<u16> {
     unsafe { Ptr::from_addr(w).as_u16_array() }
@@ -60,6 +61,7 @@ pub fn load(
         auxiliary: auxiliary,
         prefixes: ptr(0),
         prepared: prepared,
+        racers: ptr(0),
         shared: car_effects::Shared {
             pickup: pickup_light::State { banks: ptr(0xc000) },
             impacts: impacts,
@@ -443,7 +445,16 @@ pub fn check(state: &State, case: u16, offset: fix32) -> fix32 {
         offset,
         DRIVING_COMPLETE_WORDS,
     );
-    expect_block(ptr(0xc000), &mut expected, 0, DRIVING_COMPLETE_WORDS);
+    if driving_has_player(case) {
+        // These two diagnostic columns alias the authoritative route/racer rows.
+        expect_block(ptr(0xc000), &mut expected, 0, 10438);
+        expect_value(g(state.racers, 13), &mut expected, 5219);
+        expect_block(ptr(0xc000 + 10440), &mut expected, 10440, 24);
+        expect_value(g(sub(state.racers, 30), 13), &mut expected, 5232);
+        expect_block(ptr(0xc000 + 10466), &mut expected, 10466, 2);
+    } else {
+        expect_block(ptr(0xc000), &mut expected, 0, DRIVING_COMPLETE_WORDS);
+    }
     if ptr(0xffff)[0u16] != 0x53a9 {
         halt(0x7f51);
     }

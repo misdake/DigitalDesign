@@ -96,6 +96,7 @@ fn run_bounce_tick(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: 
     attitude::put(seed.as_array(), 0, attitude::get(input, 69));
     let mut runtime = scene_world::Runtime {
         ticks: lifecycle::Ticks {
+            flag_words: 2,
             flags: flags.as_array(),
             flag_count: 512,
             order: ordered::List {

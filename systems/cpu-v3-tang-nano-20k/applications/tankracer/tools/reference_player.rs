@@ -1,5 +1,24 @@
 //! Call the extracted original Player stage on the race's authoritative owners.
 use super::*;
+pub enum Stage {
+    BeforeTank,
+    Complete,
+    AfterPhysics {
+        before: Option<[Option<i16>; 4]>,
+        result: Result<(), i32>,
+    },
+}
+pub fn gun_z(world: &SinglePlayer) -> Option<[Option<i16>; 4]> {
+    super::super::car::gun_z(
+        &world.vehicles.entries[world.player.0]
+            .as_ref()
+            .unwrap()
+            .model,
+    )
+}
+pub fn initialize_routes(world: &mut SinglePlayer) -> Result<(), super::super::Error> {
+    world.initialize_player_route(100000)
+}
 struct Device;
 impl scene_objects::collision::Services for Device {
     fn sound(
@@ -35,6 +54,27 @@ pub fn before_tank(
     limit: u32,
     launch: &mut bool,
 ) -> Result<(), i32> {
+    update(
+        world,
+        keys,
+        dt,
+        number,
+        limit,
+        launch,
+        &mut Device,
+        Stage::BeforeTank,
+    )
+}
+pub fn update<D: Devices>(
+    world: &mut SinglePlayer,
+    keys: Option<(player_input::Keys, i32)>,
+    dt: i32,
+    number: u32,
+    limit: u32,
+    launch: &mut bool,
+    devices: &mut D,
+    stage: Stage,
+) -> Result<(), i32> {
     world.frame = number;
     world.objects.components.dt = dt;
     world.objects.components.frame_group = number;
@@ -47,7 +87,6 @@ pub fn before_tank(
         .registry
         .hit_environment(world.objects.components.fall_tuning, false, 65536);
     let environment = world.registry.environment(limit);
-    let mut device = Device;
     let mut execution = Execution {
         input,
         keys,
@@ -72,7 +111,7 @@ pub fn before_tank(
         },
         camera: (world.camera_position, world.camera_forward),
         camera_basis: world.camera_basis,
-        devices: &mut device,
+        devices,
         hit,
         breakable_class: world.registry.fall,
     };
@@ -88,7 +127,24 @@ pub fn before_tank(
         result: &mut result,
         context: world.identity.context(),
     };
-    let status = execution.rcc_before_tank(id, &mut call, environment);
+    let check_result;
+    let status = match stage {
+        Stage::BeforeTank => {
+            check_result = false;
+            execution.rcc_before_tank(id, &mut call, environment)
+        }
+        Stage::Complete => {
+            check_result = true;
+            execution.update_car(id, &mut call, environment)
+        }
+        Stage::AfterPhysics { before, result } => {
+            check_result = true;
+            execution.rcc_after_physics(id, &mut call, before, result)
+        }
+    };
+    if check_result && status.is_ok() {
+        assert_eq!(result, entity.0);
+    }
     *launch = execution.frame.drive.launch_eligible;
     status
 }

@@ -20,7 +20,7 @@ fn main(){
  let s=ptr(0x100);let meta=ptr(0x180);let controls=ptr(0x4000);let out=ptr(0x5000);
  let mut base=ptr(0x2000);if meta[3u16]!=0{base=ptr(0xc000);}
  let routes=player_route::Routes{header:base,points:at(base,0x100),count:meta[2u16],ranges:at(base,0x1000),items:at(base,0x1100)};
- let ids=entities::State{header:ptr(0x1000),rows:ptr(0x100c),storage_capacity:512};
+ let ids=entities::State{row_words:6,header:ptr(0x1000),rows:ptr(0x100c),storage_capacity:512};
  let world=scene_world::World{colliders:ptr(0x8000),properties:ptr(0),count:meta[1u16],fixed_count:meta[1u16],dynamic_page:121,dynamic_capacity:0,grid:spatial::Grid{page:65535,origin:ptr(0),shift_x:0,shift_z:0,items:ptr(0),ranges:ptr(0)},deformables:ordered::List{items:ptr(0),count:0,capacity:0}};
  let car=player_route::Car{route:s,race:at(s,22)};let result=at(s,46);let mut frame=0u16;
  unsafe{write_dseg_page(2,120);write_dseg_page(3,119);}

@@ -30,7 +30,7 @@ fn main(){
   let order:Buf<u16,4>=Buf::new([1,0,2,0]);let slot:Buf<u16,2>=Buf::new([12,0]);let seed:Buf<u16,2>=Buf::new([0,0]);
   let empty:Buf<u16,2>=Buf::new([0;2]);
   let mut runtime=scene_world::Runtime{
-   ticks:lifecycle::Ticks{flags:flags.as_array(),flag_count:16,order:ordered::List{items:order.as_array(),count:2,capacity:2},next:integer::from_i16(2)},
+   ticks:lifecycle::Ticks{flag_words:2,flags:flags.as_array(),flag_count:16,order:ordered::List{items:order.as_array(),count:2,capacity:2},next:integer::from_i16(2)},
    queues:lifecycle::Queues{
     notifications:ordered::List{items:notifications.as_array(),count:attitude::get(input,40).lo_bits(),capacity:8},
     destruction:ordered::List{items:destruction.as_array(),count:attitude::get(input,49).lo_bits(),capacity:8}},

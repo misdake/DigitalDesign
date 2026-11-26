@@ -20,6 +20,9 @@ pub struct Batch {
 }
 pub struct State {
     pub batches: Array<Batch>,
+    // 65535 uses resident rows. A banked stage selects DSEG2 for the complete
+    // operation; Vehicle/Context views must stay resident outside that window.
+    pub page: u16,
     pub next: fix32,
 }
 pub struct Vehicle {
@@ -122,8 +125,29 @@ fn endpoint(out: Array<u16>, r: fix32, a: Array<u16>, origin: Array<u16>, offset
         integer::trunc_shift(fmul_lo32(z, g(a, 3)), 12) + g(origin, 2) + g(offset, 2),
     );
 }
+pub fn select(state: &State) -> u16 {
+    let saved = read_dseg_page(2);
+    if state.page != 65535 && state.page != saved {
+        unsafe {
+            write_dseg_page(2, state.page);
+        }
+    }
+    saved
+}
 // Status: 0 skipped, 1 emitted, 2 arithmetic, 3 pool, 4 invalid ring/corner/basis.
 pub fn emit(
+    state: &mut State,
+    v: &mut Vehicle,
+    corner: fix32,
+    kind: fix32,
+    c: &mut Context,
+) -> u16 {
+    let saved = select(state);
+    let status = emit_selected(state, v, corner, kind, c);
+    effect_pool::restore(saved);
+    status
+}
+fn emit_selected(
     state: &mut State,
     v: &mut Vehicle,
     corner: fix32,
@@ -241,6 +265,12 @@ pub fn emit(
     1
 }
 pub fn tick(state: &mut State, v: &mut Vehicle, dt: fix32, c: &mut Context) -> u16 {
+    let saved = select(state);
+    let status = tick_selected(state, v, dt, c);
+    effect_pool::restore(saved);
+    status
+}
+fn tick_selected(state: &mut State, v: &mut Vehicle, dt: fix32, c: &mut Context) -> u16 {
     p(v.cooldown, 0, g(v.cooldown, 0) + dt);
     let scratch: Buf<u16, 34> = Buf::new([0; 34]);
     let a = scratch.as_array();

@@ -3,11 +3,13 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import struct
 import subprocess
 import sys
 from reference_bridge import prepare
+from reference_player import append_player_probe
 
 
 def words(values):
@@ -35,6 +37,7 @@ def main():
     project = out / 'reference-tool'
     project.mkdir(exist_ok=True)
     game = prepare(root, out, driving=True, lifecycle=True, meshes=True, symbols=True)
+    append_player_probe(root, out, game)
     manifest = ('[package]\nname="tankracer-driving-assets"\nversion="0.1.0"\nedition="2024"\n'
                 '[workspace]\n[[bin]]\nname="driving-oracle"\npath='
                 + json.dumps((owner / 'driving_oracle.rs').as_posix())
@@ -59,6 +62,14 @@ def main():
     (out / 'mesh-catalog.bin').write_bytes((catalog_reference / 'mesh-catalog.bin').read_bytes())
     catalog = json.loads((catalog_reference / 'mesh-catalog.json').read_text())
     catalog_words = 2560 + catalog['source_metadata_bytes'] // 2 + catalog['compact_index_bytes'] // 2
+    player_catalog_reference = out / 'player-catalog-reference'
+    subprocess.run([sys.executable, str(owner / 'mesh_store_assets.py'), '--reference',
+                    str(root / 'Cargo.toml'), '--output', str(player_catalog_reference), '--player'], check=True, timeout=400)
+    (out / 'player-mesh-catalog.bin').write_bytes((player_catalog_reference / 'mesh-catalog.bin').read_bytes())
+    player_catalog = json.loads((player_catalog_reference / 'mesh-catalog.json').read_text())
+    catalog_words = max(catalog_words, 2560 + player_catalog['source_metadata_bytes'] // 2 + player_catalog['compact_index_bytes'] // 2)
+    for field in ['motion_layout', 'auxiliary_spans']:
+        assert catalog[field] == player_catalog[field], field
     parents = json.loads((out / 'parent-bindings.json').read_text())
     assert len(parents) == 13
     parent_words = [0x4150, 1, len(parents), 26, 8, 0, 0, 0]
@@ -89,6 +100,12 @@ def main():
     assert len(pickup_config)==46
     binary(out/'pickup-config.bin',words(pickup_config[:5])+pickup_config[5:]+words([5,6])+words([0,0,0,4096,0,0,0,4096,0,0,0,4096]))
     binary(out / 'parent-bindings.bin', parent_words)
+    player_parents = list(parent_words)
+    for i, row in enumerate(parents):
+        name = row['name'].lower()
+        player_parents[8 + i * 26 + 2] = player_catalog['auxiliary_sources'].get(name, 65535)
+        player_parents[8 + i * 26 + 3] = player_catalog['names'].index(name) if name else 65535
+    binary(out / 'player-parent-bindings.bin', player_parents)
     binary(out / 'auxiliary-spans.bin', catalog['auxiliary_spans'])
     binary(out / 'motion-layout.bin', [v for row in catalog['motion_layout'] for v in row])
     inverse = root / 'crates/game/data/cosine-angle.bin'
@@ -100,6 +117,11 @@ def main():
         assert len(supplement) == 500
         case['initial'] += supplement + [0, -1, 0, 0, -1, 0, 0] + [0] * 4
         case['cars'], case['entities'], case['tank_contacts'] = 1, [1, 2], 0
+        # The second diagnostic car is frozen at the duplicated initial row.
+        # Its identity and visibility do not participate in the trajectory.
+        frozen = list(case['car_bindings'])
+        frozen[:3] = [2, 0, 1]
+        case['car_bindings'] += frozen
         for frame in case['frames']:
             seed = frame['expected'].pop()
             frame['expected'] += supplement + [0, -1, 0, 0, -1, 0, 0] + [0] * 4 + [seed]
@@ -126,6 +148,14 @@ def main():
         data['cases']=[c for c in data['cases'] if c['name'] in ['debris-169','debris-peer-blast','debris-retire']]
     elif qualification_scope=='fast-controls':
         data['cases']=[c for c in data['cases'] if c['name']=='complete-fast-controls']
+    elif qualification_scope=='dynamic':
+        data['cases']=[c for c in data['cases'] if c['name']=='complete-dynamic']
+    elif qualification_scope=='player':
+        data['cases']=[c for c in data['cases'] if c.get('player_initial')]
+    elif qualification_scope=='clock':
+        data['cases']=[c for c in data['cases'] if c.get('clock_initial')]
+    elif qualification_scope=='tail':
+        data['cases']=[c for c in data['cases'] if c['name'] in ['complete-player-horn','complete-player-hidden']]
     elif qualification_scope=='controls':
         data['cases']=[c for c in data['cases'] if c['name']=='complete-controls']
     elif qualification_scope=='visibility':
@@ -163,7 +193,7 @@ def main():
         metadata.extend(case.get('racer_slots', [0, 1 if case['cars'] == 2 else 65535] + [65535] * 7))
         metadata.extend(words([case['initial'][2285]]))
         metadata.extend([int(case.get('scene', False))] * 2)
-        metadata.extend([len(case['frames']), int(case.get('scenery', False))])
+        metadata.extend([len(case['frames']), (1 if case.get('ordered',True) else 2) if case.get('scenery',False) else 0])
         metadata.extend([case.get('retire_object', 0), case.get('retire_frame', 65535)])
         group = []
         for frame in case['frames']:
@@ -176,6 +206,12 @@ def main():
             group.extend(words(control))
             group.extend(words(frame['expected']))
         binary(out / f'frames-{case_index}.bin', group)
+        if case['name'] == 'complete-dynamic':
+            binary(out / f'world-events-{case_index}.bin', [v for frame in case['frames'] for v in frame['world_event']])
+        if case.get('player_initial'):
+            binary(out / f'player-{case_index}.bin', case['player_initial'] + [v for frame in case['frames'] for v in frame['player']])
+        if case.get('clock_initial'):
+            binary(out / f'clock-{case_index}.bin', case['clock_initial'] + [v for frame in case['frames'] for v in frame['clock']])
         if case.get('scene'):
             binary(out / f'surfaces-{case_index}.bin', words([v for frame in case['frames'] for v in frame['surface']]))
         if case.get('scenery'):
@@ -183,11 +219,11 @@ def main():
         if case.get('scene'):
             assert all(len(frame['resource_versions']) == 28 for frame in case['frames'])
             binary(out / f'mesh-versions-{case_index}.bin', [v for frame in case['frames'] for v in frame['resource_versions']])
-        if case['name'].startswith(('auxiliary-', 'debris-', 'prefix-', 'pickup-')) or case['name'] in ['complete-wall','complete-prepare']:
+        if case.get('player_initial') or case['name'].startswith(('auxiliary-', 'debris-', 'prefix-', 'pickup-')) or case['name'] in ['complete-wall','complete-prepare','complete-dynamic']:
             binary(out / f'parents-{case_index}.bin', [v for frame in case['frames'] for v in frame['parents']])
         if case['name'].startswith('debris-'):
             binary(out / f'debris-{case_index}.bin', [v for frame in case['frames'] for v in frame['debris']])
-        if case['prefix_initial']:
+        if case.get('prefix_initial'):
             binary(out / f'prefix-{case_index}.bin',[v for frame in case['frames'] for v in frame['prefix']])
             binary(out / f'prefix-initial-{case_index}.bin',case['prefix_initial'])
         if case['name'].startswith('complete-'):
@@ -222,7 +258,29 @@ def main():
                 checked_scenery_words += 64 + sum(live[live[10]:live[10] + 64]) * 2
     assert len(frames) == updates * frame_words
     binary(out / 'car-bindings.bin', [v for c in data['cases'] for v in c.get('car_bindings',[0]*38)])
-    binary(out / 'initial.bin', initial)
+    # The diagnostic snapshot also contains derived state that load_initial
+    # recomputes. Store only its independent inputs, sharing identical rows.
+    car_words = 542 + data['gun_words'] * 2
+    start_words = car_words * 2 + 42
+    start_images = {}
+    start_data = []
+    start_offsets = []
+    for case in range(len(data['cases'])):
+        row = initial[case * initial_words:(case + 1) * initial_words]
+        packed = []
+        for begin, count in [(0, car_words), (3566, car_words),
+                             (state_values * 2, 18), (602, 2), (4156, 2),
+                             (4558, 6), (4564, 6), (4572, 4), (4576, 4)]:
+            packed += row[begin:begin + count]
+        assert len(packed) == start_words
+        key = tuple(packed)
+        if key not in start_images:
+            start_images[key] = len(start_data)
+            start_data += packed
+        start_offsets.append(start_images[key])
+    assert len(start_data) <= 65536
+    binary(out / 'initial.bin', start_data)
+    binary(out / 'initial-offsets.bin', start_offsets)
     binary(out / 'config.bin', config)
     binary(out / 'body.bin', [v & 65535 for v in data['body_data']])
     binary(out / 'cases.bin', metadata)
@@ -235,6 +293,10 @@ def main():
         (out / f'{module}.rs').write_text('#![link_cseg = "parents"]\n' + source)
     for module in ['prefix','spin','vehicle_inactive','player_control']:
         (out / f'{module}.rs').write_text('#![link_cseg = "prefix"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
+    for module in ['scene_world', 'scene_lifecycle', 'entities', 'lifecycle']:
+        (out / f'{module}.rs').write_text('#![link_cseg = "world"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
+    for module in ['scene_creation','scene_mines','scene_explosions','scene_fire','scene_laps','scene_player','player_route','player_tail','projectile','projectile_sweep','projectile_flight','projectile_trail','projectile_ricochet','projectile_marks','explosion','explosion_blasts','mine','particle_sprite']:
+        (out / f'{module}.rs').write_text('#![link_cseg = "world"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
     for module in ['powerup','inventory','quad_pool','pickup_light','scene_pickups']:
         (out/f'{module}.rs').write_text('#![link_cseg = "pickups"]\n'+(owner.parent/'rcc'/f'{module}.rs').read_text())
     (out/'vehicle_startup.rs').write_text('#![link_cseg = "prefix"]\n'+(owner.parent/'rcc/vehicle_startup.rs').read_text())
@@ -243,6 +305,7 @@ def main():
     declarations = ['use crate::dsl_rt::*; mod static_assets;use static_assets::AssetBytes;\n']
     resources = []
     resource_specs = [('CELLS', 'cells.bin', 32768), ('DIRECTORY', 'directory.bin', 128), ('INITIAL', 'initial.bin', 128),
+                                ('INITIAL_OFFSETS', 'initial-offsets.bin', 128),
                                 ('CONFIG', 'config.bin', 128),
                                 ('SINE', 'sine.i16.bin', 128), ('ANGLE', 'angle.i16.bin', 128),
                                 ('MESH', 'body.bin', 128), ('CASE_META', 'cases.bin', 128),
@@ -255,13 +318,23 @@ def main():
     surface_cases = [i for i,c in enumerate(data['cases']) if c.get('scene')]
     resource_specs += [(f'SURFACE_{i}', f'surfaces-{i}.bin', 128) for i in surface_cases]
     resource_specs += [(f'MESH_VERSIONS_{i}', f'mesh-versions-{i}.bin', 128) for i in surface_cases]
-    parent_cases = [i for i,c in enumerate(data['cases']) if c['name'].startswith(('auxiliary-', 'debris-', 'prefix-', 'pickup-')) or c['name'] in ['complete-wall','complete-prepare']]
+    parent_cases = [i for i,c in enumerate(data['cases']) if c.get('player_initial') or c['name'].startswith(('auxiliary-', 'debris-', 'prefix-', 'pickup-')) or c['name'] in ['complete-wall','complete-prepare','complete-dynamic']]
     resource_specs += [(f'PARENT_FRAMES_{i}', f'parents-{i}.bin', 128) for i in parent_cases]
     debris_cases = [i for i,c in enumerate(data['cases']) if c['name'].startswith('debris-')]
     resource_specs += [(f'DEBRIS_FRAMES_{i}', f'debris-{i}.bin', 128) for i in debris_cases]
     scenery_cases = [i for i,c in enumerate(data['cases']) if c.get('scenery')]
     resource_specs += [(f'SCENERY_{i}', f'scenery-{i}.bin', 128) for i in scenery_cases]
-    prefix_cases=[i for i,c in enumerate(data['cases']) if c['prefix_initial']]
+    dynamic_cases = [i for i,c in enumerate(data['cases']) if c['name'] == 'complete-dynamic']
+    resource_specs += [(f'WORLD_EVENTS_{i}', f'world-events-{i}.bin', 128) for i in dynamic_cases]
+    player_cases = [i for i,c in enumerate(data['cases']) if c.get('player_initial')]
+    clock_cases = [i for i,c in enumerate(data['cases']) if c.get('clock_initial')]
+    resource_specs += [(f'CLOCK_{i}',f'clock-{i}.bin',128) for i in clock_cases]
+    resource_specs += [('PLAYER_CONTEXT','player-context.bin',128)]
+    resource_specs += [('PLAYER_SCENE','player-scene.bin',128)]
+    resource_specs += [('PLAYER_MESH_CATALOG','player-mesh-catalog.bin',128),
+                       ('PLAYER_PARENTS','player-parent-bindings.bin',128)]
+    resource_specs += [(f'PLAYER_{i}',f'player-{i}.bin',128) for i in player_cases]
+    prefix_cases=[i for i,c in enumerate(data['cases']) if c.get('prefix_initial')]
     spin_cases=[i for i,c in enumerate(data['cases']) if c['name'].startswith('prefix-') or c['name']=='complete-prepare']
     resource_specs.append(('PREFIX_CONFIG','prefix-config.bin',128))
     if prefix_cases:
@@ -286,8 +359,16 @@ def main():
             resource_specs.append((symbol, name, 128))
             initial_images[image] = 'DRIVING_' + symbol
         initial_symbols[i] = initial_images[image]
+    resource_images = {}
+    resource_aliases = {}
     for symbol, name, align in resource_specs:
         path = out / name
+        if re.search(r'_\d+$', symbol):
+            key = (align, path.read_bytes())
+            if key in resource_images:
+                resource_aliases['DRIVING_' + symbol] = resource_images[key]
+                continue
+            resource_images[key] = 'DRIVING_' + symbol
         declarations.append(f'#[asset(align={align})] pub static DRIVING_{symbol}:AssetBytes='
                             f'AssetBytes::new(include_bytes!({json.dumps(path.as_posix())}));\n')
         resources.append(dict(file=name, placement='source', symbol='DRIVING_' + symbol,
@@ -317,6 +398,27 @@ def main():
     for i in range(len(data['cases']) - 1):
         declarations.append(f'if case=={i} {{return DRIVING_FRAME_{i};}}\n')
     declarations.append(f'DRIVING_FRAME_{len(data["cases"])-1}\n}}\n')
+    declarations.append('pub fn driving_has_world_events(case:u16)->bool {\n' + (' || '.join(f'case=={i}' for i in dynamic_cases) or 'false') + '\n}\n')
+    declarations.append('pub fn driving_world_events(case:u16)->AssetBytes {\n')
+    for i in dynamic_cases:
+        declarations.append(f'if case=={i} {{return DRIVING_WORLD_EVENTS_{i};}}\n')
+    declarations.append('DRIVING_CONFIG\n}\n')
+    declarations.append('pub fn driving_scene(case:u16)->AssetBytes {\n')
+    for i in player_cases:
+        declarations.append(f'if case=={i} {{return DRIVING_PLAYER_SCENE;}}\n')
+    declarations.append('DRIVING_SCENE\n}\n')
+    declarations.append('pub fn driving_catalog(case:u16)->AssetBytes {\nif driving_has_player(case) {return DRIVING_PLAYER_MESH_CATALOG;}\nDRIVING_MESH_CATALOG\n}\n')
+    declarations.append('pub fn driving_parents(case:u16)->AssetBytes {\nif driving_has_player(case) {return DRIVING_PLAYER_PARENTS;}\nDRIVING_PARENTS\n}\n')
+    declarations.append('pub fn driving_has_player(case:u16)->bool {\n' + (' || '.join(f'case=={i}' for i in player_cases) or 'false') + '\n}\n')
+    declarations.append('pub fn driving_has_clock(case:u16)->bool {\n' + (' || '.join(f'case=={i}' for i in clock_cases) or 'false') + '\n}\n')
+    declarations.append('pub fn driving_clock(case:u16)->AssetBytes {\n')
+    for i in clock_cases:
+        declarations.append(f'if case=={i} {{return DRIVING_CLOCK_{i};}}\n')
+    declarations.append('DRIVING_CONFIG\n}\n')
+    declarations.append('pub fn driving_player(case:u16)->AssetBytes {\n')
+    for i in player_cases:
+        declarations.append(f'if case=={i} {{return DRIVING_PLAYER_{i};}}\n')
+    declarations.append('DRIVING_CONFIG\n}\n')
     declarations.append('pub fn driving_surfaces(case:u16)->AssetBytes {\n')
     for i in surface_cases[:-1]:
         declarations.append(f'if case=={i} {{return DRIVING_SURFACE_{i};}}\n')
@@ -345,18 +447,50 @@ def main():
         if symbol != 'DRIVING_SCENERY':
             declarations.append(f'if case=={i} {{return {symbol};}}\n')
     declarations.append('DRIVING_SCENERY\n}\n')
-    live_words = (out / 'scenery.bin').stat().st_size // 2
+    scenery_words = (out / 'scenery.bin').stat().st_size // 2
+    scenery_header = struct.unpack('<48H', (out / 'scenery.bin').read_bytes()[:96])
+    assert scenery_header[13] == scenery_header[15]
+    entity_capacity = 512
+    object_capacity = scenery_header[2] + 215
+    # Components have one resident owner; diagnostic identity columns are not
+    # copied. Flags use one word per ID and ordered queues reserve future IDs.
+    live_words = scenery_words - scenery_header[13] - scenery_header[15] - scenery_header[5]
+    live_words += entity_capacity - scenery_header[11] * 2
+    live_words += 3 * (entity_capacity - scenery_header[13]) * 2
+    live_words += 2 * (object_capacity - scenery_header[2]) * 2
+    lifetime = struct.unpack('<' + 'H' * ((out / 'lifetime.bin').stat().st_size // 2),
+                             (out / 'lifetime.bin').read_bytes())
+    source_cursor = 2
+    list_cursor = 0
+    for index, name in enumerate(['FREE', 'LAP', 'SIGNS', 'ENTER', 'LEAVE']):
+        count = lifetime[source_cursor]
+        # Lap and sign membership is fixed at map construction; updates only
+        # remove entries. Deferred visibility queues retain entity capacity.
+        capacity = scenery_header[13]
+        if index == 0:
+            capacity = object_capacity
+        elif index == 1 or index == 2:
+            capacity = count
+        assert count <= capacity
+        declarations.append(f'pub const DRIVING_LIFE_{name}_OFFSET:u16={list_cursor};\n')
+        declarations.append(f'pub const DRIVING_LIFE_{name}_CAPACITY:u16={capacity};\n')
+        source_cursor += 1 + count * 2
+        list_cursor += capacity * 2
+    assert source_cursor == len(lifetime)
     assert live_words < 8192
     assert all(len(frame['scenery']) < 65536 for c in data['cases'] if c.get('scenery') for frame in c['frames'])
     declarations.append(f'pub const DRIVING_CASES:u16={len(data["cases"])};\n')
+    declarations.append(f'pub const DRIVING_START_WORDS:u16={start_words};\n')
     declarations.append(f'pub const DRIVING_CATALOG_WORDS:u16={catalog_words};\n')
     declarations.append(f'pub const DRIVING_PARENT_WORDS:u16={len(parent_words)};\n')
+    declarations.append(f'pub const DRIVING_ENTITY_CAPACITY:u16={entity_capacity};\n')
+    declarations.append(f'pub const DRIVING_OBJECT_CAPACITY:u16={object_capacity};\n')
     for name, value in [('CONFIG_WORDS', len(config)), ('STATE_VALUES', state_values),
                         ('INITIAL_WORDS', initial_words), ('FRAME_WORDS', frame_words),
                         ('GUN_WORDS', data['gun_words']), ('MESH_WORDS', len(data['body_data'])),
                         ('BODY_VERTICES', data['body_vertices']), ('BODY_FACES', data['body_faces']),
                         ('DEFORM_WORDS', (out / 'deform-bound.bin').stat().st_size // 2), ('SURFACE_VALUES', 749),
-                        ('SCENERY_WORDS', live_words), ('IDENTITY_WORDS', (out / 'identity.bin').stat().st_size // 2),
+                        ('SCENERY_WORDS', scenery_words), ('LIVE_WORDS', live_words), ('IDENTITY_WORDS', (out / 'identity.bin').stat().st_size // 2),
                         ('SYMBOL_WORDS', (out / 'symbols.bin').stat().st_size // 2), ('LIFETIME_WORDS', (out / 'lifetime.bin').stat().st_size // 2)]:
         declarations.append(f'pub const DRIVING_{name}:u16={value};\n')
     declarations.append(f'pub static DRIVING_LIVE:Buf<u16,{live_words}>=Buf::new([0;{live_words}]);\n')
@@ -365,8 +499,9 @@ def main():
     storage = [('gun', 'i16', data['gun_words'] * 2),
                ('body', 'u16', len(data['body_data']) * 2),
                ('deform', 'u16', (out / 'deform-bound.bin').stat().st_size // 2),
-               ('identity', 'u16', (out / 'identity.bin').stat().st_size // 2),
-               ('lifetime_lists', 'u16', 2080), ('catalog', 'u16', catalog_words),
+               ('identity', 'u16', 12 + entity_capacity * 4),
+               ('records', 'u16', object_capacity * 8),
+               ('lifetime_lists', 'u16', list_cursor), ('catalog', 'u16', catalog_words),
                ('debris_directory', 'u16', 60)]
     declarations.append('pub struct DrivingStorage {\n')
     for name, kind, count in storage:
@@ -375,16 +510,24 @@ def main():
     for name, _, count in storage:
         declarations.append(f'{name}:Buf::new([0;{count}]),\n')
     declarations.append('}}\n')
-    (out / 'driving_assets.rs').write_text(''.join(declarations))
-    sources = [owner / n for n in ['driving_oracle.rs', 'driving_ground.rs', 'driving_capture.rs', 'sampling_snapshot.rs', 'reference_contact.rs', 'paired_driving_oracle.rs', 'reference_world.rs', 'reference_bridge.py', 'reference_tanks.rs', 'reference_car.rs', 'impact_snapshot.rs', 'vehicle_oracle.rs', 'drive_oracle.rs', 'terrain_assets.rs', 'driving_assets.py']]
+    source = ''.join(declarations)
+    if resource_aliases:
+        source = re.sub(r'\b(' + '|'.join(resource_aliases) + r')\b',
+                        lambda match: resource_aliases[match[0]], source)
+    (out / 'driving_assets.rs').write_text(source)
+    sources = [owner / n for n in ['driving_oracle.rs', 'driving_ground.rs', 'driving_capture.rs', 'sampling_snapshot.rs', 'reference_contact.rs', 'paired_driving_oracle.rs', 'reference_world.rs', 'reference_bridge.py', 'reference_tanks.rs', 'reference_car.rs', 'impact_snapshot.rs', 'vehicle_oracle.rs', 'drive_oracle.rs', 'terrain_assets.rs', 'driving_assets.py','player_scene_assets.rs','projectile_snapshot.rs','reference_player.py','reference_player.rs','reference_scenery_player.rs']]
     sources += [owner / n for n in ['scene_export.rs', 'deform_assets.rs', 'driving_step.rs', 'scenery_assets.rs',
         'scenery_frame.rs', 'identity_assets.rs', 'identity_capture.rs', 'reference_scene.rs',
         'parent_scene_assets.rs', 'prefix_scene_assets.rs', 'pickup_scene_assets.rs', 'pickup_snapshot.rs', 'driving_devices.rs', 'debris_scene_assets.rs', 'reference_symbols.rs', 'complete_scene_assets.rs', 'complete_driving_step.rs', 'vehicle_startup_assets.rs']]
     sources.append(inverse)
     sources += [Path(row['file']) for row in json.loads((catalog_reference / 'mesh-store-sources.json').read_text())['sources']]
+    sources += [Path(row['file']) for row in json.loads((player_catalog_reference / 'mesh-store-sources.json').read_text())['sources']]
     sources += [root / 'crates/game/src' / n for n in ['vehicle_runtime/car_objects.rs', 'scene_collision.rs', 'deformable_hit.rs', 'deformation.rs', 'obstacle_collision.rs']]
     sources += [root / 'crates/game/src' / n for n in ['contact_pipeline.rs', 'sampling.rs', 'suspension.rs', 'pose.rs', 'body.rs', 'motion.rs', 'vehicle_model.rs', 'random.rs', 'ground_collision.rs', 'impact_particles.rs', 'effect_pool.rs', 'damage.rs']]
-    (out / 'assets.json').write_text(json.dumps(dict(resources=resources, sector_relocations=[], steps=steps,
+    (out / 'assets.json').write_text(json.dumps(dict(resources=resources, resource_aliases=resource_aliases, sector_relocations=[], steps=steps,
+        initial_packing=dict(source_words=len(initial), stored_words=len(start_data),
+                             row_words=start_words, unique_rows=len(start_images),
+                             offsets='initial-offsets.bin'),
         cases=[dict(name=c['name'], cars=c['cars'], updates=len(c['frames']), cells=c['cells'], fallback_contacts=c['fallback_contacts'], tank_contacts=c['tank_contacts'], deform_contacts=c.get('deform_contacts', 0),
                     deformed_vertices=c.get('deformed_vertices', 0), surface_sample_points=c.get('surface_sample_points', 0), deform_spark_events=c.get('deform_spark_events', 0), ordinary_contacts=c.get('ordinary_contacts', 0), scenery_ticks=c.get('scenery_ticks', 0), retirement=c.get('retirement', False), transient=c.get('transient', False)) for c in data['cases']], updates=updates, scope=data['scope'], checked_i32_per_frame=state_values+1,
         checked_surface_i32=sum(len(c['frames']) * 749 for c in data['cases'] if c.get('scene')),
@@ -393,6 +536,7 @@ def main():
         checked_prefix_words=sum(len(f.get('prefix',[])) for c in data['cases'] for f in c['frames']),
         checked_debris_words=sum(len(f.get('debris',[])) for c in data['cases'] for f in c['frames']),
         checked_complete_words=sum(len(f.get('complete',[])) for c in data['cases'] for f in c['frames']), qualification_scope=qualification_scope, checked_parent_words=sum(len(f.get('parents', [])) for c in data['cases'] for f in c['frames']),
+        checked_player_words=sum(len(f.get('player',[])) for c in data['cases'] for f in c['frames']),
         catalog_initial_slots=catalog['initial_slots'],catalog_payload_bytes=catalog['initial_payload_bytes'],
         scenery_frames=sum(len(c['frames']) for c in data['cases'] if c.get('scenery')),
         checked_scenery_words=checked_scenery_words,

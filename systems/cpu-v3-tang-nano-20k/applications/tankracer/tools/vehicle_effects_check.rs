@@ -25,11 +25,11 @@ fn main(){
  let previous=read_dseg_page(2);let previous3=read_dseg_page(3);unsafe{write_dseg_page(2,138);write_dseg_page(3,137);}
  let s=ptr(0x8000);let capture=at(s,1558);
  let banks:Buf<impact::Batch,4>=Buf::new([impact::batch_zero(),impact::batch_zero(),impact::batch_zero(),impact::batch_zero()]);
- let mut impacts=impact::State{batches:banks.as_array(),next:fix32::zero()};restore(&mut impacts,capture);
+ let mut impacts=impact::State{page:65535,batches:banks.as_array(),next:fix32::zero()};restore(&mut impacts,capture);
  let mut vehicle=impact::Vehicle{entity:fix32::zero(),cooldown:at(s,1556),contacts:s,contact_stride:3,forward:fix32::zero(),basis:s,has_basis:false};
  let sine:Buf<u16,4>=Buf::new([45056,320,40960,0]);let angle:Buf<u16,4>=Buf::new([45376,5,514,0]);
  let offsets:Buf<u16,12>=Buf::new([0,0,0,0,2000,0,0,0,0,0,63536,65535]);
- let mut context=impact::Context{frame:fix32::zero(),seed:at(s,1554),pool:effect_pool::Pool{lines:at(capture,16),count:g(capture,7),overflow:effect_pool::line_zero(),exhausted:at(capture,1632)},sine:unsafe{sine.as_array().as_ptr().as_i16_array()},angle:unsafe{angle.as_array().as_ptr().as_i16_array()},forward_offset:offsets.as_array(),reverse_offset:at(offsets.as_array(),6)};
+ let mut context=impact::Context{frame:fix32::zero(),seed:at(s,1554),pool:effect_pool::Pool{page:65535,lines:at(capture,16),count:g(capture,7),overflow:effect_pool::line_zero(),exhausted:at(capture,1632)},sine:unsafe{sine.as_array().as_ptr().as_i16_array()},angle:unsafe{angle.as_array().as_ptr().as_i16_array()},forward_offset:offsets.as_array(),reverse_offset:at(offsets.as_array(),6)};
  let overflow=unsafe{view_of(&mut context.pool.overflow).as_ptr().as_u16_array()};copy(overflow,at(capture,1616),16);
  let owners=vehicle_debris::Owners{rows:at(s,714),count:3,stride:4};
  let debris_context=vehicle_debris::Context{kinds:unsafe{ptr(0x2480).as_ptr().as_i16_array()},seed:at(s,1554),impact_accumulator:at(s,738),sound:at(s,740)};

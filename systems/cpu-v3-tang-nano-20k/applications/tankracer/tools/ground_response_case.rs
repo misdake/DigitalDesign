@@ -9,6 +9,7 @@ fn run_ground_response(input: Array<u16>, out: Array<u16>, sine: Array<i16>, ang
         impact::batch_zero(),
     ]);
     let mut impacts = impact::State {
+        page: 65535,
         batches: batches.as_array(),
         next: fix32::zero(),
     };
@@ -18,6 +19,7 @@ fn run_ground_response(input: Array<u16>, out: Array<u16>, sine: Array<i16>, ang
         frame: integer::from_i16(17),
         seed: seed.as_array(),
         pool: effect_pool::Pool {
+            page: 65535,
             lines: lines.as_array(),
             count: fix32::zero(),
             overflow: effect_pool::line_zero(),

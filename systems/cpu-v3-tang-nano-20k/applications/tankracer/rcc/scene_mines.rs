@@ -151,13 +151,17 @@ pub fn spawn(
     unsafe {
         write_dseg_page(3, saved);
     }
-    if index >= weapons.object_capacity || weapons.directory[index * 2] != 2 {
+    if index >= weapons.object_capacity || scene_creation::component_kind(weapons, index) != 2 {
         return n(-4);
     }
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 2, weapons.directory[index * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                2,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
         );
     }
     let row = scene_creation::record(weapons, index, 3);
@@ -200,7 +204,11 @@ pub fn spawn(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 2, weapons.directory[index * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                2,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
         );
     }
     let mut record = scene_creation::record(weapons, index, 3);
@@ -307,14 +315,18 @@ fn update(
         return id;
     }
     let index = id.lo_bits();
-    if index >= weapons.object_capacity || weapons.directory[index * 2] != 2 {
+    if index >= weapons.object_capacity || scene_creation::component_kind(weapons, index) != 2 {
         return n(-4);
     }
     let saved = read_dseg_page(3);
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 2, weapons.directory[index * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                2,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = mine::State {
@@ -428,14 +440,18 @@ pub fn contact(
     frame: &Contact,
 ) -> fix32 {
     let index = frame.target;
-    if index >= weapons.object_capacity || weapons.directory[index * 2] != 2 {
+    if index >= weapons.object_capacity || scene_creation::component_kind(weapons, index) != 2 {
         return n(-4);
     }
     let saved = read_dseg_page(3);
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 2, weapons.directory[index * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                2,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = mine::State {

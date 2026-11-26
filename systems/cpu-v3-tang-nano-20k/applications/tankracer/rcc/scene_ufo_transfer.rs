@@ -54,7 +54,7 @@ fn set_flags(s: Array<u16>, value: u16) {
     p(s, 1, fix32::from_words(value, f.hi_bits()));
 }
 fn live(weapons: &scene_creation::Weapons, id: u16) -> bool {
-    id < weapons.object_capacity && weapons.directory[id * 2] == 4
+    id < weapons.object_capacity && scene_creation::component_kind(weapons, id) == 4
 }
 fn state(weapons: &scene_creation::Weapons, id: u16) -> Array<u16> {
     at(scene_creation::record(weapons, id, 3), 30)
@@ -658,7 +658,11 @@ pub fn dispatch(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 4, weapons.directory[id.lo_bits() * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                4,
+                weapons.directory[id.lo_bits() * weapons.directory_stride + 1],
+            ),
         );
     }
     let code = update(scene, store, runtime, world, weapons, tick);

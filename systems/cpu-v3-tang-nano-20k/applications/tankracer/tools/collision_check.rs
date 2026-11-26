@@ -2,11 +2,9 @@
 use super::*;
 pub fn run(output: &Path, fixture: &Path) -> Result<Value, Box<dyn Error>> {
     let data: Value = serde_json::from_slice(&fs::read(fixture.join("collision.json"))?)?;
-    let code = compile(
-        "collision",
-        &format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
-            r#"fn main(){
+    let source = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        r#"fn main(){
  let input=unsafe{Ptr::from_addr(0x2000).as_u16_array()};let out=unsafe{Ptr::from_addr(0x1000).as_u16_array()};
  let sine=unsafe{Ptr::from_addr(0x3000).as_i16_array()};let angle=unsafe{Ptr::from_addr(0x8000).as_i16_array()};
  let kind=unsafe{Ptr::from_addr(0x1ffe).read(0)};let mut status=0u16;
@@ -119,26 +117,72 @@ fn run_tanks(input:Array<u16>,out:Array<u16>)->u16{
   let mut result=out;i=0;while i<18{result[i]=raw_hit[i];i+=1;}
 status
 }"#,
-            include_str!("impact_case.rs"),
-            include_str!("ground_response_case.rs"),
-            include_str!("tank_response_case.rs"),
-            include_str!("lifecycle_case.rs"),
-            include_str!("crush_case.rs"),
-            include_str!("spatial_case.rs"),
-            include_str!("falling_case.rs"),
-            include_str!("blast_case.rs"),
-            include_str!("scene_world_case.rs"),
-            include_str!("scene_contact_case.rs"),
-            include_str!("fall_hit_case.rs"),
-            include_str!("bounce_hit_case.rs"),
-            include_str!("bounce_tick_case.rs"),
-            include_str!("deform_contact_case.rs"),
-            include_str!("scenery_contact_case.rs"),
-            include_str!("entities_case.rs"),
-            include_str!("scene_lifecycle_case.rs")
-        ),
-        output,
-    )?;
+        include_str!("impact_case.rs"),
+        include_str!("ground_response_case.rs"),
+        include_str!("tank_response_case.rs"),
+        include_str!("lifecycle_case.rs"),
+        include_str!("crush_case.rs"),
+        include_str!("spatial_case.rs"),
+        include_str!("falling_case.rs"),
+        include_str!("blast_case.rs"),
+        include_str!("scene_world_case.rs"),
+        include_str!("scene_contact_case.rs"),
+        include_str!("fall_hit_case.rs"),
+        include_str!("bounce_hit_case.rs"),
+        include_str!("bounce_tick_case.rs"),
+        include_str!("deform_contact_case.rs"),
+        include_str!("scenery_contact_case.rs"),
+        include_str!("entities_case.rs"),
+        include_str!("scene_lifecycle_case.rs")
+    );
+    let impact_only = data["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["kind"].as_u64() == Some(15));
+    let lifecycle_only = data["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["kind"].as_u64() == Some(18));
+    let code = if impact_only {
+        let entry = r#"fn main(){
+ let input=unsafe{Ptr::from_addr(0x2000).as_u16_array()};let out=unsafe{Ptr::from_addr(0x1000).as_u16_array()};
+ let sine=unsafe{Ptr::from_addr(0x3000).as_i16_array()};let angle=unsafe{Ptr::from_addr(0x8000).as_i16_array()};
+ run_impact(input,out,sine,angle);
+ if unsafe{Ptr::from_addr(0x1ffd).read(0)}!=0{
+  let resident:Buf<u16,1600>=Buf::new([0;1600]);let aliases:Buf<u16,16>=Buf::new([0;16]);
+  let mut pool=effect_pool::Pool{lines:unsafe{Ptr::from_addr(0x9000).as_u16_array()},page:150,count:fix32::zero(),overflow:effect_pool::line_zero(),exhausted:aliases.as_array()};
+  check_pool_window(&mut pool,resident.as_array());
+ }
+ unsafe{Ptr::from_addr(0x1fff).write(0,0);}halt(0x600d);
+}"#;
+        compile(
+            "impact",
+            &format!(
+                "{}\n{}\n{}",
+                entry,
+                include_str!("impact_case.rs"),
+                include_str!("banked_line_case.rs")
+            ),
+            output,
+        )?
+    } else if lifecycle_only {
+        compile(
+            "lifecycle",
+            &format!(
+                "{}\n{}",
+                r#"fn main(){
+ let input=unsafe{Ptr::from_addr(0x2000).as_u16_array()};let out=unsafe{Ptr::from_addr(0x1000).as_u16_array()};
+ run_lifecycle(input,out);unsafe{Ptr::from_addr(0x1fff).write(0,0);}halt(0x600d);
+}"#,
+                include_str!("lifecycle_case.rs")
+            ),
+            output,
+        )?
+    } else {
+        compile("collision", &source, output)?
+    };
     let sine = fs::read(fixture.join("sine.bin"))?;
     let angle = fs::read(fixture.join("angle.bin"))?;
     let cells = fs::read(fixture.join("collision-cells.bin"))?;
@@ -157,6 +201,8 @@ status
     let mut checked = 0usize;
     let mut runs = 0usize;
     let mut banked_world_cases = 0usize;
+    let mut banked_impact_cases = 0usize;
+    let mut packed_lifecycle_cases = 0usize;
     for (index, case) in data["cases"]
         .as_array()
         .ok_or("collision cases")?
@@ -165,12 +211,24 @@ status
     {
         let layouts = match case["kind"].as_u64() {
             Some(23) => 3,
+            Some(15) if impact_only => 3,
             Some(28) => 2,
+            Some(18)
+                if case["input"].as_array().unwrap()[..6]
+                    .iter()
+                    .all(|v| v.as_u64().is_some_and(|v| v <= u64::from(u16::MAX))) =>
+            {
+                2
+            }
             _ => 1,
         };
         for layout in 0..layouts {
             let mut cpu = CpuV3Sim::default();
             cpu.set_boot_window(&code.words);
+            for segment in &code.code_segments {
+                cpu.load_segment(segment.cseg, segment.code_base, &segment.words)
+                    .map_err(|e| format!("collision code segment load: {e:?}"))?;
+            }
             let memory = cpu.physical_memory_mut();
             if matches!(case["kind"].as_u64(), Some(27 | 31)) {
                 for (i, pair) in cells.chunks_exact(2).enumerate() {
@@ -206,7 +264,12 @@ status
             let mut passed = false;
             for step in 1..=1000000 {
                 if let StepOutcome::Halted { signal } = cpu.step().expect("collision instruction") {
-                    assert_eq!(signal, PASS, "case {index}, layout {layout}");
+                    assert_eq!(
+                        signal,
+                        PASS,
+                        "case {index}, layout {layout}, stage diagnostic {:?}",
+                        &cpu.physical_memory_mut()[0x1fe0..0x1fec]
+                    );
                     instructions += step;
                     passed = true;
                     break;
@@ -236,11 +299,17 @@ status
             }
             runs += 1;
             if layout != 0 {
-                banked_world_cases += 1;
+                if case["kind"].as_u64() == Some(15) {
+                    banked_impact_cases += 1;
+                } else if case["kind"].as_u64() == Some(18) {
+                    packed_lifecycle_cases += 1;
+                } else {
+                    banked_world_cases += 1;
+                }
             }
         }
     }
     Ok(
-        json!({"cases":data["cases"].as_array().unwrap().len(),"executions":runs,"banked_world_cases":banked_world_cases,"checked_i32_values":checked,"maximum_integer_error":0,"instruction_steps":instructions,"code_bytes":code.total_code_words()*2,"scope":data["scope"],"boundary":"RCC modules with RAM trig and original ENGLAND terrain fixtures; instruction correctness, not normal loading or system timing"}),
+        json!({"cases":data["cases"].as_array().unwrap().len(),"executions":runs,"banked_world_cases":banked_world_cases,"banked_impact_cases":banked_impact_cases,"packed_lifecycle_cases":packed_lifecycle_cases,"checked_i32_values":checked,"maximum_integer_error":0,"instruction_steps":instructions,"code_bytes":code.total_code_words()*2,"scope":data["scope"],"boundary":"RCC modules with RAM trig and original ENGLAND terrain fixtures; instruction correctness, not normal loading or system timing"}),
     )
 }

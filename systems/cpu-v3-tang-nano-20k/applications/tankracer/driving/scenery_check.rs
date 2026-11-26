@@ -109,13 +109,21 @@ pub fn check_grid_residency(page: u16) {
 pub fn live_section(image: Array<u16>, section: u16) -> Array<u16> {
     at(image, image[4 + section * 2] as i16)
 }
-pub fn valid_live(image: Array<u16>) -> bool {
+fn valid_live(image: Array<u16>, compact: bool) -> bool {
+    let mut total = DRIVING_SCENERY_WORDS;
+    let mut ids = (DRIVING_IDENTITY_WORDS - 12) / 6;
+    if compact {
+        total = DRIVING_LIVE_WORDS;
+        ids = DRIVING_ENTITY_CAPACITY;
+    }
     if image[0u16] != 0x534d
         || image[1u16] != 1
         || image[2u16] != 240
         || image[3u16] > image[13u16]
+        || image[11u16] != image[3u16]
         || image[13u16] != image[15u16]
-        || image[38u16] != DRIVING_SCENERY_WORDS
+        || image[13u16] != ids
+        || image[38u16] != total
     {
         return false;
     }
@@ -129,33 +137,135 @@ pub fn valid_live(image: Array<u16>) -> bool {
         let mut capacity = count;
         let mut words = count;
         if section == 3 {
+            if count > 16383 {
+                return false;
+            }
             words = count * 2;
+            if compact {
+                words = DRIVING_ENTITY_CAPACITY;
+            }
+        }
+        if compact && (section == 0 || section == 4 || section == 5) {
+            words = 0;
         }
         if section >= 6 {
             capacity = image[13u16];
             if section >= 9 {
                 capacity = image[2u16];
+                if compact {
+                    capacity = DRIVING_OBJECT_CAPACITY;
+                }
             }
             words = capacity * 2;
         }
-        if count > capacity
-            || cursor > DRIVING_SCENERY_WORDS
-            || words > DRIVING_SCENERY_WORDS - cursor
-        {
+        if count > capacity || cursor > total || words > total - cursor {
             return false;
         }
         cursor += words;
         section += 1;
     }
-    if cursor != DRIVING_SCENERY_WORDS || image[5u16] != image[2u16] * 8 {
+    if cursor != total || image[5u16] != image[2u16] * 8 {
         return false;
     }
     true
 }
+// Source sections retain their reference layout. Resident component rows have
+// one owner, IDs and flags use checked narrow fields, and lists reserve growth.
+// State/configuration offsets stay local to their own sections.
+pub fn load_live(image: Array<u16>, records: Array<u16>, asset: AssetBytes) -> bool {
+    let header: Buf<u16, 48> = Buf::new([0; 48]);
+    let h = header.as_array();
+    read(h, asset, fix32::zero(), 48);
+    if !valid_live(h, false) {
+        return false;
+    }
+    copy(image, h, 48);
+    let mut rows = records;
+    let mut i = 0u16;
+    while i < DRIVING_OBJECT_CAPACITY * 8 {
+        rows[i] = 0;
+        i += 1;
+    }
+    read(records, asset, fix32::from_words(h[4u16], 0), h[5u16]);
+    let mut destination = image;
+    destination[13u16] = DRIVING_ENTITY_CAPACITY;
+    destination[15u16] = DRIVING_ENTITY_CAPACITY;
+    let flags: Buf<u16, 64> = Buf::new([0; 64]);
+    let scratch = flags.as_array();
+    let mut cursor = 48u16;
+    let mut section = 0u16;
+    while section < 11 {
+        destination[4 + section * 2] = cursor;
+        if section == 3 {
+            let mut target = at(image, cursor as i16);
+            i = 0;
+            while i < DRIVING_ENTITY_CAPACITY {
+                target[i] = 0;
+                i += 1;
+            }
+            i = 0;
+            while i < h[11u16] {
+                let mut count = h[11u16] - i;
+                if count > 32 {
+                    count = 32;
+                }
+                read(
+                    scratch,
+                    asset,
+                    fix32::from_words(h[10u16] + i * 2, 0),
+                    count * 2,
+                );
+                let mut j = 0u16;
+                while j < count {
+                    if scratch[j * 2 + 1] != 0 {
+                        return false;
+                    }
+                    target[i + j] = scratch[j * 2];
+                    j += 1;
+                }
+                i += count;
+            }
+            cursor += DRIVING_ENTITY_CAPACITY;
+        } else if section != 0 && section != 4 && section != 5 {
+            let source = h[4 + section * 2];
+            let mut end = h[38u16];
+            if section < 10 {
+                end = h[6 + section * 2];
+            }
+            let source_words = end - source;
+            let mut words = source_words;
+            if section >= 6 {
+                words = DRIVING_ENTITY_CAPACITY * 2;
+                if section >= 9 {
+                    words = DRIVING_OBJECT_CAPACITY * 2;
+                }
+            }
+            if cursor > DRIVING_LIVE_WORDS || words > DRIVING_LIVE_WORDS - cursor {
+                return false;
+            }
+            read(
+                at(image, cursor as i16),
+                asset,
+                fix32::from_words(source, 0),
+                source_words,
+            );
+            let mut target = at(image, cursor as i16);
+            i = source_words;
+            while i < words {
+                target[i] = 0;
+                i += 1;
+            }
+            cursor += words;
+        }
+        section += 1;
+    }
+    destination[38u16] = cursor;
+    valid_live(image, true)
+}
 fn live_list(image: Array<u16>, section: u16) -> ordered::List {
     let mut capacity = image[13u16];
     if section >= 9 {
-        capacity = image[2u16];
+        capacity = DRIVING_OBJECT_CAPACITY;
     }
     ordered::List {
         items: live_section(image, section),
@@ -166,6 +276,7 @@ fn live_list(image: Array<u16>, section: u16) -> ordered::List {
 pub fn live_runtime(image: Array<u16>, slot: Array<u16>, seed: Array<u16>) -> scene_world::Runtime {
     scene_world::Runtime {
         ticks: lifecycle::Ticks {
+            flag_words: 1,
             flags: live_section(image, 3),
             flag_count: image[3u16],
             order: live_list(image, 6),
@@ -181,9 +292,18 @@ pub fn live_runtime(image: Array<u16>, slot: Array<u16>, seed: Array<u16>) -> sc
         special: live_list(image, 10),
     }
 }
-fn loaded_list(data: Array<u16>, offset: u16, capacity: u16, source: Array<u16>) -> ordered::List {
+fn loaded_list(
+    data: Array<u16>,
+    offset: u16,
+    capacity: u16,
+    source: Array<u16>,
+    available: u16,
+) -> ordered::List {
+    if available == 0 {
+        halt(0x7f23);
+    }
     let count = source[0u16];
-    if count > capacity {
+    if count > capacity || count > (available - 1) / 2 {
         halt(0x7f22);
     }
     copy(at(data, offset as i16), at(source, 1), count * 2);
@@ -194,50 +314,118 @@ fn loaded_list(data: Array<u16>, offset: u16, capacity: u16, source: Array<u16>)
     }
 }
 pub fn load_life(
-    image: Array<u16>,
     world: &scene_world::World,
     identity: Array<u16>,
     lists: Array<u16>,
+    records: Array<u16>,
 ) -> scene_lifecycle::Store {
     let temporary: Buf<u16, 256> = Buf::new([0; 256]);
     if DRIVING_LIFETIME_WORDS > 256 {
         halt(0x7f36);
     }
     let scratch = temporary.as_array();
-    read(
-        identity,
-        DRIVING_IDENTITY,
-        fix32::zero(),
-        DRIVING_IDENTITY_WORDS,
-    );
+    read(identity, DRIVING_IDENTITY, fix32::zero(), 12);
+    if identity[0u16] != (DRIVING_IDENTITY_WORDS - 12) / 6 || identity[1u16] != 0 {
+        halt(0x7f5b);
+    }
+    let mut ids = identity;
+    let mut i = 12u16;
+    while i < 12 + DRIVING_ENTITY_CAPACITY * 4 {
+        ids[i] = 0;
+        i += 1;
+    }
+    i = 0;
+    while i < identity[0u16] {
+        let mut count = identity[0u16] - i;
+        if count > 32 {
+            count = 32;
+        }
+        read(
+            scratch,
+            DRIVING_IDENTITY,
+            fix32::from_words(12 + i * 6, 0),
+            count * 6,
+        );
+        let mut j = 0u16;
+        while j < count {
+            let source = at(scratch, (j * 6) as i16);
+            if source[3u16] != 0 || source[5u16] != 0 || source[4u16] >= DRIVING_ENTITY_CAPACITY {
+                halt(0x7f5b);
+            }
+            let kind = (source[0u16] >> 2) & 7;
+            if (kind == 1 && source[2u16] >= DRIVING_OBJECT_CAPACITY)
+                || (kind == 2 && source[2u16] >= 8)
+            {
+                halt(0x7f5b);
+            }
+            let mut target = at(identity, (12 + (i + j) * 4) as i16);
+            target[0u16] = source[0u16];
+            target[1u16] = source[1u16];
+            target[2u16] = source[2u16];
+            target[3u16] = source[4u16];
+            j += 1;
+        }
+        i += count;
+    }
     read(
         scratch,
         DRIVING_LIFETIME,
         fix32::zero(),
         DRIVING_LIFETIME_WORDS,
     );
-    let free = loaded_list(lists, 0, 16, at(scratch, 2));
+    let free = loaded_list(
+        lists,
+        DRIVING_LIFE_FREE_OFFSET,
+        DRIVING_LIFE_FREE_CAPACITY,
+        at(scratch, 2),
+        DRIVING_LIFETIME_WORDS - 2,
+    );
     let mut cursor = 3 + free.count * 2;
-    let lap = loaded_list(lists, 32, 256, at(scratch, cursor as i16));
+    let lap = loaded_list(
+        lists,
+        DRIVING_LIFE_LAP_OFFSET,
+        DRIVING_LIFE_LAP_CAPACITY,
+        at(scratch, cursor as i16),
+        DRIVING_LIFETIME_WORDS - cursor,
+    );
     cursor += 1 + lap.count * 2;
-    let signs = loaded_list(lists, 544, 256, at(scratch, cursor as i16));
+    let signs = loaded_list(
+        lists,
+        DRIVING_LIFE_SIGNS_OFFSET,
+        DRIVING_LIFE_SIGNS_CAPACITY,
+        at(scratch, cursor as i16),
+        DRIVING_LIFETIME_WORDS - cursor,
+    );
     cursor += 1 + signs.count * 2;
-    let enter = loaded_list(lists, 1056, 256, at(scratch, cursor as i16));
+    let enter = loaded_list(
+        lists,
+        DRIVING_LIFE_ENTER_OFFSET,
+        DRIVING_LIFE_ENTER_CAPACITY,
+        at(scratch, cursor as i16),
+        DRIVING_LIFETIME_WORDS - cursor,
+    );
     cursor += 1 + enter.count * 2;
-    let leave = loaded_list(lists, 1568, 256, at(scratch, cursor as i16));
+    let leave = loaded_list(
+        lists,
+        DRIVING_LIFE_LEAVE_OFFSET,
+        DRIVING_LIFE_LEAVE_CAPACITY,
+        at(scratch, cursor as i16),
+        DRIVING_LIFETIME_WORDS - cursor,
+    );
     cursor += 1 + leave.count * 2;
     if cursor != DRIVING_LIFETIME_WORDS {
         halt(0x7f23);
     }
     scene_lifecycle::Store {
         identities: entities::State {
+            row_words: 4,
             header: identity,
             rows: at(identity, 12),
-            storage_capacity: (DRIVING_IDENTITY_WORDS - 12) / 6,
+            storage_capacity: DRIVING_ENTITY_CAPACITY,
         },
-        records: live_section(image, 0),
+        records: records,
         object_count: world.count,
-        object_capacity: world.count,
+        object_capacity: DRIVING_OBJECT_CAPACITY,
         colliders: world.colliders,
         collider_stride: 60,
         fixed_count: world.fixed_count,
@@ -356,6 +544,59 @@ pub struct ExpectedScene {
     pub asset: AssetBytes,
     pub offset: fix32,
 }
+// Independent create/release input at the frame boundary. The following car
+// update and full-world capture observe the same persistent owners.
+pub fn apply_world_event(
+    scene: &scene_query::Scene,
+    state: &mut scene_parent::State,
+    world: &mut scene_world::World,
+    asset: AssetBytes,
+    frame: u16,
+) {
+    let event: Buf<u16, 4> = Buf::new([0; 4]);
+    let e = event.as_array();
+    read(e, asset, fix32::from_words(frame * 4, 0), 4);
+    let mut i = 0u16;
+    while i < e[1u16] {
+        if e[0u16] == 1 {
+            let created = entities::create_record(&state.lifetime.identities, state.lifetime.limit);
+            if created.status != 0
+                || entities::bind_class(&state.lifetime.identities, created.id, e[3u16]) != 0
+            {
+                halt(0x7f5c);
+            }
+            let allocated = scene_lifecycle::allocate_transient(
+                &mut state.lifetime,
+                world,
+                &mut state.runtime,
+                created.id,
+            );
+            if allocated.status != 0 {
+                halt(0x7f5d);
+            }
+        } else if e[0u16] == 2 {
+            let entity = fix32::from_words(e[2u16] + i, 0);
+            let class = entities::class(&state.lifetime.identities, entity);
+            let saved = attitude::get(state.runtime.slot, 0);
+            attitude::put(state.runtime.slot, 0, integer::from_i16(3));
+            if class < fix32::zero()
+                || scene_lifecycle::parent_base(
+                    scene,
+                    &mut state.lifetime,
+                    &mut state.runtime,
+                    entity,
+                    class.lo_bits(),
+                ) != fix32::zero()
+            {
+                halt(0x7f5e);
+            }
+            attitude::put(state.runtime.slot, 0, saved);
+        } else {
+            halt(0x7f5f);
+        }
+        i += 1;
+    }
+}
 #[inline(never)]
 pub fn check_live(
     image: Array<u16>,
@@ -406,13 +647,25 @@ pub fn check_live(
         );
         identity += 1;
     }
-    compare_block(
-        runtime.ticks.flags,
-        asset,
-        base + fix32::from_words(h[7u16], 0),
-        h[8u16] * 2,
-        scratch,
-    );
+    identity = 0;
+    while identity < runtime.ticks.flag_count {
+        let mut count = runtime.ticks.flag_count - identity;
+        if count > 32 {
+            count = 32;
+        }
+        read(
+            scratch,
+            asset,
+            base + fix32::from_words(h[7u16] + identity * 2, 0),
+            count * 2,
+        );
+        let mut j = 0u16;
+        while j < count {
+            check_value(lifecycle::flags(&runtime.ticks, identity + j), scratch, j);
+            j += 1;
+        }
+        identity += count;
+    }
     // Only a live Rust Option has component state/configuration to compare.
     // Resource offsets describe each encoding and are not game state.
     let mut i = 0u16;
@@ -534,11 +787,9 @@ pub fn check_live(
     }
     i = 0;
     while i < world.count {
+        let words = unsafe { view_of(&mut reference).as_ptr().as_u16_array() };
         if next == i {
-            read(scratch, asset, base + fix32::from_words(cursor + 1, 0), 60);
-            check(at(world.colliders, (i * 60) as i16), scratch, 60, 0);
-            read(scratch, asset, base + fix32::from_words(cursor + 61, 0), 16);
-            check(at(world.properties, (i * 16) as i16), scratch, 16, 60);
+            read(words, asset, base + fix32::from_words(cursor + 1, 0), 76);
             cursor += 77;
             changed += 1;
             next = 65535;
@@ -550,10 +801,15 @@ pub fn check_live(
             if !scene.load(i, &mut reference) {
                 halt(0x7f2d);
             }
-            let words = unsafe { view_of(&mut reference).as_ptr().as_u16_array() };
-            check(at(world.colliders, (i * 60) as i16), words, 60, 0);
-            check(at(world.properties, (i * 16) as i16), at(words, 60), 16, 60);
         }
+        if !scene_world::load_collider(world, i, scratch) {
+            halt(0x7f2d);
+        }
+        check(scratch, words, 60, 0);
+        if !scene_world::load_properties(world, i, scratch) {
+            halt(0x7f2d);
+        }
+        check(scratch, at(words, 60), 16, 60);
         i += 1;
     }
     if changed != h[12u16] || cursor != h[2u16] {

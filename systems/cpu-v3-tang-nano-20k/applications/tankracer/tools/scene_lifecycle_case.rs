@@ -31,6 +31,7 @@ pub fn load_scene_lifecycle(input: Array<u16>, storage: Array<u16>) -> SceneCase
     let headers = life_at(storage, 0);
     let identity_rows = life_at(storage, 12);
     let ids = entities::State {
+        row_words: 6,
         header: headers,
         rows: identity_rows,
         storage_capacity: 256,
@@ -181,6 +182,7 @@ pub fn load_scene_lifecycle(input: Array<u16>, storage: Array<u16>) -> SceneCase
     attitude::put(dispatch_words, 1, attitude::get(input, 9));
     let runtime = scene_world::Runtime {
         ticks: lifecycle::Ticks {
+            flag_words: 2,
             flags: flags,
             flag_count: flag_count,
             order: ordered::List {

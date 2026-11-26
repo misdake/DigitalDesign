@@ -19,7 +19,7 @@ fn main(){
  let pose=vehicle_pose::State{physical_position:s,reference:at(s,6),base_position:at(s,24),body_basis:at(s,30),body_position:at(s,48),tracks:at(s,54),turret:at(s,102),gun:at(s,126),attachments:at(s,150),bottom_position:at(s,198),recoil:at(s,204)};
  let car=vehicle_transfer::Car{pose,checkpoint:at(s,208),passed:at(s,212),laps:at(s,214),controls:at(s,216),velocity:at(s,222),acceleration:at(s,228),angular:at(s,232),track_slip:at(s,238),temporary_timer:at(s,240),config:pointer(0x300),travel:pointer(0x370),environment:pointer(0x340)};
  let routes=vehicle_transfer::Routes{order:ordered::List{items:pointer(0x2000),count:meta[4u16],capacity:512},points:pointer(0x2400),count:meta[5u16],occupied:ordered::List{items:pointer(0x2800),count:meta[6u16],capacity:512}};
- let ids=entities::State{header:pointer(0x1000),rows:pointer(0x100c),storage_capacity:512};
+ let ids=entities::State{row_words:6,header:pointer(0x1000),rows:pointer(0x100c),storage_capacity:512};
  let world=scene_world::World{colliders:pointer(0x8000),properties:pointer(0),count:meta[3u16],fixed_count:meta[3u16],dynamic_page:121,dynamic_capacity:0,grid:spatial::Grid{page:65535,origin:pointer(0),shift_x:0,shift_z:0,items:pointer(0),ranges:pointer(0)},deformables:ordered::List{items:pointer(0),count:0,capacity:0}};
  let sine:Buf<u16,4>=Buf::new([45056,320,40960,0]);let angle:Buf<u16,4>=Buf::new([45376,5,514,0]);
  let request=vehicle_transfer::Request{limit:attitude::get(meta,0),sine:unsafe{sine.as_array().as_ptr().as_i16_array()},angle:unsafe{angle.as_array().as_ptr().as_i16_array()},height:at(s,242)};

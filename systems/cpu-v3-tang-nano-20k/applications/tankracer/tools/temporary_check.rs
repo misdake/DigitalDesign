@@ -11,7 +11,7 @@ fn copy(mut to:Array<u16>,from:Array<u16>,count:u16){let mut i=0u16;while i<coun
 fn main(){
  let input=unsafe{Ptr::from_addr(0x0100).as_u16_array()};let out=unsafe{Ptr::from_addr(0x1800).as_u16_array()};
  let state=temporary::State{core:input,rows:at(input,82)};
- let pools:Buf<effect_pool::Pool,1>=Buf::new([effect_pool::Pool{lines:at(input,280),count:g(at(input,278),0),overflow:effect_pool::line_zero(),exhausted:at(input,1896)}]);
+ let pools:Buf<effect_pool::Pool,1>=Buf::new([effect_pool::Pool{page:65535,lines:at(input,280),count:g(at(input,278),0),overflow:effect_pool::line_zero(),exhausted:at(input,1896)}]);
  let mut all=pools.as_array();let mut pool=&mut all[0u16];
  copy(unsafe{view_of(&mut pool.overflow).as_ptr().as_u16_array()},at(input,1880),16);
  let sine:Buf<u16,4>=Buf::new([45056,320,40960,0]);

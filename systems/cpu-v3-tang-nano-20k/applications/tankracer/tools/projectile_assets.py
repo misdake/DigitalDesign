@@ -38,7 +38,7 @@ def main():
     subprocess.run([str(executable), str(root), str(out)], check=True, timeout=120)
     subprocess.run([sys.executable,str(owner/'export_trig_assets.py'),'--reference',str(root),
         '--output',str(out)],check=True,timeout=60,stdout=subprocess.DEVNULL)
-    sources = [owner / n for n in ['projectile_oracle.rs', 'mine_oracle.rs', 'tank_hit_oracle.rs', 'temporary_oracle.rs', 'scene_allocation_oracle.rs', 'scene_creation_oracle.rs', 'reference_scene.rs', 'identity_assets.rs', 'scene_export.rs', 'scene_lifecycle_assets.rs', 'reference_world.rs', 'terrain_assets.rs', 'projectile_assets.py', 'export_trig_assets.py', 'reference_bridge.py', 'reference_car.rs', 'reference_tanks.rs']]
+    sources = [owner / n for n in ['projectile_oracle.rs', 'projectile_snapshot.rs', 'driving_devices.rs', 'mine_oracle.rs', 'tank_hit_oracle.rs', 'temporary_oracle.rs', 'scene_allocation_oracle.rs', 'scene_creation_oracle.rs', 'reference_scene.rs', 'identity_assets.rs', 'scene_export.rs', 'scene_lifecycle_assets.rs', 'reference_world.rs', 'terrain_assets.rs', 'projectile_assets.py', 'export_trig_assets.py', 'reference_bridge.py', 'reference_car.rs', 'reference_tanks.rs']]
     overlay=json.loads((out/'reference-overlay.json').read_text())
     sources += [Path(row['file']) for row in overlay['sources']]
     sources += sorted((root / 'crates/game/src').rglob('*.rs'))
@@ -47,7 +47,7 @@ def main():
     sources += [root / 'crates/game/data' / n for n in ['sine.bin', 'angle.bin']]
     sources += [root / 'assets/game' / n / 'FASTFILE.DAT' for n in ['DATA', 'INGAME',
                 'TANKS/BRONZE', 'TANKS/SILVER', 'TANKS/GOLD', 'LEVELS/ENGLAND']]
-    outputs = ['scene-allocation.json'] + [f'scene-allocation-{i}.bin' for i in range(7)] + ['projectile.json', 'mine.json', 'tank-hit.json', 'temporary.json', 'projectile-cells.bin', 'sine.i16.bin', 'angle.i16.bin']
+    outputs = ['scene-allocation.json'] + [f'scene-allocation-{i}.bin' for i in range(8)] + ['projectile.json', 'mine.json', 'tank-hit.json', 'temporary.json', 'projectile-cells.bin', 'sine.i16.bin', 'angle.i16.bin']
     outputs += ['scene-creation.json'] + [f'scene-creation-{i}.bin' for i in range(16)]
     sources += [owner / 'scene_mines_oracle.rs']
     sources += [owner / 'scene_mine_tick_oracle.rs']
@@ -85,10 +85,10 @@ def main():
     outputs += ['scene-projectile-flight.json'] + [f'scene-projectile-flight-{i}.bin' for i in range(33)]
     outputs += ['vehicle-pose.json', 'vehicle-transfer.json']
     outputs += ['scene-vehicle-transfer.json'] + [f'scene-vehicle-transfer-{i}.bin' for i in range(60)]
-    sources += [owner / 'player_control_oracle.rs', owner / 'player_route_oracle.rs', owner / 'scene_player_oracle.rs', owner / 'reference_player.py', owner / 'reference_player.rs']
+    sources += [owner / 'player_control_oracle.rs', owner / 'player_route_oracle.rs', owner / 'player_tail_oracle.rs', owner / 'scene_player_oracle.rs', owner / 'reference_player.py', owner / 'reference_player.rs', owner / 'reference_scenery_player.rs']
     outputs += ['scene-player.json'] + [f'scene-player-{i}.bin' for i in range(48)]
     sources += [owner / 'track_effects_oracle.rs', owner / 'pickup_snapshot.rs', owner / 'vehicle_effects_oracle.rs', owner / 'impact_snapshot.rs', owner / 'car_effects_oracle.rs', owner / 'car_motion_oracle.rs']
-    outputs += ['player-control.json', 'player-route.json', 'track-effects.json', 'vehicle-effects.json', 'car-effects.json', 'car-motion.json']
+    outputs += ['player-tail.json', 'player-control.json', 'player-route.json', 'track-effects.json', 'vehicle-effects.json', 'car-effects.json', 'car-motion.json']
     sources += [owner/'contact_effect_oracle.rs', owner/'sampling_snapshot.rs', owner/'reference_contact.rs', owner/'vehicle_startup_oracle.rs', owner/'vehicle_inactive_oracle.rs', owner/'drive_oracle.rs']
     outputs += ['vehicle-startup.json', 'vehicle-inactive.json', 'contact-effect.json'] + [f'contact-effect-cells-{i}.bin' for i in range(3)]
     outputs += ['scene-ambient.json'] + [f'scene-ambient-{i}.bin' for i in range(61)]

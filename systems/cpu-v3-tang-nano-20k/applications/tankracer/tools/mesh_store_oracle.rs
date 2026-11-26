@@ -2,12 +2,16 @@
 mod mesh_catalog_assets;
 mod mesh_store_snapshot;
 #[allow(dead_code)]
+mod player_scene_assets;
+#[allow(dead_code)]
+mod projectile_snapshot;
+#[allow(dead_code)]
 mod reference_world;
 use mesh_store_snapshot::{payload, snapshot};
 use serde_json::json;
 use std::{fs, path::Path};
 use tankracer_assets::{mesh::Geometry, model::Model};
-use tankracer_game::scene_meshes::{rcc_probe as probe, Meshes};
+use tankracer_game::scene_meshes::{Meshes, rcc_probe as probe};
 
 fn execute(meshes: &mut Meshes, models: &[Model], op: [u16; 4]) -> i32 {
     let [kind, a, b, c] = op;
@@ -59,7 +63,11 @@ fn main() {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let out = Path::new(&args[0]);
     let root = Path::new(&args[1]);
-    let (mut session, resources) = reference_world::constructed(root).into_session().unwrap();
+    let (mut session, resources) = if args.len() == 3 {
+        player_scene_assets::prepared(root)
+    } else {
+        reference_world::constructed(root).into_session().unwrap()
+    };
     let world = session.world();
     let mut models = Vec::new();
     let mut names = Vec::new();

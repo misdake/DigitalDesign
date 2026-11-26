@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn typed_pointer_views_address_nested_records_without_storage() {
+    let source = r#"
+struct Entry { tag:u16, points:Buf<i16,3>, value:fix32 }
+fn main(){
+ let raw:Buf<u16,12>=Buf::new([0;12]);
+ let mut rows=unsafe{raw.as_ptr().as_array::<Entry>()};
+ rows[1u16].tag=17;
+ rows[1u16].points[2u16]=-3;
+ rows[1u16].value=fix32::from_words(0x1234,0x5678);
+ if raw[9u16]!=65533 || raw[11u16]!=0x5678 {halt(1);}
+ let words=unsafe{rows.as_ptr().as_array::<u16>()};
+ halt(words[6u16]+words[10u16]);
+}"#;
+    assert_source_in_both_modes(source, 0x1245);
+    let old =
+        "fn main(){let p=Ptr::from_addr(0x100);let a=unsafe{p.as_u16_array()};halt(a[2u16]);}";
+    let typed = old.replace("as_u16_array()", "as_array::<u16>()");
+    let options = CompilerOptions::default();
+    assert_eq!(
+        compile(old, options.clone()).words,
+        compile(&typed, options).words
+    );
+}
+
+#[test]
 fn named_constant_indices_use_the_literal_addressing_mode() {
     let source = "const FIELD:u16=5; #[inline(never)] fn literal(a:Array<u16>)->u16{a[5u16]} #[inline(never)] fn named(a:Array<u16>)->u16{a[FIELD]} #[inline(never)] fn expression(a:Array<u16>)->u16{a[FIELD+0u16]} fn main(){let a:Buf<u16,8>=Buf::new([1;8]);halt(literal(a.as_array())+named(a.as_array())+expression(a.as_array()));}";
     let program = compile(source, CompilerOptions::default());

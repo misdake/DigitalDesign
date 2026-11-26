@@ -2,6 +2,7 @@
 mod car_effects_oracle;
 mod car_motion_oracle;
 mod contact_effect_oracle;
+mod driving_devices;
 mod explosion_blasts_oracle;
 mod explosion_oracle;
 #[allow(dead_code)]
@@ -13,6 +14,7 @@ mod pages;
 mod pickup_snapshot;
 mod player_control_oracle;
 mod player_route_oracle;
+mod player_tail_oracle;
 mod projectile_marks_oracle;
 #[allow(dead_code)]
 mod reference_world;
@@ -55,7 +57,6 @@ mod vehicle_transfer_oracle;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 use tankracer_game::{
-    explosion::Sprite,
     math::Matrix,
     object_query::{EntityId, TankId},
     pose::Pose,
@@ -66,78 +67,8 @@ use tankracer_game::{
     },
     vehicle_runtime::{SinglePlayer, rcc_car_probe},
 };
-fn wide(out: &mut Vec<u16>, v: i32) {
-    out.extend([v as u16, (v >> 16) as u16]);
-}
-fn ints(out: &mut Vec<u16>, v: impl IntoIterator<Item = i32>) {
-    for x in v {
-        wide(out, x);
-    }
-}
-fn sprite(out: &mut Vec<u16>, s: Sprite) {
-    ints(out, [s.material as i32]);
-    ints(out, s.position);
-    ints(out, [s.flags as i32, s.depth_bias]);
-    ints(out, s.size);
-    out.extend([
-        u16::from(s.uv[0]) | (u16::from(s.uv[1]) << 8),
-        u16::from(s.uv[2]) | (u16::from(s.uv[3]) << 8),
-        u16::from(s.color[0]) | (u16::from(s.color[1]) << 8),
-        u16::from(s.color[2]),
-        s.rotation,
-        0,
-    ]);
-}
-fn state(out: &mut Vec<u16>, s: &projectile::State) {
-    ints(
-        out,
-        [
-            i32::from(s.owner.is_some()),
-            s.owner.map_or(0, |x| x.0 as i32),
-            s.kind as i32,
-            s.time,
-            s.flags as i32,
-        ],
-    );
-    ints(out, s.velocity);
-    ints(
-        out,
-        [
-            i32::from(s.trail_count),
-            i32::from(s.trail_cursor),
-            s.trail_time,
-            i32::from(s.flash_views[0]),
-            i32::from(s.flash_views[1]),
-            i32::from(s.flash_alpha),
-            i32::from(s.target.is_some()),
-            s.target.map_or(0, |x| x.0 as i32),
-            s.target_height,
-        ],
-    );
-    ints(out, s.previous);
-    ints(
-        out,
-        [
-            i32::from(s.reference.is_some()),
-            s.pitch,
-            i32::from(s.roll),
-            i32::from(s.wobble),
-            s.uv_time,
-            i32::from(s.attached_ufo.is_some()),
-            s.attached_ufo.map_or(0, |x| x.0 as i32),
-        ],
-    );
-    ints(out, s.attachment);
-    ints(out, s.reference.map_or([0; 9], |m| m.0));
-    sprite(out, s.sprite);
-    for t in s.trails {
-        out.extend([u16::from(t.active), t.time as u16]);
-        ints(out, t.velocity);
-        wide(out, t.angular);
-        sprite(out, t.sprite);
-        wide(out, t.channel as i32);
-    }
-}
+mod projectile_snapshot;
+use projectile_snapshot::{ints, sprite, state, wide};
 fn mutable(
     s: &projectile::State,
     shared: &projectile::Flight,
@@ -148,18 +79,7 @@ fn mutable(
     let mut out = Vec::new();
     state(&mut out, s);
     assert_eq!(out.len(), 610);
-    ints(
-        &mut out,
-        [
-            shared.sequence as i32,
-            shared.homing_drift,
-            shared.homing_frame as i32,
-            i32::from(shared.size_up),
-            i32::from(shared.color_up),
-        ],
-    );
-    sprite(&mut out, shared.homing_glow);
-    sprite(&mut out, shared.concussion_glow);
+    projectile_snapshot::flight(&mut out, shared);
     ints(&mut out, p.matrix.0);
     ints(&mut out, p.position);
     wide(&mut out, seed as i32);
@@ -416,6 +336,7 @@ fn main() {
     temporary_oracle::export(out);
     player_control_oracle::export(out);
     player_route_oracle::export(root, out);
+    player_tail_oracle::export(root, out);
     track_effects_oracle::export(out);
     vehicle_effects_oracle::export(out);
     car_effects_oracle::export(root, out);

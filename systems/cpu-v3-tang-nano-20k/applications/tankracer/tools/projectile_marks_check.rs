@@ -17,7 +17,7 @@ fn main(){
  unsafe{write_dseg_page(3,119);}
  let marks=projectile_marks::State{core:pointer(0x9bee)};
  let mut quads=quad_pool::Pool{records:pointer(0x8000),exhausted:pointer(0x93f4),count:g(pointer(0x9414),0)};
- let mut lines=effect_pool::Pool{lines:pointer(0x9418),exhausted:pointer(0x9a68),count:g(pointer(0x9416),0),overflow:effect_pool::line_zero()};
+ let mut lines=effect_pool::Pool{page:65535,lines:pointer(0x9418),exhausted:pointer(0x9a68),count:g(pointer(0x9416),0),overflow:effect_pool::line_zero()};
  let overflow=unsafe{view_of(&mut lines.overflow).as_ptr().as_u16_array()};
  i=0;let mut extra=overflow;while i<16{extra[i]=pointer(0x9a58)[i];i+=1;}
  let mut frame=0u16;

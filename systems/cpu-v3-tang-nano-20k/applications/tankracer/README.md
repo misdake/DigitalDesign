@@ -37,6 +37,11 @@ updates; `--scope fast-controls --steps 2` covers fast braking and restoration.
 wrong-way state and the raw-time race clock.
 `scene-player` connects input, lap events, turret/fire, brake and route progress
 to the same scene/vehicle owners before parent Tank visibility and preparation.
+`--scope player --steps 2` runs Shell/Homing/Warp input through this complete
+Player stage and the continuous Tank physics owner, comparing route, inventory,
+shared flight, projectile payloads, scenery, vehicle effects and RNG each frame.
+`--scope clock` couples the raw race clock and countdown/release gate to that
+continuous path, with independent physics-dt clamping and per-frame clock checks.
 `track-effects` qualifies track spray, ground-mark FIFO and brake/reverse lights
 on one shared quad/line phase bank.
 `vehicle-effects` qualifies damage/traction smoke with synchronous impact emission,

@@ -127,6 +127,7 @@ fn run_tank_response(
         impact::batch_zero(),
     ]);
     let mut impacts = impact::State {
+        page: 65535,
         batches: batches.as_array(),
         next: fix32::zero(),
     };
@@ -138,6 +139,7 @@ fn run_tank_response(
         frame: integer::from_i16(17),
         seed: seed.as_array(),
         pool: effect_pool::Pool {
+            page: 65535,
             lines: lines.as_array(),
             count: fix32::zero(),
             overflow: effect_pool::line_zero(),

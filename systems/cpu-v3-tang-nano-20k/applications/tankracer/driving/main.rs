@@ -3,6 +3,7 @@
     default = "app",
     app = 7,
     checks = 6,
+    world = 2,
     parents = 5,
     prefix = 4,
     pickups = 3
@@ -24,6 +25,10 @@ static DRIVING_WORLD: StaticBuffer = StaticBuffer::new(65536, 65536);
 static DRIVING_MOTION: StaticBuffer = StaticBuffer::new(32768, 32768);
 #[static_buffer]
 static DRIVING_PICKUP_EFFECTS: StaticBuffer = StaticBuffer::new(32768, 32768);
+#[static_buffer]
+static DRIVING_DYNAMIC_WORLD: StaticBuffer = StaticBuffer::new(32768, 32768);
+#[static_buffer]
+static DRIVING_WEAPONS: StaticBuffer = StaticBuffer::new(196608, 32768);
 mod attitude;
 mod body;
 mod bounce;
@@ -46,6 +51,8 @@ mod car_motion;
 mod closer;
 mod complete_check;
 mod debris_catalog;
+mod explosion;
+mod explosion_blasts;
 mod identity_capture;
 mod impact;
 mod impact_capture;
@@ -56,17 +63,34 @@ mod lifecycle;
 mod mesh_break;
 mod mesh_catalog;
 mod mesh_storage;
+mod mine;
 mod object_query;
 mod ordered;
 mod parent_check;
+mod particle_sprite;
 mod pickup_check;
 mod pickup_light;
 mod player_check;
 mod player_control;
+mod player_route;
+mod player_tail;
+mod player_world;
 mod powerup;
 mod prefix;
+mod projectile;
+mod projectile_flight;
+mod projectile_marks;
+mod projectile_ricochet;
+mod projectile_sweep;
+mod projectile_trail;
 mod quad_pool;
+mod scene_creation;
+mod scene_explosions;
+mod scene_fire;
+mod scene_laps;
+mod scene_mines;
 mod scene_pickups;
+mod scene_player;
 mod startup_check;
 mod temporary;
 mod track_effects;
@@ -297,13 +321,19 @@ fn start_case(
     let image: Buf<u16, 640> = Buf::new([0; 640]);
     let initial = image.as_array();
     let car_words = 542 + DRIVING_GUN_WORDS * 2;
-    if car_words > 640 || DRIVING_INITIAL_WORDS != DRIVING_STATE_VALUES * 2 + 18 {
+    if car_words > 640
+        || DRIVING_INITIAL_WORDS != DRIVING_STATE_VALUES * 2 + 18
+        || DRIVING_START_WORDS != car_words * 2 + 42
+    {
         halt(0x7f35);
     }
-    let base = fmul_lo32(
+    read(
+        initial,
+        DRIVING_INITIAL_OFFSETS,
         fix32::from_words(case, 0),
-        fix32::from_words(DRIVING_INITIAL_WORDS, 0),
+        1,
     );
+    let base = fix32::from_words(initial[0u16], 0);
     let mut actors = actors;
     if !driving_has_startup(case) {
         read(initial, DRIVING_INITIAL, base, car_words);
@@ -311,7 +341,7 @@ fn start_case(
         read(
             initial,
             DRIVING_INITIAL,
-            base + fix32::from_words(3566, 0),
+            base + fix32::from_words(car_words, 0),
             car_words,
         );
         load_car(&mut actors[1u16], initial);
@@ -320,7 +350,7 @@ fn start_case(
     read(
         initial,
         DRIVING_INITIAL,
-        base + fix32::from_words(DRIVING_STATE_VALUES * 2, 0),
+        base + fix32::from_words(car_words * 2, 0),
         18,
     );
     if world.seed != attitude::get(initial, 0) {
@@ -344,35 +374,36 @@ fn start_case(
         attitude::put(at(aux, 36), 14, integer::from_i16(-1));
         return world;
     }
-    read(aux, DRIVING_INITIAL, base + fix32::from_words(602, 0), 2);
+    let auxiliary = base + fix32::from_words(car_words * 2 + 18, 0);
+    read(aux, DRIVING_INITIAL, auxiliary, 2);
     read(
         at(aux, 36),
         DRIVING_INITIAL,
-        base + fix32::from_words(4156, 0),
+        auxiliary + fix32::from_words(2, 0),
         2,
     );
     read(
         at(aux, 26),
         DRIVING_INITIAL,
-        base + fix32::from_words(4558, 0),
+        auxiliary + fix32::from_words(4, 0),
         6,
     );
     read(
         at(aux, 62),
         DRIVING_INITIAL,
-        base + fix32::from_words(4564, 0),
+        auxiliary + fix32::from_words(10, 0),
         6,
     );
     read(
         at(aux, 32),
         DRIVING_INITIAL,
-        base + fix32::from_words(4572, 0),
+        auxiliary + fix32::from_words(16, 0),
         4,
     );
     read(
         at(aux, 68),
         DRIVING_INITIAL,
-        base + fix32::from_words(4576, 0),
+        auxiliary + fix32::from_words(20, 0),
         4,
     );
 
@@ -409,6 +440,15 @@ fn main() {
     }
     let colliders = unsafe { Ptr::from_addr(0x8000).as_u16_array() };
     let properties = unsafe { Ptr::from_addr(0xc000).as_u16_array() };
+    unsafe {
+        write_dseg_page(3, DRIVING_DYNAMIC_WORLD.first_sector() >> 8);
+    }
+    let mut dynamic = properties;
+    dynamic[16340u16] = 0x6a39;
+    dynamic[16383u16] = 0x93a6;
+    unsafe {
+        write_dseg_page(3, page + 1);
+    }
     let memberships = at(properties, 3840);
     let ranges = at(properties, 7936);
     let origin = at(properties, 8128);
@@ -431,8 +471,8 @@ fn main() {
         properties: properties,
         count: 240,
         fixed_count: 240,
-        dynamic_page: 0,
-        dynamic_capacity: 0,
+        dynamic_page: DRIVING_DYNAMIC_WORLD.first_sector() >> 8,
+        dynamic_capacity: scene_world::DYNAMIC_ROWS,
         grid: spatial::Grid {
             page: page + 1,
             origin: origin,
@@ -451,7 +491,7 @@ fn main() {
     if !scene.valid || scene.load_world(&mut scenery) != 0 || scene.header[9u16] != 7 {
         halt(0x7f0c);
     }
-    run_cases(&c, &scene, &mut scenery);
+    run_cases(&c, &mut scenery);
     check_world_guards();
     unsafe {
         write_dseg_page(3, previous3);
@@ -477,7 +517,7 @@ fn load_motion_layout(bank: &mut scene_fragments::MotionBank) {
 }
 
 #[link_cseg = "checks"]
-fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scene_world::World) {
+fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
     let storage: DrivingStorage = driving_storage();
     let cfg = c.spring;
     let directory: Buf<u16, 64> = Buf::new([65535; 64]);
@@ -506,12 +546,11 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
     let empty_records: Buf<deformation::Record, 1> = Buf::new([deformation::record_zero()]);
     let mut surface = deformation::disabled(cfg, empty_records.as_array());
     let live = DRIVING_LIVE.as_array();
-    read(live, DRIVING_SCENERY, fix32::zero(), DRIVING_SCENERY_WORDS);
-    if !valid_live(live) {
+    if !load_live(live, storage.records.as_array(), DRIVING_SCENERY) {
         halt(0x7f11);
     }
     let components = scenery_contact::Components {
-        records: live_section(live, 0),
+        records: storage.records.as_array(),
         state: live_section(live, 1),
         config: live_section(live, 2),
         fall_class: attitude::get(at(live, 32), 0),
@@ -526,14 +565,21 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
     let mut case = 0u16;
     let mut serial = 0u16;
     while case < DRIVING_CASES {
+        let active_scene = scene_query::Scene::begin(driving_scene(case));
+        if !active_scene.valid {
+            halt(0x7f63);
+        }
+        let scene = &active_scene;
         read(meta, DRIVING_CASE_META, fix32::from_words(case * 24, 0), 24);
         if meta[21u16] != 0 {
-            read(
+            if !load_live(
                 live,
+                storage.records.as_array(),
                 driving_initial_scenery(case),
-                fix32::zero(),
-                DRIVING_SCENERY_WORDS,
-            );
+            ) {
+                halt(0x7f11);
+            }
+            scenery.count = scenery.fixed_count;
             if scene.load_world(scenery) != 0 {
                 halt(0x7f12);
             }
@@ -590,7 +636,7 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
         ]);
         let mut deform = surfaces.as_array();
         let catalog = mesh_catalog::load(
-            DRIVING_MESH_CATALOG,
+            driving_catalog(case),
             storage.catalog.as_array(),
             DRIVING_CATALOG_WORDS,
             catalog_scratch.as_array(),
@@ -618,10 +664,10 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
         let no_actors: Buf<scene_parent::Actor, 0> = Buf::new([]);
         let mut state = scene_parent::State {
             lifetime: load_life(
-                live,
                 scenery,
                 storage.identity.as_array(),
                 storage.lifetime_lists.as_array(),
+                storage.records.as_array(),
             ),
             runtime: live_runtime(live, current_slot.as_array(), unsafe {
                 Ptr::from_addr(0).as_u16_array()
@@ -640,7 +686,7 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
         let parent_data = at(scenery.colliders, 14402);
         read(
             parent_data,
-            DRIVING_PARENTS,
+            driving_parents(case),
             fix32::zero(),
             DRIVING_PARENT_WORDS,
         );
@@ -853,24 +899,33 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
         let geometry: Buf<object_query::Tank, 2> =
             Buf::new([object_query::tank_zero(), object_query::tank_zero()]);
         let mut geo = geometry.as_array();
-        let lines: Buf<u16, 1600> = Buf::new([0; 1600]);
+        let lines = unsafe { Ptr::from_addr(0x8000 + 12400).as_u16_array() };
         let tail: Buf<u16, 16> = Buf::new([0; 16]);
-        let batches: Buf<impact::Batch, 4> = Buf::new([
-            impact::batch_zero(),
-            impact::batch_zero(),
-            impact::batch_zero(),
-            impact::batch_zero(),
-        ]);
+        let batches = unsafe { Ptr::from_addr(0x8000 + 14000).as_array::<impact::Batch>() };
         let mut impacts = impact::State {
-            batches: batches.as_array(),
+            page: DRIVING_PICKUP_EFFECTS.first_sector() >> 8,
+            batches: batches,
             next: fix32::zero(),
         };
+        let batch_page = impact::select(&impacts);
+        let mut batch_rows = batches;
+        let stride = view_of(&mut batch_rows[1u16]).as_ptr().addr() - batches.as_ptr().addr();
+        if stride == 0 || stride > (player_world::TAIL_WORD - 1 - 14000) / 4 {
+            halt(0x7f5a);
+        }
+        let mut batch = 0u16;
+        while batch < 4 {
+            batch_rows[batch] = impact::batch_zero();
+            batch += 1;
+        }
+        effect_pool::restore(batch_page);
         let offsets: Buf<u16, 12> = Buf::new([0, 0, 0, 0, 2000, 0, 0, 0, 0, 0, 63536, 65535]);
         let mut effects = impact::Context {
             frame: fix32::zero(),
             seed: state.runtime.seed,
             pool: effect_pool::Pool {
-                lines: lines.as_array(),
+                page: DRIVING_PICKUP_EFFECTS.first_sector() >> 8,
+                lines: lines,
                 count: fix32::zero(),
                 overflow: effect_pool::line_zero(),
                 exhausted: tail.as_array(),
@@ -880,7 +935,15 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
             forward_offset: offsets.as_array(),
             reverse_offset: at(offsets.as_array(), 6),
         };
+        let line_page = effect_pool::select(&effects.pool);
+        let mut line_data = lines;
+        let mut line_word = 0u16;
+        while line_word < 1600 {
+            line_data[line_word] = 0;
+            line_word += 1;
+        }
         effect_pool::reset(&mut effects.pool);
+        effect_pool::restore(line_page);
         // Prefix hot rows occupy the fixed collision page's remaining tail.
         // Boost scalars and auxiliary contacts stay in the existing car owner.
         let prefix_data = at(scenery.colliders, (14934 + DRIVING_SYMBOL_WORDS) as i16);
@@ -974,6 +1037,33 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
         if driving_has_startup(case) {
             startup_check::construct(actors, prefixes.as_array(), c, &complete);
         }
+        let route_fields: Buf<u16, 60> = Buf::new([0; 60]);
+        let mine_fields: Buf<u16, 66> = Buf::new([0; 66]);
+        let explosion_fields: Buf<u16, 100> = Buf::new([0; 100]);
+        let mut player = player_world::load(
+            case,
+            scenery,
+            route_fields.as_array(),
+            mine_fields.as_array(),
+            explosion_fields.as_array(),
+        );
+        player.sine = c.sine;
+        player.angle = c.angle;
+        player.drive = c.drive;
+        player.surfaces = deform;
+        player.inventory = at(prefix_data, 238 + 780 + 51);
+        complete.racers = player.fields;
+        if driving_has_player(case) {
+            read(
+                player.inventory,
+                driving_player(case),
+                fix32::from_words(62, 0),
+                8,
+            );
+        }
+        player.weapons.directory = at(storage.records.as_array(), 1);
+        player.weapons.quads = view_of(&mut pickups.quads);
+        player.weapons.lines = view_of(&mut effects.pool);
         let mut complete_offset = fix32::zero();
         let mut pickup_offset = fix32::zero();
 
@@ -998,11 +1088,21 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
                 60,
             );
             let data = record;
+            if driving_has_world_events(case) {
+                apply_world_event(
+                    scene,
+                    &mut state,
+                    scenery,
+                    driving_world_events(case),
+                    frame,
+                );
+            }
             let own = attitude::get(data, 28).lo_bits();
+            let keys = attitude::get(data, 29).lo_bits() & 511;
             if own >= meta[0u16] || own >= 2 {
                 halt(0x7f0b);
             }
-            if meta[21u16] != 0 {
+            if meta[21u16] & 1 != 0 {
                 if meta[22u16] != 0 && frame == meta[23u16] {
                     let index = fix32::from_words(meta[22u16] - 1, 0);
                     if index.hi_bits() != 0 || index.lo_bits() >= scenery.count {
@@ -1024,7 +1124,7 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
             }
             let saved_slot = attitude::get(state.runtime.slot, 0);
             let mut pass = lifecycle::begin(&state.runtime.ticks, components.work_limit);
-            if meta[21u16] != 0 {
+            if meta[21u16] & 1 != 0 {
                 if lifecycle::prepare(&mut state.runtime.ticks, &mut pass, components.work_limit)
                     != 1
                     || pass.current != fix32::from_words(meta[1u16], meta[2u16])
@@ -1037,7 +1137,16 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
             if visibility & 256 != 0 {
                 actors[own].visible = visibility & 1 != 0;
             }
-            if attitude::get(data, 29).hi_bits() & 1 != 0 {
+            if attitude::get(data, 29).hi_bits() & 2 != 0 {
+                let status =
+                    player_world::prepare(scene, &mut state, scenery, &complete, &mut player, data);
+                if status != fix32::zero() {
+                    unsafe {
+                        addr_of(&DRIVING_FIELD).write(0, status.lo_bits());
+                    }
+                    halt(0x7f62);
+                }
+            } else if attitude::get(data, 29).hi_bits() & 1 != 0 {
                 if !complete.enabled {
                     halt(0x7f57);
                 }
@@ -1132,6 +1241,16 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
                     attitude::put(data, 18, attitude::get(actors[own].boost, 1));
                 } else {
                     vehicle::boost(actors[own].boost, c.drive, data);
+                }
+                let gun_before: Buf<u16, 5> = Buf::new([0; 5]);
+                if driving_has_player(case) {
+                    let car = &actors[own];
+                    let tail = player_tail::State {
+                        gun: car.gun,
+                        binding: car.gun_binding,
+                        fields: unsafe { Ptr::from_addr(0).as_u16_array() },
+                    };
+                    player_tail::capture(&tail, gun_before.as_array());
                 }
                 mark(2);
                 let actor_aux = at(aux, (own * 36) as i16);
@@ -1395,6 +1514,22 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
                         &mut response.impact,
                         &mut effects,
                     );
+                    if driving_has_player(case) {
+                        let post = player_world::finish(
+                            &state,
+                            &player,
+                            data,
+                            gun_before.as_array(),
+                            keys,
+                            status == fix32::zero(),
+                        );
+                        if post != fix32::zero() {
+                            unsafe {
+                                addr_of(&DRIVING_FIELD).write(0, post.lo_bits());
+                            }
+                            halt(0x7f68);
+                        }
+                    }
                     if status != fix32::zero() {
                         unsafe {
                             addr_of(&DRIVING_FIELD).write(0, status.lo_bits());
@@ -1433,7 +1568,7 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
                     driving::finish(car, data);
                 }
             }
-            if meta[21u16] != 0 {
+            if meta[21u16] & 1 != 0 {
                 attitude::put(state.runtime.slot, 0, saved_slot);
                 lifecycle::resume(&mut pass, &state.runtime.ticks);
                 loop {
@@ -1620,6 +1755,9 @@ fn run_cases(c: &driving::Config, scene: &scene_query::Scene, scenery: &mut scen
                 );
                 live_offset = live_offset + fix32::from_words(words, 0);
             }
+            if driving_has_player(case) {
+                player_world::check(&mut player, case, scenery);
+            }
             unsafe {
                 addr_of(&DRIVING_CHECKS).write(0, DRIVING_CHECKS + 1);
             }
@@ -1652,6 +1790,12 @@ fn check_world_guards() {
     let words = unsafe { Ptr::from_addr(0xc000).as_u16_array() };
     if words[8132u16] != 0x393c || words[16383u16] != 0xc3c3 {
         halt(0x7f3a);
+    }
+    unsafe {
+        write_dseg_page(3, DRIVING_DYNAMIC_WORLD.first_sector() >> 8);
+    }
+    if words[16340u16] != 0x6a39 || words[16383u16] != 0x93a6 {
+        halt(0x7f60);
     }
     unsafe {
         write_dseg_page(3, saved);

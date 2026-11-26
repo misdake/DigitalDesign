@@ -167,6 +167,7 @@ fn run_car_deform(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: A
         impact::batch_zero(),
     ]);
     let mut impacts = impact::State {
+        page: 65535,
         batches: batches.as_array(),
         next: attitude::get(input, 6),
     };
@@ -175,6 +176,7 @@ fn run_car_deform(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: A
         frame: integer::from_i16(17),
         seed: seed.as_array(),
         pool: effect_pool::Pool {
+            page: 65535,
             lines: lines.as_array(),
             count: fix32::zero(),
             overflow: effect_pool::line_zero(),

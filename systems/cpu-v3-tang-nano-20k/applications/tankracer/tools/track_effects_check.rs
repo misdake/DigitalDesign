@@ -12,7 +12,7 @@ fn p(v:Array<u16>,i:u16,x:fix32){attitude::put(v,i,x);}
 fn copy(mut to:Array<u16>,from:Array<u16>,count:u16){let mut i=0u16;while i<count{to[i]=from[i];i+=1;}}
 fn main(){
  let previous=read_dseg_page(2);let previous3=read_dseg_page(3);unsafe{write_dseg_page(2,137);}
- let s=ptr(0x8000);let mut lines=effect_pool::Pool{lines:at(s,5528),count:g(s,2763),overflow:effect_pool::line_zero(),exhausted:at(s,7144)};
+ let s=ptr(0x8000);let mut lines=effect_pool::Pool{page:65535,lines:at(s,5528),count:g(s,2763),overflow:effect_pool::line_zero(),exhausted:at(s,7144)};
  let line_overflow=unsafe{view_of(&mut lines.overflow).as_ptr().as_u16_array()};copy(line_overflow,at(s,7128),16);
  let mut pool=quad_pool::Pool{records:at(s,384),exhausted:at(s,5492),count:g(s,2762)};
  let spray=track_effects::Spray{header:s,particles:at(s,6)};

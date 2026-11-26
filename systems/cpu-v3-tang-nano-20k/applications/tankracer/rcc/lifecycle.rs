@@ -3,6 +3,8 @@ use crate::dsl_rt::*;
 use crate::{attitude, integer, ordered};
 pub struct Ticks {
     pub flags: Array<u16>,
+    // One word for checked u16 flags, two for the original raw i32 image.
+    pub flag_words: u16,
     pub flag_count: u16,
     pub order: ordered::List,
     pub next: fix32,
@@ -33,6 +35,19 @@ fn n(v: i16) -> fix32 {
 fn valid(t: &Ticks, id: fix32) -> bool {
     id.hi_bits() == 0 && id.lo_bits() < t.flag_count
 }
+pub fn flags(t: &Ticks, id: u16) -> fix32 {
+    if t.flag_words == 1 {
+        return fix32::from_words(t.flags[id], 0);
+    }
+    attitude::get(t.flags, id)
+}
+pub fn clear(t: &Ticks, id: u16) {
+    let mut words = t.flags;
+    words[id * t.flag_words] = 0;
+    if t.flag_words == 2 {
+        words[id * 2 + 1] = 0;
+    }
+}
 fn exhausted(work: fix32, limit: fix32) -> bool {
     work.hi_bits() > limit.hi_bits()
         || (work.hi_bits() == limit.hi_bits() && work.lo_bits() >= limit.lo_bits())
@@ -43,7 +58,7 @@ pub fn enable(t: &mut Ticks, id: fix32) -> u16 {
     if !valid(t, id) {
         return 6;
     }
-    let index = id.lo_bits() * 2;
+    let index = id.lo_bits() * t.flag_words;
     let mut flags = t.flags;
     if flags[index] & 16 != 0 {
         return 0;
@@ -62,7 +77,7 @@ pub fn disable(t: &mut Ticks, id: fix32, limit: fix32) -> u16 {
     if !valid(t, id) {
         return 6;
     }
-    let index = id.lo_bits() * 2;
+    let index = id.lo_bits() * t.flag_words;
     let mut flags = t.flags;
     if flags[index] & 16 == 0 {
         return 0;
@@ -91,7 +106,7 @@ pub fn queue(q: &mut Queues, t: &mut Ticks, id: fix32, destroy: bool, limit: fix
     if !valid(t, id) {
         return 6;
     }
-    let index = id.lo_bits() * 2;
+    let index = id.lo_bits() * t.flag_words;
     let mut flags = t.flags;
     if destroy && flags[index] & 32 != 0 {
         return 0;
@@ -124,7 +139,7 @@ pub fn cancel(q: &mut Queues, t: &mut Ticks, id: fix32, limit: fix32) -> u16 {
         return 6;
     }
     let mut flags = t.flags;
-    flags[id.lo_bits() * 2] &= 65503;
+    flags[id.lo_bits() * t.flag_words] &= 65503;
     ordered::remove_first(&mut q.notifications, id, limit)
 }
 pub fn begin(t: &Ticks, limit: fix32) -> Pass {

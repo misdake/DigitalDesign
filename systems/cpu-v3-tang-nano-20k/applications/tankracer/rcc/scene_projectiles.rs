@@ -60,7 +60,7 @@ pub fn advance(
         return n(-5);
     }
     let id = frame.object;
-    if id >= weapons.object_capacity || weapons.directory[id * 2] != 1 {
+    if id >= weapons.object_capacity || scene_creation::component_kind(weapons, id) != 1 {
         return n(-4);
     }
     if id >= world.count {
@@ -86,7 +86,11 @@ pub fn advance(
         write_dseg_page(3, saved3);
         write_dseg_page(
             2,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = projectile::view(at(scene_creation::record(weapons, id, 2), 30));
@@ -165,14 +169,18 @@ pub fn finish(
         }
     }
     let id = frame.object;
-    if id >= weapons.object_capacity || weapons.directory[id * 2] != 1 {
+    if id >= weapons.object_capacity || scene_creation::component_kind(weapons, id) != 1 {
         return n(-4);
     }
     let saved = read_dseg_page(3);
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = projectile::view(at(scene_creation::record(weapons, id, 3), 30));
@@ -195,14 +203,18 @@ pub fn reflect(
         return n(-4);
     }
     let id = frame.object;
-    if id >= weapons.object_capacity || weapons.directory[id * 2] != 1 {
+    if id >= weapons.object_capacity || scene_creation::component_kind(weapons, id) != 1 {
         return n(-4);
     }
     let saved3 = read_dseg_page(3);
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let probe = projectile::view(at(scene_creation::record(weapons, id, 3), 30));
@@ -238,7 +250,11 @@ pub fn reflect(
         write_dseg_page(3, saved3);
         write_dseg_page(
             2,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = projectile::view(at(scene_creation::record(weapons, id, 2), 30));

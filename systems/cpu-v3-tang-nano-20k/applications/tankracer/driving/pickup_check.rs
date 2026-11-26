@@ -100,7 +100,9 @@ pub fn load_pickups(
     let pool = &mut result.lines[0u16];
     read(count.as_array(), asset, fix32::from_words(8406, 0), 2);
     pool.count = attitude::get(count.as_array(), 0);
+    let line_page = effect_pool::select(pool);
     read(pool.lines, asset, fix32::from_words(8408, 0), 1600);
+    effect_pool::restore(line_page);
     read(
         unsafe { view_of(&mut pool.overflow).as_ptr().as_u16_array() },
         asset,
@@ -383,7 +385,9 @@ pub fn check_pickups(
     let pool = &store.lines[0u16];
     expect_word(pool.count.lo_bits(), &mut expected, 8406);
     expect_word(pool.count.hi_bits(), &mut expected, 8407);
+    let line_page = effect_pool::select(pool);
     expect_block(pool.lines, &mut expected, 8408, 1600);
+    effect_pool::restore(line_page);
     let mut pools = store.lines;
     expect_block(
         unsafe { view_of(&mut pools[0u16].overflow).as_ptr().as_u16_array() },

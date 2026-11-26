@@ -37,6 +37,30 @@ impl ground_collision::Effects for Effects<'_> {
     }
 }
 impl State {
+    // Raw trajectories execute the visible physical branch directly. Export
+    // its actual vehicle fields instead of relying on empty scene bindings.
+    pub fn bindings(&self) -> Vec<u16> {
+        let v = &self.vehicle;
+        let mut out = vec![
+            v.entity.0 as u16,
+            (v.entity.0 >> 16) as u16,
+            0,
+            u16::from(v.player),
+            1,
+        ];
+        for value in [
+            v.blast.health,
+            i32::from(v.blast.health_timer),
+            i32::from(v.blast.health_color),
+            v.blast.protection_timer,
+            i32::from(v.blast.angular_enabled),
+            i32::from(v.blast.hit_axes[0]),
+            i32::from(v.blast.hit_axes[1]),
+        ] {
+            out.extend([value as u16, (value >> 16) as u16]);
+        }
+        out
+    }
     pub fn new(mesh: Geometry, selected: [u8; 4]) -> Self {
         Self {
             vehicle: vehicle::State {

@@ -25,6 +25,18 @@ signed-word wrap; time, velocity and position preserve wrapped i32 arithmetic.
 Views contain addresses and scalar descriptors, rather than copies of persistent
 state. A scene owner supplies stable storage and retains the RNG between calls.
 
+`Weapons.directory_stride` selects dense two-word kind/slot rows or columns one
+and two of an existing eight-word scenery component row. In the shared layout,
+column zero distinguishes ordinary scenery from a weapon. Both layouts retain
+the same canonical component snapshots and pool-slot semantics.
+
+Projectile creation captures sixty bytes of read-only turret basis, gun position
+and velocity before borrowing both mapped windows for collider and component.
+Homing's produced drift is published after restoring the shared-effect mapping,
+before activation. Its glow writes follow component metadata publication and the
+same mapping restoration. Persistent projectile and flight state retain their
+existing owners.
+
 ## Projectile sequence
 
 `projectile::launch` commits owner and kind before pitch validation, computes

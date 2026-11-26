@@ -5,6 +5,8 @@ use tankracer_game::{entity_factory as factory, scene_entity::Handle};
 pub struct Setup<'a> {
     pub complete: bool,
     pub sample_controls: u16,
+    pub dt: i32,
+    pub start_stage: i32,
     pub terrain: &'a TerrainData,
     pub surfaces: &'a tankracer_assets::config::Surfaces,
     pub tank: &'a tankracer_assets::config::Tank,

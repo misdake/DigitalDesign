@@ -159,6 +159,7 @@ pub fn load_auxiliary_hit(
     };
     let runtime = scene_world::Runtime {
         ticks: lifecycle::Ticks {
+            flag_words: 2,
             flags: storage,
             flag_count: 0,
             order: ordered::List {

@@ -1,6 +1,6 @@
 //! Capture canonical impact state for source-oracle comparison.
 use crate::dsl_rt::*;
-use crate::{attitude, impact, integer};
+use crate::{attitude, effect_pool, impact, integer};
 pub fn write(
     state: &mut impact::State,
     vehicle: &impact::Vehicle,
@@ -14,10 +14,12 @@ pub fn write(
     attitude::put(out, 7, context.pool.count);
     let mut dest = out;
     let mut j = 0u16;
+    let saved = effect_pool::select(&context.pool);
     while j < 1600 {
         dest[16 + j] = context.pool.lines[j];
         j += 1;
     }
+    effect_pool::restore(saved);
     let overflow = unsafe { view_of(&mut context.pool.overflow).as_ptr().as_u16_array() };
     j = 0;
     while j < 16 {
@@ -26,6 +28,7 @@ pub fn write(
         j += 1;
     }
     let mut cursor = 824u16;
+    let batch_page = impact::select(state);
     i = 0;
     while i < 4 {
         let batch = &mut state.batches[i];
@@ -44,6 +47,7 @@ pub fn write(
         }
         i += 1;
     }
+    effect_pool::restore(batch_page);
 }
 
 // Row writers also support bounded streaming comparison without a full image.

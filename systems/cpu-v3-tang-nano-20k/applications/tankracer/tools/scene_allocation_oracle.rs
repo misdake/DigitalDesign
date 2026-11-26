@@ -36,7 +36,7 @@ fn allocate(world: &mut SinglePlayer) -> EntityId {
 }
 pub fn export(root: &Path, out: &Path) {
     let mut cases = Vec::new();
-    for branch in 0..7 {
+    for branch in 0..8 {
         let mut world = super::reference_world::race(root);
         if branch == 1 || branch == 2 || branch == 6 {
             let a = allocate(&mut world);
@@ -59,12 +59,18 @@ pub fn export(root: &Path, out: &Path) {
         let mut controls = Vec::new();
         let mut frames = Vec::new();
         let mut created = Vec::new();
-        let count = if branch == 0 { 140 } else { 4 };
+        let count = if branch == 0 {
+            140
+        } else if branch == 7 {
+            219
+        } else {
+            4
+        };
         for step in 0..count {
-            let release = branch == 2 && step >= 2;
+            let release = (branch == 2 && step >= 2) || (branch == 7 && (215..217).contains(&step));
             let absent = branch == 4;
             let (entity, status, id) = if release {
-                let entity = created[step - 2];
+                let entity = created[if branch == 7 { 429 - step } else { step - 2 }];
                 let status = rcc_lifecycle_probe::release_transient(&mut world, entity)
                     .map_or_else(|v| v, |()| 0);
                 (entity, status, None)

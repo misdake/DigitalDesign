@@ -19,7 +19,7 @@ fn main(){
  let input=unsafe{Ptr::from_addr(0x0100).as_u16_array()};let out=unsafe{Ptr::from_addr(0x2000).as_u16_array()};let data=at(input,16);let r=at(input,input[5u16]);
  let prefix=at(input,input[12u16]);let temp=at(input,input[13u16]);
  let shared=temporary::State{core:temp,rows:at(temp,82)};
- let pools:Buf<effect_pool::Pool,1>=Buf::new([effect_pool::Pool{lines:at(temp,278),count:g(at(temp,276),0),overflow:effect_pool::line_zero(),exhausted:at(temp,1894)}]);
+ let pools:Buf<effect_pool::Pool,1>=Buf::new([effect_pool::Pool{page:65535,lines:at(temp,278),count:g(at(temp,276),0),overflow:effect_pool::line_zero(),exhausted:at(temp,1894)}]);
  let mut pool_rows=pools.as_array();let mut pool=&mut pool_rows[0u16];
  copy(unsafe{view_of(&mut pool.overflow).as_ptr().as_u16_array()},at(temp,1878),16);
  let sine:Buf<u16,4>=Buf::new([45056,320,40960,0]);

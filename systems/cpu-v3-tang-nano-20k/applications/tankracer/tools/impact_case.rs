@@ -9,6 +9,7 @@ fn run_impact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: Array
         impact::batch_zero(),
     ]);
     let mut state = impact::State {
+        page: 65535,
         batches: batches.as_array(),
         next: attitude::get(input, 7),
     };
@@ -28,6 +29,7 @@ fn run_impact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: Array
         frame: integer::from_i16(17),
         seed: seed.as_array(),
         pool: effect_pool::Pool {
+            page: 65535,
             lines: lines.as_array(),
             count: fix32::zero(),
             overflow: effect_pool::line_zero(),
@@ -38,6 +40,33 @@ fn run_impact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: Array
         forward_offset: unsafe { input.as_ptr().add(60).as_u16_array() },
         reverse_offset: unsafe { input.as_ptr().add(66).as_u16_array() },
     };
+    let layout = unsafe { Ptr::from_addr(0x1ffd).read(0) };
+    let banked = layout != 0;
+    let original_page = read_dseg_page(2);
+    if banked {
+        context.pool.page = 150;
+        context.pool.lines = unsafe { Ptr::from_addr(0x9000).as_u16_array() };
+        let saved = effect_pool::select(&context.pool);
+        let mut records = context.pool.lines;
+        let mut word = 0u16;
+        while word < 1600 {
+            records[word] = 0;
+            word += 1;
+        }
+        effect_pool::restore(saved);
+    }
+    if layout == 2 {
+        state.page = 150;
+        state.batches = unsafe { Ptr::from_addr(0xa000).as_array::<impact::Batch>() };
+        let saved = impact::select(&state);
+        let mut rows = state.batches;
+        let mut i = 0u16;
+        while i < 4 {
+            rows[i] = impact::batch_zero();
+            i += 1;
+        }
+        effect_pool::restore(saved);
+    }
     effect_pool::reset(&mut context.pool);
     let variant = attitude::get(input, 3);
     if variant == integer::from_i16(1) || variant == integer::from_i16(2) {
@@ -53,8 +82,10 @@ fn run_impact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: Array
         }
     }
     if variant == integer::from_i16(3) {
+        let saved = impact::select(&state);
         state.batches[0u16].active = true;
         state.batches[0u16].particles[3u16].line = integer::from_i16(101);
+        effect_pool::restore(saved);
     }
     let phases: Buf<u16, 8> = Buf::new([0; 8]);
     let phase = phases.as_array();
@@ -117,4 +148,7 @@ fn run_impact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: Array
         i += 1;
     }
     impact_capture::write(&mut state, &vehicle, &mut context, out);
+    if read_dseg_page(2) != original_page {
+        halt(0x7f72);
+    }
 }

@@ -26,9 +26,9 @@ fn main(){
  let previous=read_dseg_page(2);let previous3=read_dseg_page(3);unsafe{write_dseg_page(2,138);write_dseg_page(3,137);}
  let s=ptr(0x8000);let pool=at(s,4844);let capture=at(s,11620);
  let banks:Buf<impact::Batch,4>=Buf::new([impact::batch_zero(),impact::batch_zero(),impact::batch_zero(),impact::batch_zero()]);
- let mut live_impacts=impact::State{batches:banks.as_array(),next:fix32::zero()};
+ let mut live_impacts=impact::State{page:65535,batches:banks.as_array(),next:fix32::zero()};
  let mut live_quads=quad_pool::Pool{records:pool,exhausted:at(pool,5108),count:g(pool,2570)};
- let mut context=impact::Context{frame:fix32::zero(),seed:at(s,14196),pool:effect_pool::Pool{lines:at(pool,5144),count:g(pool,2571),overflow:effect_pool::line_zero(),exhausted:at(pool,6760)},sine:unsafe{ptr(0x2500).as_ptr().as_i16_array()},angle:unsafe{ptr(0x2504).as_ptr().as_i16_array()},forward_offset:ptr(0x2520),reverse_offset:ptr(0x2526)};
+ let mut context=impact::Context{frame:fix32::zero(),seed:at(s,14196),pool:effect_pool::Pool{page:65535,lines:at(pool,5144),count:g(pool,2571),overflow:effect_pool::line_zero(),exhausted:at(pool,6760)},sine:unsafe{ptr(0x2500).as_ptr().as_i16_array()},angle:unsafe{ptr(0x2504).as_ptr().as_i16_array()},forward_offset:ptr(0x2520),reverse_offset:ptr(0x2526)};
  let overflow=unsafe{view_of(&mut context.pool.overflow).as_ptr().as_u16_array()};copy(overflow,at(pool,6744),16);
  let prefix=prefix::Shared{view:at(s,14226),camera:at(s,14256),spin:at(s,4840),boost:at(s,14262),temporary:at(s,4566),pool:view_of(&mut context.pool),seed:context.seed,slot:ptr(0x2580)};
  let mut shared=car_effects::Shared{pickup:pickup_light::State{banks:at(s,2934)},impacts:view_of(&mut live_impacts),debris:at(s,1760),shield:at(s,2124),quads:view_of(&mut live_quads),temporary:temporary::State{core:at(s,4566),rows:at(s,4648)},owners:vehicle_debris::Owners{rows:at(s,14202),count:3,stride:4},own:0,owner_slots:3,impact_accumulator:at(s,701+152),sound:at(s,14198)};

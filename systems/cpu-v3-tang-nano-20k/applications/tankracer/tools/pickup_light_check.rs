@@ -13,7 +13,7 @@ fn copy(mut to:Array<u16>,from:Array<u16>,count:u16){let mut i=0u16;while i<coun
 fn main(){
  let input=unsafe{Ptr::from_addr(0x8000).as_u16_array()};
  let controls=unsafe{Ptr::from_addr(0x0100).as_u16_array()};
- let mut lines=effect_pool::Pool{lines:at(input,6776),count:g(input,3387),overflow:effect_pool::line_zero(),exhausted:at(input,8392)};
+ let mut lines=effect_pool::Pool{page:65535,lines:at(input,6776),count:g(input,3387),overflow:effect_pool::line_zero(),exhausted:at(input,8392)};
  let overflow=unsafe{view_of(&mut lines.overflow).as_ptr().as_u16_array()};copy(overflow,at(input,8376),16);
  let mut pool=quad_pool::Pool{records:at(input,1632),exhausted:at(input,6740),count:g(input,3386)};
  let state=pickup_light::State{banks:input};

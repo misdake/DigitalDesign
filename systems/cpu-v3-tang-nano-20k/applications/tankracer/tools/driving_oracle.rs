@@ -6,7 +6,7 @@ mod pages;
 #[allow(dead_code, clippy::needless_range_loop, clippy::manual_range_contains)]
 #[path = "vehicle_oracle.rs"]
 mod reference;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{fs, path::Path};
 use tankracer_assets::{
     archive::Archive,
@@ -277,6 +277,7 @@ fn main() {
         let mut initial = state(&m, &p, &b, &g, &data);
         initial.extend(body_state(&m, &live_pose, &gun));
         initial.extend(contacts.snapshot(seed));
+        let car_bindings = contacts.bindings();
         let initial_seed = seed;
         let mut frames = Vec::new();
         let mut visited = Vec::new();
@@ -325,11 +326,7 @@ fn main() {
             b.decay(dt, true);
             let input = drive::Input {
                 throttle: if index < steps * 2 / 3 {
-                    if velocity < 0 {
-                        -65535
-                    } else {
-                        65535
-                    }
+                    if velocity < 0 { -65535 } else { 65535 }
                 } else {
                     0
                 },
@@ -477,7 +474,7 @@ fn main() {
                 "high-speed fallback must cause live track/body damage"
             );
         }
-        cases.push(json!({"name":name,"initial":initial,"seed_after_noise":initial_seed,"noise":noise,"environment":flat_env,"frames":frames,"cells":visited,"fallback_contacts":fallback_contacts}));
+        cases.push(json!({"name":name,"car_bindings":car_bindings,"initial":initial,"seed_after_noise":initial_seed,"noise":noise,"environment":flat_env,"frames":frames,"cells":visited,"fallback_contacts":fallback_contacts}));
     }
     let mut collision = Vec::new();
     let mut directory = [65535u16; 64];

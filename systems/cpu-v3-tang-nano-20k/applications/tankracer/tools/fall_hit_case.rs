@@ -20,6 +20,7 @@ fn run_fall_hit(input: Array<u16>, out: Array<u16>) {
         count = 2;
     }
     let mut ticks = lifecycle::Ticks {
+        flag_words: 2,
         flags: flags.as_array(),
         flag_count: attitude::get(input, 14).lo_bits(),
         order: ordered::List {

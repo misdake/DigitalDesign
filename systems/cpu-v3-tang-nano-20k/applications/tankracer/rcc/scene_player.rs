@@ -112,13 +112,21 @@ pub fn prepare(
                 if g(result, 0) != n(0) {
                     laps[0u16].lap = g(car.route.race, 1).lo_bits() as i16;
                     laps[0u16].flush = false;
+                    let previous = route_page(stage);
                     let status = scene_laps::step(scene, store, runtime, world, weapons, laps);
+                    unsafe {
+                        write_dseg_page(3, previous);
+                    }
                     if status != n(0) {
                         return status;
                     }
                 }
                 laps[0u16].flush = true;
+                let previous = route_page(stage);
                 let status = scene_laps::step(scene, store, runtime, world, weapons, laps);
+                unsafe {
+                    write_dseg_page(3, previous);
+                }
                 if status != n(0) {
                     return status;
                 }
@@ -199,7 +207,11 @@ pub fn prepare(
                 score - integer::mul(lap, fix32::from_words(16384, 156)),
                 fix32::from_words(8192, 3),
             );
+            let previous = route_page(stage);
             flags = fix32::from_words(stage.weather_table[lap.lo_bits() * 64 + part.lo_bits()], 0);
+            unsafe {
+                write_dseg_page(3, previous);
+            }
         }
         let first = f.number == n(1);
         if flags != fix32::from_words(65535, 65535) && (flags != g(car.weather, 0) || first) {

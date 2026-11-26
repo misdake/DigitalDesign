@@ -64,6 +64,7 @@ fn run_bounce_hit(input: Array<u16>, out: Array<u16>, sine: Array<i16>) {
     attitude::put(seed.as_array(), 0, attitude::get(input, 83));
     let mut runtime = scene_world::Runtime {
         ticks: lifecycle::Ticks {
+            flag_words: 2,
             flags: flags.as_array(),
             flag_count: attitude::get(input, 80).lo_bits(),
             order: ordered::List {

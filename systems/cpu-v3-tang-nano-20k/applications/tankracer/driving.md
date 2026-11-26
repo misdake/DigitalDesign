@@ -87,6 +87,57 @@ compares the original sampler's partial state, RNG and tail writes on diagnostic
 planes; its cases distinguish failures before expiry from auxiliary failures
 after the shared write.
 
+## Complete Player preparation
+
+`--scope player` runs the original complete Player method on the reference side,
+including Tank preparation, physics and post-physics publication. The target
+executes those stages on the same persistent World. Its trajectories fire Shell,
+Homing and Warp, advance the race clock, exercise horn edges and hide/reveal the
+vehicle while continuing through authored contacts. Route crossing, lap queues,
+turret/fire, auxiliary brake,
+progress and first-map weather precede the existing Tank branch. Ordinary object
+collision remains active independently of whether the qualifier runs the outer
+scenery scheduler.
+
+`player_world` binds the existing input, collision, poses, inventory, prefix,
+resource and shared RNG owners. Sixty resident words hold two route/racer/weather
+rows. The context asset contains actual ENGLAND route tables, initial lap bindings,
+backup bases, tuning, camera and weapon resources. Mutable lap fields live in
+the World properties bank. Loading completes the original
+resource-preparation methods without consuming RNG and selects their matching
+mesh catalog and name/source bindings. The regular constructor qualification
+retains its original resource catalog.
+
+Weapon kind/slot metadata borrows columns one and two of the existing eight-word
+component rows. Six 32-KiB banks reserve two projectile banks, one mine bank,
+two explosion banks and one UFO bank. They share identities, dynamic collision
+rows and ordered lists with scenery. Shared flight occupies effects words
+10468..10521. Two seven-word Player tail rows occupy 15232..15245; blast state
+occupies 16000..16373, with adjacent guards. The typed impact-batch extent is
+checked against the first tail guard before either range is installed. Constructor
+scratch and line storage retain their existing separate ranges.
+
+Each Player snapshot contains its total word count and projectile count, sixty
+route/racer/weather words, eight inventory words, 54 shared-flight words,
+fourteen Player tail words, then sorted projectile IDs and complete 640-word component records. Only the initial
+route/inventory state is loaded; later snapshots are streamed through the bounded
+answer cache after the update. Identical per-case reference resources share one
+asset descriptor. Their source files and bytes remain independently audited.
+
+`--scope clock` advances the original raw-time countdown/release clock before
+visiting the live racer slots, then clamps the physics interval to 10..100 ms.
+The release frame sets driving without carrying countdown overshoot into lap
+elapsed or the GO timer. Clock state occupies twelve resident bytes. The five
+updates cover countdown, release, a 250-ms interval and a 5-ms interval; racer
+elapsed retains raw time while Player/Tank uses the clamped interval. Start-stage
+bits are derived from the clock. Their reference control columns are unused.
+The source clock/racer snapshots are checked after every update. Complete-effect
+snapshots read their driving aliases from the same authoritative racer rows.
+
+This entry qualifies direct Player-to-Tank updates and post-Tank gun revision
+and horn state. Finish takeover, the mixed weapon/actor scheduler and complete
+race startup remain distinct integration boundaries.
+
 ## Vehicle construction
 
 `vehicle_startup::construct` takes immutable assembled-model metadata and the
@@ -195,6 +246,54 @@ The recipe sets `ApplicationSource.stack_top` to word 0x8000 and reserves an
 8-KiB heap starting at word 0x2000. Statics, heap and all call frames remain below
 the two working windows. `target.stack_top` in the artifact describes this
 compiled entry; the boot map's cold-entry SP remains the system default.
+
+The driving loader retains the reference scenery file's eleven-section format.
+Its CPU image omits the class and object snapshots: both are already owned by
+`Store.identities`, which remains the source for dispatch and object handles.
+The loader validates the source header before transferring sections, relocates
+their offsets, and validates the compact extent. State/configuration references
+remain relative to their own sections. Reference exports and expected frame
+states keep their original byte layout. `scenery_loading_check.py` tests that
+changes to diagnostic snapshots have no effect, while changes to canonical
+identity/component state and invalid source sections are detected.
+
+Lifetime lists use generated offsets in one CPU allocation. The free-object
+stack reserves the full fixed-object capacity, rather than sixteen entries.
+Lap and sign membership reserve their initial map counts because updates only
+remove entries from these two lists. Deferred enter/leave queues retain the
+original identity capacity. With the ENGLAND inputs these capacities are
+240/54/26/256/256, occupying 1,664 words in total. The loader validates each
+source list count before writing its allocated range.
+
+The 100-line effect pool occupies words 12400..13999 of the existing effects
+bank, beyond the constructor scratch ending at word 12384. Its descriptor,
+overflow record and exhausted alias stay in CPU memory. `effect_pool::Pool.page`
+selects the DSEG2 line bank for record access and restores the incoming mapping
+on every return; 65535 retains the caller's resident layout. Inputs in a DSEG2
+window that will be replaced are retained before the switch, including a span
+that starts before the window edge. CPU/DSEG3 inputs retain their normal aliases.
+Quad 160's cross-pool alias uses the same raw line access. Driving comparisons
+and loading select the line bank around their contiguous transfers.
+
+The focused impact qualifier runs the same original cases with resident and
+banked records. Separate checks cover window-edge inputs, overflow records,
+Quad 160's span across two line records, rejected handles and full-pool early
+returns. Raw driving trajectories export vehicle bindings with their initial
+state; full physical trajectories keep their existing bindings and answers.
+
+The four impact batches follow the lines at word 14000. Each current target
+record occupies 211 words, ending at word 14844. A typed `Ptr::as_array::<Batch>()`
+view addresses these nested records directly; initialization writes each row
+in place. Loading checks the compiled row stride against the remaining bank
+capacity before writing. The layout is private to the target program; canonical
+reference captures keep their original serialized representation.
+
+`impact::State.page` selects DSEG2 for a complete emit/tick and restores it on
+every return. Vehicle/context views remain resident outside that window. Lines
+and batches share a page, so the inner pool calls retain the existing selection
+throughout the particle loop. The resident convention remains 65535. The focused
+qualifier runs every original case with resident rows, banked lines, and banked
+lines plus batches, including early and partially committed failures.
 
 Scene loading, queries and scenery ticks select the property/grid page. Grid
 insert/remove operations restore the incoming page on success and failure.
@@ -977,3 +1076,29 @@ cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- tar
 cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/vehicle-methods-check target/weapon-reference 0 scene-vehicle-transfer
 cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/obstacle-methods-check target/weapon-reference 0 scene-obstacle-transfer
 ```
+
+## Post-physics Player publication
+
+`player_tail` compares the four bound gun vertices before and after physics.
+The snapshot retains both the optional gun and per-index validity; a changed
+snapshot increments the gun presentation revision as four wrapping u16 words.
+This publication precedes propagation of a physics error. Horn state follows
+only successful visible primary-player updates. Hidden and non-primary branches
+retain their source ordering.
+
+Each seven-word tail row contains horn-down, horn-latched, the signed i16 horn
+timer and four little-endian u64 revision words. The horn rising edge starts
+1000 ms; held and released inputs preserve the original latch and signed-time
+behavior. At expiry, the caller visits racer slots 2..9 in order and clears the
+timer only after all referenced non-AI vehicles are present. AI anger is owned
+by the later opponent phase. Audio delivery is an external successful device
+operation. `--scope tail` selects the three-frame horn and hidden-vehicle
+trajectories. The standalone `player-tail` qualifier also supplies controlled
+post-physics geometry and errors to the original extracted tail body.
+
+The driving qualifier packs initialization independently from later answers.
+Each row contains both cars' consumed initialization slices, seed/noise and the
+24 auxiliary input words. Identical packed rows share an offset in `initial.bin`;
+`initial-offsets.bin` holds one u16 word offset per case. The full diagnostic
+source remains in the host export. Runtime loads the same consumed words and
+recomputes derived fields as before; later reference streams retain their format.

@@ -80,7 +80,7 @@ fn abs(v: fix32) -> fix32 {
     v
 }
 fn component(weapons: &scene_creation::Weapons, id: u16) -> bool {
-    id < weapons.object_capacity && weapons.directory[id * 2] == 1
+    id < weapons.object_capacity && scene_creation::component_kind(weapons, id) == 1
 }
 // The caller has resolved UFO attachment and shield reflection before this phase.
 pub fn begin(
@@ -138,7 +138,11 @@ pub fn begin(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let row = at(scene_creation::record(weapons, id, 3), 30);
@@ -186,7 +190,11 @@ pub fn begin(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let row = scene_creation::record(weapons, id, 3);
@@ -210,7 +218,11 @@ pub fn begin(
         unsafe {
             write_dseg_page(
                 3,
-                scene_creation::page(weapons, 3, weapons.directory[index * 2 + 1]),
+                scene_creation::page(
+                    weapons,
+                    3,
+                    weapons.directory[index * weapons.directory_stride + 1],
+                ),
             );
         }
         let mut target = scene_creation::record(weapons, index, 3);
@@ -226,7 +238,11 @@ pub fn begin(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = at(scene_creation::record(weapons, id, 3), 30);
@@ -275,7 +291,11 @@ pub fn begin(
             unsafe {
                 write_dseg_page(
                     3,
-                    scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+                    scene_creation::page(
+                        weapons,
+                        1,
+                        weapons.directory[id * weapons.directory_stride + 1],
+                    ),
                 );
             }
             let state = at(scene_creation::record(weapons, id, 3), 30);
@@ -310,7 +330,11 @@ pub fn area(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = at(scene_creation::record(weapons, id, 3), 30);
@@ -399,7 +423,11 @@ pub fn direct(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = at(scene_creation::record(weapons, id, 3), 30);
@@ -525,7 +553,11 @@ pub fn dispatch(
             unsafe {
                 write_dseg_page(
                     3,
-                    scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+                    scene_creation::page(
+                        weapons,
+                        1,
+                        weapons.directory[id * weapons.directory_stride + 1],
+                    ),
                 );
             }
             let kind = g(at(scene_creation::record(weapons, id, 3), 30), 2);
@@ -567,7 +599,11 @@ pub fn dispatch(
                         unsafe {
                             write_dseg_page(
                                 3,
-                                scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+                                scene_creation::page(
+                                    weapons,
+                                    1,
+                                    weapons.directory[id * weapons.directory_stride + 1],
+                                ),
                             );
                         }
                         let state = at(scene_creation::record(weapons, id, 3), 30);
@@ -608,7 +644,11 @@ pub fn dispatch(
                             unsafe {
                                 write_dseg_page(
                                     3,
-                                    scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+                                    scene_creation::page(
+                                        weapons,
+                                        1,
+                                        weapons.directory[id * weapons.directory_stride + 1],
+                                    ),
                                 );
                             }
                             let state = at(scene_creation::record(weapons, id, 3), 30);

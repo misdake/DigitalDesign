@@ -381,8 +381,8 @@ pub fn progress(
     warning(car, f.entity, f.number, f.dt);
     n(0)
 }
-// Clock: countdown, release/GO timer, display stage. Each racer has three i32.
-pub fn clock(clock: Array<u16>, racers: Array<u16>, count: u16, elapsed: fix32) {
+// Clock: countdown, release/GO timer and display stage, before any racer update.
+pub fn clock_time(clock: Array<u16>, elapsed: fix32) -> bool {
     let running = g(clock, 0) == n(0);
     let mut launch = false;
     if running {
@@ -412,6 +412,13 @@ pub fn clock(clock: Array<u16>, racers: Array<u16>, count: u16, elapsed: fix32) 
             p(clock, 2, display);
         }
     }
+    launch
+}
+// Dense standalone racers have three i32 each. The session uses clock_time
+// once and visits its existing racer-slot table over authoritative vehicle rows.
+pub fn clock(clock: Array<u16>, racers: Array<u16>, count: u16, elapsed: fix32) {
+    let running = g(clock, 0) == n(0);
+    let launch = clock_time(clock, elapsed);
     let mut i = 0u16;
     while i < count {
         let racer = at(racers, i * 6);

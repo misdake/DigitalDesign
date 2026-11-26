@@ -202,7 +202,9 @@ fn check_impacts(
     expect_value(state.next, expected, 300);
     expect_value(attitude::get(vehicle.cooldown, 0), expected, 301);
     expect_value(context.pool.count, expected, 302);
+    let saved = effect_pool::select(&context.pool);
     expect_block(context.pool.lines, expected, 606, 1600);
+    effect_pool::restore(saved);
     expect_block(
         unsafe { view_of(&mut context.pool.overflow).as_ptr().as_u16_array() },
         expected,
@@ -212,6 +214,7 @@ fn check_impacts(
     expect_block(context.pool.exhausted, expected, 2222, 16);
     let row: Buf<u16, 22> = Buf::new([0; 22]);
     let mut cursor = 2238u16;
+    let batch_page = impact::select(state);
     i = 0;
     while i < 4 {
         let batch = &mut state.batches[i];
@@ -227,6 +230,7 @@ fn check_impacts(
         }
         i += 1;
     }
+    effect_pool::restore(batch_page);
 }
 #[inline(never)]
 pub fn check_snapshot(

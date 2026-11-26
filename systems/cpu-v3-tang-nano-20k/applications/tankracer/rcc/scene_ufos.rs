@@ -67,14 +67,18 @@ pub fn carrier(
     frame: &mut crate::projectile_flight::Frame,
 ) -> fix32 {
     frame.carrier_present = false;
-    if id >= weapons.object_capacity || weapons.directory[id * 2] != 1 {
+    if id >= weapons.object_capacity || scene_creation::component_kind(weapons, id) != 1 {
         return n(-4);
     }
     let saved = read_dseg_page(3);
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                1,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = at(scene_creation::record(weapons, id, 3), 30);
@@ -93,7 +97,7 @@ pub fn carrier(
     let ufo = entities::handle(&store.identities, entity);
     if ufo.hi_bits() != 0
         || ufo.lo_bits() >= weapons.object_capacity
-        || weapons.directory[ufo.lo_bits() * 2] != 4
+        || scene_creation::component_kind(weapons, ufo.lo_bits()) != 4
     {
         return n(-4);
     }
@@ -101,7 +105,11 @@ pub fn carrier(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 4, weapons.directory[object * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                4,
+                weapons.directory[object * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = at(scene_creation::record(weapons, object, 3), 30);
@@ -199,7 +207,7 @@ pub fn spawn(
     }
     let id = object.lo_bits();
     if id >= weapons.object_capacity
-        || weapons.directory[id * 2] != 4
+        || scene_creation::component_kind(weapons, id) != 4
         || id >= store.object_count
         || at(store.records, id * 8)[7u16] & 1 == 0
     {
@@ -209,7 +217,11 @@ pub fn spawn(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 4, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                4,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let mut row = scene_creation::record(weapons, id, 3);
@@ -247,7 +259,11 @@ pub fn spawn(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 4, weapons.directory[id * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                4,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = at(scene_creation::record(weapons, id, 3), 30);
@@ -307,7 +323,11 @@ pub fn spawn(
         unsafe {
             write_dseg_page(
                 3,
-                scene_creation::page(weapons, 4, weapons.directory[id * 2 + 1]),
+                scene_creation::page(
+                    weapons,
+                    4,
+                    weapons.directory[id * weapons.directory_stride + 1],
+                ),
             );
         }
         let state = at(scene_creation::record(weapons, id, 3), 30);

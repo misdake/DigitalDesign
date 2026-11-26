@@ -25,7 +25,7 @@ fn main(){
  let previous=read_dseg_page(2);let previous3=read_dseg_page(3);unsafe{write_dseg_page(2,138);write_dseg_page(3,137);}
  let s=ptr(0x8000);let capture=at(s,1558);let tracks=at(s,4134);
  let banks:Buf<impact::Batch,4>=Buf::new([impact::batch_zero(),impact::batch_zero(),impact::batch_zero(),impact::batch_zero()]);
- let mut live_impacts=impact::State{batches:banks.as_array(),next:fix32::zero()};
+ let mut live_impacts=impact::State{page:65535,batches:banks.as_array(),next:fix32::zero()};
  let mut live_quads=quad_pool::Pool{records:at(tracks,384),exhausted:at(tracks,5492),count:g(tracks,2762)};
  let mut shared=car_effects::Shared{pickup:pickup_light::State{banks:at(s,11294)},impacts:view_of(&mut live_impacts),debris:at(s,350),shield:at(s,744),quads:view_of(&mut live_quads),temporary:temporary::State{core:at(s,12926),rows:at(s,13008)},owners:vehicle_debris::Owners{rows:at(s,714),count:1,stride:4},own:0,owner_slots:1,impact_accumulator:at(s,738),sound:at(s,740)};
  restore(&mut live_impacts,capture);
@@ -34,7 +34,7 @@ fn main(){
  let mut vehicle=impact::Vehicle{entity:fix32::zero(),cooldown:at(s,1556),contacts:s,contact_stride:3,forward:fix32::zero(),basis:s,has_basis:false};
  let sine:Buf<u16,4>=Buf::new([45056,320,40960,0]);let angle:Buf<u16,4>=Buf::new([45376,5,514,0]);
  let offsets:Buf<u16,12>=Buf::new([0,0,0,0,2000,0,0,0,0,0,63536,65535]);
- let mut context=impact::Context{frame:fix32::zero(),seed:at(s,1554),pool:effect_pool::Pool{lines:at(tracks,5528),count:g(tracks,2763),overflow:effect_pool::line_zero(),exhausted:at(tracks,7144)},sine:unsafe{sine.as_array().as_ptr().as_i16_array()},angle:unsafe{angle.as_array().as_ptr().as_i16_array()},forward_offset:offsets.as_array(),reverse_offset:at(offsets.as_array(),6)};
+ let mut context=impact::Context{frame:fix32::zero(),seed:at(s,1554),pool:effect_pool::Pool{page:65535,lines:at(tracks,5528),count:g(tracks,2763),overflow:effect_pool::line_zero(),exhausted:at(tracks,7144)},sine:unsafe{sine.as_array().as_ptr().as_i16_array()},angle:unsafe{angle.as_array().as_ptr().as_i16_array()},forward_offset:offsets.as_array(),reverse_offset:at(offsets.as_array(),6)};
  let overflow=unsafe{view_of(&mut context.pool.overflow).as_ptr().as_u16_array()};copy(overflow,at(tracks,7128),16);
  let count=ptr(0x2300)[0u16];let mut frame=0u16;
  while frame<count{

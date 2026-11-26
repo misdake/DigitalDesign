@@ -26,7 +26,7 @@ pub fn get(pool: &Pool, lines: &effect_pool::Pool, handle: fix32, index: u16) ->
         if index < 2 {
             return attitude::get(lines.exhausted, index + 6);
         }
-        return attitude::get(lines.lines, index - 2);
+        return effect_pool::get(lines, index - 2);
     }
     if handle == n(159) && index >= 10 {
         return attitude::get(lines.exhausted, index - 10);
@@ -43,7 +43,7 @@ pub fn put(pool: &Pool, lines: &effect_pool::Pool, handle: fix32, index: u16, va
             attitude::put(lines.exhausted, index + 6, value);
             return;
         }
-        attitude::put(lines.lines, index - 2, value);
+        effect_pool::put(lines, index - 2, value);
         return;
     }
     if handle == n(159) && index >= 10 {

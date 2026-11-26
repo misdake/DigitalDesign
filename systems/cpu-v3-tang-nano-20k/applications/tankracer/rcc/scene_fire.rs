@@ -153,7 +153,7 @@ pub fn apply(
         let object = entities::handle(&store.identities, entity);
         if object.hi_bits() != 0
             || object.lo_bits() >= weapons.object_capacity
-            || weapons.directory[object.lo_bits() * 2] != 1
+            || scene_creation::component_kind(weapons, object.lo_bits()) != 1
         {
             return n(-4);
         }
@@ -162,7 +162,11 @@ pub fn apply(
         unsafe {
             write_dseg_page(
                 2,
-                scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+                scene_creation::page(
+                    weapons,
+                    1,
+                    weapons.directory[id * weapons.directory_stride + 1],
+                ),
             );
         }
         let state = projectile::view(at(scene_creation::record(weapons, id, 2), 30));

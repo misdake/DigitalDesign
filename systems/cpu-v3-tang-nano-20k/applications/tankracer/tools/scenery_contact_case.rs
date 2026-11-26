@@ -261,6 +261,7 @@ fn run_car_scenery(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: 
     attitude::put(slot.as_array(), 0, attitude::get(input, 9));
     let mut runtime = scene_world::Runtime {
         ticks: lifecycle::Ticks {
+            flag_words: 2,
             flags: fl,
             flag_count: attitude::get(input, 110).lo_bits(),
             order: ordered::List {

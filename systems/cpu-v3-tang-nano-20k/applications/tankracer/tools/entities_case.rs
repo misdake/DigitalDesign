@@ -2,6 +2,7 @@ fn run_entities(input: Array<u16>, out: Array<u16>) {
     let header: Buf<u16, 12> = Buf::new([0; 12]);
     let rows: Buf<u16, 2400> = Buf::new([0; 2400]);
     let state = entities::State {
+        row_words: 6,
         header: header.as_array(),
         rows: rows.as_array(),
         storage_capacity: 400,

@@ -93,10 +93,14 @@ fn spawn(
         return n(-1);
     }
     // The content loader binds the Projectile class and its banked component.
-    if id >= weapons.object_capacity || weapons.directory[id * 2] != 1 {
+    if id >= weapons.object_capacity || scene_creation::component_kind(weapons, id) != 1 {
         return n(-4);
     }
-    let bank = scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]);
+    let bank = scene_creation::page(
+        weapons,
+        1,
+        weapons.directory[id * weapons.directory_stride + 1],
+    );
     let previous = read_dseg_page(3);
     unsafe {
         write_dseg_page(3, bank);

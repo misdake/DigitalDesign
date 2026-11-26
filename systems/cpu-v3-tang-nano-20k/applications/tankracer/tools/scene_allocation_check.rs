@@ -22,25 +22,27 @@ fn check_words(
     Ok(want.len())
 }
 pub fn run(output: &Path, fixture: &Path, label: &str) -> Result<Value, Box<dyn Error>> {
-    let creation = label != "scene-allocation";
-    let player_mode = label == "scene-player";
-    let fire_mode = label == "scene-fire" || player_mode;
-    let laps = label == "scene-laps";
-    let trains = label == "scene-train";
-    let emitters = label == "scene-emitter";
-    let flocks = label == "scene-flock";
-    let ambient = label == "scene-ambient";
-    let ufo_tick = label == "scene-ufo-transfer";
-    let vehicle_methods = label == "scene-vehicle-transfer" || ufo_tick;
-    let obstacle_methods = label == "scene-obstacle-transfer";
-    let ufos = label == "scene-ufos";
-    let projectile_ufo = label == "scene-projectile-ufo";
+    let packed = label.ends_with("-packed");
+    let mode = label.strip_suffix("-packed").unwrap_or(label);
+    let creation = mode != "scene-allocation";
+    let player_mode = mode == "scene-player";
+    let fire_mode = mode == "scene-fire" || player_mode;
+    let laps = mode == "scene-laps";
+    let trains = mode == "scene-train";
+    let emitters = mode == "scene-emitter";
+    let flocks = mode == "scene-flock";
+    let ambient = mode == "scene-ambient";
+    let ufo_tick = mode == "scene-ufo-transfer";
+    let vehicle_methods = mode == "scene-vehicle-transfer" || ufo_tick;
+    let obstacle_methods = mode == "scene-obstacle-transfer";
+    let ufos = mode == "scene-ufos";
+    let projectile_ufo = mode == "scene-projectile-ufo";
     let has_ufos = ufos || projectile_ufo || ufo_tick;
-    let mines = label == "scene-mines" || label == "scene-mine-tick";
-    let mine_hit = label == "scene-mine-hit";
-    let projectile_direct = label == "scene-projectile-direct";
-    let projectile_area = label == "scene-projectile-area" || projectile_direct || projectile_ufo;
-    let projectile_flight = label == "scene-projectile-flight" || projectile_area;
+    let mines = mode == "scene-mines" || mode == "scene-mine-tick";
+    let mine_hit = mode == "scene-mine-hit";
+    let projectile_direct = mode == "scene-projectile-direct";
+    let projectile_area = mode == "scene-projectile-area" || projectile_direct || projectile_ufo;
+    let projectile_flight = mode == "scene-projectile-flight" || projectile_area;
     let mine_membership = mines
         || mine_hit
         || has_ufos
@@ -52,10 +54,10 @@ pub fn run(output: &Path, fixture: &Path, label: &str) -> Result<Value, Box<dyn 
         || emitters
         || flocks
         || ambient;
-    let explosion_tick = label == "scene-explosion-tick";
-    let weapon_explosion = label == "scene-weapon-explosion" || label == "scene-mine-explosion";
+    let explosion_tick = mode == "scene-explosion-tick";
+    let weapon_explosion = mode == "scene-weapon-explosion" || mode == "scene-mine-explosion";
     let vehicle_views = explosion_tick || weapon_explosion || mine_hit || projectile_area;
-    let explosions = label == "scene-explosions" || vehicle_views;
+    let explosions = mode == "scene-explosions" || vehicle_views;
     let ambient_setup = if ambient {
         r#"
  let mut smoke_data=pointer(0x6100);if pointer(0x62e5)[0u16]!=0{smoke_data=pointer(0xc000);}
@@ -280,7 +282,7 @@ fn flock_geometry(index:u16)->scene_flock::Geometry{let m=pointer(0x6500+index*6
     } else {
         ""
     };
-    let weapon_call = if label == "scene-weapon-explosion" {
+    let weapon_call = if mode == "scene-weapon-explosion" {
         r#"
  let start=scene_explosions::Spawn{class:g(pointer(0x2372),0),frame:g(c,5),position:pointer(0x2376),context:explosion::Context{resources:pointer(0x2368),seed:runtime.seed,sine:launch.context.tables.sine}};
  let request=scene_explosions::WeaponSpawn{start,kind:g(c,1).lo_bits(),stamp:g(c,2),camera:pointer(0x238a),materials:pointer(0x2380),has_contact:g(c,3)!=integer::from_i16(0),vehicle:pointer(0x23b1)[0u16],local_point:pointer(0x239e),world_point:pointer(0x23a4),velocity:pointer(0x23aa),vehicles:hit_cars.as_array(),vehicle_count:pointer(0x23bc)[0u16]};
@@ -297,7 +299,7 @@ fn flock_geometry(index:u16)->scene_flock::Geometry{let m=pointer(0x6500+index*6
     } else {
         ""
     };
-    let mine_explosion_call = if label == "scene-mine-explosion" {
+    let mine_explosion_call = if mode == "scene-mine-explosion" {
         r#"
  let start=scene_explosions::Spawn{class:g(pointer(0x2372),0),frame:g(c,5),position:pointer(0x2376),context:explosion::Context{resources:pointer(0x2368),seed:runtime.seed,sine:launch.context.tables.sine}};
  let car=&hit_cars[pointer(0x23b1)[0u16]];
@@ -479,9 +481,11 @@ fn flock_geometry(index:u16)->scene_flock::Geometry{let m=pointer(0x6500+index*6
     } else {
         "halt(0x7e73);"
     };
-    let data: Value = serde_json::from_slice(&fs::read(fixture.join(format!("{label}.json")))?)?;
+    let fixture_name = mode;
+    let data: Value =
+        serde_json::from_slice(&fs::read(fixture.join(format!("{fixture_name}.json")))?)?;
     let code = compile(
-        label,
+        mode,
         &r#"
 const CREATION:bool=$CREATION;
 const PLAYER:bool=$PLAYER;
@@ -550,18 +554,18 @@ $FLOCK_HELPERS
 fn main(){
  let meta=pointer(0x80);let initial2=read_dseg_page(2);let initial3=read_dseg_page(3);
  unsafe{write_dseg_page(2,120);write_dseg_page(3,119);}
- let header=pointer(0x100);let ids=entities::State{header:header,rows:at(header,12),storage_capacity:512};
+ let header=pointer(0x100);let ids=entities::State{row_words:$ROW_WORDS,header:header,rows:at(header,12),storage_capacity:512};
  let mut world=scene_world::World{colliders:pointer(0x8000),properties:pointer(0xc000),count:meta[0u16],fixed_count:meta[0u16],dynamic_page:122,dynamic_capacity:215,
  grid:spatial::Grid{page:65535,origin:pointer(0),shift_x:0,shift_z:0,items:pointer(0),ranges:pointer(0)},deformables:ordered::List{items:pointer(0),count:0,capacity:0}};
  let mut store=scene_lifecycle::Store{identities:ids,records:pointer(0x1300),object_count:meta[1u16],object_capacity:512,colliders:world.colliders,collider_stride:60,fixed_count:world.fixed_count,dynamic_page:122,
  generic_class:meta[3u16],obstacle_class:meta[4u16],limit:fix32::from_words(34464,1),free_objects:list(5),lap_objects:list(6),signs:list(7),enter:list(8),leave:list(9)};
- let mut runtime=scene_world::Runtime{ticks:lifecycle::Ticks{flags:pointer(0xe00),flag_count:meta[2u16],order:list(0),next:g(pointer(0xb0),0)},
+ let mut runtime=scene_world::Runtime{ticks:lifecycle::Ticks{flag_words:$FLAG_WORDS,flags:pointer(0xe00),flag_count:meta[2u16],order:list(0),next:g(pointer(0xb0),0)},
  slot:pointer(0xb2),seed:pointer(0xb4),queues:lifecycle::Queues{notifications:list(1),destruction:list(2)},ordinary:list(3),special:list(4)};
  let mut quads=quad_pool::Pool{records:pointer(0x8000),exhausted:pointer(0x93f4),count:g(pointer(0x2364),0)};
- let mut lines=effect_pool::Pool{lines:pointer(0x9418),exhausted:pointer(0x9a68),count:g(pointer(0x2366),0),overflow:effect_pool::line_zero()};
+ let mut lines=effect_pool::Pool{page:65535,lines:pointer(0x9418),exhausted:pointer(0x9a68),count:g(pointer(0x2366),0),overflow:effect_pool::line_zero()};
  let overflow=unsafe{view_of(&mut lines.overflow).as_ptr().as_u16_array()};
  $EXPLOSION_SETUP
- let mut weapons=scene_creation::Weapons{directory:pointer(0x2c00),object_capacity:512,projectile_page:123,projectile_pages:2,mine_page:125,mine_pages:1,explosion_page:126,explosion_pages:2,ufo_page:130,ufo_pages:$UFO_PAGES,explosion_world:pointer(0x2300),blasts:explosion_blasts::view(pointer(0x9a78)),effect_page:128,quads:view_of(&mut quads),lines:view_of(&mut lines),has_effect_pool:pointer(0x237c)[0u16]!=0,world_class:meta[6u16],mine_order:ordered::List{items:pointer(0x5c00),count:pointer(0xaa)[0u16],capacity:512},mine_count:pointer(0xbc)};
+ let mut weapons=scene_creation::Weapons{directory_stride:$DIRECTORY_STRIDE,directory:pointer($DIRECTORY_ADDRESS),object_capacity:512,projectile_page:123,projectile_pages:2,mine_page:125,mine_pages:1,explosion_page:126,explosion_pages:2,ufo_page:130,ufo_pages:$UFO_PAGES,explosion_world:pointer(0x2300),blasts:explosion_blasts::view(pointer(0x9a78)),effect_page:128,quads:view_of(&mut quads),lines:view_of(&mut lines),has_effect_pool:pointer(0x237c)[0u16]!=0,world_class:meta[6u16],mine_order:ordered::List{items:pointer(0x5c00),count:pointer(0xaa)[0u16],capacity:512},mine_count:pointer(0xbc)};
  let sine:Buf<u16,4>=Buf::new([45056,320,40960,0]);let angle:Buf<u16,4>=Buf::new([45376,5,514,0]);
  let params=pointer(0x5b00);
  let context=projectile::Context{shared:projectile::shared(pointer(0x5a00)),resources:projectile::Resources{tuning:params,main:at(params,30),trail:at(params,42),homing_tail:at(params,54),cup:params[60u16]},tables:projectile::Tables{sine:unsafe{sine.as_array().as_ptr().as_i16_array()},angle:unsafe{angle.as_array().as_ptr().as_i16_array()}},seed:runtime.seed};
@@ -651,7 +655,7 @@ fn main(){
  $MINE_FINISH
  unsafe{write_dseg_page(3,initial3);write_dseg_page(2,initial2);}halt(0x600d);
 }
-"#.replace("$PLAYER_SETUP",player_setup).replace("$PLAYER_CALL",player_call).replace("$PLAYER",if player_mode {"true"}else{"false"}).replace("$AMBIENT_SETUP",ambient_setup).replace("$AMBIENT_CALL",ambient_call).replace("$FLOCK_HELPERS",flock_helpers).replace("$FLOCK_SETUP",flock_setup).replace("$FLOCK_CALL",flock_call).replace("$EMITTER_SETUP",emitter_setup).replace("$EMITTER_CALL",emitter_call).replace("$TRAIN_SETUP",train_setup).replace("$TRAIN_CALL",train_call).replace("$LAP_SETUP",lap_setup).replace("$LAP_CALL",lap_call).replace("$FIRE_SETUP",fire_setup).replace("$FIRE_CALL",fire_call).replace("$ACTOR_SETUP",actor_setup).replace("$ACTOR_CALL",actor_call).replace("$OBSTACLE_SETUP",obstacle_setup).replace("$OBSTACLE_CALL",obstacle_call).replace("$VEHICLE_SETUP",&vehicle_setup).replace("$VEHICLE_CALL",vehicle_call).replace("$UFOPROJECTILE",if projectile_ufo {"true"}else{"false"}).replace("$UFO_PAGES",if has_ufos {"1"}else{"0"}).replace("$CREATION",if creation {"true"}else{"false"}).replace("$MINE_SETUP",mine_setup).replace("$PROJECTILE_SETUP",projectile_setup).replace("$UFO_CONTEXT",ufo_context).replace("$UFO_SETUP",ufo_setup).replace("$UFO_CALL",ufo_call).replace("$AREA_SETUP",area_setup).replace("$AREA_CALL",area_call).replace("$AREA",if projectile_area {"true"}else{"false"}).replace("$PROJECTILE_CALL",projectile_call).replace("$REFLECTION_CALL",reflection_call).replace("$MINE_HIT_SETUP",mine_hit_setup).replace("$MINE_HIT_CALL",mine_hit_call).replace("$MINE_CALL",mine_call).replace("$MINE_TICK",mine_tick).replace("$EXPLOSION_CALL",explosion_call).replace("$EXPLOSION_PUBLISH",explosion_publish).replace("$EXPLOSION_TICK_SETUP",explosion_tick_setup).replace("$EXPLOSION_TICK_CALL",explosion_tick_call).replace("$WEAPON_SETUP",weapon_setup).replace("$WEAPON_CALL",weapon_call).replace("$MINE_EXPLOSION_CALL",mine_explosion_call).replace("$EXPLOSION_SETUP",if explosions {"unsafe{write_dseg_page(2,128);}copy(overflow,pointer(0x9a58),16);unsafe{write_dseg_page(2,120);}"}else{""}).replace("$MINE_FINISH",if mines || projectile_flight || fire_mode {"map.terrain.finish();"}else{""}),
+"#.replace("$DIRECTORY_STRIDE",if packed {"8"}else{"2"}).replace("$DIRECTORY_ADDRESS",if packed {"0x1301"}else{"0x2c00"}).replace("$ROW_WORDS",if packed {"4"}else{"6"}).replace("$FLAG_WORDS",if packed {"1"}else{"2"}).replace("$PLAYER_SETUP",player_setup).replace("$PLAYER_CALL",player_call).replace("$PLAYER",if player_mode {"true"}else{"false"}).replace("$AMBIENT_SETUP",ambient_setup).replace("$AMBIENT_CALL",ambient_call).replace("$FLOCK_HELPERS",flock_helpers).replace("$FLOCK_SETUP",flock_setup).replace("$FLOCK_CALL",flock_call).replace("$EMITTER_SETUP",emitter_setup).replace("$EMITTER_CALL",emitter_call).replace("$TRAIN_SETUP",train_setup).replace("$TRAIN_CALL",train_call).replace("$LAP_SETUP",lap_setup).replace("$LAP_CALL",lap_call).replace("$FIRE_SETUP",fire_setup).replace("$FIRE_CALL",fire_call).replace("$ACTOR_SETUP",actor_setup).replace("$ACTOR_CALL",actor_call).replace("$OBSTACLE_SETUP",obstacle_setup).replace("$OBSTACLE_CALL",obstacle_call).replace("$VEHICLE_SETUP",&vehicle_setup).replace("$VEHICLE_CALL",vehicle_call).replace("$UFOPROJECTILE",if projectile_ufo {"true"}else{"false"}).replace("$UFO_PAGES",if has_ufos {"1"}else{"0"}).replace("$CREATION",if creation {"true"}else{"false"}).replace("$MINE_SETUP",mine_setup).replace("$PROJECTILE_SETUP",projectile_setup).replace("$UFO_CONTEXT",ufo_context).replace("$UFO_SETUP",ufo_setup).replace("$UFO_CALL",ufo_call).replace("$AREA_SETUP",area_setup).replace("$AREA_CALL",area_call).replace("$AREA",if projectile_area {"true"}else{"false"}).replace("$PROJECTILE_CALL",projectile_call).replace("$REFLECTION_CALL",reflection_call).replace("$MINE_HIT_SETUP",mine_hit_setup).replace("$MINE_HIT_CALL",mine_hit_call).replace("$MINE_CALL",mine_call).replace("$MINE_TICK",mine_tick).replace("$EXPLOSION_CALL",explosion_call).replace("$EXPLOSION_PUBLISH",explosion_publish).replace("$EXPLOSION_TICK_SETUP",explosion_tick_setup).replace("$EXPLOSION_TICK_CALL",explosion_tick_call).replace("$WEAPON_SETUP",weapon_setup).replace("$WEAPON_CALL",weapon_call).replace("$MINE_EXPLOSION_CALL",mine_explosion_call).replace("$EXPLOSION_SETUP",if explosions {"unsafe{write_dseg_page(2,128);}copy(overflow,pointer(0x9a58),16);unsafe{write_dseg_page(2,120);}"}else{""}).replace("$MINE_FINISH",if mines || projectile_flight || fire_mode {"map.terrain.finish();"}else{""}),
         output,
     )?;
     let cases = data["cases"].as_array().ok_or("scene allocation cases")?;
@@ -1153,13 +1157,36 @@ fn main(){
         }
         let identity = u16s(&initial["identity"]);
         assert!(identity.len() <= 12 + 512 * 6);
-        memory[0x100..0x100 + identity.len()].copy_from_slice(&identity);
+        if packed {
+            memory[0x100..0x10c].copy_from_slice(&identity[..12]);
+            for (i, row) in identity[12..].chunks_exact(6).enumerate() {
+                assert_eq!(row[3], 0, "component high word");
+                assert_eq!(row[5], 0, "free-link high word");
+                memory[0x10c + i * 4..0x110 + i * 4]
+                    .copy_from_slice(&[row[0], row[1], row[2], row[4]]);
+            }
+        } else {
+            memory[0x100..0x100 + identity.len()].copy_from_slice(&identity);
+        }
         for (i, v) in flags.iter().enumerate() {
-            memory[0xe00 + i * 2..0xe02 + i * 2]
-                .copy_from_slice(&words(v.as_u64().unwrap() as i32));
+            let value = v.as_u64().unwrap();
+            if packed {
+                memory[0xe00 + i] = u16::try_from(value)?;
+            } else {
+                memory[0xe00 + i * 2..0xe02 + i * 2].copy_from_slice(&words(value as i32));
+            }
         }
         for (i, row) in initial["records"].as_array().unwrap().iter().enumerate() {
             memory[0x1300 + i * 8..0x1308 + i * 8].copy_from_slice(&u16s(row));
+        }
+        if packed && creation {
+            for id in 0..512 {
+                if memory[0x2c00 + id * 2] != 0 {
+                    assert_eq!(memory[0x1300 + id * 8], 0, "weapon component row kind");
+                    memory[0x1301 + id * 8] = memory[0x2c00 + id * 2];
+                    memory[0x1302 + id * 8] = memory[0x2c01 + id * 2];
+                }
+            }
         }
         for (i, row) in initial["colliders"].as_array().unwrap().iter().enumerate() {
             let row = u16s(row);
@@ -1173,6 +1200,7 @@ fn main(){
             memory[collider..collider + 60].copy_from_slice(&row[..60]);
             memory[properties..properties + 16].copy_from_slice(&row[60..]);
         }
+        memory[122 * 16384 + 215 * 76..123 * 16384].fill(0x79ab);
         for (i, list) in initial["lists"].as_array().unwrap().iter().enumerate() {
             let list = list.as_array().unwrap();
             assert!(list.len() <= 512);
@@ -1191,7 +1219,7 @@ fn main(){
                 memory[at..at + 2].copy_from_slice(&words(v.as_i64().unwrap() as i32));
             }
         }
-        assert!(controls.len() * 12 <= 0x800);
+        assert!(controls.len() * 12 <= if creation { 0x800 } else { 0xc00 });
         let expected = case["frames"].as_array().unwrap();
         let mut done = 0;
         let mut passed = false;
@@ -1264,7 +1292,16 @@ fn main(){
                     &label,
                 )?;
                 let identity = u16s(&state["identity"]);
-                let mut canonical = memory[0x100..0x100 + identity.len()].to_vec();
+                let mut canonical = if packed {
+                    let mut rows = memory[0x100..0x10c].to_vec();
+                    for i in 0..(identity.len() - 12) / 6 {
+                        let row = &memory[0x10c + i * 4..0x110 + i * 4];
+                        rows.extend([row[0], row[1], row[2], 0, row[3], 0]);
+                    }
+                    rows
+                } else {
+                    memory[0x100..0x100 + identity.len()].to_vec()
+                };
                 for row in canonical[12..].chunks_exact_mut(6) {
                     if row[0] & 2 == 0 {
                         row[1] = 0;
@@ -1282,14 +1319,25 @@ fn main(){
                     &format!("{label} dispatch slot"),
                 )?;
                 for (i, v) in state["flags"].as_array().unwrap().iter().enumerate() {
+                    let actual = if packed {
+                        [memory[0xe00 + i], 0]
+                    } else {
+                        [memory[0xe00 + i * 2], memory[0xe01 + i * 2]]
+                    };
                     checked += check_words(
-                        memory,
-                        0xe00 + i * 2,
+                        &actual,
+                        0,
                         &words(v.as_u64().unwrap() as i32),
                         &format!("{label} tick flags {i}"),
                     )?;
                 }
                 let rows = state["colliders"].as_array().unwrap();
+                assert!(
+                    memory[122 * 16384 + 215 * 76..123 * 16384]
+                        .iter()
+                        .all(|&v| v == 0x79ab),
+                    "{label} dynamic world bank guard"
+                );
                 assert_eq!(
                     usize::from(memory[0x80]),
                     rows.len(),
@@ -1326,6 +1374,9 @@ fn main(){
                         &format!("{label} properties {i}"),
                     )?;
                     let mut metadata = memory[0x1300 + i * 8..0x1308 + i * 8].to_vec();
+                    if packed && metadata[0] == 0 {
+                        metadata[1..3].fill(0);
+                    }
                     if metadata[7] & 1 == 0 {
                         metadata[4..7].fill(0);
                     }
@@ -1380,8 +1431,13 @@ fn main(){
                         let id = w["id"].as_u64().unwrap() as usize;
                         expected_live[id] = true;
                         let kind = w["kind"].as_u64().unwrap() as u16;
-                        assert_eq!(memory[0x2c00 + id * 2], kind, "{label} weapon {id} kind");
-                        let slot = memory[0x2c01 + id * 2] as usize;
+                        let directory = if packed {
+                            0x1301 + id * 8
+                        } else {
+                            0x2c00 + id * 2
+                        };
+                        assert_eq!(memory[directory], kind, "{label} weapon {id} kind");
+                        let slot = memory[directory + 1] as usize;
                         let (first, count, size) = if kind == 1 {
                             (123, 25, 640)
                         } else if kind == 2 {
@@ -1406,11 +1462,12 @@ fn main(){
                         )?;
                     }
                     for (id, &live) in expected_live.iter().enumerate() {
-                        assert_eq!(
-                            memory[0x2c00 + id * 2] != 0,
-                            live,
-                            "{label} weapon {id} presence"
-                        );
+                        let present = if packed {
+                            memory[0x1300 + id * 8] == 0 && memory[0x1301 + id * 8] != 0
+                        } else {
+                            memory[0x2c00 + id * 2] != 0
+                        };
+                        assert_eq!(present, live, "{label} weapon {id} presence");
                     }
                     let mut occupied = 0;
                     for (kind, first, banks, count, size) in [
@@ -1424,13 +1481,14 @@ fn main(){
                             let owner = usize::from(memory[base]);
                             if owner != 0 {
                                 assert!(owner <= 512, "{label} pool owner");
+                                let directory = if packed {
+                                    0x1301 + (owner - 1) * 8
+                                } else {
+                                    0x2c00 + (owner - 1) * 2
+                                };
+                                assert_eq!(memory[directory], kind, "{label} orphaned component");
                                 assert_eq!(
-                                    memory[0x2c00 + (owner - 1) * 2],
-                                    kind,
-                                    "{label} orphaned component"
-                                );
-                                assert_eq!(
-                                    usize::from(memory[0x2c01 + (owner - 1) * 2]),
+                                    usize::from(memory[directory + 1]),
                                     slot,
                                     "{label} component slot"
                                 );

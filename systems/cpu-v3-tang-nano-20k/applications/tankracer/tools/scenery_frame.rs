@@ -46,6 +46,14 @@ pub fn lifetime_flags(world: &SinglePlayer, index: usize) -> u16 {
     {
         flags |= 256;
     }
+    let id = tankracer_game::object_query::ObstacleId(index);
+    if c.projectiles.entries().any(|(object, _)| object == id)
+        || c.mines.entries().iter().any(|(object, _)| *object == id)
+        || c.explosions.get(index).is_some_and(Option::is_some)
+        || c.ufos.get(index).is_some_and(Option::is_some)
+    {
+        flags &= !256;
+    }
     flags
 }
 pub fn initial(world: &SinglePlayer) -> Vec<u16> {
@@ -72,7 +80,7 @@ pub fn initial_lists(world: &SinglePlayer) -> Vec<u16> {
 pub fn capture(world: &SinglePlayer, baseline: &[Vec<u16>]) -> Vec<u16> {
     let image = scenery_assets::encode(world);
     let count = world.objects.world.objects.len();
-    assert_eq!(baseline.len(), count);
+    assert!(baseline.len() <= count);
     let mut out = vec![0; 24 + count * 8];
     out[..5].copy_from_slice(&[0x5346, 1, 0, count as u16, 24]);
     for index in 0..count {
@@ -163,9 +171,14 @@ pub fn capture(world: &SinglePlayer, baseline: &[Vec<u16>]) -> Vec<u16> {
     }
     out[11] = u16::try_from(out.len()).unwrap();
     let mut changes = 0;
-    for (index, original) in baseline.iter().enumerate() {
-        let current = scene_export::record(&world.objects.world, index);
-        if &current != original {
+    for index in 0..count {
+        let mut current = scene_export::record(&world.objects.world, index);
+        // An appended collider with no external basis owns no matrix there.
+        // Match the allocation snapshot's canonical absent-Option encoding.
+        if index >= baseline.len() && current[58] == 0 && current[59] == 0 {
+            current[26..44].fill(0);
+        }
+        if baseline.get(index) != Some(&current) {
             out.push(index as u16);
             out.extend(current);
             changes += 1;

@@ -10,6 +10,7 @@ pub fn step(
         &mut tankracer_game::entity_factory::Context<'_, tankracer_game::scene_entity::Handle>,
     >,
 ) -> driving_step::Step {
+    let dt = setup.dt;
     let before = world.vehicles.entries[own]
         .as_ref()
         .unwrap()
@@ -29,47 +30,94 @@ pub fn step(
     let mut sampled = 0i32;
     let mut active = true;
     let mut launch = false;
+    let mut full = false;
+    let mut devices = driving_devices::Devices {
+        models: setup.models,
+    };
     if setup.sample_controls != 0 && own == 0 {
-        let stage = if setup.sample_controls == 2 {
+        let stage = if setup.sample_controls == 4 {
+            setup.start_stage
+        } else if setup.sample_controls >= 2 {
             4
         } else if number < 3 {
             number as i32
         } else {
             4
         };
-        let sequence = if setup.sample_controls == 2 {
+        let sequence = if setup.sample_controls == 5 {
+            [260u16, 4, 260, 0, 0, 0]
+        } else if setup.sample_controls == 4 {
+            [4u16, 4, 132, 68, 4, 0]
+        } else if setup.sample_controls == 3 {
+            [132u16, 68, 4, 0, 0, 0]
+        } else if setup.sample_controls == 2 {
             [80u16, 4, 36, 0, 0, 0]
         } else {
             [0u16, 4, 68, 18, 36, 0]
         };
         let keys = sequence[((number - 1) as usize).min(5)];
         active = stage == 4;
-        world.vehicles.entries[own].as_mut().unwrap().race.driving = active;
-        rcc_car_probe::controls(
-            world,
-            own,
-            tankracer_game::player_input::Keys {
-                left: keys & 1 != 0,
-                right: keys & 2 != 0,
-                throttle: keys & 4 != 0,
-                brake: keys & 8 != 0,
-                auxiliary: keys & 16 != 0,
-                turret_left: keys & 32 != 0,
-                turret_right: keys & 64 != 0,
-                ..Default::default()
-            },
-            stage,
-            33,
-            true,
-        )
-        .unwrap();
+        if setup.sample_controls == 4 {
+            active = world.vehicles.entries[own].as_ref().unwrap().race.driving;
+        } else {
+            world.vehicles.entries[own].as_mut().unwrap().race.driving = active;
+        }
+        let keys = tankracer_game::player_input::Keys {
+            left: keys & 1 != 0,
+            right: keys & 2 != 0,
+            throttle: keys & 4 != 0,
+            brake: keys & 8 != 0,
+            auxiliary: keys & 16 != 0,
+            turret_left: keys & 32 != 0,
+            turret_right: keys & 64 != 0,
+            fire: keys & 128 != 0,
+            horn: keys & 256 != 0,
+            ..Default::default()
+        };
+        if setup.sample_controls >= 3 {
+            tankracer_game::vehicle_runtime::rcc_player_probe::update(
+                world,
+                Some((keys, stage)),
+                dt,
+                number,
+                100000,
+                &mut launch,
+                &mut devices,
+                tankracer_game::vehicle_runtime::rcc_player_probe::Stage::Complete,
+            )
+            .unwrap_or_else(|code| {
+                panic!(
+                    "Player stage {number}: code={code}, route={:?}, projectiles={}, slot={}",
+                    world.vehicles.entries[own].as_ref().unwrap().route,
+                    world.objects.components.projectiles.entries().count(),
+                    world.identity.current_slot
+                )
+            });
+            full = true;
+        } else {
+            rcc_car_probe::controls(world, own, keys, stage, dt, true).unwrap();
+        }
         let car = world.vehicles.entries[own].as_ref().unwrap();
         input = car.input.drive;
         launch = car.input.fast_start != 0;
-        sampled = 65536 | i32::from(keys) | (stage << 9);
+        let packed_keys = (u16::from(keys.left))
+            | (u16::from(keys.right) << 1)
+            | (u16::from(keys.throttle) << 2)
+            | (u16::from(keys.brake) << 3)
+            | (u16::from(keys.auxiliary) << 4)
+            | (u16::from(keys.turret_left) << 5)
+            | (u16::from(keys.turret_right) << 6)
+            | (u16::from(keys.fire) << 7)
+            | (u16::from(keys.horn) << 8);
+        sampled = if setup.sample_controls >= 3 {
+            131072
+        } else {
+            65536
+        } | i32::from(packed_keys)
+            | (stage << 9);
     }
     let env = drive::Environment {
-        dt: 33,
+        dt,
         player,
         active,
         launch_eligible: launch,
@@ -80,15 +128,14 @@ pub fn step(
     let visible = world.vehicles.entries[own].as_ref().unwrap().visible;
     control[27] = 256 | i32::from(visible);
     control[29] = sampled;
-    let mut devices = driving_devices::Devices {
-        models: setup.models,
-    };
-    let result = if visible {
+    let result = if full {
+        Ok(())
+    } else if visible {
         rcc_car_probe::physics(
             world,
             tankracer_game::object_query::TankId(own),
             &vehicle::Frame {
-                dt: 33,
+                dt,
                 number,
                 mode: 0,
                 input,
@@ -104,7 +151,7 @@ pub fn step(
             world,
             tankracer_game::object_query::TankId(own),
             &vehicle::Frame {
-                dt: 33,
+                dt,
                 number,
                 mode: 0,
                 input,

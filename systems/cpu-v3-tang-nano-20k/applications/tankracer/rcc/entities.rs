@@ -10,6 +10,9 @@ pub struct State {
     // Flags: record present (1), class present (2), Handle kind in bits 2..4.
     // Handle kinds: 0 none, 1 obstacle, 2 vehicle, 3 camera, 4 finish owner.
     pub rows: Array<u16>,
+    // Six words retain u32 handles/links. Four words store their checked u16
+    // form for bounded worlds; header counters retain the original i32 layout.
+    pub row_words: u16,
     // Reserved slots; growth returns capacity status before crossing this
     // backing span. At most 5461 six-word rows fit a signed pointer offset.
     pub storage_capacity: u16,
@@ -36,7 +39,7 @@ fn row(state: &State, id: fix32) -> Array<u16> {
         state
             .rows
             .as_ptr()
-            .add((id.lo_bits() * 6) as i16)
+            .add((id.lo_bits() * state.row_words) as i16)
             .as_u16_array()
     }
 }
@@ -64,7 +67,11 @@ pub fn handle(state: &State, id: fix32) -> fix32 {
     if kind == 0 || kind > 2 {
         return n(0);
     }
-    attitude::get(row(state, id), 1)
+    let r = row(state, id);
+    if state.row_words == 4 {
+        return fix32::from_words(r[2u16], 0);
+    }
+    attitude::get(r, 1)
 }
 pub fn bind_class(state: &State, id: fix32, class: u16) -> u16 {
     if !present(state, id) {
@@ -79,13 +86,32 @@ pub fn bind_handle(state: &State, id: fix32, kind: u16, index: fix32) -> u16 {
     if !present(state, id) {
         return 6;
     }
+    if state.row_words == 4 && index.hi_bits() != 0 {
+        return 4;
+    }
     let mut r = row(state, id);
     r[0u16] = (r[0u16] & 3) | (kind << 2);
-    attitude::put(r, 1, index);
+    if state.row_words == 4 {
+        r[2u16] = index.lo_bits();
+    } else {
+        attitude::put(r, 1, index);
+    }
     0
 }
 pub fn next_free(state: &State, id: fix32) -> fix32 {
-    attitude::get(row(state, id), 2)
+    let r = row(state, id);
+    if state.row_words == 4 {
+        return fix32::from_words(r[3u16], 0);
+    }
+    attitude::get(r, 2)
+}
+fn put_link(state: &State, id: fix32, next: fix32) {
+    let mut r = row(state, id);
+    if state.row_words == 4 {
+        r[3u16] = next.lo_bits();
+    } else {
+        attitude::put(r, 2, next);
+    }
 }
 pub fn reset(state: &State, capacity: u16) -> u16 {
     if capacity < 2 || capacity > 5461 || capacity > state.storage_capacity {
@@ -95,7 +121,7 @@ pub fn reset(state: &State, capacity: u16) -> u16 {
     let mut rows = state.rows;
     let mut i = 0u16;
     if previous != fix32::from_words(capacity, 0) {
-        while i < capacity * 6 {
+        while i < capacity * state.row_words {
             rows[i] = 0;
             i += 1;
         }
@@ -106,7 +132,7 @@ pub fn reset(state: &State, capacity: u16) -> u16 {
         if i + 1 == capacity {
             next = n(0);
         }
-        attitude::put(row(state, fix32::from_words(i, 0)), 2, next);
+        put_link(state, fix32::from_words(i, 0), next);
         i += 1;
     }
     attitude::put(state.header, 0, fix32::from_words(capacity, 0));
@@ -122,8 +148,8 @@ pub fn grow(state: &State) -> u16 {
     }
     let count = old + 128;
     let mut rows = state.rows;
-    let mut i = old * 6;
-    while i < count * 6 {
+    let mut i = old * state.row_words;
+    while i < count * state.row_words {
         rows[i] = 0;
         i += 1;
     }
@@ -133,7 +159,7 @@ pub fn grow(state: &State) -> u16 {
         if i + 1 == count {
             next = n(0);
         }
-        attitude::put(row(state, fix32::from_words(i, 0)), 2, next);
+        put_link(state, fix32::from_words(i, 0), next);
         i += 1;
     }
     attitude::put(state.header, 0, fix32::from_words(count, 0));
@@ -168,7 +194,7 @@ pub fn unlink_free(state: &State, id: fix32, limit: fix32) -> Entry {
         next = next_free(state, next);
     }
     if next != n(0) || id == n(0) {
-        attitude::put(row(state, current), 2, next_free(state, next));
+        put_link(state, current, next_free(state, next));
     }
     if next == n(0) {
         return entry(0, n(0));
@@ -242,7 +268,7 @@ pub fn release_id(state: &State, id: fix32) -> u16 {
     if status != 0 {
         return status;
     }
-    attitude::put(row(state, id), 2, attitude::get(state.header, 1));
+    put_link(state, id, attitude::get(state.header, 1));
     attitude::put(state.header, 1, id);
     0
 }

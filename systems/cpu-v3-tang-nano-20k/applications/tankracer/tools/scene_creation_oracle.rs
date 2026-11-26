@@ -70,39 +70,13 @@ pub(super) fn snapshot(world: &SinglePlayer) -> serde_json::Value {
         weapons
             .into_iter()
             .map(|(id, kind, payload)| {
-                let object = world.objects.components.objects[id].as_ref().unwrap();
-                let mut meta = vec![0u16; 30];
-                meta[0] = (id + 1) as u16;
-                meta[1] = object.data.sort_position as u16;
-                meta[5] = object.data.visibility.distance as u16;
-                if let Some(emitter) = object.emitter {
-                    meta[7] = 1;
-                    meta[8] = emitter.0 as u16;
-                    meta[9] = (emitter.0 >> 16) as u16;
-                }
-                if let Some(mesh) = object.data.mesh {
-                    meta[2] = 1;
-                    meta[3] = mesh.index() as u16;
-                    meta[4] = (mesh.index() >> 16) as u16;
-                }
+                let meta = super::projectile_snapshot::metadata(world, id);
                 json!({"id":id,"kind":kind,"meta":meta,"payload":payload})
             })
             .collect::<Vec<_>>()
     );
-    let flight = &world.objects.components.projectiles.flight;
     let mut shared = Vec::new();
-    super::ints(
-        &mut shared,
-        [
-            flight.sequence as i32,
-            flight.homing_drift,
-            flight.homing_frame as i32,
-            i32::from(flight.size_up),
-            i32::from(flight.color_up),
-        ],
-    );
-    super::sprite(&mut shared, flight.homing_glow);
-    super::sprite(&mut shared, flight.concussion_glow);
+    super::projectile_snapshot::flight(&mut shared, &world.objects.components.projectiles.flight);
     out["flight"] = json!(shared);
     out
 }

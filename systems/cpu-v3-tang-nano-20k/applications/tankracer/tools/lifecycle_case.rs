@@ -26,7 +26,12 @@ fn run_lifecycle(input: Array<u16>, out: Array<u16>) {
     let notifications: Buf<u16, 32> = Buf::new([0; 32]);
     let destruction: Buf<u16, 32> = Buf::new([0; 32]);
     let visit_storage: Buf<u16, 32> = Buf::new([0; 32]);
+    let mut width = 2u16;
+    if unsafe { Ptr::from_addr(0x1ffd).read(0) } != 0 {
+        width = 1;
+    }
     let mut ticks = lifecycle::Ticks {
+        flag_words: width,
         flags: flags,
         flag_count: 6,
         order: ordered::List {
@@ -50,7 +55,11 @@ fn run_lifecycle(input: Array<u16>, out: Array<u16>) {
     };
     let mut i = 0u16;
     while i < 6 {
-        attitude::put(flags, i, attitude::get(input, i));
+        let mut stored = flags;
+        stored[i * width] = attitude::get(input, i).lo_bits();
+        if width == 2 {
+            stored[i * 2 + 1] = attitude::get(input, i).hi_bits();
+        }
         i += 1;
     }
     load_list(&mut ticks.order, input, 6);
@@ -147,7 +156,7 @@ fn run_lifecycle(input: Array<u16>, out: Array<u16>) {
         attitude::put(out, base + 1, ticks.next);
         i = 0;
         while i < 6 {
-            attitude::put(out, base + 2 + i, attitude::get(flags, i));
+            attitude::put(out, base + 2 + i, lifecycle::flags(&ticks, i));
             i += 1;
         }
         write_list(&ticks.order, out, base + 8);

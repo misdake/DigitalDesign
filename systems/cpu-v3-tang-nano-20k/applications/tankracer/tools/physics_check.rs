@@ -39,6 +39,8 @@ mod pickup_light_check;
 mod player_control_check;
 #[path = "player_route_check.rs"]
 mod player_route_check;
+#[path = "player_tail_check.rs"]
+mod player_tail_check;
 #[path = "polar_check.rs"]
 mod polar_check;
 #[path = "powerup_check.rs"]
@@ -113,15 +115,21 @@ const STATIC_ASSETS: &str = include_str!("../../../rcc/static_assets.rs");
 const GPU_LAYOUT: &str = include_str!("../../../rcc/gpu_layout.rs");
 const OBJECT_QUERY: &str = include_str!("../rcc/object_query.rs");
 const TRIG_ASSET_LOOKUP: &str = include_str!("../rcc/trig_asset_lookup.rs");
-const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod vehicle_pose; mod vehicle_transfer; mod scene_vehicle_transfer; mod scene_obstacle_transfer; mod scene_ufo_transfer; mod scene_fire; mod scene_laps; mod train; mod scene_train; mod emitter; mod scene_emitter; mod flock; mod scene_flock; mod smoker; mod scene_ambient; mod player_control; mod player_route; mod scene_player; mod track_effects; mod vehicle_smoke; mod vehicle_debris; mod vehicle_shield; mod car_effects; mod car_motion; mod vehicle_startup; mod vehicle_inactive; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_ufos; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
+const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod vehicle_pose; mod vehicle_transfer; mod scene_vehicle_transfer; mod scene_obstacle_transfer; mod scene_ufo_transfer; mod scene_fire; mod scene_laps; mod train; mod scene_train; mod emitter; mod scene_emitter; mod flock; mod scene_flock; mod smoker; mod scene_ambient; mod player_control; mod player_tail; mod player_route; mod scene_player; mod track_effects; mod vehicle_smoke; mod vehicle_debris; mod vehicle_shield; mod car_effects; mod car_motion; mod vehicle_startup; mod vehicle_inactive; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_ufos; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
 
 fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<dyn Error>> {
     let folder = output.join(label);
     fs::create_dir_all(&folder)?;
-    let source = format!("{PREAMBLE}{body}");
+    let placement = if label == "collision" {
+        "#![link_csegs(default=\"app\",app=0,world=1)]\n"
+    } else {
+        ""
+    };
+    let source = format!("{placement}{PREAMBLE}{body}");
     fs::write(folder.join("input.rs"), &source)?;
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
     if label == "scene-allocation"
+        || label == "scene-allocation-packed"
         || label == "scene-creation"
         || label == "scene-mines"
         || label == "scene-mine-tick"
@@ -147,6 +155,7 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         || label == "scene-flock"
         || label == "scene-ambient"
         || label == "player-control"
+        || label == "player-tail"
         || label == "player-route"
         || label == "scene-player"
         || label == "track-effects"
@@ -168,6 +177,13 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         // Resource-aware surface access makes the allocator reachable, even
         // when RAM-only fixtures never allocate. Keep its startup tags above
         // the angle table and outside the fixed input/snapshot areas.
+        options.heap_begin = 0x8200;
+        options.heap_size = 32;
+    }
+    if label == "impact" {
+        // DSEG2 is replaced by the line-pool stage. Keep descriptors, capture
+        // and resident comparison rows in DSEG3, above the RAM trig tables.
+        options.stack_init = 0xfff0;
         options.heap_begin = 0x8200;
         options.heap_size = 32;
     }
@@ -208,6 +224,7 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "emitter" => Ok(include_str!("../rcc/emitter.rs").to_owned()),
             "flock" => Ok(include_str!("../rcc/flock.rs").to_owned()),
             "smoker" => Ok(include_str!("../rcc/smoker.rs").to_owned()),
+            "player_tail" => Ok(include_str!("../rcc/player_tail.rs").to_owned()),
             "player_control" => Ok(include_str!("../rcc/player_control.rs").to_owned()),
             "player_route" => Ok(include_str!("../rcc/player_route.rs").to_owned()),
             "scene_player" => Ok(include_str!("../rcc/scene_player.rs").to_owned()),
@@ -334,16 +351,25 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "ground_response" => Ok(GROUND_RESPONSE.to_owned()),
             "tank_response" => Ok(TANK_RESPONSE.to_owned()),
             "ordered" => Ok(ORDERED.to_owned()),
-            "lifecycle" => Ok(LIFECYCLE.to_owned()),
-            "entities" => Ok(include_str!("../rcc/entities.rs").to_owned()),
-            "scene_lifecycle" => Ok(include_str!("../rcc/scene_lifecycle.rs").to_owned()),
+            "lifecycle" | "entities" | "scene_lifecycle" | "scene_world" => {
+                let content = match name {
+                    "lifecycle" => LIFECYCLE,
+                    "entities" => include_str!("../rcc/entities.rs"),
+                    "scene_lifecycle" => include_str!("../rcc/scene_lifecycle.rs"),
+                    _ => SCENE_WORLD,
+                };
+                if label == "collision" {
+                    Ok(format!("#![link_cseg = \"world\"]\n{content}"))
+                } else {
+                    Ok(content.to_owned())
+                }
+            }
             "identity_capture" => Ok(include_str!("identity_capture.rs").to_owned()),
             "crush" => Ok(CRUSH.to_owned()),
             "spatial" => Ok(SPATIAL.to_owned()),
             "falling" => Ok(FALLING.to_owned()),
             "blast" => Ok(BLAST.to_owned()),
             "driving" => Ok(include_str!("../rcc/driving.rs").to_owned()),
-            "scene_world" => Ok(SCENE_WORLD.to_owned()),
             "scene_contact" => Ok(SCENE_CONTACT.to_owned()),
             "bounce" => Ok(BOUNCE.to_owned()),
             "ground" => Ok(GROUND.to_owned()),
@@ -781,6 +807,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or(600);
         let mode = std::env::args().nth(4);
         let report = match mode.as_deref() {
+            Some(mode) if mode.starts_with("scene-") && mode.ends_with("-packed") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), mode)?
+            }
             Some("scene-allocation") => {
                 scene_allocation_check::run(&output, Path::new(&fixture), "scene-allocation")?
             }
@@ -828,6 +857,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 scene_allocation_check::run(&output, Path::new(&fixture), "scene-weapon-explosion")?
             }
             Some("collision") => collision_check::run(&output, Path::new(&fixture))?,
+            Some("player-tail") => player_tail_check::run(&output, Path::new(&fixture))?,
             Some("player-control") => player_control_check::run(&output, Path::new(&fixture))?,
             Some("track-effects") => track_effects_check::run(&output, Path::new(&fixture))?,
             Some("vehicle-effects") => vehicle_effects_check::run(&output, Path::new(&fixture))?,

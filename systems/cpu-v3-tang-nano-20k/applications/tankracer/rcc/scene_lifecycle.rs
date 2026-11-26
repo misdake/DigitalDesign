@@ -23,7 +23,7 @@ pub struct Store {
     pub leave: ordered::List,
 }
 // Class allocation operates on the same identity, collision and lifetime owners.
-// Tick flags reserve two words per identity backing slot, including future growth.
+// Tick flags reserve the selected row width for every identity backing slot.
 pub fn allocate_transient(
     store: &mut Store,
     world: &mut scene_world::World,
@@ -98,14 +98,13 @@ pub fn allocate_transient(
         };
     }
     let capacity = attitude::get(store.identities.header, 0).lo_bits();
-    let mut flags = runtime.ticks.flags;
     i = runtime.ticks.flag_count;
     while i < capacity {
-        attitude::put(flags, i, n(0));
+        lifecycle::clear(&runtime.ticks, i);
         i += 1;
     }
     runtime.ticks.flag_count = capacity;
-    attitude::put(flags, entity.lo_bits(), n(0));
+    lifecycle::clear(&runtime.ticks, entity.lo_bits());
     entities::Entry { status: 0, id: id }
 }
 fn n(value: i16) -> fix32 {

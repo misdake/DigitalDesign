@@ -133,6 +133,12 @@ impl Ptr {
     pub unsafe fn as_i16_array(self) -> Array<i16> {
         unimplemented!("Ptr::as_i16_array is a target intrinsic")
     }
+    /// # Safety
+    /// The active region must contain initialized elements with the target
+    /// layout of `T`, and remain resident for every access through the view.
+    pub unsafe fn as_array<T>(self) -> Array<T> {
+        unimplemented!("Ptr::as_array is a target intrinsic")
+    }
 }
 
 /// Typed, one-word array view used by rcc's indexing syntax. On the target it

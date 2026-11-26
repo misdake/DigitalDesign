@@ -84,7 +84,7 @@ pub fn clear_blast_owner(
     let id = entities::handle(&store.identities, owner);
     if id.hi_bits() != 0
         || id.lo_bits() >= weapons.object_capacity
-        || weapons.directory[id.lo_bits() * 2] != 3
+        || scene_creation::component_kind(weapons, id.lo_bits()) != 3
     {
         return n(-4);
     }
@@ -92,7 +92,11 @@ pub fn clear_blast_owner(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 3, weapons.directory[id.lo_bits() * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                3,
+                weapons.directory[id.lo_bits() * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = at(scene_creation::record(weapons, id.lo_bits(), 3), 30);
@@ -122,7 +126,7 @@ fn update(
         return n(-1);
     }
     let index = id.lo_bits();
-    if index >= weapons.object_capacity || weapons.directory[index * 2] != 3 {
+    if index >= weapons.object_capacity || scene_creation::component_kind(weapons, index) != 3 {
         return n(-1);
     }
     if index >= world.count {
@@ -154,7 +158,11 @@ fn update(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 3, weapons.directory[index * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                3,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = explosion::view(at(scene_creation::record(weapons, index, 3), 30));
@@ -391,14 +399,18 @@ pub fn spawn(
     if !scene_world::store_collider(world, index, collider.as_array()) {
         return n(-1);
     }
-    if index >= weapons.object_capacity || weapons.directory[index * 2] != 3 {
+    if index >= weapons.object_capacity || scene_creation::component_kind(weapons, index) != 3 {
         return n(-4);
     }
     let saved = read_dseg_page(3);
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 3, weapons.directory[index * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                3,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = explosion::view(at(scene_creation::record(weapons, index, 3), 30));
@@ -474,7 +486,11 @@ pub fn spawn(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 3, weapons.directory[index * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                3,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = explosion::view(at(scene_creation::record(weapons, index, 3), 30));
@@ -509,7 +525,7 @@ pub fn spawn_weapon(
     let id = entities::handle(&store.identities, entity);
     if id.hi_bits() != 0
         || id.lo_bits() >= weapons.object_capacity
-        || weapons.directory[id.lo_bits() * 2] != 3
+        || scene_creation::component_kind(weapons, id.lo_bits()) != 3
     {
         return n(-4);
     }
@@ -582,7 +598,11 @@ pub fn spawn_weapon(
         unsafe {
             write_dseg_page(
                 3,
-                scene_creation::page(weapons, 3, weapons.directory[index * 2 + 1]),
+                scene_creation::page(
+                    weapons,
+                    3,
+                    weapons.directory[index * weapons.directory_stride + 1],
+                ),
             );
         }
         let state = explosion::view(at(scene_creation::record(weapons, index, 3), 30));
@@ -619,7 +639,11 @@ pub fn spawn_weapon(
         unsafe {
             write_dseg_page(
                 3,
-                scene_creation::page(weapons, 3, weapons.directory[index * 2 + 1]),
+                scene_creation::page(
+                    weapons,
+                    3,
+                    weapons.directory[index * weapons.directory_stride + 1],
+                ),
             );
         }
         let state = explosion::view(at(scene_creation::record(weapons, index, 3), 30));
@@ -656,7 +680,7 @@ pub fn spawn_mine(
     let id = entities::handle(&store.identities, entity);
     if id.hi_bits() != 0
         || id.lo_bits() >= weapons.object_capacity
-        || weapons.directory[id.lo_bits() * 2] != 3
+        || scene_creation::component_kind(weapons, id.lo_bits()) != 3
     {
         return n(-4);
     }
@@ -665,7 +689,11 @@ pub fn spawn_mine(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 3, weapons.directory[index * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                3,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = explosion::view(at(scene_creation::record(weapons, index, 3), 30));
@@ -725,7 +753,11 @@ pub fn spawn_mine(
     unsafe {
         write_dseg_page(
             3,
-            scene_creation::page(weapons, 3, weapons.directory[index * 2 + 1]),
+            scene_creation::page(
+                weapons,
+                3,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
         );
     }
     let state = explosion::view(at(scene_creation::record(weapons, index, 3), 30));

@@ -6,8 +6,11 @@ use crate::{
 };
 
 pub struct Weapons {
-    // Two CPU words per object: kind (0 absent, 1 projectile, 2 mine, 3 explosion, 4 UFO), pool slot.
+    // Kind (0 absent, 1 projectile, 2 mine, 3 explosion, 4 UFO), then pool slot.
+    // Stride 2 owns a dense directory. Stride 8 borrows component columns 1/2;
+    // column 0 must be zero for these weapon rows and keeps scenery separate.
     pub directory: Array<u16>,
+    pub directory_stride: u16,
     pub object_capacity: u16,
     pub projectile_page: u16,
     pub projectile_pages: u16,
@@ -164,9 +167,18 @@ pub fn page(weapons: &Weapons, kind: u16, slot: u16) -> u16 {
     }
     first + slot / slots(kind)
 }
+pub fn component_kind(weapons: &Weapons, id: u16) -> u16 {
+    if weapons.directory_stride == 8 {
+        let components = unsafe { weapons.directory.as_ptr().add(-1).as_u16_array() };
+        if components[id * 8] != 0 {
+            return 0;
+        }
+    }
+    weapons.directory[id * weapons.directory_stride]
+}
 pub fn record(weapons: &Weapons, id: u16, segment: u16) -> Array<u16> {
-    let kind = weapons.directory[id * 2];
-    let slot = weapons.directory[id * 2 + 1];
+    let kind = component_kind(weapons, id);
+    let slot = weapons.directory[id * weapons.directory_stride + 1];
     let mut base = 0xc000u16;
     if segment == 2 {
         base = 0x8000;
@@ -177,7 +189,7 @@ pub fn record(weapons: &Weapons, id: u16, segment: u16) -> Array<u16> {
     )
 }
 fn insert(weapons: &Weapons, id: u16, kind: u16) -> fix32 {
-    if id >= weapons.object_capacity || weapons.directory[id * 2] != 0 {
+    if id >= weapons.object_capacity || component_kind(weapons, id) != 0 {
         return n(-1);
     }
     let mut pages = weapons.mine_pages;
@@ -214,8 +226,8 @@ fn insert(weapons: &Weapons, id: u16, kind: u16) -> fix32 {
                     attitude::put(at(row, 30), 7, n(-1));
                 }
                 let mut directory = weapons.directory;
-                directory[id * 2] = kind;
-                directory[id * 2 + 1] = bank * count + slot;
+                directory[id * weapons.directory_stride] = kind;
+                directory[id * weapons.directory_stride + 1] = bank * count + slot;
                 unsafe {
                     write_dseg_page(3, saved);
                 }
@@ -233,25 +245,32 @@ fn insert(weapons: &Weapons, id: u16, kind: u16) -> fix32 {
 // The caller selects the bank in DSEG2 or DSEG3 for the entire weapon stage.
 // Fixed colliders stay in DSEG2; appended colliders occupy DSEG3 instead.
 pub fn retire(weapons: &Weapons, id: u16) {
-    if id >= weapons.object_capacity || weapons.directory[id * 2] == 0 {
+    if id >= weapons.object_capacity || component_kind(weapons, id) == 0 {
         return;
     }
-    let kind = weapons.directory[id * 2];
+    let kind = component_kind(weapons, id);
     let saved = read_dseg_page(3);
     unsafe {
-        write_dseg_page(3, page(weapons, kind, weapons.directory[id * 2 + 1]));
+        write_dseg_page(
+            3,
+            page(
+                weapons,
+                kind,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
+        );
     }
     let mut row = record(weapons, id, 3);
     row[0u16] = 0;
     let mut directory = weapons.directory;
-    directory[id * 2] = 0;
+    directory[id * weapons.directory_stride] = 0;
     unsafe {
         write_dseg_page(3, saved);
     }
 }
 // Resources retire before identity detach/release and before component reuse.
 pub fn release_explosion(weapons: &mut Weapons, world: &scene_world::World, id: u16) -> fix32 {
-    if id >= weapons.object_capacity || weapons.directory[id * 2] != 3 {
+    if id >= weapons.object_capacity || component_kind(weapons, id) != 3 {
         return n(0);
     }
     let collider: Buf<u16, 60> = Buf::new([0; 60]);
@@ -262,7 +281,14 @@ pub fn release_explosion(weapons: &mut Weapons, world: &scene_world::World, id: 
     let saved2 = read_dseg_page(2);
     let saved3 = read_dseg_page(3);
     unsafe {
-        write_dseg_page(3, page(weapons, 3, weapons.directory[id * 2 + 1]));
+        write_dseg_page(
+            3,
+            page(
+                weapons,
+                3,
+                weapons.directory[id * weapons.directory_stride + 1],
+            ),
+        );
     }
     let state = at(record(weapons, id, 3), 30);
     let mut kind = 0u16;
@@ -379,13 +405,20 @@ fn initialize(
             let mut row = at(store.records, index * 8);
             row[6u16] = 0;
         } else {
-            if index >= weapons.object_capacity || weapons.directory[index * 2] == 0 {
+            if index >= weapons.object_capacity || component_kind(weapons, index) == 0 {
                 return n(-1);
             }
-            let kind = weapons.directory[index * 2];
+            let kind = component_kind(weapons, index);
             let saved = read_dseg_page(3);
             unsafe {
-                write_dseg_page(3, page(weapons, kind, weapons.directory[index * 2 + 1]));
+                write_dseg_page(
+                    3,
+                    page(
+                        weapons,
+                        kind,
+                        weapons.directory[index * weapons.directory_stride + 1],
+                    ),
+                );
             }
             let mut row = record(weapons, index, 3);
             row[1u16] = 65528;
@@ -584,6 +617,49 @@ pub fn spawn_projectile(
     if launch.class < n(0) || !launch.resources_present {
         return n(-5);
     }
+    // The collider and component occupy both mapped windows during launch.
+    // Capture only the owner's read-only launch inputs before borrowing them.
+    let owner_words: Buf<u16, 30> = Buf::new([0; 30]);
+    let mut owner_data = owner_words.as_array();
+    let mut i = 0u16;
+    while i < 18 {
+        owner_data[i] = launch.owner.turret[i];
+        i += 1;
+    }
+    i = 0;
+    while i < 6 {
+        owner_data[18 + i] = launch.owner.gun[i];
+        owner_data[24 + i] = launch.owner.velocity[i];
+        i += 1;
+    }
+    let owner = projectile::Owner {
+        entity: launch.owner.entity,
+        turret: owner_data,
+        gun: at(owner_data, 18),
+        velocity: at(owner_data, 24),
+    };
+    // Homing launch produces one shared scalar. Publish it after restoring the
+    // caller's shared-effect mapping, before activation can invoke other methods.
+    let drift: Buf<u16, 4> = Buf::new([0; 4]);
+    let context = projectile::Context {
+        shared: projectile::Shared {
+            core: drift.as_array(),
+            homing: launch.context.shared.homing,
+            concussion: launch.context.shared.concussion,
+        },
+        resources: projectile::Resources {
+            tuning: launch.context.resources.tuning,
+            main: launch.context.resources.main,
+            trail: launch.context.resources.trail,
+            homing_tail: launch.context.resources.homing_tail,
+            cup: launch.context.resources.cup,
+        },
+        tables: projectile::Tables {
+            sine: launch.context.tables.sine,
+            angle: launch.context.tables.angle,
+        },
+        seed: launch.context.seed,
+    };
     let entity = create(
         scene,
         store,
@@ -603,7 +679,7 @@ pub fn spawn_projectile(
         return n(-4);
     }
     let index = id.lo_bits();
-    if index >= weapons.object_capacity || weapons.directory[index * 2] != 1 {
+    if index >= weapons.object_capacity || component_kind(weapons, index) != 1 {
         return n(-1);
     }
     let saved2 = read_dseg_page(2);
@@ -620,7 +696,11 @@ pub fn spawn_projectile(
             (index - world.fixed_count) * 76,
         );
     }
-    let component_page = page(weapons, 1, weapons.directory[index * 2 + 1]);
+    let component_page = page(
+        weapons,
+        1,
+        weapons.directory[index * weapons.directory_stride + 1],
+    );
     unsafe {
         if segment == 2 {
             write_dseg_page(2, component_page);
@@ -634,7 +714,7 @@ pub fn spawn_projectile(
         basis: at(collider, 8),
         position: at(collider, 2),
     };
-    let status = projectile::launch(&state, &pose, &launch.owner, launch.kind, &launch.context);
+    let status = projectile::launch(&state, &pose, &owner, launch.kind, &context);
     if status == n(0) {
         let mut i = 0u16;
         let mut raw = collider;
@@ -651,6 +731,13 @@ pub fn spawn_projectile(
     }
     if status != n(0) {
         return status;
+    }
+    if launch.kind == 2 {
+        attitude::put(
+            launch.context.shared.core,
+            1,
+            attitude::get(drift.as_array(), 1),
+        );
     }
     let status = dispatch(
         scene,
@@ -681,7 +768,14 @@ pub fn spawn_projectile(
     }
     let saved = read_dseg_page(3);
     unsafe {
-        write_dseg_page(3, page(weapons, 1, weapons.directory[index * 2 + 1]));
+        write_dseg_page(
+            3,
+            page(
+                weapons,
+                1,
+                weapons.directory[index * weapons.directory_stride + 1],
+            ),
+        );
     }
     let mut row = record(weapons, index, 3);
     projectile::sprite(&projectile::view(at(row, 30)), &launch.context);
@@ -691,6 +785,9 @@ pub fn spawn_projectile(
         row[4u16] = launch.homing_mesh.hi_bits();
         let mut metadata = at(store.records, index * 8);
         metadata[3u16] = metadata[3u16] | 2;
+        unsafe {
+            write_dseg_page(3, saved);
+        }
         attitude::put(launch.context.shared.core, 3, n(1));
         attitude::put(launch.context.shared.homing, 6, n(150));
         attitude::put(launch.context.shared.homing, 7, n(150));

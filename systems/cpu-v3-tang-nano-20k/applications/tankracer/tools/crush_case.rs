@@ -31,6 +31,7 @@ fn run_crush(input: Array<u16>, out: Array<u16>) {
     let notifications: Buf<u16, 8> = Buf::new([0; 8]);
     let destruction: Buf<u16, 8> = Buf::new([0; 8]);
     let mut ticks = lifecycle::Ticks {
+        flag_words: 2,
         flags: flags.as_array(),
         flag_count: 2,
         order: ordered::List {

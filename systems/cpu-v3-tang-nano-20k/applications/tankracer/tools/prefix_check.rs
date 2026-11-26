@@ -15,13 +15,13 @@ fn main(){
  let input=unsafe{Ptr::from_addr(0x2000).as_u16_array()};
  let out=unsafe{Ptr::from_addr(0x1000).as_u16_array()};
  let ids=unsafe{Ptr::from_addr(0x6000).as_u16_array()};
- let identities=entities::State{header:ids,rows:at(ids,12),storage_capacity:g(ids,0).lo_bits()};
+ let identities=entities::State{row_words:6,header:ids,rows:at(ids,12),storage_capacity:g(ids,0).lo_bits()};
  let bytes=g(input,938).lo_bits();
  let asset=static_assets::AssetBytes{first_sector:40960,sector_count:(bytes+127)>>7,byte_len_lo:bytes,byte_len_hi:0};
  let scene=scene_query::Scene::begin(asset);if !scene.valid {halt(0x7f21);}
  let sine:Buf<u16,4>=Buf::new([45056,320,40960,0]);
  let auxiliary:Buf<sampling::Auxiliary,2>=Buf::new([aux(input,29),aux(input,35)]);
- let mut pool=effect_pool::Pool{lines:at(input,244),count:g(input,121),overflow:effect_pool::line_zero(),exhausted:at(input,1860)};
+ let mut pool=effect_pool::Pool{page:65535,lines:at(input,244),count:g(input,121),overflow:effect_pool::line_zero(),exhausted:at(input,1860)};
  let overflow=unsafe{view_of(&mut pool.overflow).as_ptr().as_u16_array()};copy(overflow,at(input,1844),16);
  let spin:Buf<u16,2>=Buf::new([g(input,59).lo_bits(),g(input,60).lo_bits()]);
  let state=prefix::State{core:input,spin:at(input,20),boost:at(input,38),boost_control:at(input,46),auxiliary:auxiliary.as_array()};

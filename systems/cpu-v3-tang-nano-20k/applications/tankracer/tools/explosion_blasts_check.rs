@@ -18,7 +18,7 @@ fn main(){
  let state=explosion_blasts::view(input);let sine:Buf<u16,4>=Buf::new([45056,320,40960,0]);
  let ctx=explosion_blasts::Context{resources:at(input,7152),camera:at(input,7162),sine:unsafe{sine.as_array().as_ptr().as_i16_array()},seed:at(input,7150)};
  let mut quads=quad_pool::Pool{records:at(input,374),exhausted:at(input,5482),count:g(at(input,5514),0)};
- let mut lines=effect_pool::Pool{lines:at(input,5518),count:g(at(input,5516),0),overflow:effect_pool::line_zero(),exhausted:at(input,7134)};
+ let mut lines=effect_pool::Pool{page:65535,lines:at(input,5518),count:g(at(input,5516),0),overflow:effect_pool::line_zero(),exhausted:at(input,7134)};
  let overflow=unsafe{view_of(&mut lines.overflow).as_ptr().as_u16_array()};copy(overflow,at(input,7118),16);
  let count=controls[0u16];let mut frame=0u16;
  while frame<count{
