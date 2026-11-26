@@ -79,13 +79,13 @@ texture/view across each consecutive run with the same texture and address mode.
 Material tint and billboard selection stay per draw. Shared texture descriptors
 use an indexed table independent of material tints.
 Transparent sorting moves u16 indices while its six-word draw records remain in
-place. A single previous-count u16 guards comparisons of old ordinal stable IDs
+place. A previous-count word guards comparisons of old ordinal stable IDs
 before each record is overwritten; every frame still writes its new depth.
 An identical complete member sequence permits checking the previous order against
-new depths and the stable-ID tie break. An ordered sequence reuses those indices;
-a member or order change runs the original Shellsort. The first frame and ordinals
-beyond the previous count never read uninitialized records. This adds no heap
-buffer and does not reuse visibility, LOD or command recording decisions.
+new depths and the stable-ID tie break. An ordered sequence reuses those indices.
+Otherwise direction ranks seed an exact repair, as described below. The first
+frame and ordinals beyond the previous count never read uninitialized records.
+Visibility, LOD and command recording decisions are still evaluated each frame.
 Radius-based display screening and box-based side/near checks keep viewing range
 independent of the projection/depth encoding.
 
@@ -466,6 +466,57 @@ python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_route_
 python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_route_location_grid.py --packed "$out/snapshot/tankracer-static-assets" --output "$out/location-grid-check.json"
 python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_route_snapshot.py "$out/snapshot" "$out/rebuilt"
 ```
+
+## Static visibility and transparent-order priors
+
+The renderer keeps the route ring as the coarse candidate domain and individual
+groups as visibility/LOD units. Immutable opaque command pages reuse native
+World packets, while the transparent tail keeps the established depth/stable-ID
+order. Static and slowly changing views still benefit from the default UnlitBank
+View/Target patch path; Prepared mode targets changing selections.
+
+`tools/view_pvs.py` bakes a conservative candidate mask for each existing XZ
+location cell and 32 horizontal headings. The circular cone encloses the CPU
+frustum under arbitrary roll. A one-world-unit camera guard and a two-radius
+group guard retain the loose candidates accepted by the existing box test.
+At runtime, the table is used only with an accepted route position, an in-grid
+cell and absolute pitch at most 19 degrees; other views retain the original
+candidate path. A cached 156-byte mask rejects empty 32-group chunks before
+their metadata DMA and rejects individual groups before their exact tests.
+Only cells with a nonempty route-location list need distinct baked masks;
+other cells use the universal mask. Dictionary deduplication and a 2-MiB budget
+bound the immutable asset. ENGLAND's table occupies 1,501,056 bytes and adds a
+160-byte heap allocation including its tag. It does not perform occlusion
+culling or change geometry selection inside the guarded domain.
+
+`tools/alpha_order.py` bakes stable-ID ranks for 16 headings and nine pitch
+representatives from compact static group centers. Translation contributes the
+same offset to all center depths, so it need not enter the prior. A changed
+member set gathers a candidate permutation using ranks; bounded insertion
+repair then uses actual frame depths and the original stable-ID tie break.
+After four moves per visible group it falls back to the original Shellsort.
+Unchanged members retain the previous-order check. Approximate direction bins
+affect work only, never the final order. ENGLAND uses 165,888 immutable bytes
+and 2,226 extra heap bytes including tags.
+
+The priors use static bounds and route data, independently of replay cameras.
+One-sided boundary cards do not imply one global transparent order: a billboard
+can interleave with a fixed card, and visible domains overlap. The prior/repair
+path preserves those relationships without a special fixed-card pass.
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_alpha_order.py --output target/tankracer-alpha-check
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_view_pvs.py target/tankracer-map --probes 1024 --output target/tankracer-pvs-check.json
+```
+
+The sort check executes the actual RCC repair bodies with independent total
+ordering and guarded buffers. The visibility probe covers native Q16 cameras,
+roll, cell/heading boundaries and variable height; it corroborates the baked
+guard construction rather than proving all continuous camera poses by sampling.
+`tools/map_priors.py` inspects fixed-card support planes and partial painter
+constraints within an explicit route domain; its report is diagnostic and does
+not change runtime order.
+
 
 ## Camera input and workload
 

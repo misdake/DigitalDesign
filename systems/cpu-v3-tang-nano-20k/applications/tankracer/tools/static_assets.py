@@ -14,6 +14,8 @@ import zipfile
 from export_route import pack_route, read_json, write_json_atomic
 import export_route
 import route_ring
+import alpha_order
+import view_pvs
 
 from gpu_mesh_layout import native_record
 from mesh_partition import partition
@@ -461,6 +463,8 @@ def build(output, route_path=None):
     spans = opaque_spans(rows, opaque_count, len(records))
     assets.bytes("MAP_OPAQUE_SPANS", struct.pack(f"<{len(spans)}H", *spans))
     packed, clusters, cluster_counts = cluster_groups(rows)
+    ranks, rank_sectors, pitch_thresholds = alpha_order.build(packed, opaque_count)
+    assets.bytes('MAP_ALPHA_RANKS', ranks)
     ring = None
     if route_input is not None:
         ring = route_ring.build_ring(route_input[0], packed, opaque_count, origin, scale, display,
@@ -489,12 +493,22 @@ def build(output, route_path=None):
         raise ValueError("expected 1..192 camera samples in the supplied sequence")
     camera_words = [w for camera in cameras for w in view_words(camera, origin, scale)]
     assets.bytes("MAP_CAMERA_DATA", struct.pack(f"<{len(camera_words)}H", *camera_words))
+    pvs, pvs_info = view_pvs.build([] if ring is None else ring[0], location, scale,
+                                  [location_lists[offset] != 0 for offset in location_cells])
+    assets.bytes('MAP_VIEW_PVS', pvs)
     extra = "use crate::dsl_rt::*;\n"
     candidates = os.getenv('TANKRACER_CANDIDATES', 'route')
     if candidates not in ('clusters', 'route'):
         raise ValueError('candidates must be clusters or route')
     safe_corridor = 0 if ring is None else max(0, ring[2]['camera_corridor'] - scale)
     constants = dict(
+        MAP_PVS_ENABLED=int(pvs_info['enabled']),
+        MAP_PVS_MASK_WORDS=pvs_info['mask_words'],
+        MAP_PVS_STRIDE_SECTORS=pvs_info['stride_sectors'],
+        MAP_PVS_MASK_FIRST_SECTOR=pvs_info['first_mask_sector'],
+        MAP_PVS_YAW_SECTORS=view_pvs.YAW_SECTORS,
+        ALPHA_RANK_SECTORS=rank_sectors,
+        ALPHA_PITCH_COUNT=len(alpha_order.PITCH_DEGREES),
         TANKRACER_ROUTE_CANDIDATES=int(candidates == 'route'),
         RING_GROUP_WORDS=route_ring.RING_WORDS, RING_SEGMENT_WORDS=route_ring.SEGMENT_WORDS,
         RING_CHUNK_GROUPS=chunk_groups,
@@ -538,6 +552,10 @@ def build(output, route_path=None):
     extra += word_table('MAP_OPAQUE_RING_INDEX', command_index)
     extra += word_table('MAP_OPAQUE_RING_PAGE', command_ring[6::7] if recording == 'prepared' else [0])
     extra += word_table('MAP_PREPARED_PAGE_FIRST', command_pages)
+    extra += word_table('MAP_ALPHA_PITCH_THRESHOLDS', pitch_thresholds)
+    extra += word_table('MAP_PVS_QUADRANT', [w for i in range(view_pvs.YAW_SECTORS//4+1)
+                         for v in (math.sin(i*2*math.pi/view_pvs.YAW_SECTORS), math.cos(i*2*math.pi/view_pvs.YAW_SECTORS))
+                         for w in q16(v)])
     extra += word_table("MAP_CLUSTERS", clusters)
     extra += word_table("MAP_RING_SEGMENTS", [0] if ring is None else ring[1])
     extra += word_table("MAP_RING_CHUNKS", chunk_directory)
@@ -546,8 +564,9 @@ def build(output, route_path=None):
     if ring is None:
         extra += "pub const MAP_RING_GROUP_DATA:AssetBytes=MAP_GROUP_DATA;\n"
     extra += material_code
-    manifest = assets.write_manifest("tankracer_static.rs", sources=[__file__, export_route.__file__, route_ring.__file__], extra=extra)
+    manifest = assets.write_manifest("tankracer_static.rs", sources=[__file__, export_route.__file__, route_ring.__file__, alpha_order.__file__, view_pvs.__file__], extra=extra)
     manifest.update(candidate_source=candidates, map_sha256=hashlib.sha256(map_data).hexdigest(),
+                    view_pvs=pvs_info,
                     camera_sha256=hashlib.sha256(camera_data).hexdigest(),
                     origin=origin, render_scale=scale, position_shift=shift, display_distance=display,
                     selection=dict(group_record_bytes=GROUP_WORDS * 2,

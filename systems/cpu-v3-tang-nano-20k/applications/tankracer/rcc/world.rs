@@ -14,7 +14,7 @@ const X_PER_DEPTH: fix32 = fix!(0.78515625);
 const Y_PER_DEPTH: fix32 = fix!(0.47265625);
 
 // Current render-only s=segment+t; negative means cluster fallback.
-static RENDER_ROUTE_POSITION: Buf<u16, 2> = Buf::new([0, 65535]);
+static RENDER_ROUTE_POSITION: Buf<u16, 3> = Buf::new([0, 65535, 65535]);
 
 struct View {
     matrix: Mat3x4,
@@ -49,6 +49,12 @@ pub struct World {
     count_a: u16,
     count_b: u16,
     previous_blended: u16,
+    alpha_ranks: Ptr,
+    alpha_ordinals: Ptr,
+    alpha_mask: Ptr,
+    alpha_rank_key: u16,
+    pvs_mask: Ptr,
+    pvs_key: u16,
 }
 
 pub struct Selection {
@@ -62,12 +68,18 @@ impl World {
         let mut opaque_draws = Ptr::from_addr(0);
         let mut blended_draws = Ptr::from_addr(0);
         let mut blended_order = Ptr::from_addr(0);
+        let mut alpha_ranks = Ptr::from_addr(0);
+        let mut alpha_ordinals = Ptr::from_addr(0);
+        let mut alpha_mask = Ptr::from_addr(0);
         if OPAQUE_COUNT != 0 {
             opaque_draws = malloc(OPAQUE_COUNT * OPAQUE_DRAW_WORDS);
         }
         if GROUP_COUNT != OPAQUE_COUNT {
             blended_draws = malloc((GROUP_COUNT - OPAQUE_COUNT) * 6);
             blended_order = malloc(GROUP_COUNT - OPAQUE_COUNT);
+            alpha_ranks = malloc(GROUP_COUNT - OPAQUE_COUNT);
+            alpha_ordinals = malloc(GROUP_COUNT - OPAQUE_COUNT);
+            alpha_mask = malloc((GROUP_COUNT - OPAQUE_COUNT + 15) / 16);
         }
         let state = RenderStateDesc::opaque(Lighting::ambient(fix32::one()))
             .with_filter(TextureFilter::Bilinear);
@@ -106,6 +118,12 @@ impl World {
             count_a: 0,
             count_b: 0,
             previous_blended: 0,
+            alpha_ranks,
+            alpha_ordinals,
+            alpha_mask,
+            alpha_rank_key: 65535,
+            pvs_mask: malloc(MAP_PVS_MASK_WORDS),
+            pvs_key: 65535,
         };
         world.prepare_bindings();
         world
@@ -444,14 +462,43 @@ impl World {
             blended: 0,
         };
         let mut same_blended = self.previous_blended != 0;
+        let mut position = RENDER_ROUTE_POSITION.as_array();
+        position[2u16] = 65535;
         let mut route_s = -fix32::one();
         if TANKRACER_ROUTE_CANDIDATES != 0 && TANKRACER_POLICY != 0 && RING_SEGMENT_COUNT != 0 {
             route_s = route_position(view);
         }
-        let mut position = RENDER_ROUTE_POSITION.as_array();
         position[0u16] = route_s.lo_bits();
         position[1u16] = route_s.hi_bits();
         let route_active = route_s >= fix32::zero();
+        let use_pvs = MAP_PVS_ENABLED != 0
+            && route_active
+            && position[2u16] != 65535
+            && view.matrix.row2.y.abs() <= fix!(0.3255615234375);
+        let pvs = unsafe { self.pvs_mask.as_u16_array() };
+        if use_pvs {
+            let mut yaw = alpha_direction_key(view) / ALPHA_PITCH_COUNT;
+            if MAP_PVS_YAW_SECTORS != 16 {
+                yaw = pvs_heading(view);
+            }
+            let key = position[2u16] * MAP_PVS_YAW_SECTORS + yaw;
+            if key != self.pvs_key {
+                let entry: Buf<u16, 1> = Buf::new([0]);
+                if !gpu_window_asset_read(entry.as_array(), MAP_VIEW_PVS.first_sector, key, 1)
+                    || !gpu_window_asset_read(
+                        pvs,
+                        MAP_VIEW_PVS.first_sector
+                            + MAP_PVS_MASK_FIRST_SECTOR
+                            + entry[0u16] * MAP_PVS_STRIDE_SECTORS,
+                        0,
+                        MAP_PVS_MASK_WORDS,
+                    )
+                {
+                    halt(0x7b43);
+                }
+                self.pvs_key = key;
+            }
+        }
         let mut coarse = MAP_CLUSTERS.as_array();
         let mut source = MAP_GROUP_DATA.first_sector;
         let mut stride = GROUP_WORDS;
@@ -483,7 +530,9 @@ impl World {
                 count = coarse[header + 15];
             }
             let mut classification: u16 = 2;
-            if TANKRACER_POLICY != 0 {
+            if use_pvs && (pvs[(first >> 5) * 2] | pvs[(first >> 5) * 2 + 1]) == 0 {
+                classification = 0;
+            } else if TANKRACER_POLICY != 0 {
                 classification = classify_cluster(view, coarse, header);
             }
             if classification != 0 {
@@ -493,49 +542,53 @@ impl World {
                 let mut index: u16 = 0;
                 while index < count {
                     let record = index * stride;
-                    let bound = group_bound(words, record);
-                    let depth = -project(&view.matrix.row2, &bound);
-                    if classification == 2 || visible_group(view, words, record, &bound, depth) {
-                        let mut span = record + 7;
-                        if TANKRACER_POLICY == 2 && depth - bound.w > LOD_DISTANCE {
-                            span = record + 9;
-                        }
-                        let draw_first = words[span];
-                        let draw_count = words[span + 1];
-                        let draw_material = words[record + 11];
-                        if words[record + 12] >= OPAQUE_COUNT {
-                            let mut output = blended;
-                            let target = result.blended * 6;
-                            if same_blended {
-                                if result.blended >= self.previous_blended {
-                                    same_blended = false;
-                                } else if output[target + 3] != words[record + 12] {
-                                    same_blended = false;
-                                }
+                    if !use_pvs || pvs[(first + index) >> 4] & (1u16 << ((first + index) & 15)) != 0
+                    {
+                        let bound = group_bound(words, record);
+                        let depth = -project(&view.matrix.row2, &bound);
+                        if classification == 2 || visible_group(view, words, record, &bound, depth)
+                        {
+                            let mut span = record + 7;
+                            if TANKRACER_POLICY == 2 && depth - bound.w > LOD_DISTANCE {
+                                span = record + 9;
                             }
-                            output[target + 3] = words[record + 12];
-                            output[target + 4] = depth.lo_bits();
-                            output[target + 5] = depth.hi_bits();
-                            output[target] = draw_first;
-                            output[target + 1] = draw_count;
-                            output[target + 2] = draw_material;
-                            result.blended += 1;
-                        } else {
-                            if TANKRACER_PREPARED != 0 {
-                                let item = MAP_OPAQUE_RING_INDEX[words[record + 12]];
-                                let mut bits: u16 = 1;
-                                if draw_first != words[record + 7] {
-                                    bits = 3;
+                            let draw_first = words[span];
+                            let draw_count = words[span + 1];
+                            let draw_material = words[record + 11];
+                            if words[record + 12] >= OPAQUE_COUNT {
+                                let mut output = blended;
+                                let target = result.blended * 6;
+                                if same_blended {
+                                    if result.blended >= self.previous_blended {
+                                        same_blended = false;
+                                    } else if output[target + 3] != words[record + 12] {
+                                        same_blended = false;
+                                    }
                                 }
-                                mask[item >> 3] |= bits << ((item & 7) * 2);
-                                // Retain the exact selected range already loaded by culling.
-                                // The remaining two words per group hold the ordered indices.
-                                let mut spans = unsafe { self.opaque_draws.as_u16_array() };
-                                spans[item * 3] = draw_first;
-                                spans[item * 3 + 1] = draw_count;
-                                spans[item * 3 + 2] = draw_material;
+                                output[target + 3] = words[record + 12];
+                                output[target + 4] = depth.lo_bits();
+                                output[target + 5] = depth.hi_bits();
+                                output[target] = draw_first;
+                                output[target + 1] = draw_count;
+                                output[target + 2] = draw_material;
+                                result.blended += 1;
                             } else {
-                                mask[draw_first >> 4] |= 1u16 << (draw_first & 15);
+                                if TANKRACER_PREPARED != 0 {
+                                    let item = MAP_OPAQUE_RING_INDEX[words[record + 12]];
+                                    let mut bits: u16 = 1;
+                                    if draw_first != words[record + 7] {
+                                        bits = 3;
+                                    }
+                                    mask[item >> 3] |= bits << ((item & 7) * 2);
+                                    // Retain the exact selected range already loaded by culling.
+                                    // The remaining two words per group hold the ordered indices.
+                                    let mut spans = unsafe { self.opaque_draws.as_u16_array() };
+                                    spans[item * 3] = draw_first;
+                                    spans[item * 3 + 1] = draw_count;
+                                    spans[item * 3 + 2] = draw_material;
+                                } else {
+                                    mask[draw_first >> 4] |= 1u16 << (draw_first & 15);
+                                }
                             }
                         }
                     }
@@ -556,10 +609,70 @@ impl World {
         let order = unsafe { self.blended_order.as_u16_array() };
         same_blended = same_blended && result.blended == self.previous_blended;
         self.previous_blended = result.blended;
-        if !same_blended || !blended_ordered(blended, order, result.blended) {
-            sort_back_to_front(blended, order, result.blended);
+        if !same_blended {
+            self.seed_blended(view, blended, order, result.blended);
+            repair_blended_order(blended, order, result.blended);
+        } else if !blended_ordered(blended, order, result.blended) {
+            repair_blended_order(blended, order, result.blended);
         }
         result
+    }
+
+    fn seed_blended(
+        &mut self,
+        view: &View,
+        records: Array<u16>,
+        mut order: Array<u16>,
+        count: u16,
+    ) {
+        if count < 2 {
+            if count == 1 {
+                order[0u16] = 0;
+            }
+            return;
+        }
+        let key = alpha_direction_key(view);
+        let ranks = unsafe { self.alpha_ranks.as_u16_array() };
+        if key != self.alpha_rank_key {
+            if !gpu_window_asset_read(
+                ranks,
+                MAP_ALPHA_RANKS.first_sector + key * ALPHA_RANK_SECTORS,
+                0,
+                GROUP_COUNT - OPAQUE_COUNT,
+            ) {
+                halt(0x7b42);
+            }
+            self.alpha_rank_key = key;
+        }
+        let mut mask = unsafe { self.alpha_mask.as_u16_array() };
+        let mut ordinals = unsafe { self.alpha_ordinals.as_u16_array() };
+        let mut bucket: u16 = 0;
+        while bucket < (GROUP_COUNT - OPAQUE_COUNT + 15) / 16 {
+            mask[bucket] = 0;
+            bucket += 1;
+        }
+        let mut index: u16 = 0;
+        while index < count {
+            let rank = ranks[records[index * 6 + 3] - OPAQUE_COUNT];
+            ordinals[rank] = index;
+            mask[rank >> 4] |= 1u16 << (rank & 15);
+            index += 1;
+        }
+        bucket = 0;
+        index = 0;
+        while bucket < (GROUP_COUNT - OPAQUE_COUNT + 15) / 16 {
+            let mut bits = mask[bucket];
+            let mut at = bucket * 16;
+            while bits != 0 {
+                if bits & 1 != 0 {
+                    order[index] = ordinals[at];
+                    index += 1;
+                }
+                at += 1;
+                bits >>= 1;
+            }
+            bucket += 1;
+        }
     }
 
     fn ordered_opaque(&mut self, words: Array<u16>) -> u16 {
@@ -664,6 +777,107 @@ impl World {
             pass.draw_unlit(&self.unlit, binding, first, length);
             i += 1;
         }
+    }
+}
+
+// Quantize the horizontal view direction for the conservative candidate mask.
+fn pvs_heading(view: &View) -> u16 {
+    let x = view.matrix.row2.x;
+    let z = view.matrix.row2.z;
+    let axes = MAP_PVS_QUADRANT.as_array();
+    let mut sector: u16 = 0;
+    let mut best = z.abs();
+    let mut i: u16 = 1;
+    while i <= MAP_PVS_YAW_SECTORS / 4 {
+        let value = x.abs() * fixed(axes, i * 4) + z.abs() * fixed(axes, i * 4 + 2);
+        if value > best {
+            best = value;
+            sector = i;
+        }
+        i += 1;
+    }
+    if z < fix32::zero() {
+        if x < fix32::zero() {
+            sector = MAP_PVS_YAW_SECTORS / 2 + sector;
+        } else {
+            sector = MAP_PVS_YAW_SECTORS / 2 - sector;
+        }
+    } else if x < fix32::zero() {
+        sector = (MAP_PVS_YAW_SECTORS - sector) % MAP_PVS_YAW_SECTORS;
+    }
+    sector
+}
+
+// Camera translation is common to all depths. Direction-only ranks seed an
+// exact sort; they never decide visibility or replace the stable-ID tie break.
+fn alpha_direction_key(view: &View) -> u16 {
+    let x = view.matrix.row2.x;
+    let z = view.matrix.row2.z;
+    let ax = x.abs();
+    let az = z.abs();
+    let mut yaw: u16 = 0;
+    let mut best = az;
+    let a = ax * fix!(0.3826904296875) + az * fix!(0.9238739013671875);
+    if a > best {
+        yaw = 1;
+        best = a;
+    }
+    let diagonal = (ax + az) * fix!(0.7071075439453125);
+    if diagonal > best {
+        yaw = 2;
+        best = diagonal;
+    }
+    let b = ax * fix!(0.9238739013671875) + az * fix!(0.3826904296875);
+    if b > best {
+        yaw = 3;
+        best = b;
+    }
+    if ax > best {
+        yaw = 4;
+    }
+    if z < fix32::zero() {
+        if x < fix32::zero() {
+            yaw = 8 + yaw;
+        } else {
+            yaw = 8 - yaw;
+        }
+    } else if x < fix32::zero() {
+        yaw = (16 - yaw) & 15;
+    }
+    let thresholds = MAP_ALPHA_PITCH_THRESHOLDS.as_array();
+    let mut pitch: u16 = 0;
+    while pitch + 1 < ALPHA_PITCH_COUNT && view.matrix.row2.y > fixed(thresholds, pitch * 2) {
+        pitch += 1;
+    }
+    yaw * ALPHA_PITCH_COUNT + pitch
+}
+
+fn repair_blended_order(records: Array<u16>, mut order: Array<u16>, count: u16) {
+    let mut budget = count * 4;
+    let mut i: u16 = 1;
+    while i < count {
+        let record = order[i];
+        let group = records[record * 6 + 3];
+        let depth = fixed(records, record * 6 + 4);
+        let mut at = i;
+        while at != 0 {
+            let previous = order[at - 1] * 6;
+            let previous_depth = fixed(records, previous + 4);
+            if previous_depth > depth || (previous_depth == depth && records[previous + 3] < group)
+            {
+                break;
+            }
+            order[at] = order[at - 1];
+            at -= 1;
+            budget -= 1;
+            if budget == 0 {
+                order[at] = record;
+                sort_back_to_front(records, order, count);
+                return;
+            }
+        }
+        order[at] = record;
+        i += 1;
     }
 }
 
@@ -878,7 +1092,9 @@ fn route_position(view: &View) -> fix32 {
         let x = ((camera_x - origin_x) * inverse).to_int() as u16;
         let z = ((camera_z - origin_z) * inverse).to_int() as u16;
         let cells = MAP_ROUTE_LOCATION_CELLS.as_array();
-        first = cells[z * ROUTE_LOCATION_COLUMNS + x];
+        let cell = z * ROUTE_LOCATION_COLUMNS + x;
+        RENDER_ROUTE_POSITION[2u16] = cell;
+        first = cells[cell];
         count = lists[first];
         first += 1;
     }
