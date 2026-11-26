@@ -22,7 +22,11 @@ Its reusable complete part-pose and route-restoration kernels also have independ
 checks candidates/class slots and runs connected Fall/Bounce contacts and motion; see
 [scene collision assets](/systems/cpu-v3-tang-nano-20k/applications/tankracer/scene.md).
 The reusable `scene-laps` qualifier covers real lap memberships, camera-delayed
-queues and off-camera Fall restoration.
+queues and off-camera Fall restoration. `scene-train` qualifies both authored
+ENGLAND paths against live class calls and shared RNG. `scene-emitter` covers
+the five authored emitters and their real ownerless projectile factories.
+`scene-flock` connects all three bird groups, live wing models and render mesh revisions.
+`scene-ambient` qualifies chimney particles and ambient sound-region selection.
 
 [Collision and body arithmetic](/systems/cpu-v3-tang-nano-20k/applications/tankracer/collision.md)
 describes reflection, pair impulses, body springs, contact hulls and their module checks.

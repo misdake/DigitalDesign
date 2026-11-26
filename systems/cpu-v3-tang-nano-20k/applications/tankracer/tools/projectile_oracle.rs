@@ -11,12 +11,15 @@ mod projectile_marks_oracle;
 #[allow(dead_code)]
 mod reference_world;
 mod scene_allocation_oracle;
+mod scene_ambient_oracle;
 mod scene_creation_oracle;
+mod scene_emitter_oracle;
 mod scene_explosion_tick_oracle;
 mod scene_explosions_oracle;
 #[allow(dead_code)]
 mod scene_export;
 mod scene_fire_oracle;
+mod scene_flock_oracle;
 mod scene_laps_oracle;
 #[allow(dead_code)]
 mod scene_lifecycle_assets;
@@ -29,6 +32,7 @@ mod scene_projectile_area_oracle;
 mod scene_projectile_direct_oracle;
 mod scene_projectile_flight_oracle;
 mod scene_projectile_ufo_oracle;
+mod scene_train_oracle;
 mod scene_ufo_transfer_oracle;
 mod scene_ufos_oracle;
 mod scene_vehicle_transfer_oracle;
@@ -406,6 +410,10 @@ fn main() {
     scene_ufo_transfer_oracle::export(root, out);
     scene_fire_oracle::export(root, out);
     scene_laps_oracle::export(root, out);
+    scene_train_oracle::export(root, out);
+    scene_emitter_oracle::export(root, out);
+    scene_flock_oracle::export(root, out);
+    scene_ambient_oracle::export(root, out);
     scene_allocation_oracle::export(root, out);
     scene_creation_oracle::export(root, out);
     scene_mines_oracle::export(root, out);

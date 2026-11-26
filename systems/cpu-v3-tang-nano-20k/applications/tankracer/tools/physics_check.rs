@@ -95,7 +95,7 @@ const STATIC_ASSETS: &str = include_str!("../../../rcc/static_assets.rs");
 const GPU_LAYOUT: &str = include_str!("../../../rcc/gpu_layout.rs");
 const OBJECT_QUERY: &str = include_str!("../rcc/object_query.rs");
 const TRIG_ASSET_LOOKUP: &str = include_str!("../rcc/trig_asset_lookup.rs");
-const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod vehicle_pose; mod vehicle_transfer; mod scene_vehicle_transfer; mod scene_obstacle_transfer; mod scene_ufo_transfer; mod scene_fire; mod scene_laps; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_ufos; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
+const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod vehicle_pose; mod vehicle_transfer; mod scene_vehicle_transfer; mod scene_obstacle_transfer; mod scene_ufo_transfer; mod scene_fire; mod scene_laps; mod train; mod scene_train; mod emitter; mod scene_emitter; mod flock; mod scene_flock; mod smoker; mod scene_ambient; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_ufos; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
 
 fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<dyn Error>> {
     let folder = output.join(label);
@@ -124,6 +124,10 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         || label == "scene-ufo-transfer"
         || label == "scene-fire"
         || label == "scene-laps"
+        || label == "scene-train"
+        || label == "scene-emitter"
+        || label == "scene-flock"
+        || label == "scene-ambient"
         || label == "projectile-marks"
         || label == "explosion"
         || label == "explosion-blasts"
@@ -172,6 +176,14 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "mesh_break" => Ok(include_str!("../rcc/mesh_break.rs").to_owned()),
             "scene_meshes" => Ok(include_str!("../rcc/scene_meshes.rs").to_owned()),
             "scene_fire" => Ok(include_str!("../rcc/scene_fire.rs").to_owned()),
+            "train" => Ok(include_str!("../rcc/train.rs").to_owned()),
+            "emitter" => Ok(include_str!("../rcc/emitter.rs").to_owned()),
+            "flock" => Ok(include_str!("../rcc/flock.rs").to_owned()),
+            "smoker" => Ok(include_str!("../rcc/smoker.rs").to_owned()),
+            "scene_ambient" => Ok(include_str!("../rcc/scene_ambient.rs").to_owned()),
+            "scene_flock" => Ok(include_str!("../rcc/scene_flock.rs").to_owned()),
+            "scene_emitter" => Ok(include_str!("../rcc/scene_emitter.rs").to_owned()),
+            "scene_train" => Ok(include_str!("../rcc/scene_train.rs").to_owned()),
             "scene_laps" => Ok(include_str!("../rcc/scene_laps.rs").to_owned()),
             "scene_ufo_transfer" => Ok(include_str!("../rcc/scene_ufo_transfer.rs").to_owned()),
             "scene_obstacle_transfer" => {
@@ -209,6 +221,10 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
                 || label == "scene-ufo-transfer"
                 || label == "scene-fire"
                 || label == "scene-laps"
+                || label == "scene-train"
+                || label == "scene-emitter"
+                || label == "scene-flock"
+                || label == "scene-ambient"
                 || label == "tank-hit"
                 || label == "explosion"
                 || label == "explosion-blasts"
@@ -767,6 +783,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Some("collision") => collision_check::run(&output, Path::new(&fixture))?,
             Some("closer") => closer_check::run(&output, Path::new(&fixture))?,
+            Some("scene-ambient") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-ambient")?
+            }
+            Some("scene-flock") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-flock")?
+            }
+            Some("scene-emitter") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-emitter")?
+            }
+            Some("scene-train") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-train")?
+            }
             Some("scene-laps") => {
                 scene_allocation_check::run(&output, Path::new(&fixture), "scene-laps")?
             }

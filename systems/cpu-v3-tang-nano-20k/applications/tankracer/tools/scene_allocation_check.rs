@@ -25,6 +25,10 @@ pub fn run(output: &Path, fixture: &Path, label: &str) -> Result<Value, Box<dyn 
     let creation = label != "scene-allocation";
     let fire_mode = label == "scene-fire";
     let laps = label == "scene-laps";
+    let trains = label == "scene-train";
+    let emitters = label == "scene-emitter";
+    let flocks = label == "scene-flock";
+    let ambient = label == "scene-ambient";
     let ufo_tick = label == "scene-ufo-transfer";
     let vehicle_methods = label == "scene-vehicle-transfer" || ufo_tick;
     let obstacle_methods = label == "scene-obstacle-transfer";
@@ -36,12 +40,106 @@ pub fn run(output: &Path, fixture: &Path, label: &str) -> Result<Value, Box<dyn 
     let projectile_direct = label == "scene-projectile-direct";
     let projectile_area = label == "scene-projectile-area" || projectile_direct || projectile_ufo;
     let projectile_flight = label == "scene-projectile-flight" || projectile_area;
-    let mine_membership =
-        mines || mine_hit || has_ufos || vehicle_methods || obstacle_methods || fire_mode || laps;
+    let mine_membership = mines
+        || mine_hit
+        || has_ufos
+        || vehicle_methods
+        || obstacle_methods
+        || fire_mode
+        || laps
+        || trains
+        || emitters
+        || flocks
+        || ambient;
     let explosion_tick = label == "scene-explosion-tick";
     let weapon_explosion = label == "scene-weapon-explosion" || label == "scene-mine-explosion";
     let vehicle_views = explosion_tick || weapon_explosion || mine_hit || projectile_area;
     let explosions = label == "scene-explosions" || vehicle_views;
+    let ambient_setup = if ambient {
+        r#"
+ let mut smoke_data=pointer(0x6100);if pointer(0x62e5)[0u16]!=0{smoke_data=pointer(0xc000);}
+ let smoke_records:Buf<scene_ambient::Smoke,1>=Buf::new([scene_ambient::Smoke{object:1,present:true,state:smoker::State{header:smoke_data,particles:at(smoke_data,10),sequence:pointer(0x62c4)}}]);
+ let noisy_records:Buf<scene_ambient::Noisy,1>=Buf::new([scene_ambient::Noisy{object:0,present:true,selected:pointer(0x62c0),sounds:pointer(0x6300),count:pointer(0x62e3)[0u16]}]);
+ let mut ambient_tick=scene_ambient::Tick{call:scene_creation::Call{entity:integer::from_i16(0),slot:12},dt:integer::from_i16(0),number:integer::from_i16(0),camera:pointer(0x6a00),vehicles:pointer(0x62e0)[0u16]!=0,player_present:pointer(0x62e1)[0u16]!=0,simulation:pointer(0x62e2)[0u16]!=0,smoke:smoke_records.as_array(),smoke_count:1,noisy:noisy_records.as_array(),noisy_count:1};
+"#
+    } else {
+        ""
+    };
+    let ambient_call = if ambient {
+        r#"
+ entity=g(c,3);ambient_tick.call.entity=entity;ambient_tick.call.slot=g(c,2).lo_bits();ambient_tick.dt=g(c,1);ambient_tick.number=g(c,5);ambient_tick.camera=pointer(0x6a00+frame*6);
+ if pointer(0x62e5)[0u16]!=0{unsafe{write_dseg_page(3,134);}}
+ status=scene_ambient::dispatch(&scene,&mut store,&mut runtime,&mut world,&mut weapons,&ambient_tick);
+ let count=smoker::sprites(&smoke_records[0u16].state,pointer(0x6800));let mut output=pointer(0x62e4);output[0u16]=count;
+ if pointer(0x62e5)[0u16]!=0{if read_dseg_page(3)!=134{halt(0x7e8c);}unsafe{write_dseg_page(3,119);}}
+"#
+    } else {
+        "halt(0x7e8b);"
+    };
+    let flock_helpers = if flocks {
+        r#"fn flock_core(index:u16)->Array<u16>{let mut base=0x6100u16;if pointer(0x6609)[0u16]!=0{base=0xc000;}pointer(base+index*288)}
+fn flock_model(index:u16)->flock::Model{let m=pointer(0x6500+index*6);flock::Model{vertices:unsafe{Ptr::from_addr(0xc000+m[0u16]).as_i16_array()},page:131,low:m[2u16],high:m[3u16]}}
+fn flock_geometry(index:u16)->scene_flock::Geometry{let m=pointer(0x6500+index*6);let row=pointer(0x6540+m[4u16]*8);scene_flock::Geometry{exists:row[0u16]!=0,flags:at(row,1),revision:at(row,2),vertices:unsafe{Ptr::from_addr(0xc000+row[7u16]).as_i16_array()},page:132}}
+"#
+    } else {
+        ""
+    };
+    let flock_setup = if flocks {
+        r#"
+ let mut flock_models:Buf<flock::Model,6>=Buf::new([flock_model(0),flock_model(1),flock_model(2),flock_model(3),flock_model(4),flock_model(5)]);
+ let mut flock_geometry:Buf<scene_flock::Geometry,6>=Buf::new([flock_geometry(0),flock_geometry(1),flock_geometry(2),flock_geometry(3),flock_geometry(4),flock_geometry(5)]);
+ let flock_records:Buf<scene_flock::Record,3>=Buf::new([
+  scene_flock::Record{object:pointer(0x660c)[0u16],present:true,state:flock::State{flight:flock_core(0),birds:at(flock_core(0),64),models:view_of(&mut flock_models[0u16]),model_count:pointer(0x6485)[0u16],range:g(pointer(0x6480),0)},meshes:view_of(&mut flock_geometry[0u16]),mesh_count:pointer(0x6486)[0u16]},
+  scene_flock::Record{object:pointer(0x660c)[1u16],present:true,state:flock::State{flight:flock_core(1),birds:at(flock_core(1),64),models:view_of(&mut flock_models[2u16]),model_count:pointer(0x648f)[0u16],range:g(pointer(0x648a),0)},meshes:view_of(&mut flock_geometry[2u16]),mesh_count:pointer(0x6490)[0u16]},
+  scene_flock::Record{object:pointer(0x660c)[2u16],present:true,state:flock::State{flight:flock_core(2),birds:at(flock_core(2),64),models:view_of(&mut flock_models[4u16]),model_count:pointer(0x6499)[0u16],range:g(pointer(0x6494),0)},meshes:view_of(&mut flock_geometry[4u16]),mesh_count:pointer(0x649a)[0u16]}
+ ]);
+ let mut flock_tick=scene_flock::Tick{call:scene_creation::Call{entity:integer::from_i16(0),slot:12},dt:integer::from_i16(0),number:integer::from_i16(0),simulation:pointer(0x6608)[0u16]!=0,vehicles:pointer(0x6606)[0u16]!=0,player_present:pointer(0x6607)[0u16]!=0,player:pointer(0x6600),records:flock_records.as_array(),count:3,tables:launch.context.tables};
+"#
+    } else {
+        ""
+    };
+    let flock_call = if flocks {
+        r#"
+ entity=g(c,3);flock_tick.call.entity=entity;flock_tick.call.slot=g(c,2).lo_bits();flock_tick.dt=g(c,1);flock_tick.number=g(c,5);
+ if pointer(0x6609)[0u16]!=0{unsafe{write_dseg_page(3,133);}}
+ status=scene_flock::dispatch(&scene,&mut store,&mut runtime,&mut world,&mut weapons,&flock_tick);
+ if pointer(0x6609)[0u16]!=0{if read_dseg_page(3)!=133{halt(0x7e8a);}unsafe{write_dseg_page(3,119);}}
+"#
+    } else {
+        "halt(0x7e89);"
+    };
+    let emitter_setup = if emitters {
+        r#"
+ let emitter_records:Buf<scene_emitter::Record,5>=Buf::new([scene_emitter::Record{object:pointer(0x6230)[0u16],present:true,data:pointer(0x6100)},scene_emitter::Record{object:pointer(0x6230)[1u16],present:true,data:pointer(0x6132)},scene_emitter::Record{object:pointer(0x6230)[2u16],present:true,data:pointer(0x6164)},scene_emitter::Record{object:pointer(0x6230)[3u16],present:true,data:pointer(0x6196)},scene_emitter::Record{object:pointer(0x6230)[4u16],present:true,data:pointer(0x61c8)}]);
+ let mut emitter_tick=scene_emitter::Tick{call:scene_creation::Call{entity:integer::from_i16(0),slot:12},dt:integer::from_i16(0),simulation:pointer(0x6243)[0u16]!=0,camera:pointer(0x6200),player:pointer(0x6210),player_present:pointer(0x6242)[0u16]!=0,records:emitter_records.as_array(),count:5,resources_present:launch.resources_present,material:g(pointer(0x6240),0),class:launch.class,sine:launch.context.tables.sine};
+"#
+    } else {
+        ""
+    };
+    let emitter_call = if emitters {
+        r#"
+ entity=g(c,3);emitter_tick.call.entity=entity;emitter_tick.call.slot=g(c,2).lo_bits();emitter_tick.dt=g(c,1);
+ status=scene_emitter::dispatch(&scene,&mut store,&mut runtime,&mut world,&mut weapons,&emitter_tick);
+"#
+    } else {
+        "halt(0x7e88);"
+    };
+    let train_setup = if trains {
+        r#"
+ let train_records:Buf<scene_train::Record,2>=Buf::new([scene_train::Record{object:pointer(0x6310)[0u16],present:true,travel:pointer(0x6100),motion:pointer(0x6126),sound:pointer(0x6312)[0u16]!=0},scene_train::Record{object:pointer(0x6311)[0u16],present:true,travel:pointer(0x613c),motion:pointer(0x6162),sound:pointer(0x6313)[0u16]!=0}]);
+ let mut train_tick=scene_train::Tick{call:scene_creation::Call{entity:integer::from_i16(0),slot:12},dt:integer::from_i16(0),number:integer::from_i16(0),simulation:pointer(0x6306)[0u16]!=0,player:scene_train::Car{vehicles:pointer(0x6307)[0u16]!=0,present:pointer(0x6308)[0u16]!=0,position:pointer(0x6300)},records:train_records.as_array(),count:2,sine:launch.context.tables.sine};
+"#
+    } else {
+        ""
+    };
+    let train_call = if trains {
+        r#"
+ entity=g(c,3);train_tick.call.entity=entity;train_tick.call.slot=g(c,2).lo_bits();train_tick.dt=g(c,1);train_tick.number=g(c,5);
+ status=scene_train::dispatch(&scene,&mut store,&mut runtime,&mut world,&mut weapons,&train_tick);
+"#
+    } else {
+        "halt(0x7e87);"
+    };
     let lap_setup = if laps {
         r#"
  world.grid=spatial::Grid{page:119,origin:pointer(0xf2c0),shift_x:scene.header[14u16],shift_z:scene.header[15u16],items:pointer(0xd200),ranges:pointer(0xf200)};
@@ -427,6 +525,7 @@ fn copy(mut to:Array<u16>,from:Array<u16>,count:u16){let mut i=0u16;while i<coun
 fn list(index:u16)->ordered::List{ordered::List{items:pointer(0x3000+index*1024),count:pointer(0xa0)[index],capacity:512}}
 fn car(slot:u16)->scene_explosions::Vehicle{let row=pointer(0xd10+slot*27);scene_explosions::Vehicle{present:row[0u16]!=0,entity:g(at(row,1),0),position:at(row,3),basis:at(row,9)}}
 fn hit_car(slot:u16)->scene_explosions::HitVehicle{let row=pointer(0x5b80+slot*13);scene_explosions::HitVehicle{present:row[0u16]!=0,entity:g(at(row,1),0),velocity:at(row,3),spin:at(row,9),has_body:row[11u16]!=0,radius:row[12u16]as i16}}
+$FLOCK_HELPERS
 fn main(){
  let meta=pointer(0x80);let initial2=read_dseg_page(2);let initial3=read_dseg_page(3);
  unsafe{write_dseg_page(2,120);write_dseg_page(3,119);}
@@ -456,6 +555,10 @@ fn main(){
  $MINE_SETUP
  $FIRE_SETUP
  $LAP_SETUP
+ $TRAIN_SETUP
+ $EMITTER_SETUP
+ $FLOCK_SETUP
+ $AMBIENT_SETUP
  $PROJECTILE_SETUP
  $AREA_SETUP
  $MINE_HIT_SETUP
@@ -477,6 +580,10 @@ fn main(){
    }else if operation==6{$EXPLOSION_CALL
    }else if operation==7{$EXPLOSION_TICK_CALL
    }else if operation==8{$WEAPON_CALL
+   }else if operation==24{$AMBIENT_CALL
+   }else if operation==23{$FLOCK_CALL
+   }else if operation==22{$EMITTER_CALL
+   }else if operation==21{$TRAIN_CALL
    }else if operation==20{$LAP_CALL
    }else if operation==19{$FIRE_CALL
    }else if operation==18{$ACTOR_CALL
@@ -521,7 +628,7 @@ fn main(){
  $MINE_FINISH
  unsafe{write_dseg_page(3,initial3);write_dseg_page(2,initial2);}halt(0x600d);
 }
-"#.replace("$LAP_SETUP",lap_setup).replace("$LAP_CALL",lap_call).replace("$FIRE_SETUP",fire_setup).replace("$FIRE_CALL",fire_call).replace("$ACTOR_SETUP",actor_setup).replace("$ACTOR_CALL",actor_call).replace("$OBSTACLE_SETUP",obstacle_setup).replace("$OBSTACLE_CALL",obstacle_call).replace("$VEHICLE_SETUP",&vehicle_setup).replace("$VEHICLE_CALL",vehicle_call).replace("$UFOPROJECTILE",if projectile_ufo {"true"}else{"false"}).replace("$UFO_PAGES",if has_ufos {"1"}else{"0"}).replace("$CREATION",if creation {"true"}else{"false"}).replace("$MINE_SETUP",mine_setup).replace("$PROJECTILE_SETUP",projectile_setup).replace("$UFO_CONTEXT",ufo_context).replace("$UFO_SETUP",ufo_setup).replace("$UFO_CALL",ufo_call).replace("$AREA_SETUP",area_setup).replace("$AREA_CALL",area_call).replace("$AREA",if projectile_area {"true"}else{"false"}).replace("$PROJECTILE_CALL",projectile_call).replace("$REFLECTION_CALL",reflection_call).replace("$MINE_HIT_SETUP",mine_hit_setup).replace("$MINE_HIT_CALL",mine_hit_call).replace("$MINE_CALL",mine_call).replace("$MINE_TICK",mine_tick).replace("$EXPLOSION_CALL",explosion_call).replace("$EXPLOSION_PUBLISH",explosion_publish).replace("$EXPLOSION_TICK_SETUP",explosion_tick_setup).replace("$EXPLOSION_TICK_CALL",explosion_tick_call).replace("$WEAPON_SETUP",weapon_setup).replace("$WEAPON_CALL",weapon_call).replace("$MINE_EXPLOSION_CALL",mine_explosion_call).replace("$EXPLOSION_SETUP",if explosions {"unsafe{write_dseg_page(2,128);}copy(overflow,pointer(0x9a58),16);unsafe{write_dseg_page(2,120);}"}else{""}).replace("$MINE_FINISH",if mines || projectile_flight || fire_mode {"map.terrain.finish();"}else{""}),
+"#.replace("$AMBIENT_SETUP",ambient_setup).replace("$AMBIENT_CALL",ambient_call).replace("$FLOCK_HELPERS",flock_helpers).replace("$FLOCK_SETUP",flock_setup).replace("$FLOCK_CALL",flock_call).replace("$EMITTER_SETUP",emitter_setup).replace("$EMITTER_CALL",emitter_call).replace("$TRAIN_SETUP",train_setup).replace("$TRAIN_CALL",train_call).replace("$LAP_SETUP",lap_setup).replace("$LAP_CALL",lap_call).replace("$FIRE_SETUP",fire_setup).replace("$FIRE_CALL",fire_call).replace("$ACTOR_SETUP",actor_setup).replace("$ACTOR_CALL",actor_call).replace("$OBSTACLE_SETUP",obstacle_setup).replace("$OBSTACLE_CALL",obstacle_call).replace("$VEHICLE_SETUP",&vehicle_setup).replace("$VEHICLE_CALL",vehicle_call).replace("$UFOPROJECTILE",if projectile_ufo {"true"}else{"false"}).replace("$UFO_PAGES",if has_ufos {"1"}else{"0"}).replace("$CREATION",if creation {"true"}else{"false"}).replace("$MINE_SETUP",mine_setup).replace("$PROJECTILE_SETUP",projectile_setup).replace("$UFO_CONTEXT",ufo_context).replace("$UFO_SETUP",ufo_setup).replace("$UFO_CALL",ufo_call).replace("$AREA_SETUP",area_setup).replace("$AREA_CALL",area_call).replace("$AREA",if projectile_area {"true"}else{"false"}).replace("$PROJECTILE_CALL",projectile_call).replace("$REFLECTION_CALL",reflection_call).replace("$MINE_HIT_SETUP",mine_hit_setup).replace("$MINE_HIT_CALL",mine_hit_call).replace("$MINE_CALL",mine_call).replace("$MINE_TICK",mine_tick).replace("$EXPLOSION_CALL",explosion_call).replace("$EXPLOSION_PUBLISH",explosion_publish).replace("$EXPLOSION_TICK_SETUP",explosion_tick_setup).replace("$EXPLOSION_TICK_CALL",explosion_tick_call).replace("$WEAPON_SETUP",weapon_setup).replace("$WEAPON_CALL",weapon_call).replace("$MINE_EXPLOSION_CALL",mine_explosion_call).replace("$EXPLOSION_SETUP",if explosions {"unsafe{write_dseg_page(2,128);}copy(overflow,pointer(0x9a58),16);unsafe{write_dseg_page(2,120);}"}else{""}).replace("$MINE_FINISH",if mines || projectile_flight || fire_mode {"map.terrain.finish();"}else{""}),
         output,
     )?;
     let cases = data["cases"].as_array().ok_or("scene allocation cases")?;
@@ -736,6 +843,128 @@ fn main(){
             assert!(geometry.len() < 16384);
             memory[base..base + geometry.len()].copy_from_slice(&geometry);
         }
+        if ambient {
+            let banked = case["ambient_banked"].as_bool().unwrap();
+            memory[0x62e5] = u16::from(banked);
+            memory[134 * 16384..135 * 16384].fill(0x79ab);
+            let base = if banked {
+                memory[0x6100..0x62aa].fill(0x79ab);
+                134 * 16384
+            } else {
+                0x6100
+            };
+            memory[base..base + 426].copy_from_slice(&u16s(&initial["smoker_state"]));
+            memory[0x62c0..0x62c2].copy_from_slice(&u16s(&initial["noisy_selected"]));
+            memory[0x62c4] = initial["smoke_sequence"].as_u64().unwrap() as u16;
+            let sounds = u16s(&initial["noisy_sounds"]);
+            assert!(sounds.len() <= 640 && sounds.len().is_multiple_of(10));
+            memory[0x6300..0x6300 + sounds.len()].copy_from_slice(&sounds);
+            memory[0x62e3] = (sounds.len() / 10) as u16;
+            for (address, name) in [
+                (0x62e0, "ambient_vehicles"),
+                (0x62e1, "ambient_player_present"),
+                (0x62e2, "ambient_simulation"),
+            ] {
+                memory[address] = u16::from(case[name].as_bool().unwrap());
+            }
+            let cameras = u16s(&case["ambient_cameras"]);
+            assert!(cameras.len() <= 256);
+            memory[0x6a00..0x6a00 + cameras.len()].copy_from_slice(&cameras);
+            memory[0x6800..0x69a0].fill(0x79ab);
+        }
+        if flocks {
+            let banked = case["flock_banked"].as_bool().unwrap();
+            memory[0x6609] = u16::from(banked);
+            let base = if banked { 133 * 16384 } else { 0x6100 };
+            memory[133 * 16384..134 * 16384].fill(0x79ab);
+            if banked {
+                memory[0x6100..0x6460].fill(0x79ab);
+            }
+            memory[base..base + 864].copy_from_slice(&u16s(&initial["flock_state"]));
+            memory[0x6480..0x649e].copy_from_slice(&u16s(&initial["flock_config"]));
+            memory[0x6600..0x6606].copy_from_slice(&u16s(&case["flock_player"]));
+            for (address, name) in [
+                (0x6606, "flock_vehicles"),
+                (0x6607, "flock_player_present"),
+                (0x6608, "flock_simulation"),
+            ] {
+                memory[address] = u16::from(case[name].as_bool().unwrap());
+            }
+            for (i, id) in case["flock_objects"].as_array().unwrap().iter().enumerate() {
+                memory[0x660c + i] = id.as_u64().unwrap() as u16;
+            }
+            let models = initial["flock_models"].as_array().unwrap();
+            let meshes = initial["flock_meshes"].as_array().unwrap();
+            assert_eq!(models.len(), 6);
+            assert!(meshes.len() <= 6);
+            memory[131 * 16384..133 * 16384].fill(0x79ab);
+            let mut offset = 0;
+            for (i, m) in models.iter().enumerate() {
+                let v = u16s(&m["vertices"]);
+                assert!(offset + v.len() <= 16384);
+                memory[131 * 16384 + offset..131 * 16384 + offset + v.len()].copy_from_slice(&v);
+                let geometry = meshes.iter().position(|g| g["id"] == m["mesh"]).unwrap();
+                memory[0x6500 + i * 6..0x6506 + i * 6].copy_from_slice(&[
+                    offset as u16,
+                    (v.len() / 3) as u16,
+                    m["low"].as_u64().unwrap() as u16,
+                    m["high"].as_u64().unwrap() as u16,
+                    geometry as u16,
+                    1,
+                ]);
+                offset += v.len();
+            }
+            memory[0x660a] = offset as u16;
+            offset = 0;
+            for (i, m) in meshes.iter().enumerate() {
+                let v = u16s(&m["vertices"]);
+                assert!(offset + v.len() <= 16384);
+                memory[132 * 16384 + offset..132 * 16384 + offset + v.len()].copy_from_slice(&v);
+                let mut row = vec![
+                    u16::from(m["exists"].as_bool().unwrap()),
+                    u16::from(m["present"].as_bool().unwrap()),
+                ];
+                row.extend(u16s(&m["version"]));
+                row.extend([(v.len() / 3) as u16, offset as u16]);
+                memory[0x6540 + i * 8..0x6548 + i * 8].copy_from_slice(&row);
+                offset += v.len();
+            }
+            memory[0x660b] = offset as u16;
+        }
+        if emitters {
+            memory[0x6100..0x61fa].copy_from_slice(&u16s(&initial["emitter_state"]));
+            memory[0x6200..0x6206].copy_from_slice(&u16s(&case["emitter_camera"]));
+            memory[0x6210..0x6216].copy_from_slice(&u16s(&case["emitter_player"]));
+            for (i, id) in case["emitter_objects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+            {
+                memory[0x6230 + i] = id.as_u64().unwrap() as u16;
+            }
+            memory[0x6240..0x6242]
+                .copy_from_slice(&words(case["emitter_material"].as_u64().unwrap() as i32));
+            memory[0x6242] = u16::from(case["emitter_player_present"].as_bool().unwrap());
+            memory[0x6243] = u16::from(case["emitter_simulation"].as_bool().unwrap());
+        }
+        if trains {
+            memory[0x6100..0x6178].copy_from_slice(&u16s(&initial["train_state"]));
+            memory[0x6300..0x6306].copy_from_slice(&u16s(&case["train_player"]));
+            for (address, name) in [
+                (0x6306, "train_simulation"),
+                (0x6307, "train_vehicles"),
+                (0x6308, "train_player_present"),
+            ] {
+                memory[address] = u16::from(case[name].as_bool().unwrap());
+            }
+            for (i, id) in case["train_objects"].as_array().unwrap().iter().enumerate() {
+                memory[0x6310 + i] = id.as_u64().unwrap() as u16;
+            }
+            for (i, sound) in case["train_sounds"].as_array().unwrap().iter().enumerate() {
+                memory[0x6312 + i] = u16::from(sound.as_bool().unwrap());
+            }
+        }
         if laps {
             let bindings = u16s(&initial["lap_bindings"]);
             assert!(bindings.len() <= 0xc00);
@@ -923,6 +1152,10 @@ fn main(){
                     || obstacle_methods
                     || fire_mode
                     || laps
+                    || trains
+                    || emitters
+                    || flocks
+                    || ambient
                 {
                     assert!(
                         sp >= if vehicle_methods || laps {
@@ -1383,6 +1616,212 @@ fn main(){
                         )?;
                     }
                 }
+                if ambient {
+                    checked += check_words(
+                        memory,
+                        if case["ambient_banked"].as_bool().unwrap() {
+                            134 * 16384
+                        } else {
+                            0x6100
+                        },
+                        &u16s(&state["smoker_state"]),
+                        &format!("{label} smoker state"),
+                    )?;
+                    checked += check_words(
+                        memory,
+                        0x62c0,
+                        &u16s(&state["noisy_selected"]),
+                        &format!("{label} noisy selection"),
+                    )?;
+                    checked += check_words(
+                        memory,
+                        0x62c4,
+                        &[state["smoke_sequence"].as_u64().unwrap() as u16],
+                        &format!("{label} smoke sequence"),
+                    )?;
+                    checked += check_words(
+                        memory,
+                        0x6300,
+                        &u16s(&state["noisy_sounds"]),
+                        &format!("{label} noisy sounds"),
+                    )?;
+                    checked += check_words(
+                        memory,
+                        0x6a00,
+                        &u16s(&case["ambient_cameras"]),
+                        &format!("{label} ambient cameras"),
+                    )?;
+                    if case["ambient_banked"].as_bool().unwrap() {
+                        assert!(
+                            memory[134 * 16384 + 426..135 * 16384]
+                                .iter()
+                                .all(|&v| v == 0x79ab),
+                            "{label} smoker state bank guard"
+                        );
+                        assert!(
+                            memory[0x6100..0x62aa].iter().all(|&v| v == 0x79ab),
+                            "{label} smoker unused CPU guard"
+                        );
+                    }
+                    let sprites = u16s(&state["smoke_sprites"]);
+                    checked += check_words(
+                        memory,
+                        0x62e4,
+                        &[(sprites.len() / 22) as u16],
+                        &format!("{label} smoke sprite count"),
+                    )?;
+                    checked +=
+                        check_words(memory, 0x6800, &sprites, &format!("{label} smoke sprites"))?;
+                    assert!(
+                        memory[0x6960..0x69a0].iter().all(|&v| v == 0x79ab),
+                        "{label} smoke sprite guard"
+                    );
+                }
+                if flocks {
+                    checked += check_words(
+                        memory,
+                        if case["flock_banked"].as_bool().unwrap() {
+                            133 * 16384
+                        } else {
+                            0x6100
+                        },
+                        &u16s(&state["flock_state"]),
+                        &format!("{label} flock state"),
+                    )?;
+                    checked += check_words(
+                        memory,
+                        0x6480,
+                        &u16s(&state["flock_config"]),
+                        &format!("{label} flock config"),
+                    )?;
+                    checked += check_words(
+                        memory,
+                        0x6600,
+                        &u16s(&case["flock_player"]),
+                        &format!("{label} flock player"),
+                    )?;
+                    if case["flock_banked"].as_bool().unwrap() {
+                        assert!(
+                            memory[133 * 16384 + 864..134 * 16384]
+                                .iter()
+                                .all(|&v| v == 0x79ab),
+                            "{label} flock state bank guard"
+                        );
+                        assert!(
+                            memory[0x6100..0x6460].iter().all(|&v| v == 0x79ab),
+                            "{label} flock unused CPU state guard"
+                        );
+                    }
+                    let mut directory_offset = 0;
+                    let initial_meshes = initial["flock_meshes"].as_array().unwrap();
+                    for (i, m) in initial["flock_models"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .enumerate()
+                    {
+                        let count = u16s(&m["vertices"]).len();
+                        let geometry = initial_meshes
+                            .iter()
+                            .position(|g| g["id"] == m["mesh"])
+                            .unwrap();
+                        let row = [
+                            directory_offset as u16,
+                            (count / 3) as u16,
+                            m["low"].as_u64().unwrap() as u16,
+                            m["high"].as_u64().unwrap() as u16,
+                            geometry as u16,
+                            1,
+                        ];
+                        checked += check_words(
+                            memory,
+                            0x6500 + i * 6,
+                            &row,
+                            &format!("{label} flock model directory {i}"),
+                        )?;
+                        directory_offset += count;
+                    }
+                    let mut offset = 0;
+                    for (i, m) in state["flock_models"].as_array().unwrap().iter().enumerate() {
+                        let v = u16s(&m["vertices"]);
+                        checked += check_words(
+                            memory,
+                            131 * 16384 + offset,
+                            &v,
+                            &format!("{label} flock model {i}"),
+                        )?;
+                        offset += v.len();
+                    }
+                    assert!(
+                        memory[131 * 16384 + offset..132 * 16384]
+                            .iter()
+                            .all(|&v| v == 0x79ab),
+                        "{label} flock model bank guard"
+                    );
+                    offset = 0;
+                    for (i, m) in state["flock_meshes"].as_array().unwrap().iter().enumerate() {
+                        let v = u16s(&m["vertices"]);
+                        checked += check_words(
+                            memory,
+                            132 * 16384 + offset,
+                            &v,
+                            &format!("{label} flock mesh {i}"),
+                        )?;
+                        let mut row = vec![
+                            u16::from(m["exists"].as_bool().unwrap()),
+                            u16::from(m["present"].as_bool().unwrap()),
+                        ];
+                        row.extend(u16s(&m["version"]));
+                        row.extend([(v.len() / 3) as u16, offset as u16]);
+                        checked += check_words(
+                            memory,
+                            0x6540 + i * 8,
+                            &row,
+                            &format!("{label} flock mesh {i} metadata"),
+                        )?;
+                        offset += v.len();
+                    }
+                    assert!(
+                        memory[132 * 16384 + offset..133 * 16384]
+                            .iter()
+                            .all(|&v| v == 0x79ab),
+                        "{label} flock mesh bank guard"
+                    );
+                }
+                if emitters {
+                    checked += check_words(
+                        memory,
+                        0x6100,
+                        &u16s(&state["emitter_state"]),
+                        &format!("{label} emitter state"),
+                    )?;
+                    checked += check_words(
+                        memory,
+                        0x6200,
+                        &u16s(&case["emitter_camera"]),
+                        &format!("{label} emitter camera"),
+                    )?;
+                    checked += check_words(
+                        memory,
+                        0x6210,
+                        &u16s(&case["emitter_player"]),
+                        &format!("{label} emitter player"),
+                    )?;
+                }
+                if trains {
+                    checked += check_words(
+                        memory,
+                        0x6100,
+                        &u16s(&state["train_state"]),
+                        &format!("{label} train state"),
+                    )?;
+                    checked += check_words(
+                        memory,
+                        0x6300,
+                        &u16s(&case["train_player"]),
+                        &format!("{label} player position"),
+                    )?;
+                }
                 if laps {
                     for (address, name) in [
                         (0x6100, "lap_bindings"),
@@ -1586,6 +2025,10 @@ fn main(){
         || obstacle_methods
         || fire_mode
         || laps
+        || trains
+        || emitters
+        || flocks
+        || ambient
     {
         report["maximum_stack_bytes"] = json!((0x8000 - usize::from(minimum_stack)) * 2);
     }

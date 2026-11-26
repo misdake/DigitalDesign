@@ -31,6 +31,10 @@ def main():
     group.add_argument('--ufo-transfer',action='store_true')
     group.add_argument('--fire',action='store_true')
     group.add_argument('--laps',action='store_true')
+    group.add_argument('--trains',action='store_true')
+    group.add_argument('--emitters',action='store_true')
+    group.add_argument('--flocks',action='store_true')
+    group.add_argument('--ambient',action='store_true')
     args = parser.parse_args()
     fixture = args.fixture.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -52,6 +56,10 @@ def main():
     if args.ufo_transfer:mode='scene-ufo-transfer'
     if args.fire:mode='scene-fire'
     if args.laps:mode='scene-laps'
+    if args.trains:mode='scene-train'
+    if args.emitters:mode='scene-emitter'
+    if args.flocks:mode='scene-flock'
+    if args.ambient:mode='scene-ambient'
     data = json.loads((fixture / (mode + '.json')).read_text())
     faults = [('transient-1', 'object'), ('transient-0', 'properties'),
               ('transient-6', 'free-pop'), ('transient-0', 'growth'),
@@ -202,12 +210,86 @@ def main():
                 ('laps-40','fall-alias'),('laps-41','external-basis'),('laps-46','restore-prefix'),
                 ('laps-61','attached-stop'),('laps-63','missing-records'),('laps-64','enter-prefix'),
                 ('laps-69','reused-identity'),('laps-68','wrapped-near'),('laps-0','RNG')]
+    if args.trains:
+        faults=[('train-0','activation'),('train-2','stagger'),('train-7','wait'),
+                ('train-16','reset'),('train-17','reverse-velocity'),('train-17','reverse-basis'),
+                ('train-28','failure-motion'),('train-28','failure-pose'),('train-28','failure-slot'),
+                ('train-44','shared-RNG'),('train-45','peer-velocity'),('train-46','recovery')]
+    if args.emitters:
+        faults=[('emitter-0','timer'),('emitter-21','camera'),('emitter-19','equality'),
+                ('emitter-15','gun-basis'),('emitter-16','debris-kind'),('emitter-37','alpha'),
+                ('emitter-42','material'),('emitter-43','glow'),('emitter-26','resource-prefix'),
+                ('emitter-30','activation-prefix'),('emitter-32','cross-bank'),('emitter-33','shared-RNG'),
+                ('emitter-33','owner-link'),('emitter-29','constructor-prefix'),('emitter-31','failed-slot')]
+    if args.flocks:
+        faults=[('flock-0','takeoff'),('flock-3','stagger'),('flock-12','timer-equality'),
+                ('flock-15','stage-target'),('flock-10','bird-motion'),('flock-25','wing-wrap'),
+                ('flock-26','wing-alias'),('flock-27','missing-geometry'),('flock-28','partial-mesh'),
+                ('flock-30','mesh-alias'),('flock-31','revision-wrap'),('flock-18','stop-membership'),
+                ('flock-37','failed-stop-slot'),('flock-43','angle-prefix'),('flock-47','shared-RNG')]
+    if args.ambient:
+        faults=[('ambient-0','sequence'),('ambient-11','last-expired'),('ambient-12','life-equality'),
+                ('ambient-13','last-free'),('ambient-14','billow'),('ambient-20','wrapped-camera'),
+                ('ambient-22','negative-age'),('ambient-37','rotation-wrap'),('ambient-26','distance-freeze'),
+                ('ambient-38','sprite-material'),('ambient-50','independent-noisy'),('ambient-44','invalid-selected'),
+                ('ambient-51','region-leave'),('ambient-60','sequence-sharing'),('ambient-0','gameplay-RNG')]
     results = []
     for index, (tag, kind) in enumerate(faults):
         case = copy.deepcopy(next(c for c in data['cases'] if c['tag'] == tag))
         frame = 0
         expected = 'call 0 word 0:'
-        if args.laps:
+        if args.ambient:
+            frame=2 if kind=='sequence-sharing' else 1 if kind=='distance-freeze' else 0;state=case['frames'][frame]['state']
+            if kind in ['sequence','sequence-sharing']:state['smoke_sequence']^=1;expected=f'call {frame} smoke sequence word 0:'
+            elif kind=='gameplay-RNG':state['random']^=1;expected='call 0 RNG word 0:'
+            elif kind in ['independent-noisy','region-leave']:state['noisy_selected'][0]^=1;expected='noisy selection word 0:'
+            elif kind=='invalid-selected':case['frames'][frame]['status']^=1
+            elif kind=='sprite-material':state['smoke_sprites'][0]^=1;expected='smoke sprites word 0:'
+            else:
+                word={'last-expired':420,'life-equality':34,'last-free':212,'billow':404,'wrapped-camera':6,'negative-age':34,'rotation-wrap':22,'distance-freeze':414}[kind]
+                state['smoker_state'][word]^=1;expected=f'smoker state word {word}:'
+        elif args.flocks:
+            frame=2 if kind=='shared-RNG' else 0;state=case['frames'][frame]['state'];object=case['frames'][frame]['object'];actor=case['flock_objects'].index(object);base=actor*288
+            if kind=='shared-RNG':state['random']^=1;expected=f'call {frame} RNG word 0:'
+            elif kind in ['takeoff','stagger','timer-equality','stage-target','bird-motion','angle-prefix']:
+                word=base+({'takeoff':0,'stagger':0,'timer-equality':4,'stage-target':6,'bird-motion':64,'angle-prefix':64}[kind]);state['flock_state'][word]^=1;expected=f'flock state word {word}:'
+            elif kind=='failed-stop-slot':state['slot']^=1;expected='dispatch slot word 0:'
+            elif kind=='stop-membership':state['lists'][4].append(object);expected='list 4'
+            else:
+                model_index=actor*2;model=state['flock_models'][model_index];word=model['low']*3+1
+                if kind in ['wing-wrap','wing-alias']:
+                    model['vertices'][word]^=1;expected=f'flock model {model_index} word {word}:'
+                else:
+                    mesh_index=next(i for i,m in enumerate(state['flock_meshes'])if m['id']==model['mesh']);mesh=state['flock_meshes'][mesh_index]
+                    if kind=='partial-mesh':mesh['vertices'][word]^=1;expected=f'flock mesh {mesh_index} word {word}:'
+                    else:
+                        part=1 if kind=='revision-wrap' else 0;mesh['version'][part]^=1;expected=f'flock mesh {mesh_index} metadata word {2+part}:'
+        elif args.emitters:
+            frame=25 if kind=='cross-bank' else 4 if kind in ['shared-RNG','owner-link'] else 0
+            state=case['frames'][frame]['state']
+            if kind in ['timer','camera','equality','resource-prefix']:
+                word=case['emitter_objects'].index(case['frames'][frame]['object'])*50;state['emitter_state'][word]^=1;expected=f'emitter state word {word}:'
+            elif kind=='shared-RNG':state['random']^=1;expected=f'call {frame} RNG word 0:'
+            elif kind=='failed-slot':state['slot']^=1;expected='dispatch slot word 0:'
+            else:
+                weapon=state['weapons'][-1];id=weapon['id']
+                if kind=='gun-basis':state['colliders'][id][8]^=1;expected=f'collider {id} word 8:'
+                elif kind in ['activation-prefix','owner-link','constructor-prefix']:
+                    weapon['meta'][8]^=1;expected=f'weapon {id} scene data word 8:'
+                else:
+                    word={'debris-kind':4,'alpha':86,'material':78,'glow':54,'cross-bank':10}[kind]
+                    weapon['payload'][word]^=1;expected=f'weapon {id} payload word {word}:'
+        elif args.trains:
+            frame=1 if kind in ['shared-RNG','peer-velocity','recovery'] else 0
+            state=case['frames'][frame]['state'];id=case['train_objects'][0]
+            if kind=='shared-RNG':state['random']^=1;expected=f'call {frame} RNG word 0:'
+            elif kind=='failure-slot':state['slot']^=1;expected='dispatch slot word 0:'
+            elif kind in ['reset','reverse-basis','failure-pose']:
+                word=2 if kind=='reset' else 8;state['colliders'][id][word]^=1;expected=f'collider {id} word {word}:'
+            else:
+                word=6 if kind=='wait' else 54 if kind in ['reverse-velocity','failure-motion'] else 114 if kind in ['peer-velocity','recovery'] else 0
+                state['train_state'][word]^=1;expected=f'train state word {word}:'
+        elif args.laps:
             state=case['frames'][0]['state']
             if kind in ['shared-limit','missing-records']:
                 case['frames'][0]['status']^=1
@@ -547,7 +629,7 @@ def main():
         changed = dict(data, cases=[case])
         (folder / (mode + '.json')).write_text(json.dumps(changed))
         shutil.copyfile(fixture / case['scene'], folder / case['scene'])
-        if args.creation or args.mines or args.mine_tick or args.explosions or args.explosion_tick or args.weapon_explosion or args.mine_explosion or args.mine_hit or args.projectile_flight or args.projectile_area or args.projectile_direct or args.ufos or args.projectile_ufo or args.vehicle_methods or args.obstacle_methods or args.ufo_transfer or args.fire or args.laps:
+        if args.creation or args.mines or args.mine_tick or args.explosions or args.explosion_tick or args.weapon_explosion or args.mine_explosion or args.mine_hit or args.projectile_flight or args.projectile_area or args.projectile_direct or args.ufos or args.projectile_ufo or args.vehicle_methods or args.obstacle_methods or args.ufo_transfer or args.fire or args.laps or args.trains or args.emitters or args.flocks or args.ambient:
             for name in ['sine.i16.bin', 'angle.i16.bin']:
                 shutil.copyfile(fixture / name, folder / name)
         if args.mines or args.mine_tick or args.projectile_flight or args.projectile_area or args.projectile_direct or args.projectile_ufo or args.fire:shutil.copyfile(fixture/'projectile-cells.bin',folder/'projectile-cells.bin')

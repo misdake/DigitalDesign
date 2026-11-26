@@ -107,6 +107,36 @@ pub fn lap_step(
         view.lap_events(lap, &mut context, env)
     }
 }
+pub fn tick_scenery(
+    world: &mut crate::vehicle_runtime::SinglePlayer,
+    entity: EntityId,
+    dt: i32,
+    slot: u32,
+    limit: u32,
+    simulation: bool,
+    vehicles: bool,
+) -> Result<(), i32> {
+    world.objects.components.dt = dt;
+    let env = world.registry.environment(limit);
+    let mut view = world.objects.view();
+    if simulation {
+        view.execution = Execution::Simulation {
+            random: &mut world.shared.random,
+        };
+    }
+    if vehicles {
+        view.vehicles = Some(&mut world.vehicles);
+    }
+    world
+        .identity
+        .context()
+        .dispatch(entity, slot, None, env, &mut view)
+        .map(|_| ())
+        .map_err(|e| match e {
+            crate::entity_factory::Error::Dispatch(crate::dispatch::Error::Method(code)) => code,
+            _ => -1,
+        })
+}
 pub fn tick_ufo(
     world: &mut crate::vehicle_runtime::SinglePlayer,
     entity: EntityId,

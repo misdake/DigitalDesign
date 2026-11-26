@@ -709,3 +709,138 @@ including persistent lap sequences, delayed queues, attachment/pending states,
 near-boundary wrapping, stale/reused identities, limits and committed failures.
 `scene_allocation_checker_check.py --laps` checks selected answer mutations.
 The mixed race scheduler calls this module at its own lap and camera boundaries.
+
+## Train path updates
+
+`train::tick` implements the two ENGLAND Train paths: staggered activation,
+strict X/Z range checks, waiting, X/Z motion, endpoint reset or reversal and
+exact matrix normalization. Travel and mutable endpoints/velocity are direct
+views. A complete Train state occupies 120 bytes: 19 Travel integers,
+speed/range and nine path integers. The shared world RNG advances once when
+an endpoint is crossed. Matrix rotation uses the original sine table.
+
+`scene_train::dispatch` runs method 109 through the actual class table on these
+path records. It reads the primary player's current body position and requires
+the original vehicle and simulation context. The pose starts with the live
+external basis when present. A successful update publishes both collider pose
+and external basis, including a gated or waiting tick. A normalization failure
+retains changed endpoints, velocity and RNG but leaves the collider pose intact;
+the scene slot remains at the failed method. Successful calls restore it.
+
+The source Train class also has motions selected by extra-map content; the
+caller binds the first-map path records to this entry. Train sound operations
+remain external. Ordinary lifecycle interfaces reuse the shared dispatcher.
+The update retains the source special-list/grid ownership while moving its
+collider and consumes no additional random values for audio.
+
+`scene-train` captures both authored owners after each actual reference dispatch.
+Cases include alternating calls sharing one RNG, endpoint overshoot, signed
+wrap, wait boundaries, external bases, failed-pose recovery and class/context
+errors. `scene_allocation_checker_check.py --trains` checks selected answer
+mutations. Continuous mixed-world scheduling is a separate integration boundary.
+
+## Emitter updates
+
+`emitter::tick` implements the first-map camera and BOX triggers, strict bounds,
+cooldown equality, one-draw period reset and gun/sky launch arithmetic. Each
+record contains 25 i32 columns (100 bytes), with the timer first. The five
+ENGLAND emitters occupy 500 bytes. BOX reads the optional primary player's base
+position; camera triggers work with an absent vehicle context. An inactive
+camera/BOX match clears the timer, while an absent BOX player retains it.
+
+`scene_emitter::dispatch` invokes method 109 using the constructed Projectile
+class and the shared identity/component factory. Timer and RNG commit before
+resource lookup and creation. The ownerless Debris receives the original pose,
+optional mesh, sort position, emitter identity, velocity, glow and sprite style.
+The alpha byte is sign-extended into the sprite flags. Activation precedes
+ordinary-list removal and special-list append. Later failures retain their
+committed fields and nested dispatch slot.
+
+Launch output and a compact immutable style prototype remain on the caller's
+stack while the factory borrows component banks. Persistent timers and shared
+flight state retain their original owners. The factory initializes the complete
+Debris payload and uses the existing 25-projectile bank layout; it does not call
+the player launch or random sprite initializer. DSEG mappings are restored at
+each scoped bank operation.
+
+`scene-emitter` compares every emitter record, created projectile payload/header,
+collider, shared RNG, tick/queue and ordered membership against actual reference
+class calls. It covers all five authored emitters, alternating calls, thirty-five
+consecutive emissions, strict trigger boundaries, signed style values and
+resource/creation/activation failures followed by cooldown updates.
+`scene_allocation_checker_check.py --emitters` exercises selected answer mutations.
+
+## Flock updates
+
+`flock::tick` owns the first-map bird-flight stages. Its direct views contain
+32 flight integers and eight rows of position, basis, speed and active state:
+576 bytes per flock. The three ENGLAND flocks occupy 1,728 bytes. Six model
+vertex arrays and their six renderer counterparts add 288 bytes each.
+
+Takeoff performs the original stagger/range test, publishes its target and draws
+one shared random value per bird. Flying birds approach velocity component by
+component, advance position with signed truncation and derive yaw/pitch from the
+original angle table. Active birds draw one random value and retain their pose
+for that call even when the draw deactivates them. Stage transitions and failures
+retain the original target, velocity, pose and RNG prefixes.
+
+The wing loop changes the two extremal model vertices using wrapping i16 values;
+a repeated vertex index receives both additions. Geometry descriptors bind those
+live vertices and their bank. Direction flags are read before selecting that bank
+and published after restoring the flight-state mapping. The caller keeps the
+small descriptor directory addressable throughout the update.
+
+`scene_flock::dispatch` calls the actual class Tick with the primary player's body
+position, then copies the two changed Y coordinates to each selected render mesh.
+Each mesh view borrows its resource owner's geometry flag and full u64 revision.
+Mutable access increments the revision before testing for a released geometry;
+aliasing mesh IDs therefore share vertices and revision increments. Model and
+render banks can differ; only two scalar coordinates cross that boundary.
+
+Successful calls publish collider pose/external basis before requested special-list
+removal and the actual Stop interface. Flight or mesh errors retain earlier bird,
+model and resource changes while withholding collider publication. Stop failures
+retain the published pose and current inner slot. Base lifecycle calls reuse the
+shared dispatcher; extra-map flight phases retain their feature boundary.
+
+`scene-flock` compares all three flocks, every model/render vertex and revision,
+RNG, collider, ordered membership and scheduler after actual reference calls.
+Cases cover stagger/timer boundaries, angle failure prefixes, repeated extrema,
+mesh aliasing/release, revision overflow and Stop failures. Selected trajectories
+keep the full flight/bird state in a separate DSEG3 bank from both geometry banks;
+all borrowed mappings and bank guards are checked after each call.
+`scene_allocation_checker_check.py --flocks` exercises selected answer mutations.
+
+## Ambient actor updates
+
+`smoker::State` binds five i32 header columns, sixteen particle rows and the
+scene-wide ten-value sequence cursor. A particle has thirteen i32 columns;
+byte and u16 fields remain zero-extended after their original narrowing steps.
+The complete state occupies 852 bytes; the shared cursor occupies two bytes.
+The fixed ten-value sequence is independent of the gameplay RNG.
+
+`smoker::tick` applies the original strict XZ camera range, freezes distant
+particles, advances live particles in index order and retains the last available
+slot. Life equality, signed shifts, rotation wrapping, billow-dependent sequence
+draws and the full-pool timer behavior retain their source semantics.
+`smoker::sprites` derives up to sixteen packed sprites into caller-provided
+storage (704 bytes), without advancing either random stream or changing particles.
+
+`scene_ambient::dispatch` resolves the actual Tick interface and handles Noisy
+regions before requiring a vehicle or simulation context. Region tests are
+staggered by entity/frame number and preserve the selected index until its
+original leave test. Sound rows contain position, range and external sample
+identity; playback belongs to the external audio interface.
+
+Successful Smoker updates publish the collider's pose and external basis even
+when the particle update is frozen by distance. Context, class and invalid-region
+errors retain their original slot and committed state. State views may address
+a separate DSEG3 bank; the caller owns its binding, while scoped class/resource
+reads restore that mapping.
+
+`scene-ambient` compares all particle fields, sequence state, derived sprites,
+sound selection, collider, scheduler and gameplay RNG after actual reference
+calls. Cases include all sequence starting positions, expiration/equality and
+full-pool behavior, extreme signed steps, camera boundaries, alternating actor
+calls and banked state. `scene_allocation_checker_check.py --ambient` checks
+selected answer mutations. Mixed-world scheduling retains its separate owner.

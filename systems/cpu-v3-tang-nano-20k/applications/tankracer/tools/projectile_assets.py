@@ -18,7 +18,7 @@ def main():
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     owner = Path(__file__).resolve().parent
-    game = prepare(root,out,driving=True,lifecycle=True)
+    game = prepare(root,out,driving=True,lifecycle=True,meshes=True)
     project = out / 'reference-tool'
     project.mkdir(exist_ok=True)
     manifest = ('[package]\nname="tankracer-projectile-assets"\nversion="0.1.0"\nedition="2024"\n'
@@ -69,6 +69,8 @@ def main():
     sources += [owner / 'scene_ufo_transfer_oracle.rs']
     sources += [owner / 'scene_fire_oracle.rs']
     sources += [owner / 'scene_laps_oracle.rs']
+    sources += [owner / 'scene_train_oracle.rs']
+    sources += [owner / 'scene_emitter_oracle.rs', owner / 'scene_flock_oracle.rs', owner / 'reference_meshes.rs', owner / 'scene_ambient_oracle.rs']
     outputs += ['scene-mines.json'] + [f'scene-mines-{i}.bin' for i in range(10)]
     outputs += ['scene-mine-tick.json'] + [f'scene-mine-tick-{i}.bin' for i in range(20)]
     outputs += ['explosion.json']
@@ -81,6 +83,10 @@ def main():
     outputs += ['scene-projectile-flight.json'] + [f'scene-projectile-flight-{i}.bin' for i in range(33)]
     outputs += ['vehicle-pose.json', 'vehicle-transfer.json']
     outputs += ['scene-vehicle-transfer.json'] + [f'scene-vehicle-transfer-{i}.bin' for i in range(60)]
+    outputs += ['scene-ambient.json'] + [f'scene-ambient-{i}.bin' for i in range(61)]
+    outputs += ['scene-flock.json'] + [f'scene-flock-{i}.bin' for i in range(48)]
+    outputs += ['scene-emitter.json'] + [f'scene-emitter-{i}.bin' for i in range(50)]
+    outputs += ['scene-train.json'] + [f'scene-train-{i}.bin' for i in range(47)]
     outputs += ['scene-laps.json'] + [f'scene-laps-{i}.bin' for i in range(74)]
     outputs += ['scene-fire.json'] + [f'scene-fire-{i}.bin' for i in range(77)]
     outputs += ['scene-ufo-transfer.json'] + [f'scene-ufo-transfer-{i}.bin' for i in range(62)]
