@@ -123,7 +123,7 @@ fn gpu_scene_render_values(
         exponent = view[GPU_VIEW_EXPONENT];
         texture_flags = (view[GPU_VIEW_FLAGS] & 1) | ((view[GPU_VIEW_FLAGS] >> 1) & 6);
         fixed = (view[GPU_VIEW_FLAGS] >> 1) & 1;
-        filter = state[GPU_STATE_FILTER];
+        filter = state[GPU_STATE_FILTER] & 255;
         min_mip = (view[GPU_VIEW_FLAGS] >> 4) & 3;
     }
     if fixed != 0 && filter > 1 {
@@ -140,6 +140,10 @@ fn gpu_scene_render_values(
     native[start + 2] = material[GPU_MATERIAL_SPECULAR];
     native[start + 3] = material[GPU_MATERIAL_SPECULAR + 1];
     native[start + 4] = state[GPU_STATE_CONTROL] | ((material[GPU_MATERIAL_FLAGS] & 1) << 5);
+    if textured {
+        // Material24 packs bias beside raster control, unlike NativeRender32.
+        native[start + 4] |= state[GPU_STATE_FILTER] & 65280;
+    }
     true
 }
 

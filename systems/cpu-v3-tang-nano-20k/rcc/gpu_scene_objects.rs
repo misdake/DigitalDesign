@@ -249,11 +249,12 @@ pub fn gpu_scene_state_blend(mut out: Array<u16>, mode: BlendMode) -> bool {
 }
 
 pub fn gpu_scene_state_filter(mut out: Array<u16>, filter: TextureFilter) -> bool {
-    out[GPU_STATE_FILTER] = filter as u16;
+    out[GPU_STATE_FILTER] = (out[GPU_STATE_FILTER] & 65280) | (filter as u16);
     true
 }
 
 pub fn gpu_scene_state_init(mut out: Array<u16>, desc: RenderStateDesc) -> bool {
+    out[GPU_STATE_FILTER] = 0;
     if !gpu_scene_state_lighting(out, desc.lighting) {
         return false;
     }

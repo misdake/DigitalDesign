@@ -81,7 +81,7 @@ impl World {
             alpha_mask = malloc((GROUP_COUNT - OPAQUE_COUNT + 15) / 16);
         }
         let state = RenderStateDesc::opaque(Lighting::ambient(fix32::one()))
-            .with_filter(TextureFilter::Bilinear);
+            .with_filter(TextureFilter::Trilinear);
         let mut cache_a = Ptr::from_addr(0);
         let mut cache_b = Ptr::from_addr(0);
         if TANKRACER_REUSE != 0 {
@@ -124,6 +124,9 @@ impl World {
             pvs_mask: malloc(MAP_PVS_MASK_WORDS),
             pvs_key: 65535,
         };
+        // The derivative estimator has a conservative half-level footprint.
+        // This scene uses the one-pixel footprint while retaining full mips.
+        world.opaque.set_lod_bias(fix!(-0.5));
         world.prepare_bindings();
         world
     }

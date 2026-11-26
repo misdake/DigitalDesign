@@ -1541,6 +1541,11 @@ impl RenderState {
         gpu_api_render_state_set_filter(gpu_arena_data(self.slot), filter)
     }
 
+    /// Bias mip selection in levels, quantized down to 1/16. Range: [-8, 8).
+    pub fn set_lod_bias(&mut self, bias: fix32) {
+        gpu_api_render_state_set_lod_bias(gpu_arena_data(self.slot), bias)
+    }
+
     pub fn set_lighting(&mut self, light: Lighting) {
         gpu_api_render_state_set_lighting(gpu_arena_data(self.slot), light)
     }
@@ -2260,6 +2265,9 @@ impl RenderStatePtr {
     pub fn set_filter(self, filter: TextureFilter) {
         gpu_api_render_state_set_filter(self.data(), filter)
     }
+    pub fn set_lod_bias(self, bias: fix32) {
+        gpu_api_render_state_set_lod_bias(self.data(), bias)
+    }
     pub fn set_lighting(self, light: Lighting) {
         gpu_api_render_state_set_lighting(self.data(), light)
     }
@@ -2275,6 +2283,12 @@ fn gpu_api_render_state_set_blend(data: Array<u16>, mode: BlendMode) {
 
 fn gpu_api_render_state_set_filter(data: Array<u16>, filter: TextureFilter) {
     gpu_api_checked(gpu_scene_state_filter(data, filter), GpuCheck::State);
+}
+
+fn gpu_api_render_state_set_lod_bias(mut data: Array<u16>, bias: fix32) {
+    gpu_api_checked(bias >= fix!(-8) && bias < fix!(8), GpuCheck::State);
+    let steps = (bias * fix!(16)).to_int() as u16;
+    data[GPU_STATE_FILTER] = (data[GPU_STATE_FILTER] & 255) | ((steps & 255) << 8);
 }
 
 fn gpu_api_render_state_set_lighting(data: Array<u16>, light: Lighting) {

@@ -16,7 +16,7 @@ fn inputs(context: &mut Context<'_>) {
             MAP_INPUT,
             context
                 .root
-                .join("applications/tankracer/assets/england/scene-opaque-atlas.zip"),
+                .join("applications/tankracer/assets/england/scene-grid-atlas.zip"),
         );
     }
     if std::env::var_os(ROUTE_INPUT).is_none() {

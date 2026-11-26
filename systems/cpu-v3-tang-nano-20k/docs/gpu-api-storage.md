@@ -428,6 +428,12 @@ Material, RenderState, Texture, UiAtlas and UiGrid occupy 16-word slots. Each Dr
 its one owning slot. Projection's prepared values and transform conventions are
 specified in [scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md).
 
+`RenderState::set_lod_bias(fix!(-0.5))` and its pointer equivalent select a signed
+mip bias in levels, rounded down to 1/16, in `[-8, 8)`. Filter updates preserve
+the bias. Its signed byte shares the high byte of the existing filter word and
+is copied to the existing Material24 raster-bias byte; slot and snapshot sizes do not grow.
+Untextured native packets retain zero bias. The default is zero on new/reused slots.
+
 Pass setters copy Camera and RenderState values into desired snapshots; later
 source-object changes cannot alter them. Draw preparation reads Transform, Material
 and texture descriptions, creates static World/material bytes and prepares the

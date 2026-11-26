@@ -1,8 +1,13 @@
 # Tank Racer static-map playback
 
-The default scene is `assets/england/scene-opaque-atlas.zip`. Supply a camera
+The default scene is `assets/england/scene-grid-atlas.zip`. Supply a camera
 sequence staged within the repository; `--map` selects an alternative archive.
 The application uses the regular SDK and Display path.
+
+This scene uses the 1024-square, 8×8 fixed grid, trilinear filtering and a
+−0.5-level application LOD bias. The minimum atlas side is eight texels, giving
+one texel per cell at the final permitted mip. The original bordered atlas in
+`scene-opaque-atlas.zip` and its input archive remain available through `--map`.
 
 The same catalog registers `bench-tankracer-physics`, a separate frozen-contact
 single-vehicle benchmark. Its kernels, resource inputs and execution boundary
@@ -227,10 +232,10 @@ merge. The ENGLAND visual comparison accepts these distant colour differences
 and UV requantization; the bordered scene uses ordinary sampling mode. Sampler probes and
 pixel extraction remain available to inspect that content-specific tradeoff.
 
-## Optional fixed-grid scene
+## Fixed-grid scene
 
-The bordered archive and its producer remain the default and are not overwritten.
-`tools/grid_atlas.py` builds an independent borderless candidate from the same
+The bordered archive and its producer are retained and are not overwritten.
+`tools/grid_atlas.py` builds the borderless fixed grid from the same
 retained source archive. Its two-bit `atlas_grid_log2` field selects1,2,4 or8
 cells per axis. The matching GPU gateware limits texture mip selection and clamps both filtering
 planes inside each selected cell; older gateware does not implement this field.
@@ -253,6 +258,13 @@ Run `tools/check_grid_atlas.py` for native mip choice, guarded endpoints and
 deterministic conversion. Use the sampler probe and `tools/check_atlas_probe.py`
 on the intended camera sequence to check actual weighted-tap isolation. A grid
 does not infer arbitrary UV wrapping or primitive ownership from the source.
+
+The default archive uses this grid conversion. The retained bordered and native
+archives stay available. Regenerate into a fresh destination:
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/grid_atlas.py "$assets/scene-compact.zip" --side 1024 --grid-log2 3 --output target/tankracer-grid-source
+```
 
 ## Fixed unlit bindings
 

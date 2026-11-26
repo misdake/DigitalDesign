@@ -94,6 +94,9 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
             source=source.replace("texture_view.set_address_mode(TextureAddressMode::ClampToEdge);",
                 &format!("texture_view.set_atlas_grid({atlas_grid});texture_view.set_address_mode(TextureAddressMode::Repeat);texture_view.set_address_mode(TextureAddressMode::ClampToEdge);"));
         }
+        if atlas_grid == 3 {
+            source = source.replace("let state=make_state();", "let mut state=make_state();state.set_lod_bias(fix!(-0.5));state.set_filter(TextureFilter::Trilinear);let state_ptr=state.ptr();state_ptr.set_filter(TextureFilter::Bilinear);state_ptr.set_lod_bias(fix!(-0.5));");
+        }
         let parsed = super::gpu_api_resources::parse(&source, "public-b-scene", debug)
             .unwrap_or_else(|error| panic!("{error}"));
         let static_words = parsed.debug.static_data_end;
@@ -178,6 +181,16 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
             push.windows(4).any(|w| w == [0xa800, header, 0xffff, 0xff]),
             "native format and mip/filter bits lost during public recording"
         );
+        if atlas_grid == 3 {
+            assert!(
+                push.windows(8).any(|w| w[0] == 0xa800
+                    && w[1] == header
+                    && w[4] >> 8 == 0xf8
+                    && w[6] == 0
+                    && w[7] == 0),
+                "signed half-level bias must survive owner/ptr filter updates and native recording"
+            );
+        }
         let grid = &memory[0xb100 * 64..0xb100 * 64 + 375];
         assert_eq!(grid[25], 0x00ff);
         assert_eq!(grid[26], 0x0201);
