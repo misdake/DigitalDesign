@@ -10,6 +10,9 @@ mod geometry;
 mod lighting;
 #[path = "functional/shading.rs"]
 mod shading;
+#[path = "functional/texture_probe.rs"]
+mod texture_probe;
+pub use texture_probe::{TextureProbe, TextureSample, TextureSampleProbe, TextureTap, TextureUse};
 
 #[cfg(feature = "functional-batch")]
 pub use geometry::batch::{BatchStats, RebinMode};
@@ -44,10 +47,19 @@ pub struct Effects {
     pub target: Option<[u32; 2]>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
     work: usize,
     pub effects: Effects,
+    /// Opt-in observations of real shaded fragments and nonzero-weight taps.
+    pub textures: Option<TextureProbe>,
+    pub samples: Option<TextureSampleProbe>,
+    probe_meshlet: u32,
+    probe_xy: [u16; 2],
+    probe_target: u32,
+    probe_uniform: u32,
+    probe_unlit: bool,
+    probe_sample: Option<usize>,
 }
 impl Report {
     fn charge(&mut self, work: usize, maximum: usize) -> Result<(), String> {
@@ -65,6 +77,8 @@ fn column_offset(x: usize, y: usize) -> usize {
 /// Work is counted in commands and halfwords touched, never GPU cycles.
 pub struct Executor {
     maximum_work: usize,
+    texture_probe: bool,
+    texture_samples: Option<(u8, usize)>,
     #[cfg(feature = "functional-batch")]
     batch_stats: BatchStats,
     #[cfg(feature = "functional-batch")]
@@ -79,11 +93,28 @@ impl Executor {
     pub fn new(maximum_work: usize) -> Self {
         Self {
             maximum_work,
+            texture_probe: false,
+            texture_samples: None,
             #[cfg(feature = "functional-batch")]
             batch_stats: BatchStats::default(),
             #[cfg(feature = "functional-batch")]
             rebin_mode: RebinMode::default(),
         }
+    }
+
+    /// Observe UV/LOD/tap bounds without changing arithmetic or memory accesses.
+    /// Probed execution uses the serial path so every actual sample is observed.
+    pub fn with_texture_probe(mut self) -> Self {
+        self.texture_probe = true;
+        self
+    }
+    /// Record bounded sampler transactions and track their surviving opaque
+    /// DRAW pixels. Partial-alpha overlays are marked, not called unobscured.
+    pub fn with_texture_samples(mut self, minimum_lod: u8, maximum_samples: usize) -> Self {
+        assert!(minimum_lod <= 80 && maximum_samples != 0 && maximum_samples <= 1_000_000);
+        self.texture_probe = true;
+        self.texture_samples = Some((minimum_lod, maximum_samples));
+        self
     }
 
     #[cfg(feature = "functional-batch")]
@@ -201,9 +232,15 @@ impl Executor {
             1
         };
         let mut state = State::default();
+        if self.texture_probe {
+            state.report.textures = Some(TextureProbe::default());
+        }
+        if let Some((minimum, maximum)) = self.texture_samples {
+            state.report.samples = Some(TextureSampleProbe::new(minimum, maximum));
+        }
         let mut pc_base = 0usize;
         #[cfg(feature = "functional-batch")]
-        let mut batch_allowed = true;
+        let mut batch_allowed = !self.texture_probe;
         for (index, &(base, count)) in spans[..span_count].iter().enumerate() {
             let last_span = index + 1 == span_count;
             let sector_base = base & !63;
@@ -365,6 +402,7 @@ struct State {
     global: Option<shading::Global>,
     render: Option<shading::RenderState>,
     pages: [Option<geometry::Meshlet>; 2],
+    page_sources: [u32; 2],
     uniforms: [bool; 4],
     all_fence: bool,
     stored: bool,
@@ -381,6 +419,7 @@ impl Default for State {
             global: None,
             render: None,
             pages: [None, None],
+            page_sources: [0; 2],
             uniforms: [false; 4],
             all_fence: false,
             stored: false,
@@ -480,9 +519,13 @@ impl State {
                     memory.read(header)?,
                     memory.read(payload)?,
                 )?);
+                self.page_sources[slot] = source * 128;
             }
             3 => {
                 let slot = (word & 1) as usize;
+                if self.report.textures.is_some() {
+                    self.report.probe_meshlet = self.page_sources[slot];
+                }
                 let world = word & 2 != 0;
                 if (if world {
                     Command::draw_world_billboard(slot as u8, word & 4 != 0)?
@@ -613,6 +656,11 @@ impl State {
                 let range = bounds(memory, target[plane], PLANE_WORDS)?;
                 self.charge(PLANE_WORDS, maximum)?;
                 memory.write(range)?.fill(word as u16);
+                if plane == 0 {
+                    if let Some(probe) = &mut self.report.samples {
+                        probe.clear(Some(target[0] as u32 * 2));
+                    }
+                }
             }
             9 if word == Command::TEX_INVALIDATE.0 => {
                 self.fenced(false)?;
@@ -640,6 +688,9 @@ impl State {
                 self.stored = false;
             }
             11 => {
+                if let Some(probe) = &mut self.report.samples {
+                    probe.clear(None);
+                }
                 self.fenced(true)?;
                 let target = self.target.ok_or("UI_GRID requires SET_TARGET")?;
                 let ranged = word & (1 << 27) != 0;
@@ -707,6 +758,9 @@ impl State {
                 self.pages = [None, None];
             }
             12 => {
+                if let Some(probe) = &mut self.report.samples {
+                    probe.clear(None);
+                }
                 self.fenced(true)?;
                 let object = self.object::<32>(word, false)?;
                 let descriptor = u64::from_le_bytes(object[..8].try_into().unwrap());

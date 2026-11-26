@@ -29,7 +29,7 @@ geometry and the replay camera positions. Camera directions keep their basis.
 | `position_shift` | Shared position lattice, defaults to `10` or 1/64 render unit. Each meshlet retains its own origin. |
 | `billboard_position_shift` | Optional billboard position lattice, defaults to `position_shift`; integer `0..31`. |
 | `billboard_exact_anchor` | Optional boolean, defaults to `false`. Vertical billboards keep their common X/Z center line in full F16 origins with zero X/Z deltas; Y retains the absolute billboard lattice. |
-| `materials` | Indexed entries with optional `texture`, `rgba`, `mipmaps`, `clamp`, `blend`, and RGBA byte `tint`. Textures are square powers of two. Omitting the texture uses RGB vertices. |
+| `materials` | Indexed entries with optional `texture`, `rgba`, `mipmaps`, `clamp`, `blend`, and RGBA byte `tint`. Textures are square powers of two. Omitting the texture uses RGB vertices. `vertex_color: true` retains RGB geometry while supplying a shared texture binding. `atlas_grid_log2: 0..3` selects a fixed grid with full mips and clamp. |
 | `groups` | Spatial and material runs with `material`, `vertices`, `triangles`, and optional `name`, `lod`, `billboard` and `bounds_geometry`. |
 
 Triangles are triples of zero-based vertex indices. Geometry uses the SDK's
@@ -242,7 +242,6 @@ merge. The ENGLAND visual comparison accepts these distant colour differences
 and UV requantization; the bordered scene uses ordinary sampling mode. Sampler probes and
 pixel extraction remain available to inspect that content-specific tradeoff.
 
-
 ## Optional fixed-grid scene
 
 The bordered archive and its producer remain the default and are not overwritten.
@@ -269,7 +268,6 @@ Run `tools/check_grid_atlas.py` for native mip choice, guarded endpoints and
 deterministic conversion. Use the sampler probe and `tools/check_atlas_probe.py`
 on the intended camera sequence to check actual weighted-tap isolation. A grid
 does not infer arbitrary UV wrapping or primitive ownership from the source.
-
 
 ## Fixed unlit bindings
 
@@ -333,7 +331,6 @@ Separate startup from warm CPU work, and include consecutive or stationary
 cameras: UnlitBank can patch only View/Target when its complete draw list stays
 unchanged. Native CPU timing with functional GPU and cold GPU/native-SDRAM
 replay are separate costs; neither establishes whole-system frame time.
-
 
 ## Authored route input
 
@@ -517,7 +514,6 @@ guard construction rather than proving all continuous camera poses by sampling.
 constraints within an explicit route domain; its report is diagnostic and does
 not change runtime order.
 
-
 ## Camera input and workload
 
 Use a JSON list of 1–192 views with three-component `eye` and `target` and an
@@ -537,6 +533,29 @@ separately through the [application profiling workflow](../../docs/application-p
 The CSV also reports CPU instruction advances since the preceding submission;
 its first row includes boot/startup. These counts are distinct from CPU cycles
 and milliseconds.
+
+For a bounded CPU timing window through the actual core, I/D caches, arbiter
+and native SDRAM controller:
+
+```powershell
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-cpu-timing -- target/tankracer-map/cpu-v3-boot.bin 12 35000000 600 target/tankracer-cpu-time
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/profile_cpu.py target/tankracer-map target/tankracer-cpu-time/frame-002.cpu-execute64 --output target/tankracer-cpu-profile.json
+```
+
+This peer uses functional GPU/Display, manually released vblank and no GPU
+memory competition. START-to-START samples include CPU submission work; the
+first also includes initialization, but not SPI loading. The execute histogram
+records scalar execute occupancy, leaving fetch and FPU-only cycles unassigned.
+`profile_cpu.py` also accepts the workload's `.cpu-pc64` instruction histogram.
+An optional `--gpu-cycles N` holds BUSY for a fixed synthetic service time to
+compare CPU/GPU overlap and post-service submission gaps. It is a controlled
+pipeline experiment, not an end-to-end GPU or board frame-rate measurement.
+
+Both the workload inspector and GPU cycle replay accept direct command buffers
+and the current ordered command-list submission. Inspection follows the
+right-aligned table and each instruction-aligned slice in execution order,
+preserving meshlet DMA slots across segments. END must coincide with a segment's
+end, and the final segment must contain END.
 The PPM probe scales RGB565 components with integer division; registered Display
 output uses bit replication. Compare native scanout through that RGB565 expansion
 contract; the recorded RGB565 fingerprints retain the original words.
@@ -568,12 +587,48 @@ the GPU with the production memory arbiter and native SDRAM controller. `display
 `display_cpu` and `display_cpu_heavy` add synthetic traffic. CPU application work
 and actual Display presentation remain separate measurements. A successful command
 alone does not establish image agreement: inspect both `functional_*_match` fields.
+The replay writes complete little-endian physical planes to `color.bin` and
+`depth.bin`, including padding, for exact comparisons beyond the visible PPM.
+Append `--trace` to write `timeline.json`: it records each executed command's
+physical address, latch, first execution, issue and CP release, command-cache DMA
+intervals, CP phase intervals, and selected DMA/render/memory events. Timestamps
+are absolute 54 MHz GPU clocks and intervals are `[start,end)`. Subtract the
+reported `start` to align submissions. A DRAW's CP release ends its vertex work;
+downstream pixels can remain in flight. Phase totals partition GPU busy time;
+pipeline load counters and DMA intervals overlap and must not be added to them.
+
+Append `--uv-probe` to the workload command (after `--images-only` when used) to
+write a `frame-NNN.uv.json` alongside each image. A separate full functional
+replay records UV/LOD/tap bounds and checks both complete physical output planes
+against the application. Sampling probes do not enter CPU/GPU timing comparisons.
+`--uv-samples` additionally captures bounded transactions at LOD 6 and above,
+including nonzero-weight tap coordinates/colours and final opaque-pixel ownership.
+Partial-alpha overlays are marked separately. `tools/check_atlas_probe.py` resolves
+the observed bounds against original source cells; `tools/extract_atlas_pixels.py`
+extracts actual cross-cell pixels, reference crops and an isolated tap-clamping
+diagnostic. Both bind the probe's package identity to the supplied snapshot.
+
+`tools/opaque_atlas.py SOURCE.zip --output NEW_DIRECTORY` produces an explicit
+atlas candidate from native opaque source mip chains. It preserves geometry,
+sort identities and transparent inputs; UVs are remapped into clamped source
+cells and native RGB geometry retains its format. The audit lists protected mip
+levels. Atlas levels that merge source cells are not source-isolated: measure
+unclamped LOD and actual taps, then compare images before adopting an input.
+The existing map packages remain the baseline.
 
 Each captured frame also includes a row-major 400×240 little-endian D16 plane.
 Use `--images-only` after the output directory to capture up to 192 frames without
 SDRAM preimages or PC histograms. These metadata files use
 `tankracer.frame-output.v1`; GPU-cycle replay takes full `tankracer.gpu-input.v1`
-captures. Compare complete output sets with an explicit near depth:
+captures.
+
+New GPU captures preserve the exact Device4 COUNT SEND in `count_word` and the
+START byte address in `base`. Flat captures also retain `words`, their instruction
+count. List captures omit `words`: their COUNT identifies a table rather than
+an instruction count. The cycle replay accepts older flat captures containing
+only `base` and `words`, and rejects contradictory count/size metadata.
+
+Compare complete output sets with an explicit near depth:
 
 ```powershell
 python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/compare_frames.py target/before-images target/after-images --near 25 --out target/frame-comparison.json

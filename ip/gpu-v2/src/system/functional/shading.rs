@@ -98,6 +98,19 @@ pub(super) struct Texture {
     framebuffer: bool,
 }
 impl Texture {
+    pub(super) fn descriptor(self) -> u32 {
+        crate::system::command::abi::TextureDescriptor {
+            base_sector: (self.base / 64) as u16,
+            size_log2: self.size_log2,
+            min_size_log2: self.min_size_log2,
+            full_mip: self.full_mip,
+            rgba4444: self.rgba4444,
+            clamp: self.clamp,
+            filter: self.filter,
+            framebuffer_view: self.framebuffer,
+        }
+        .word()
+    }
     fn decode(word: u32) -> Result<Self, String> {
         let value = Self {
             base: (word as usize & 65535) * 64,
@@ -198,6 +211,30 @@ impl Texture {
         } else {
             0
         };
+        let descriptor = (self.descriptor(), report.probe_meshlet);
+        if let Some(probe) = &mut report.textures {
+            probe.entry(descriptor).or_default().sample(uv, lod);
+        }
+        if let Some(probe) = &mut report.samples {
+            report.probe_sample = None;
+            if lod >= probe.minimum_lod {
+                report.probe_sample = Some(probe.begin(super::TextureSample {
+                    descriptor: descriptor.0,
+                    meshlet: descriptor.1,
+                    target: report.probe_target,
+                    xy: report.probe_xy,
+                    uv,
+                    lod,
+                    uniform_color: report.probe_uniform,
+                    unlit: report.probe_unlit,
+                    shaded: [0; 4],
+                    taps: Vec::new(),
+                    depth_passed: false,
+                    visible: false,
+                    overlaid: false,
+                })?);
+            }
+        }
         let fine = if self.framebuffer {
             9
         } else {
@@ -264,8 +301,22 @@ impl Texture {
                     continue;
                 }
                 report.charge(1, maximum)?;
+                if let Some(probe) = &mut report.textures {
+                    probe
+                        .get_mut(&descriptor)
+                        .unwrap()
+                        .tap(level, [x + (tap & 1) as i128, y + (tap >> 1) as i128]);
+                }
                 let color =
                     self.texel(memory, level, x + (tap & 1) as i128, y + (tap >> 1) as i128)?;
+                if let (Some(probe), Some(index)) = (&mut report.samples, report.probe_sample) {
+                    probe.samples[index].taps.push(super::TextureTap {
+                        level,
+                        xy: [x + (tap & 1) as i128, y + (tap >> 1) as i128],
+                        weight: weight as u16,
+                        rgba: color,
+                    });
+                }
                 alpha += u32::from(color[3] / 17) * weight;
                 for channel in 0..3 {
                     result[channel] += (u32::from(color[channel]) * weight + 256) >> 9;
@@ -397,8 +448,29 @@ pub(super) fn fragment(
     report: &mut Report,
     maximum: usize,
 ) -> Result<(), String> {
+    if report.samples.is_some() {
+        report.probe_xy = xy.map(|v| v as u16);
+        report.probe_target = state.target[0] as u32 * 2;
+        report.probe_uniform = state.color;
+        report.probe_unlit = state.render.control & 32 != 0;
+        report.probe_sample = None;
+    }
     let color = shade(memory, xy, &fragment, state, lod, report, maximum)?;
-    rop(memory, xy, fragment.depth, color, state)
+    let result = rop(memory, xy, fragment.depth, color, state)?;
+    if let Some(probe) = &mut report.samples {
+        if let Some(index) = report.probe_sample {
+            probe.samples[index].shaded = color;
+        }
+        if let Some(alpha) = result {
+            probe.resolve(
+                state.target[0] as u32 * 2,
+                xy.map(|v| v as u16),
+                report.probe_sample,
+                alpha,
+            );
+        }
+    }
+    Ok(())
 }
 
 // Workers only read immutable memory. Work charges and failures are retired by
@@ -439,7 +511,7 @@ pub(super) fn commit(
 ) -> Result<(), String> {
     report.charge(prepared.work, maximum)?;
     let (color, depth) = prepared.result?;
-    rop(memory, xy, depth, color, state)
+    rop(memory, xy, depth, color, state).map(|_| ())
 }
 
 pub(super) trait PixelMemory {
@@ -461,7 +533,7 @@ pub(super) fn rop<M: PixelMemory>(
     incoming_depth: u16,
     color: [u8; 4],
     state: &DrawState,
-) -> Result<(), String> {
+) -> Result<Option<u8>, String> {
     let target = state.target;
     let render = state.render;
     let offset = super::column_offset(x, y);
@@ -477,7 +549,7 @@ pub(super) fn rop<M: PixelMemory>(
         _ => true,
     };
     if !passing {
-        return Ok(());
+        return Ok(None);
     }
     if render.control & 8 != 0 {
         memory.store(target[1] + offset, incoming_depth)?;
@@ -492,5 +564,5 @@ pub(super) fn rop<M: PixelMemory>(
         ((64 - alpha) * u32::from(old[c]) + alpha * u32::from(color[c]) + 32) / 64
     });
     memory.store(target[0] + offset, pack(blended.map(|v| v as u8)))?;
-    Ok(())
+    Ok(Some(alpha as u8))
 }

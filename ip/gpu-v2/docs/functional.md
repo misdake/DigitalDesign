@@ -290,3 +290,20 @@ Raw output remains linear RGB565/D16 in the documented column layout. Display's
 selected color interpretation and scanout are separate from these stored bytes.
 The independent v6/XYW/ideal-alpha rendering APIs are not this executor's native
 command implementation or a bit-exact golden for it.
+
+`Executor::with_texture_probe()` enables read-only sampler bounds in
+`Report::textures`, keyed by texture descriptor and physical meshlet address.
+It records real fragment UVs before clamp, effective LOD histograms, unclamped
+Q8 LOD bounds at quad anchors, and bounds of nonzero-weight taps before address
+wrap. Probed execution selects the serial geometry path; normal execution keeps
+its existing parallel path. These observations cover exercised fragments, not
+all possible cameras or helper lanes, and are not GPU timing measurements.
+
+`with_texture_samples(minimum_lod_eighths, maximum_samples)` adds bounded actual
+sampler transactions. Each tap records its nonzero weight, RGBA and stored mip
+side exponent. Serial ROP records whether the sample passed depth and remains
+the last full-opacity DRAW writer at that target/pixel. Later partial-alpha
+overlays are marked. CLEAR removes target owners; UI and raw copies invalidate
+ownership observations conservatively. Recording limits fail explicitly rather
+than silently dropping samples. All instrumentation leaves shading/memory
+arithmetic unchanged.

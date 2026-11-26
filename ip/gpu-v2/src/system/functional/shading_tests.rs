@@ -36,10 +36,25 @@ fn atlas_grid_clamps_each_mip_and_never_samples_a_neighboring_cell() {
                 let last = first + (65536 >> grid) - 1;
                 for uv in [[first, first], [last, last], [first, last], [last, first]] {
                     for lod in [0, 1, 7, 8, 15, 16, 23, 24, 39, 255] {
-                        let mut report = Report::default();
+                        let mut report = Report {
+                            textures: Some(Default::default()),
+                            ..Default::default()
+                        };
                         let sampled = texture.sample(&memory, uv, lod, &mut report, 16).unwrap();
                         assert!(sampled[0] >= 250);
                         assert_eq!(&sampled[1..3], &[0, 0]);
+                        for p in report.textures.unwrap().values() {
+                            for level in 0..=5 {
+                                if p.taps[level] == 0 {
+                                    continue;
+                                }
+                                assert!(level >= grid as usize);
+                                let size = 1i128 << (level - grid as usize);
+                                let lo = cell * size;
+                                assert!(p.tap_min[level].iter().all(|&v| v >= lo));
+                                assert!(p.tap_max[level].iter().all(|&v| v < lo + size));
+                            }
+                        }
                     }
                 }
             }
@@ -48,6 +63,37 @@ fn atlas_grid_clamps_each_mip_and_never_samples_a_neighboring_cell() {
     assert!(Texture::decode((2 << 16) | (1 << 20) | (3 << 26)).is_err());
     assert!(Texture::decode((5 << 16) | (1 << 26)).is_err());
     assert!(Texture::decode((5 << 16) | (1 << 28)).is_err());
+}
+
+#[test]
+fn uv_probe_observes_before_clamp_and_only_nonzero_weight_taps() {
+    let mut data = vec![0x7bef; 256];
+    let memory = super::super::Memory {
+        words: &mut data,
+        access: None,
+        effects: Default::default(),
+    };
+    let texture = Texture::decode((1 << 16) | (1 << 21) | (1 << 25)).unwrap();
+    let uv = [-1, 70000];
+    let mut ordinary = Report::default();
+    let expected = texture.sample(&memory, uv, 0, &mut ordinary, 16).unwrap();
+    let mut observed = Report {
+        textures: Some(Default::default()),
+        ..Default::default()
+    };
+    assert_eq!(
+        texture.sample(&memory, uv, 0, &mut observed, 16).unwrap(),
+        expected
+    );
+    assert_eq!(ordinary.work, observed.work);
+    let p = observed.textures.as_ref().unwrap().values().next().unwrap();
+    assert_eq!(p.samples, 1);
+    assert_eq!(p.outside_normalized, 1);
+    assert_eq!(p.uv_min, uv);
+    assert_eq!(p.uv_max, uv);
+    assert_eq!(p.taps[1], 1);
+    assert_eq!(p.tap_min[1], [0, 1]);
+    assert_eq!(p.tap_max[1], [0, 1]);
 }
 
 fn sample_alpha(alphas: [u16; 3], filter: u8, lod: u8, uv: [i128; 2]) -> u8 {

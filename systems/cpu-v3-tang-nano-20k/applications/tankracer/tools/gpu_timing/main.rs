@@ -1,14 +1,14 @@
 //! Bounded cold command replay through the GPU and native SDRAM cycle models.
 mod memory;
+#[path = "../submission.rs"]
+mod submission;
+mod timeline;
 mod traffic;
-use gpu_v2::system::{
-    vliw_command::DeviceSubmission,
-    vliw_cycle::{
-        command::DeviceBus,
-        draw::{Gpu, Input},
-        postquad::Profile,
-        router,
-    },
+use gpu_v2::system::vliw_cycle::{
+    command::DeviceBus,
+    draw::{Gpu, Input},
+    postquad::Profile,
+    router,
 };
 use std::{
     error::Error,
@@ -19,8 +19,8 @@ use std::{
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.len() != 5 {
-        return Err("usage: tankracer-gpu-timing FRAME.json MAX_CYCLES MAX_SECONDS TRAFFIC OUTPUT_DIRECTORY".into());
+    if args.len() != 5 && !(args.len() == 6 && args[5] == "--trace") {
+        return Err("usage: tankracer-gpu-timing FRAME.json MAX_CYCLES MAX_SECONDS TRAFFIC OUTPUT_DIRECTORY [--trace]".into());
     }
     let maximum: usize = args[1].parse()?;
     let seconds: u64 = args[2].parse()?;
@@ -43,15 +43,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     if bytes.len() != 8 * 1024 * 1024 {
         return Err("GPU preimage must cover 8 MiB".into());
     }
-    let color = source["color"].as_u64().ok_or("Missing color target")? as usize;
-    let depth = source["depth"].as_u64().ok_or("Missing depth target")? as usize;
-    if color + 204800 > bytes.len() || depth + 204800 > bytes.len() {
+    let color = usize::try_from(source["color"].as_u64().ok_or("Missing color target")?)?;
+    let depth = usize::try_from(source["depth"].as_u64().ok_or("Missing depth target")?)?;
+    if !color.is_multiple_of(65536)
+        || !depth.is_multiple_of(65536)
+        || color > bytes.len() - 204800
+        || depth > bytes.len() - 204800
+    {
         return Err("Framebuffer extent".into());
     }
-    let submission = DeviceSubmission::new(
-        source["base"].as_u64().ok_or("Missing CB base")? as u32,
-        source["words"].as_u64().ok_or("Missing CB size")? as u32 * 4,
-    )?;
+    let submission = submission::from_capture(&source)?;
     let output = Path::new(&args[4]);
     if output.exists() {
         return Err("GPU timing needs a fresh output directory".into());
@@ -61,6 +62,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     for pair in bytes.as_chunks::<2>().0 {
         backing.push(u16::from_le_bytes(*pair));
     }
+    let addresses = submission::command_addresses(&backing, submission)?;
+    let mut timeline = (args.len() == 6).then(|| timeline::Timeline::new(&backing, addresses));
     let mut memory = memory::Memory::new(backing, traffic::Traffic::new(&args[3], color, 0));
     let mut gpu = Gpu::with_all_commands(Profile::Native);
     let mut start = None;
@@ -133,6 +136,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let mut d16 = rgb;
                     let mut ppm = b"P6\n400 240\n255\n".to_vec();
                     let plane = memory.backing();
+                    for (name, base) in [("color.bin", color), ("depth.bin", depth)] {
+                        let mut bytes = Vec::with_capacity(204800);
+                        for &word in &plane[base / 2..base / 2 + 102400] {
+                            bytes.extend(word.to_le_bytes());
+                        }
+                        fs::write(output.join(name), bytes)?;
+                    }
                     for y in 0..240 {
                         for x in 0..400 {
                             let at = ((x / 16) * 16 + y / 16) * 256 + (y % 16) * 16 + x % 16;
@@ -162,6 +172,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         output.join("result.json"),
                         serde_json::to_vec_pretty(&report)?,
                     )?;
+                    if let Some(timeline) = timeline {
+                        timeline.finish(output, first, cycle)?;
+                    }
                     println!("{report}");
                     return Ok(());
                 }
@@ -172,8 +185,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 );
             }
         }
-        gpu.clock(i)
-            .map_err(|e| format!("GPU cycle {cycle}: {e}"))?;
+        if let Some(timeline) = &mut timeline {
+            let phase = gpu.control.processor.phase();
+            let edge = gpu
+                .clock_observing(i)
+                .map_err(|e| format!("GPU cycle {cycle}: {e}"))?;
+            if start.is_some() {
+                timeline.observe(cycle, phase, &o, edge)?;
+            }
+        } else {
+            gpu.clock(i)
+                .map_err(|e| format!("GPU cycle {cycle}: {e}"))?;
+        }
         memory.clock();
     }
     Err(format!("Cycle limit {maximum}; meshlets={meshlets}, fragments={fragments}").into())

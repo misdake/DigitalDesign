@@ -592,7 +592,7 @@ pub(super) fn draw(
                 [None, None]
             }
         });
-        let mut prepared = independent
+        let mut prepared = (independent && report.textures.is_none())
             .then(|| {
                 let count: usize = rows
                     .iter()
@@ -655,6 +655,14 @@ pub(super) fn draw(
                 } else {
                     triangle.lod(first, state.render)
                 };
+                if !mesh.rgb && fragments.iter().flatten().any(|f| f.valid) {
+                    if let Some(probe) = &mut report.textures {
+                        probe
+                            .entry((state.render.texture.descriptor(), report.probe_meshlet))
+                            .or_default()
+                            .quad(triangle.lod_raw(first, state.render));
+                    }
+                }
                 for (lane, fragment) in fragments.into_iter().enumerate() {
                     if let Some(fragment) = fragment.filter(|f| f.valid) {
                         shading::fragment(

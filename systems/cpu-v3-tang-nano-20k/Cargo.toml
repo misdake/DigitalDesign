@@ -63,6 +63,11 @@ path = "applications/tankracer/tools/gpu_timing/main.rs"
 test = false
 
 [[bin]]
+name = "tankracer-cpu-timing"
+path = "applications/tankracer/tools/cpu_timing.rs"
+test = false
+
+[[bin]]
 name = "tankracer-physics-check"
 path = "applications/tankracer/tools/physics_check.rs"
 test = false
