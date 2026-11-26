@@ -7,12 +7,12 @@ PITCH_DEGREES = (-60, -30, -10, -1, 0, 1, 10, 30, 60)
 
 
 def build(packed, opaque_count):
-    total = len(packed)//13
+    total = len(packed)//11
     count = total-opaque_count
     stride = max(64, ((count+63)//64)*64)
     centers = {}
-    for at in range(0, len(packed), 13):
-        identity = packed[at+12]
+    for at in range(0, len(packed), 11):
+        identity = packed[at+10]
         if identity >= opaque_count:
             centers[identity] = [(v-65536 if v & 32768 else v)*512 for v in packed[at:at+3]]
     if sorted(centers) != list(range(opaque_count, total)):

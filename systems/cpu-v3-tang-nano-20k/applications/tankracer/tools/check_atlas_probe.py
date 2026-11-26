@@ -34,13 +34,12 @@ def check(snapshot, frames, atlas, source):
     groups = assets['groups']
     by_meshlet = {}
     first = 0
-    for field in ['fine_meshlets', 'reduced_meshlets']:
-        for group in groups:
-            material = original['materials'][group['material']]
-            for i in range(group[field]):
-                address = struct.unpack_from('<H', mesh, (first+i)*4)[0] * 128
-                by_meshlet[address] = (group['name'], material.get('texture'))
-            first += group[field]
+    for group in groups:
+        material = original['materials'][group['material']]
+        for i in range(group['meshlets']):
+            address = struct.unpack_from('<H', mesh, (first+i)*4)[0] * 128
+            by_meshlet[address] = (group['name'], material.get('texture'))
+        first += group['meshlets']
     rows, samples = [], 0
     paths = sorted(frames.glob('frame-*.uv.json'))
     if len(paths) != run['requested_frames']:

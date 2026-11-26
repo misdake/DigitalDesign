@@ -18,34 +18,36 @@ def signed(word):
 
 def row(center, extent, identity):
     return [word for value in (*center, math.hypot(*extent), *extent) for word in q16(value)] + [
-        identity, 1, identity + 1000, 2, identity % 17, identity % 2]
+        identity, 1, identity % 17, identity % 2]
 
 
 class SelectionRecords(unittest.TestCase):
     def test_prepared_ring_uses_route_order_for_disjoint_groups(self):
         rows = sum((row([i * 4, 0, 0], [1, 1, 1], i) for i in range(3)), [])
-        records = sum(([0] * 12 + [i] + [0] * 3 for i in [2, 0, 1]), [])
+        records = sum(([0] * 10 + [i] + [0] * 5 for i in [2, 0, 1]), [])
         directory, index, pages = prepared_ring(rows, 3, (records, [], {}))
-        self.assertEqual(directory[5::7], [2, 0, 1])
+        self.assertEqual(directory[3::5], [2, 0, 1])
         self.assertEqual(index, [1, 2, 0])
         self.assertEqual(pages, [0, 3])
-        records[12] = 0
+        records[10] = 0
         with self.assertRaisesRegex(ValueError, 'each opaque group once'):
             prepared_ring(rows, 3, (records, [], {}))
 
     def test_prepared_ring_preserves_quantized_overlap_order(self):
         rows = row([0, 0, 0], [1, 1, 1], 0) + row([2.02, 0, 0], [1, 1, 1], 1)
-        records = [0] * 12 + [1] + [0] * 15 + [0] + [0] * 3
-        self.assertEqual(prepared_ring(rows, 2, (records, [], {}))[0][5::7], [0, 1])
-        self.assertEqual(prepared_ring(rows, 2, (records, [], {}), 0)[0][5::7], [1, 0])
+        records = [0] * 10 + [1] + [0] * 15 + [0] + [0] * 5
+        self.assertEqual(prepared_ring(rows, 2, (records, [], {}))[0][3::5], [0, 1])
+        self.assertEqual(prepared_ring(rows, 2, (records, [], {}), 0)[0][3::5], [1, 0])
 
-    def test_prepared_pages_budget_both_lods_and_push_storage(self):
+    def test_prepared_pages_budget_commands_and_push_storage(self):
         rows = sum((row([i * 4, 0, 0], [1, 1, 1], i) for i in range(260)), [])
+        for i in range(260):
+            rows[i * 18 + 15] = 2
         directory, _, pages = prepared_ring(rows, 260, None)
         self.assertEqual(pages, [0, 196, 260])
-        self.assertEqual(directory[195 * 7 + 6:197 * 7:7], [0, 1])
+        self.assertEqual(directory[195 * 5 + 4:197 * 5:5], [0, 1])
         for i in range(260):
-            rows[i * 20 + 17] = 1
+            rows[i * 18 + 15] = 1
         self.assertEqual(prepared_ring(rows, 260, None)[2], [0, 256, 260])
         rows[15] = 700
         with self.assertRaisesRegex(ValueError, 'one opaque group'):
@@ -53,17 +55,17 @@ class SelectionRecords(unittest.TestCase):
         prepared_ring(rows, 260, None, strict=False)
 
     def test_empty_prepared_ring_has_a_valid_empty_page(self):
-        self.assertEqual(prepared_ring([], 0, None), ([0] * 7, [0], [0, 0]))
+        self.assertEqual(prepared_ring([], 0, None), ([0] * 5, [0], [0, 0]))
 
-    def test_opaque_span_order_keeps_sparse_fine_and_coarse_ranges(self):
+    def test_opaque_span_order_keeps_sparse_ranges(self):
         rows = row([0, 0, 0], [1, 1, 1], 0) + row([0, 0, 0], [1, 1, 1], 1)
-        rows[14:20] = [0, 2, 5, 1, 7, 0]
-        rows[34:40] = [2, 1, 2, 1, 8, 0]
+        rows[14:18] = [0, 2, 7, 0]
+        rows[32:36] = [5, 1, 8, 0]
         spans = opaque_spans(rows, 2, 6)
         self.assertEqual(len(spans), 48)
-        self.assertEqual([spans[n:n+3] for n in [0, 6, 15]], [[0, 2, 7], [2, 1, 8], [5, 1, 7]])
-        self.assertTrue(all(spans[n * 3 + 1] == 0 for n in [1, 3, 4, 6, 15]))
-        rows[34] = 0
+        self.assertEqual([spans[n:n+3] for n in [0, 15]], [[0, 2, 7], [5, 1, 8]])
+        self.assertTrue(all(spans[n * 3 + 1] == 0 for n in [1, 2, 3, 4, 6, 15]))
+        rows[32] = 0
         with self.assertRaisesRegex(ValueError, 'unique'):
             opaque_spans(rows, 2, 6)
 
@@ -119,10 +121,10 @@ class SelectionRecords(unittest.TestCase):
             start, count = clusters[at + 14:at + 16]
             for offset in range(start, start + count * GROUP_WORDS, GROUP_WORDS):
                 values = packed[offset:offset + GROUP_WORDS]
-                identity = values[12]
+                identity = values[10]
                 self.assertNotIn(identity, seen)
                 seen.add(identity)
-                source = original[identity * 20:identity * 20 + 20]
+                source = original[identity * 18:identity * 18 + 18]
                 old = struct.unpack('<7i', struct.pack('<14H', *source[:14]))
                 center = [signed(v) * 512 for v in values[:3]]
                 extent = [v * 512 for v in values[3:6]]
@@ -132,9 +134,9 @@ class SelectionRecords(unittest.TestCase):
                     self.assertLessEqual(floats[axis] - floats[axis + 4], center[axis] - extent[axis])
                     self.assertGreaterEqual(floats[axis] + floats[axis + 4], center[axis] + extent[axis])
                 self.assertGreaterEqual(values[6] * 512, old[3] + math.dist(center, old[:3]))
-                self.assertEqual(values[7:11], source[14:18])
-                self.assertEqual(values[11] & 32767, source[18])
-                self.assertEqual(values[11] >> 15, source[19])
+                self.assertEqual(values[7:9], source[14:16])
+                self.assertEqual(values[9] & 32767, source[16])
+                self.assertEqual(values[9] >> 15, source[17])
         self.assertEqual(seen, set(range(257)))
 
     def test_cell_splits_and_original_ids(self):
@@ -143,13 +145,13 @@ class SelectionRecords(unittest.TestCase):
         self.assertEqual(counts, [32, 32, 1])
         self.assertEqual([clusters[i + 14] for i in range(0, len(clusters), CLUSTER_WORDS)],
                          [0, 32 * GROUP_WORDS, 64 * GROUP_WORDS])
-        self.assertEqual([packed[i + 12] for i in range(0, len(packed), GROUP_WORDS)], list(range(65)))
+        self.assertEqual([packed[i + 10] for i in range(0, len(packed), GROUP_WORDS)], list(range(65)))
 
     def test_invalid_coordinate_and_material(self):
         with self.assertRaisesRegex(ValueError, 'center'):
             cluster_groups(row([256, 0, 0], [1, 1, 1], 0))
         words = row([0, 0, 0], [1, 1, 1], 0)
-        words[18] = 32768
+        words[16] = 32768
         with self.assertRaisesRegex(ValueError, 'material'):
             cluster_groups(words)
 

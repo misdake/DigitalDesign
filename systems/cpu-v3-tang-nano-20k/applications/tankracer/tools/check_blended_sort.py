@@ -23,7 +23,7 @@ def main():
     start = source.index("                            if same_blended {")
     end = source.index("                            output[target + 4]", start)
     member = source[start:end].replace("self.previous_blended", "previous").replace(
-        "result.blended", "count").replace("words[record + 12]", "identity")
+        "result.blended", "count").replace("words[record + 10]", "identity")
     fixture = PRELUDE + TESTS.replace("MEMBER_GUARD", member) + function(source, "blended_ordered") + function(source, "sort_back_to_front")
     path = args.output / "fixture.rs"
     data = fixture.encode()

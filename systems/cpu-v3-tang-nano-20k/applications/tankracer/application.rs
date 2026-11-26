@@ -65,7 +65,7 @@ const STATIC_APPLICATION: Definition = Definition {
         BuildOption::environment(
             "policy",
             "TANKRACER_POLICY",
-            OptionValues::Choices(&["full", "cull", "lod"]),
+            OptionValues::Choices(&["full", "cull"]),
         ),
         BuildOption::environment(
             "candidates",

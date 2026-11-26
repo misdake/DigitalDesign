@@ -21,7 +21,6 @@ const {alphaAtlas, nativeTexture} = await import(
   pathToFileURL(path.join(source, 'tools/platform_texture.mjs'))
 );
 const {staticScene} = await import(pathToFileURL(path.join(source, 'tools/static_scene.mjs')));
-const {terrainLods} = await import(pathToFileURL(path.join(source, 'tools/terrain_lod.mjs')));
 const {zipArchive} = await import(pathToFileURL(path.join(source, 'tools/zip_archive.mjs')));
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const jsonBytes = (value, indent) => Buffer.from(JSON.stringify(value, null, indent) + '\n');
@@ -154,9 +153,17 @@ function build(split) {
       levels: native.levels
     });
   }
-  const {scene, inventory} = staticScene(world, textures);
-  scene.display_distance = original.scene.display_distance;
-  inventory.terrain_lod = terrainLods(scene);
+  const {scene: converted, inventory} = staticScene(world, textures);
+  const scene = {
+    version: converted.version,
+    origin: converted.origin,
+    scale: converted.scale,
+    far: converted.far,
+    display_distance: original.scene.display_distance,
+    position_shift: converted.position_shift,
+    materials: converted.materials,
+    groups: converted.groups
+  };
   const metadata = {
     format: 'tankracer.static-input.v1',
     map: 'ENGLAND',
@@ -246,7 +253,6 @@ function convert() {
     assert.equal(b.vertices.length, a.vertices.length);
     assert.equal(b.billboard, a.billboard);
     assert.equal(b.source_texture, a.source_texture);
-    assert.deepEqual(b.lod, a.lod, 'Opaque LOD unchanged');
     const ma = baseline.scene.materials[a.material],
       mb = candidate.scene.materials[b.material];
     for (const key of ['tint', 'rgba', 'mipmaps', 'clamp', 'blend', 'encoding'])
@@ -403,7 +409,6 @@ for (const file of [
   'map_format.mjs',
   'platform_texture.mjs',
   'static_scene.mjs',
-  'terrain_lod.mjs',
   'zip_archive.mjs'
 ])
   helperHashes[file] = hash(await readFile(path.join(source, 'tools', file)));
@@ -428,7 +433,7 @@ const report = {
   alpha_texture_bytes_saved: 229376,
   texture_bytes_before: baseline.metadata.texture_bytes,
   texture_bytes_after: candidate.metadata.texture_bytes,
-  positions_indices_source_order_lod_states_preserved: true,
+  positions_indices_source_order_states_preserved: true,
   per_source_alpha_modes_preserved: true,
   runtime_material_state_fields: ['tint', 'rgba', 'mipmaps', 'clamp', 'blend', 'encoding'],
   source_alpha_metadata_scope:

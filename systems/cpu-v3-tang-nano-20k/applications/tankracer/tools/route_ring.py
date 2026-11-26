@@ -3,6 +3,7 @@ import math
 
 from export_route import validate_route
 
+COMPACT_WORDS = 11
 RING_WORDS = 16
 SEGMENT_WORDS = 12
 
@@ -81,7 +82,7 @@ def build_ring(route, packed, opaque_count, origin, scale, display_distance, cor
     validate_route(route)
     if scale <= 0 or not math.isfinite(scale) or display_distance <= 0 or corridor_world < 0:
         raise ValueError("invalid route ring distance or scale")
-    if not 0 < opaque_count <= len(packed) // 13 or len(packed) % 13:
+    if not 0 < opaque_count <= len(packed) // COMPACT_WORDS or len(packed) % COMPACT_WORDS:
         raise ValueError("invalid opaque compact-group table")
     points = {p["name"]: [(v - o) * scale for v, o in zip(p["position"], origin)] for p in route["points"]}
     circuit = [points[name] for name in route["main_loop"]]
@@ -99,9 +100,9 @@ def build_ring(route, packed, opaque_count, origin, scale, display_distance, cor
         progress += length
     groups = []
     seen = set()
-    for at in range(0, len(packed), 13):
-        record = packed[at:at + 13]
-        identity = record[12]
+    for at in range(0, len(packed), COMPACT_WORDS):
+        record = packed[at:at + COMPACT_WORDS]
+        identity = record[10]
         if identity in seen:
             raise ValueError("duplicate compact-group source ID")
         seen.add(identity)
@@ -112,11 +113,11 @@ def build_ring(route, packed, opaque_count, origin, scale, display_distance, cor
         nearest = min(((*distance_squared(center, s["a"], s["b"]), i) for i, s in enumerate(segments)),
                       key=lambda item: (item[0], item[2]))
         _, t, index = nearest
-        groups.append(dict(id=identity, packed_index=at // 13, record=record,
+        groups.append(dict(id=identity, packed_index=at // COMPACT_WORDS, record=record,
                            progress=segments[index]["progress"] + t * segments[index]["length"],
                            lo=[x - e for x, e in zip(center, extent)],
                            hi=[x + e for x, e in zip(center, extent)]))
-    expected = len(packed) // 13 if include_blended else opaque_count
+    expected = len(packed) // COMPACT_WORDS if include_blended else opaque_count
     if len(groups) != expected or {g["id"] for g in groups} != set(range(expected)):
         raise ValueError("selected source IDs do not cover the ring table")
     groups.sort(key=lambda g: (g["progress"], g["id"]))
@@ -139,8 +140,8 @@ def build_ring(route, packed, opaque_count, origin, scale, display_distance, cor
                          required_ids=[groups[i]["id"] for i in required],
                          segment_lo=segment["lo"], segment_hi=segment["hi"],
                          segment_start=segment["a"], segment_end=segment["b"]))
-    metadata = [w for group in groups for w in [*group["record"], 0, 0, 0]]
-    info = dict(format="tankracer.route-ring.v1", scope="static candidate metadata" if include_blended else "opaque metadata; no command reordering",
+    metadata = [w for group in groups for w in [*group["record"], *([0] * (RING_WORDS - COMPACT_WORDS))]]
+    info = dict(format="tankracer.route-ring.v2", scope="static candidate metadata" if include_blended else "opaque metadata; no command reordering",
                 route_start=route["start"], route_branch=0, group_words=RING_WORDS,
                 segment_words=SEGMENT_WORDS, group_count=len(groups),
                 segment_count=len(segments), display_distance=display_distance,
@@ -148,11 +149,10 @@ def build_ring(route, packed, opaque_count, origin, scale, display_distance, cor
                 world_display_distance=display_distance / scale, world_camera_corridor=corridor_world,
                 render_scale=scale, origin=list(origin),
                 bound_metric="XZ distance from closed route segment to closed group AABB",
-                bound_source="outward quantized union of fine, bounds_geometry and LOD positions",
+                bound_source="outward quantized union of geometry and bounds_geometry positions",
                 metadata_bytes=len(metadata) * 2, directory_bytes=len(directory) * 2,
                 opaque_stable_id_range=[0, opaque_count],
-                transparent_stable_id_range=[opaque_count, len(packed) // 13],
-                lod_group_ids=[g["id"] for g in groups if g["record"][7:9] != g["record"][9:11]],
+                transparent_stable_id_range=[opaque_count, len(packed) // COMPACT_WORDS],
                 order=[g["id"] for g in groups], packed_indices=[g["packed_index"] for g in groups],
                 segments=rows, max_candidates=max(row["count"] for row in rows))
     return metadata, directory, info

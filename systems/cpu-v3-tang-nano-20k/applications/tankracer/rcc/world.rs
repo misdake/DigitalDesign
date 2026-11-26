@@ -9,7 +9,6 @@ use gpu_window::gpu_window_asset_read;
 
 const FAR: fix32 = fix32::from_words(MAP_FAR_LOW, MAP_FAR_HIGH);
 const DISPLAY_DISTANCE: fix32 = fix32::from_words(MAP_DISPLAY_LOW, MAP_DISPLAY_HIGH);
-const LOD_DISTANCE: fix32 = fix32::from_words(MAP_LOD_LOW, MAP_LOD_HIGH);
 const X_PER_DEPTH: fix32 = fix!(0.78515625);
 const Y_PER_DEPTH: fix32 = fix!(0.47265625);
 
@@ -148,7 +147,7 @@ impl World {
             }
             let mut i: u16 = 0;
             while i < count {
-                let material = words[i * GROUP_WORDS + 11] & 32767;
+                let material = words[i * GROUP_WORDS + 9] & 32767;
                 if material > maximum {
                     maximum = material;
                 }
@@ -180,13 +179,13 @@ impl World {
             i = 0;
             while i < count {
                 let at = i * GROUP_WORDS;
-                let key = words[at + 11];
+                let key = words[at + 9];
                 let material = key & 32767;
                 let index = material * 2 + (key >> 15);
                 if map[index] == 0 {
                     self.set_material(key);
                     let mut state = self.opaque.ptr();
-                    if words[at + 12] >= OPAQUE_COUNT {
+                    if words[at + 10] >= OPAQUE_COUNT {
                         state = self.blended.ptr();
                     }
                     let texture_id = MAP_MATERIALS[material * 4];
@@ -303,9 +302,9 @@ impl World {
         let mut item: u16 = 0;
         let mut page: u16 = 0;
         if TANKRACER_PREPARED != 0 {
-            let order = OPAQUE_COUNT * 3 + index * 2;
+            let order = OPAQUE_COUNT * 3 + index;
             item = words[order];
-            page = words[order + 1];
+            page = MAP_OPAQUE_RING_PAGE[item];
             at = item * 3;
         }
         DrawSpan {
@@ -548,24 +547,20 @@ impl World {
                         let depth = -project(&view.matrix.row2, &bound);
                         if classification == 2 || visible_group(view, words, record, &bound, depth)
                         {
-                            let mut span = record + 7;
-                            if TANKRACER_POLICY == 2 && depth - bound.w > LOD_DISTANCE {
-                                span = record + 9;
-                            }
-                            let draw_first = words[span];
-                            let draw_count = words[span + 1];
-                            let draw_material = words[record + 11];
-                            if words[record + 12] >= OPAQUE_COUNT {
+                            let draw_first = words[record + 7];
+                            let draw_count = words[record + 8];
+                            let draw_material = words[record + 9];
+                            if words[record + 10] >= OPAQUE_COUNT {
                                 let mut output = blended;
                                 let target = result.blended * 6;
                                 if same_blended {
                                     if result.blended >= self.previous_blended {
                                         same_blended = false;
-                                    } else if output[target + 3] != words[record + 12] {
+                                    } else if output[target + 3] != words[record + 10] {
                                         same_blended = false;
                                     }
                                 }
-                                output[target + 3] = words[record + 12];
+                                output[target + 3] = words[record + 10];
                                 output[target + 4] = depth.lo_bits();
                                 output[target + 5] = depth.hi_bits();
                                 output[target] = draw_first;
@@ -574,14 +569,10 @@ impl World {
                                 result.blended += 1;
                             } else {
                                 if TANKRACER_PREPARED != 0 {
-                                    let item = MAP_OPAQUE_RING_INDEX[words[record + 12]];
-                                    let mut bits: u16 = 1;
-                                    if draw_first != words[record + 7] {
-                                        bits = 3;
-                                    }
-                                    mask[item >> 3] |= bits << ((item & 7) * 2);
+                                    let item = MAP_OPAQUE_RING_INDEX[words[record + 10]];
+                                    mask[item >> 4] |= 1u16 << (item & 15);
                                     // Retain the exact selected range already loaded by culling.
-                                    // The remaining two words per group hold the ordered indices.
+                                    // The remaining word per group holds its ordered index.
                                     let mut spans = unsafe { self.opaque_draws.as_u16_array() };
                                     spans[item * 3] = draw_first;
                                     spans[item * 3 + 1] = draw_count;
@@ -720,33 +711,19 @@ impl World {
         let mask = unsafe { self.opaque_mask.as_u16_array() };
         let mut output = unsafe { self.opaque_draws.as_u16_array() };
         let mut count: u16 = 0;
-        let mut variant: u16 = 0;
-        while variant < 2 {
-            let mut bucket: u16 = 0;
-            while bucket < OPAQUE_MASK_WORDS {
-                let candidates = mask[bucket];
-                let mut bits = candidates & (65535 ^ (candidates >> 1)) & 21845;
-                if variant != 0 {
-                    bits = (candidates >> 1) & 21845;
+        let mut bucket: u16 = 0;
+        while bucket < OPAQUE_MASK_WORDS {
+            let mut bits = mask[bucket];
+            let mut item = bucket * 16;
+            while bits != 0 {
+                if bits & 1 != 0 {
+                    output[OPAQUE_COUNT * 3 + count] = item;
+                    count += 1;
                 }
-                if bits != 0 {
-                    let mut index: u16 = 0;
-                    while bits != 0 {
-                        if bits & 1 != 0 {
-                            let item = bucket * 8 + index;
-                            let at = OPAQUE_COUNT * 3 + count * 2;
-                            output[at] = item;
-                            output[at + 1] =
-                                MAP_OPAQUE_RING_PAGE[item] + variant * MAP_PREPARED_RING_PAGES;
-                            count += 1;
-                        }
-                        bits >>= 2;
-                        index += 1;
-                    }
-                }
-                bucket += 1;
+                bits >>= 1;
+                item += 1;
             }
-            variant += 1;
+            bucket += 1;
         }
         count
     }

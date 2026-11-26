@@ -68,18 +68,17 @@ def build(source, destination, side=1024, grid_log2=3):
             if material.get('blend') or not material.get('texture'):
                 continue
             region = regions[material['texture']]
-            for geometry in [group, *([group['lod']] if isinstance(group.get('lod'), dict) else [])]:
-                at = 4 if group.get('billboard') else 3
-                for vertex in geometry['vertices']:
-                    for axis, origin in enumerate((region['x'], region['y'])):
-                        uv = vertex[at+axis]
-                        if not 0 <= uv <= 1:
-                            raise ValueError('Source UV is outside the normalized domain')
-                        # The existing interpolator can truncate one Q16 unit
-                        # below a constant endpoint. Keep both ends two units
-                        # inside their cell; this allocates no texture gutter.
-                        vertex[at+axis] = max(origin/side+2/65536,
-                            min((origin+uv*cell)/side, (origin+cell)/side-2/65536))
+            at = 4 if group.get('billboard') else 3
+            for vertex in group['vertices']:
+                for axis, origin in enumerate((region['x'], region['y'])):
+                    uv = vertex[at+axis]
+                    if not 0 <= uv <= 1:
+                        raise ValueError('Source UV is outside the normalized domain')
+                    # The existing interpolator can truncate one Q16 unit
+                    # below a constant endpoint. Keep both ends two units
+                    # inside their cell; this allocates no texture gutter.
+                    vertex[at+axis] = max(origin/side+2/65536,
+                        min((origin+uv*cell)/side, (origin+cell)/side-2/65536))
         texture = 'textures/OPAQUE_GRID.bin'
         for material in result['materials']:
             if not material.get('blend'):

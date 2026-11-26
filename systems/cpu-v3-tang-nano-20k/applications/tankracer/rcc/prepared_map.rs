@@ -1,4 +1,4 @@
-//! Route-ordered fine/coarse opaque command rings and an ordinary frame tail.
+//! One route-ordered opaque command ring and an ordinary frame tail.
 use crate::dsl_rt::*;
 mod boot_resources;
 mod gpu_api;
@@ -20,8 +20,8 @@ const OPAQUE_STORAGE: StaticBuffer = StaticBuffer::new(MAP_PREPARED_PAGES * 4096
 
 struct PreparedMap {
     pool: PreparedPool,
-    // The native mesh limit bounds both rings to at most 86 command pages.
-    parts: Buf<PreparedDrawsPtr, 86>,
+    // The native mesh limit bounds the ring to at most 43 command pages.
+    parts: Buf<PreparedDrawsPtr, 43>,
     offsets: Ptr,
 }
 
@@ -37,8 +37,8 @@ impl PreparedMap {
         let first = pool.allocate(8192, 32768);
         let mut result = Self {
             pool,
-            parts: Buf::new([first; 86]),
-            offsets: malloc((OPAQUE_COUNT + 1) * 4),
+            parts: Buf::new([first; 43]),
+            offsets: malloc((OPAQUE_COUNT + 1) * 2),
         };
         let mut page: u16 = 1;
         while page < MAP_PREPARED_PAGES as u16 {
@@ -51,19 +51,17 @@ impl PreparedMap {
 
     fn record(&mut self, world: &mut World) {
         let mut offsets = unsafe { self.offsets.as_u16_array() };
-        let entries: Buf<u16, 56> = Buf::new([0; 56]);
+        let entries: Buf<u16, 40> = Buf::new([0; 40]);
         let words = entries.as_array();
         let mut page: u16 = 0;
         while page < MAP_PREPARED_PAGES as u16 {
-            let variant = page / MAP_PREPARED_RING_PAGES;
-            let local_page = page % MAP_PREPARED_RING_PAGES;
             let owner: PreparedDrawsPtr = self.parts[page];
             let mut part: PreparedPart = owner.record();
             if MAP_SHARED_OPAQUE_STATE != 0 {
                 part.share_state();
             }
-            let mut item = MAP_PREPARED_PAGE_FIRST[local_page];
-            let end = MAP_PREPARED_PAGE_FIRST[local_page + 1];
+            let mut item = MAP_PREPARED_PAGE_FIRST[page];
+            let end = MAP_PREPARED_PAGE_FIRST[page + 1];
             let mut loaded: u16 = 65535;
             while item < end {
                 let bucket = item >> 3;
@@ -75,24 +73,21 @@ impl PreparedMap {
                     if !gpu_window_asset_read(
                         words,
                         MAP_OPAQUE_RING.first_sector,
-                        bucket * 56,
-                        count * 7,
+                        bucket * 40,
+                        count * 5,
                     ) {
                         halt(0x7b40);
                     }
                     loaded = bucket;
                 }
-                let at = (item & 7) * 7;
-                let first = words[at + variant * 2];
-                let count = words[at + variant * 2 + 1];
-                let mark = item * 4 + variant * 2;
+                let at = (item & 7) * 5;
+                let first = words[at];
+                let count = words[at + 1];
+                let mark = item * 2;
                 offsets[mark] = part.mark_slice();
-                // Groups without a reduced mesh reuse their fine-ring entry.
-                if variant == 0 || first != words[at] || count != words[at + 1] {
-                    let group = Mesh::from_native(TRACK_MESH.subset(first, count));
-                    world.record_static_span(&mut part, group.ptr(), words[at + 4]);
-                    drop(group);
-                }
+                let group = Mesh::from_native(TRACK_MESH.subset(first, count));
+                world.record_static_span(&mut part, group.ptr(), words[at + 2]);
+                drop(group);
                 offsets[mark + 1] = part.mark_slice();
                 item += 1;
             }
@@ -101,8 +96,8 @@ impl PreparedMap {
         }
     }
 
-    // Consecutive route groups share a slice. Holes and LOD switches remain
-    // explicit; only the caller's exact selected geometry enters the list.
+    // Consecutive route groups share a slice. Visibility holes remain explicit;
+    // only the caller's exact selected geometry enters the list.
     fn plan(&self, world: &World, selected: &Selection, mut ranges: Array<u16>) -> Plan {
         let offsets = unsafe { self.offsets.as_u16_array() };
         let mut result = Plan {
@@ -123,8 +118,7 @@ impl PreparedMap {
         }
         while index < selected.opaque {
             let span = world.opaque_span(index);
-            let variant = span.page / MAP_PREPARED_RING_PAGES;
-            let mark = span.item * 4 + variant * 2;
+            let mark = span.item * 2;
             let first = offsets[mark];
             let end = offsets[mark + 1];
             let mut merged = false;

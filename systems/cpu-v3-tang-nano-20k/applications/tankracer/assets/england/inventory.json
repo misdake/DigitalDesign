@@ -8122,12 +8122,6 @@
   "billboard_triangles": 542,
   "reverse_triangles": 216,
   "source_vertices": 9291,
-  "terrain_lod": {
-    "groups": 28,
-    "fine_triangles": 948,
-    "coarse_triangles": 614,
-    "texture_bytes": 0
-  },
   "cameras": {
     "file": "cameras.json",
     "views": 118,
@@ -8139,7 +8133,7 @@
   },
   "package": {
     "file": "scene.zip",
-    "bytes": 404956,
-    "sha256": "14d9936f245ad71ce66b1fd299d8d2758b6e1362e4eee6e431fb94bb9445df2d"
+    "bytes": 402802,
+    "sha256": "78308d5815eb2bddde69d7e5799192e766080a49fecf1b8bff143842f564ec9a"
   }
 }

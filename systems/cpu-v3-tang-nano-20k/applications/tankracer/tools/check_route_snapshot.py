@@ -54,11 +54,12 @@ def check(snapshot, output):
     constants = artifact.files["tankracer-static-assets/tankracer_static.rs"].decode("utf-8")
     policy = int(re.search(r"pub const TANKRACER_POLICY\s*:\s*u16\s*=\s*(\d+)", constants)[1])
     reuse = int(re.search(r"pub const TANKRACER_REUSE\s*:\s*u16\s*=\s*(\d+)", constants)[1])
+    prepared = int(re.search(r"pub const TANKRACER_PREPARED\s*:\s*u16\s*=\s*(\d+)", constants)[1])
     environment.update(PYTHONPATH=str(common), PYTHONDONTWRITEBYTECODE="1",
                        TANKRACER_MAP_INPUT=str(recovered[before["map_sha256"]]),
                        TANKRACER_CAMERA_INPUT=str(recovered[before["camera_sha256"]]),
-                       TANKRACER_POLICY={0: "full", 1: "cull", 2: "lod"}[policy],
-                       TANKRACER_RECORDING="reuse" if reuse else "always",
+                       TANKRACER_POLICY={0: "full", 1: "cull"}[policy],
+                       TANKRACER_RECORDING="prepared" if prepared else ("reuse" if reuse else "always"),
                        TANKRACER_CANDIDATES=before.get("candidate_source", "clusters"))
     def produce(name, with_route):
         destination = output / name

@@ -65,7 +65,7 @@ def analyse(scene, route, corridor_world=24, candidate_domain=None):
         shift = scene.get('billboard_position_shift', scene.get('position_shift', 10)) if billboard else scene.get('position_shift', 10)
         step = (1 << shift)/65536
         shape = []
-        for geometry in [group, *[group[k] for k in ('lod', 'bounds_geometry') if k in group]]:
+        for geometry in [group, *[group[k] for k in ('bounds_geometry',) if k in group]]:
             for v in geometry['vertices']:
                 x, z = ((v[k]-origin[k])*scale for k in (0, 2))
                 if billboard and scene.get('billboard_exact_anchor', False):

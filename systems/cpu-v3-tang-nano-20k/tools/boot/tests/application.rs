@@ -60,6 +60,7 @@ fn list_help_and_invalid_requests_work_without_a_cargo_or_python_process() {
         ],
         vec!["build", "game-bloxorz", "--scene", "full"],
         vec!["build", "bench-gpu", "--scene", "invalid"],
+        vec!["build", "bench-tankracer-static", "--policy", "lod"],
         vec!["build", "default"],
         vec!["build", "demo-showcase", "--page", "7"],
         vec!["build", "demo-showcase", "--frames", "65536"],

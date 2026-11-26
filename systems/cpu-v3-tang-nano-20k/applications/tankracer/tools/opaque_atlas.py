@@ -119,14 +119,13 @@ def build(source, destination, side=1024):
             if material.get('blend') or not material.get('texture'):
                 continue
             region = placed[material['texture']]
-            for geometry in [group, *([group['lod']] if isinstance(group.get('lod'), dict) else [])]:
-                at = 4 if group.get('billboard') else 3
-                for vertex in geometry['vertices']:
-                    for axis, origin in enumerate((region['x'], region['y'])):
-                        uv = vertex[at + axis]
-                        if not 0 <= uv <= 1:
-                            raise ValueError('Source vertex UV is outside the normalized domain')
-                        vertex[at + axis] = (origin + region['gutter'] + uv * region['size']) / side
+            at = 4 if group.get('billboard') else 3
+            for vertex in group['vertices']:
+                for axis, origin in enumerate((region['x'], region['y'])):
+                    uv = vertex[at + axis]
+                    if not 0 <= uv <= 1:
+                        raise ValueError('Source vertex UV is outside the normalized domain')
+                    vertex[at + axis] = (origin + region['gutter'] + uv * region['size']) / side
         for material in result['materials']:
             if not material.get('blend'):
                 if not material.get('texture'):

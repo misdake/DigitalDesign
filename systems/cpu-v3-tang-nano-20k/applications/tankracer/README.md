@@ -24,19 +24,17 @@ geometry and the replay camera positions. Camera directions keep their basis.
 | --- | --- |
 | `version` | `1` |
 | `origin`, `scale` | Optional source-world translation and positive uniform render scale. Defaults to `[0,0,0]` and `0.125`. |
-| `far`, `lod_distance` | Render-unit depth and LOD threshold. Defaults to `110` and `20`. |
+| `far` | Projection depth limit in render units. Defaults to `110`. |
 | `display_distance` | Conservative selection depth in render units, including each group's radius. Defaults to `far`. ENGLAND exports `25`, corresponding to the source's 200 world units; projection remains `far=110`. |
 | `position_shift` | Shared position lattice, defaults to `10` or 1/64 render unit. Each meshlet retains its own origin. |
 | `billboard_position_shift` | Optional billboard position lattice, defaults to `position_shift`; integer `0..31`. |
 | `billboard_exact_anchor` | Optional boolean, defaults to `false`. Vertical billboards keep their common X/Z center line in full F16 origins with zero X/Z deltas; Y retains the absolute billboard lattice. |
 | `materials` | Indexed entries with optional `texture`, `rgba`, `mipmaps`, `clamp`, `blend`, and RGBA byte `tint`. Textures are square powers of two. Omitting the texture uses RGB vertices. `vertex_color: true` retains RGB geometry while supplying a shared texture binding. `atlas_grid_log2: 0..3` selects a fixed grid with full mips and clamp. |
-| `groups` | Spatial and material runs with `material`, `vertices`, `triangles`, and optional `name`, `lod`, `billboard` and `bounds_geometry`. |
+| `groups` | Spatial and material runs with `material`, `vertices`, `triangles`, and optional `name`, `billboard` and `bounds_geometry`. |
 
 Triangles are triples of zero-based vertex indices. Geometry uses the SDK's
 ordinary native culling contract. Supply both windings for a double-sided
-mesh. A group can carry a second geometry in `lod` with its own vertices and
-triangles. Preserve shared boundary positions and topology across exported
-LOD groups. The packer snaps all groups to the common lattice and rejects a
+mesh. The packer snaps all groups to the common lattice and rejects a
 meshlet whose local deltas exceed their native width.
 `bounds_geometry` supplies additional conservative bounds using the same vertex
 format. Its geometry is included in culling and sort bounds but is not submitted.
@@ -69,8 +67,8 @@ live in an asset; the CPU reads only the current 48-byte view.
 The culling kernels borrow matrix rows and group bounds; their fixed-point dot
 products read the existing fields directly throughout the candidate loop.
 
-Each group occupies 26 bytes: three signed Q9.7 center components, three unsigned
-Q9.7 extents, an unsigned Q9.7 radius, fine and coarse first/count pairs, a material
+Each group occupies 22 bytes: three signed Q9.7 center components, three unsigned
+Q9.7 extents, an unsigned Q9.7 radius, one meshlet first/count pair, a material
 with billboard bit 15, and the original stable group ID. Bounds round outward;
 the packer rejects unrepresentable ranges. Native geometry keeps its original
 order. Opaque selections sort by first meshlet and coalesce adjacent compatible
@@ -85,27 +83,14 @@ An identical complete member sequence permits checking the previous order agains
 new depths and the stable-ID tie break. An ordered sequence reuses those indices.
 Otherwise direction ranks seed an exact repair, as described below. The first
 frame and ordinals beyond the previous count never read uninitialized records.
-Visibility, LOD and command recording decisions are still evaluated each frame.
+Visibility and command recording decisions are still evaluated each frame.
 Radius-based display screening and box-based side/near checks keep viewing range
 independent of the projection/depth encoding.
-
-ENGLAND's offline producer supplies two terrain levels. It locks every group
-boundary and reduces interior vertices only on gently sloping opaque surfaces
-with a single XZ height layer. Edge collapse preserves winding and manifold
-connectivity; every original position remains within 0.25 source world units
-of the reduced surface. Fine data and materials stay intact. The far mesh reuses
-source UV samples and textures, allowing a small change in distant texture detail.
-The nearest conservative group depth must exceed 12 render units (96 source
-world units) before selecting the coarse range. Boundaries use the same lattice
-in either level. The exporter provides `--fine-only` for a full-detail reference.
-The native pack stores all fine ranges contiguously and appends the coarse
-ranges, retaining contiguous material runs when groups use their fine level.
 
 | `--policy` | Selection |
 | --- | --- |
 | `full` | All groups at full geometry |
-| `cull` | Full geometry with conservative section frustum checks |
-| `lod` | Frustum checks and supplied reduced geometry beyond the threshold |
+| `cull` | Full geometry with conservative section frustum checks (default) |
 
 The frame loop uses two command buffers. The CPU records the next view while
 the GPU executes the previous one. Each buffer owns its push snapshots; submission
@@ -136,7 +121,7 @@ uses ClampToEdge over its complete original image domain.
 The converter reads decoded original SUR data and builds geometry and UVs
 forward from the structured source world. It first reproduces the complete
 reference ZIP, then checks source-image pixels, protected edges, source UVs,
-positions, indices, billboard anchors, LOD, sort units and material states.
+positions, indices, billboard anchors, sort units and material states.
 Group names and `source_group_ordinal` preserve source identity; the generated
 material mapping is exported separately. `source_alpha` on a merged material
 labels its first source image; its `blend` field defines the runtime state.
@@ -247,7 +232,7 @@ pixel extraction remain available to inspect that content-specific tradeoff.
 The bordered archive and its producer remain the default and are not overwritten.
 `tools/grid_atlas.py` builds an independent borderless candidate from the same
 retained source archive. Its two-bit `atlas_grid_log2` field selects1,2,4 or8
-cells per axis. The matching GPU gateware limits LOD and clamps both filtering
+cells per axis. The matching GPU gateware limits texture mip selection and clamps both filtering
 planes inside each selected cell; older gateware does not implement this field.
 
 ```powershell
@@ -275,7 +260,7 @@ The world registers the mesh directory and its unlit material bindings once.
 The bank stores the fixed material fields and records through the normal GPU
 World/View encoders. Each frame CB reserves one View packet plus one World
 slot per unique binding, with the Target after this prefix. Replaying a fixed
-ordered list updates View and Target only. Frustum selection, LOD and
+ordered list updates View and Target only. Frustum selection and
 transparent ordering still run before deciding whether the list can be reused.
 
 See [Reusable unlit draw lists](../../docs/gpu-api-storage.md#reusable-unlit-draw-lists)
@@ -294,22 +279,21 @@ without additional material SETs, full-render fences or restoration segments.
 
 The producer orders disjoint opaque groups by their authored route-ring order.
 Potentially intersecting bounds retain native order, with padding for position
-and depth quantization. Fine draws precede actual reduced-mesh draws, preserving
-the native ordering at LOD transitions. Without a route, native group order is
-retained. Visibility, display distance and transparent depth sorting keep their
+and depth quantization. Without a route, native group order is retained.
+Visibility, display distance and transparent depth sorting keep their
 existing tests; the command ring does not draw rejected candidate groups.
 
 Each command page reserves 8 KiB of commands and 32 KiB of push storage. Offline
-packing bounds both LOD streams to 1,960 instructions and 256 World packets per
+packing bounds the stream to 1,960 instructions and 256 World packets per
 page. A larger individual group is rejected for this recording option. Startup
-records explicit group endpoints once. Groups without reduced geometry reuse
-their fine-ring entry. Mesh directory views are temporary and restricted to the
-group being recorded; the immutable external geometry remains allocated.
+records one start/end pair per group once. ENGLAND uses three pages, reserving
+120 KiB of external command/push storage. Mesh directory views are temporary
+and restricted to the group being recorded; external geometry remains allocated.
 
 Each frame records one real opaque group in its dynamic prefix to establish the
 checked Target/View state. Adjacent selected command ranges then merge into
 safe slices, including the two sides of a wrapped ring selection. Visibility
-holes, page boundaries, and the fine/coarse split can require additional slices.
+holes and page boundaries can require additional slices.
 Up to 30 slices leave room for dynamic prefix and tail in one 32-entry list. Excess
 opaque groups and the unchanged transparent order use the original UnlitBank
 writer in the tail. If that tail exceeds a list segment's 8-KiB limit, playback
@@ -371,14 +355,14 @@ The ring tables are loaded, including in the explicit clusters comparison build;
 the current compiler retains their resource references. JSON sidecars are
 inspection data and do not add another runtime copy.
 
-Each record preserves the compact center/extents, radius, fine/coarse meshlet
-index/count pairs, material/billboard key and stable group ID. Its last three
+Each record preserves the compact center/extents, radius, meshlet
+index/count pairs, material/billboard key and stable group ID. Its last five
 words are reserved. Intervals use X/Z AABBs rather than the radius field.
 The segment directory stores cyclic start/count, X/Z origin and delta, and a
 reciprocal-length hint. Meshlet indices remain logical geometry spans. Each
 chunk encloses both group boxes and visibility spheres; it uses the existing
 coarse classifier before reading metadata into a shared 512-word scratch.
-Opaque and blended groups then follow their existing visibility/LOD tests,
+Opaque and blended groups then follow their existing visibility tests,
 opaque coalescing and depth/stable-ID transparent sort.
 
 The renderer recovers camera X/Z from the rigid view. A baked X/Z grid selects
@@ -425,9 +409,9 @@ The candidate path does not alter the draw binding or matrix contract.
 
 Opaque selection marks a meshlet-first bitset and streams its baked span table
 in ascending order. Nonempty buckets reuse the existing group scratch. Adjacent
-compatible spans coalesce during emission. ENGLAND uses 166 bytes for the bitset
-and 7,968 asset bytes for the sparse table; selection needs no per-frame opaque
-sort. Fine/coarse selection, transparent depth order and the UnlitBank replay
+compatible spans coalesce during emission. ENGLAND uses a bitset and
+a sparse immutable span table; selection needs no per-frame opaque
+sort. Transparent depth order and the UnlitBank replay
 path retain their existing behavior.
 
 Coarse classification shares projected centers and extents between rejection
@@ -467,7 +451,7 @@ python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_route_
 ## Static visibility and transparent-order priors
 
 The renderer keeps the route ring as the coarse candidate domain and individual
-groups as visibility/LOD units. Immutable opaque command pages reuse native
+groups as visibility units. Immutable opaque command pages reuse native
 World packets, while the transparent tail keeps the established depth/stable-ID
 order. Static and slowly changing views still benefit from the default UnlitBank
 View/Target patch path; Prepared mode targets changing selections.
@@ -668,7 +652,7 @@ rounded to RGB565 (`0x7cf6`).
 
 Use these views to assess composition, geometry, occlusion, billboard continuity
 and transparent edges. Native RGB565/RGBA4444, fixed-point interpolation and the
-chosen distant LOD have explicit quality tradeoffs. Native byte/depth/state
+native vertex quantization have explicit quality tradeoffs. Native byte/depth/state
 regressions and visual Rust reference checks remain separate evidence.
 
 ## Physics arithmetic

@@ -21,7 +21,7 @@ class RuntimeRingChunks(unittest.TestCase):
             # Deliberately let some group spheres extend beyond their box corners.
             radius = math.ceil(math.hypot(*extent)) + 80
             metadata.extend([*(v & 65535 for v in center), *extent, radius,
-                             identity, 1, identity, 1, 0, identity, 0, 0, 0])
+                             identity, 1, 0, identity, 0, 0, 0, 0, 0])
         chunks = ring_chunks(metadata, 26)
         self.assertEqual(len(chunks), 4 * 16)
         seen = []
@@ -40,11 +40,11 @@ class RuntimeRingChunks(unittest.TestCase):
                     self.assertLessEqual(center[axis]-extent[axis], point[axis]-size[axis])
                     self.assertGreaterEqual(center[axis]+extent[axis], point[axis]+size[axis])
                 self.assertGreaterEqual(radius, math.dist(center, point)+record[6]/128)
-                seen.append(record[12])
+                seen.append(record[10])
         self.assertEqual(seen, list(range(81)))
 
     def test_last_partial_chunk_and_empty_table(self):
-        row = [0, 0, 0, 128, 256, 384, 512, 0, 1, 0, 1, 0, 0, 0, 0, 0]
+        row = [0, 0, 0, 128, 256, 384, 512, 0, 1, 0, 0, 0, 0, 0, 0, 0]
         chunks = ring_chunks(row * 697, 26)
         self.assertEqual(len(chunks), 27 * 16)
         self.assertEqual(chunks[-2:], [676, 21])

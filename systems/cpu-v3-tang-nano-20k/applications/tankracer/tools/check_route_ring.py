@@ -49,7 +49,7 @@ class RingChecks(unittest.TestCase):
         records = []
         for identity, (x, z, extent) in enumerate([(10, 0, 1), (90, 10, 1), (200, 100, 180)]):
             records.extend([round(x * 128), 0, round(z * 128), round(extent * 128), 128,
-                            round(extent * 128), 32768, identity, 1, identity + 10, 1, 0, identity])
+                            round(extent * 128), 32768, identity, 1, 0, identity])
         metadata, directory, info = build_ring(route, records, 3, [0, 0, 0], 1, 20, 4)
         self.assertEqual(len(metadata), 3 * 16)
         self.assertEqual(len(directory), 3 * 12)
@@ -65,7 +65,7 @@ class RingChecks(unittest.TestCase):
         packed = []
         for identity in range(3):
             packed.extend([identity * 128, 0, 0, 128, 128, 128, 256,
-                           identity, 1, identity, 1, identity | 32768, identity])
+                           identity, 1, identity | 32768, identity])
         old, _, old_info = build_ring(route, packed, 1, [0, 0, 0], 1, 20)
         all_groups, _, info = build_ring(route, packed, 1, [0, 0, 0], 1, 20,
                                        include_blended=True)
@@ -76,7 +76,7 @@ class RingChecks(unittest.TestCase):
         self.assertEqual(info['transparent_stable_id_range'], [1, 3])
         self.assertEqual(set(info['order']), {0, 1, 2})
         for index, identity in enumerate(info['order']):
-            self.assertEqual(all_groups[index*16:index*16+13], packed[identity*13:identity*13+13])
+            self.assertEqual(all_groups[index*16:index*16+11], packed[identity*11:identity*11+11])
 
     def test_box_bound_covers_any_point_pair_in_camera_corridor(self):
         rng = random.Random(991)
@@ -101,12 +101,12 @@ def audit_real(scene_path, directory, reference=None):
     route = json.loads((directory / "route.json").read_bytes())["route"]
     raw = (directory / "map_group_data.bin").read_bytes()
     words = struct.unpack(f"<{len(raw) // 2}H", raw)
-    packed = {words[i + 12]: list(words[i:i + 13]) for i in range(0, len(words), 13)}
+    packed = {words[i + 10]: list(words[i:i + 11]) for i in range(0, len(words), 11)}
     metadata_raw = (directory / "map_ring_group_data.bin").read_bytes()
     metadata = struct.unpack(f"<{len(metadata_raw) // 2}H", metadata_raw)
     assert sorted(info["order"]) == list(range(info["group_count"]))
     for index, identity in enumerate(info["order"]):
-        assert list(metadata[index * 16:index * 16 + 13]) == packed[identity]
+        assert list(metadata[index * 16:index * 16 + 11]) == packed[identity]
     names = {group["name"]: i for i, group in enumerate(assets["groups"])}
     boxes, original = {}, {}
     for index, group in enumerate(source["groups"]):

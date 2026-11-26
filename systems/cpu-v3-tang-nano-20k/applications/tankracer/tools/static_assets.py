@@ -22,8 +22,9 @@ from mesh_partition import partition
 from mesh_source import PositionEncoding, Vertex, encode_mesh
 from native_asset_source import Sources
 
-POLICIES = {"full": 0, "cull": 1, "lod": 2}
-GROUP_WORDS = 13
+POLICIES = {"full": 0, "cull": 1}
+GROUP_WORDS = 11
+SOURCE_WORDS = 18
 CLUSTER_WORDS = 16
 CLUSTER_GROUPS = 32
 MAX_MESHLETS = 5460
@@ -237,8 +238,8 @@ def group_words(points, padding):
 def cluster_groups(rows):
     """Keep native ranges and stable IDs; stream compact records by spatial cell."""
     cells = {}
-    for stable_id, at in enumerate(range(0, len(rows), 20)):
-        words = rows[at:at + 20]
+    for stable_id, at in enumerate(range(0, len(rows), SOURCE_WORDS)):
+        words = rows[at:at + SOURCE_WORDS]
         fixed = struct.unpack('<7i', struct.pack('<14H', *words[:14]))
         center = [round(value / 512) for value in fixed[:3]]
         if any(not -32768 <= value <= 32767 for value in center):
@@ -249,10 +250,10 @@ def cluster_groups(rows):
                            for value, snapped in zip(fixed[:3], center)))) / 512)
         if any(not 0 <= value <= 65535 for value in [*extent, radius]):
             raise ValueError('group extent exceeds unsigned Q9.7 range')
-        if words[18] >= 32768 or words[19] not in (0, 1):
+        if words[16] >= 32768 or words[17] not in (0, 1):
             raise ValueError('group material or billboard flag exceeds compact record')
         record = [*(value & 65535 for value in center), *extent, radius,
-                  *words[14:18], words[18] | words[19] << 15, stable_id]
+                  *words[14:16], words[16] | words[17] << 15, stable_id]
         cell = center[0] // 2048, center[2] // 2048  # 16 render units.
         cells.setdefault(cell, []).append((record, center, extent))
     packed, clusters, counts = [], [], []
@@ -303,34 +304,32 @@ def opaque_spans(rows, opaque_count, meshlet_count):
     spans = [0] * (((meshlet_count + 15) // 16) * 16 * 3)
     owners = {}
     for identity in range(opaque_count):
-        at = identity * 20
-        for offset in (14, 16):
-            first, count = rows[at + offset:at + offset + 2]
-            if not count or first + count > meshlet_count:
-                raise ValueError('opaque span exceeds the meshlet directory')
-            record = [first, count, rows[at + 18]]
-            previous = spans[first * 3:first * 3 + 3]
-            if first in owners and (owners[first] != identity or previous != record):
-                raise ValueError('opaque spans need unique first meshlets')
-            owners[first] = identity
-            spans[first * 3:first * 3 + 3] = record
+        at = identity * SOURCE_WORDS
+        first, count = rows[at + 14:at + 16]
+        if not count or first + count > meshlet_count:
+            raise ValueError('opaque span exceeds the meshlet directory')
+        record = [first, count, rows[at + 16]]
+        previous = spans[first * 3:first * 3 + 3]
+        if first in owners and (owners[first] != identity or previous != record):
+            raise ValueError('opaque spans need unique first meshlets')
+        owners[first] = identity
+        spans[first * 3:first * 3 + 3] = record
     return spans
 
 
 def prepared_ring(rows, opaque_count, ring, position_shift=10, strict=True):
-    """Two matching command rings (fine/coarse), in authored route order."""
+    """One immutable command ring in authored route order."""
     order = list(range(opaque_count)) if ring is None else [
-        ring[0][at + 12] for at in range(0, len(ring[0]), route_ring.RING_WORDS)
-        if ring[0][at + 12] < opaque_count]
+        ring[0][at + 10] for at in range(0, len(ring[0]), route_ring.RING_WORDS)
+        if ring[0][at + 10] < opaque_count]
     if sorted(order) != list(range(opaque_count)):
         raise ValueError('opaque command ring must contain each opaque group once')
     # Reorder disjoint groups spatially. Potentially intersecting quantized
-    # surfaces retain native order, including LessEqual depth ties. Fine draws
-    # precede coarse draws at runtime, as in the native meshlet directory.
+    # surfaces retain native order, including LessEqual depth ties.
     margin = 2 * (1 << position_shift) + 256
     bounds = []
     for identity in range(opaque_count):
-        values = struct.unpack('<7i', struct.pack('<14H', *rows[identity * 20:identity * 20 + 14]))
+        values = struct.unpack('<7i', struct.pack('<14H', *rows[identity * SOURCE_WORDS:identity * SOURCE_WORDS + 14]))
         bounds.append([(values[axis] - values[axis + 4] - margin,
                         values[axis] + values[axis + 4] + margin) for axis in range(3)])
     rank = {identity: ordinal for ordinal, identity in enumerate(order)}
@@ -352,24 +351,24 @@ def prepared_ring(rows, opaque_count, ring, position_shift=10, strict=True):
             if not incoming[after]:
                 heapq.heappush(ready, (rank[after], after))
     directory, index, starts = [], [0] * max(1, opaque_count), [0]
-    commands = [0, 0]
+    commands = 0
     groups = 0
     for ordinal, identity in enumerate(order):
-        at = identity * 20
-        spans = rows[at + 14:at + 18]
-        cost = [4 + 3 * spans[1], 4 + 3 * spans[3]]
-        if strict and max(cost) > 1960:
+        at = identity * SOURCE_WORDS
+        first, count = rows[at + 14:at + 16]
+        cost = 4 + 3 * count
+        if strict and cost > 1960:
             raise ValueError('one opaque group exceeds the prepared command segment budget')
-        if groups == 256 or max(a + b for a, b in zip(commands, cost)) > 1960:
+        if groups == 256 or commands + cost > 1960:
             starts.append(ordinal)
-            commands, groups = [0, 0], 0
+            commands, groups = 0, 0
         page = len(starts) - 1
-        directory.extend([*spans, rows[at + 18], identity, page])
+        directory.extend([first, count, rows[at + 16], identity, page])
         index[identity] = ordinal
-        commands = [a + b for a, b in zip(commands, cost)]
+        commands += cost
         groups += 1
     starts.append(opaque_count)
-    return directory or [0] * 7, index, starts
+    return directory or [0] * 5, index, starts
 
 
 def build(output, route_path=None):
@@ -402,13 +401,12 @@ def build(output, route_path=None):
         raise ValueError("billboard_exact_anchor must be a bool")
     far = vector([source.get("far", 110)], 1, "render far")[0]
     display = vector([source.get("display_distance", far)], 1, "display distance")[0]
-    lod = vector([source.get("lod_distance", 20)], 1, "LOD distance")[0]
-    if scale <= 0 or type(shift) is not int or not 0 <= shift <= 31 or not 0 < lod < far < 200:
-        raise ValueError("expected positive scale, position_shift in 0..31 and 0 < lod_distance < far < 200")
+    if scale <= 0 or type(shift) is not int or not 0 <= shift <= 31 or not 0 < far < 200:
+        raise ValueError("expected positive scale, position_shift in 0..31 and 0 < far < 200")
     if not 0 < display <= far:
         raise ValueError('display_distance must be positive and within the projection far plane')
-    policy = POLICIES[os.getenv("TANKRACER_POLICY", "lod")]
-    records, coarse_records, coarse_ranges, rows, inventory = [], [], [], [], []
+    policy = POLICIES[os.getenv("TANKRACER_POLICY", "cull")]
+    records, rows, inventory = [], [], []
     opaque_count = 0
     queued = {False: [], True: []}
     for group in source["groups"]:
@@ -428,7 +426,7 @@ def build(output, route_path=None):
             if billboard and (not textured or not blended):
                 raise ValueError("vertical billboard needs a textured blended material")
             group_shift = billboard_shift if billboard else shift
-            fine, points, triangles = read_geometry(
+            geometry, points, triangles = read_geometry(
                 group, textured, billboard, origin, scale, group_shift, exact_anchor,
             )
             if group.get("bounds_geometry") is not None:
@@ -437,29 +435,11 @@ def build(output, route_path=None):
                 )
                 points.extend(original_bounds)
             first = len(records)
-            records.extend(fine)
-            coarse = None
-            reduced_triangles = 0
-            if policy == 2 and group.get("lod") is not None:
-                coarse, more, reduced_triangles = read_geometry(
-                    group["lod"], textured, billboard, origin, scale, group_shift, exact_anchor,
-                )
-                points.extend(more)
-            low_first = first
-            if coarse:
-                low_first = len(coarse_records)
-                coarse_ranges.append((len(rows) + 16, low_first))
-                coarse_records.extend(coarse)
+            records.extend(geometry)
             row = group_words(points, (1 << group_shift) / 65536)
-            rows.extend((*row, first, len(fine), low_first, len(coarse or fine), mat, int(billboard)))
+            rows.extend((*row, first, len(geometry), mat, int(billboard)))
             inventory.append(dict(name=group.get("name"), material=mat, billboard=billboard,
-                                  fine_triangles=triangles, fine_meshlets=len(fine),
-                                  reduced_triangles=reduced_triangles,
-                                  reduced_meshlets=len(coarse or ())))
-    # Keep fine material runs contiguous; switching LOD only selects another span.
-    for at, first in coarse_ranges:
-        rows[at] = len(records) + first
-    records.extend(coarse_records)
+                                  triangles=triangles, meshlets=len(geometry)))
     spans = opaque_spans(rows, opaque_count, len(records))
     assets.bytes("MAP_OPAQUE_SPANS", struct.pack(f"<{len(spans)}H", *spans))
     packed, clusters, cluster_counts = cluster_groups(rows)
@@ -532,10 +512,9 @@ def build(output, route_path=None):
         MAP_SHARED_OPAQUE_STATE=int(len({(m.get('texture'), m.get('clamp', False),
                                            m.get('rgba', m.get('blend', False)), m.get('mipmaps', False), m.get('atlas_grid_log2', 0))
                                           for m in materials if not m.get('blend', False)}) == 1),
-        OPAQUE_MASK_WORDS=(max(1, (opaque_count * 2 + 15) // 16) if recording == 'prepared'
+        OPAQUE_MASK_WORDS=(max(1, (opaque_count + 15) // 16) if recording == 'prepared'
                            else (len(records) + 15) // 16),
-        OPAQUE_DRAW_WORDS=5 if recording == 'prepared' else 3,
-        MAP_PREPARED_RING_PAGES=len(command_pages) - 1,
+        OPAQUE_DRAW_WORDS=4 if recording == 'prepared' else 3,
         TANKRACER_POLICY=policy, GROUP_COUNT=len(inventory), GROUP_WORDS=GROUP_WORDS,
         GROUP_SCRATCH_WORDS=scratch_words, OPAQUE_COUNT=opaque_count,
         CLUSTER_COUNT=len(cluster_counts), CLUSTER_WORDS=CLUSTER_WORDS,
@@ -544,13 +523,12 @@ def build(output, route_path=None):
         RING_GROUP_COUNT=0 if ring is None else ring[2]["group_count"],
         MAP_FAR_LOW=q16(far)[0], MAP_FAR_HIGH=q16(far)[1],
         MAP_DISPLAY_LOW=q16(display)[0], MAP_DISPLAY_HIGH=q16(display)[1],
-        MAP_LOD_LOW=q16(lod)[0], MAP_LOD_HIGH=q16(lod)[1],
     )
     for name, value in constants.items():
         extra += f"pub const {name}:u16={value};\n"
-    extra += f"pub const MAP_PREPARED_PAGES:usize={(len(command_pages) - 1) * 2};\n"
+    extra += f"pub const MAP_PREPARED_PAGES:usize={len(command_pages) - 1};\n"
     extra += word_table('MAP_OPAQUE_RING_INDEX', command_index)
-    extra += word_table('MAP_OPAQUE_RING_PAGE', command_ring[6::7] if recording == 'prepared' else [0])
+    extra += word_table('MAP_OPAQUE_RING_PAGE', command_ring[4::5] if recording == 'prepared' else [0])
     extra += word_table('MAP_PREPARED_PAGE_FIRST', command_pages)
     extra += word_table('MAP_ALPHA_PITCH_THRESHOLDS', pitch_thresholds)
     extra += word_table('MAP_PVS_QUADRANT', [w for i in range(view_pvs.YAW_SECTORS//4+1)

@@ -1,6 +1,6 @@
 {
   "format": "tankracer.opaque-atlas.v1",
-  "source_sha256": "a258e6b5ac9d6472d72e616e11b2ebe5653bae34da99b6f8e368207842c6952a",
+  "source_sha256": "803e6bcd4073316b91f6221fb5ead0bd785d0c06dba8cbdcef73ffb8f7559659",
   "side": 1024,
   "bytes": 2798080,
   "source_count": 38,
@@ -349,15 +349,15 @@
     }
   },
   "sampling_contract": "Source texels are isolated through the listed mip levels; deeper atlas levels merge source cells. Validate sampled footprints and rendered quality for the intended content.",
-  "archive_sha256": "12b513adf70dcfc1342567e020d1320d73310ec0ebffa787efbb5254c1f13f55",
+  "archive_sha256": "4d27f01cbd4b7268da06c470660fe2b190a19809b37e88875803c540eac62570",
   "producer": {
     "file": "systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/opaque_atlas.py",
-    "sha256": "5b9210311f844b9a04d12addee90da1943c870198a82678dc2b18df70a488ade"
+    "sha256": "9affe8fbc190fe33fe145b7edcaa0bc094e2ceafcf9456b4b24326060e197736"
   },
   "retained_sources": {
-    "scene.zip": "14d9936f245ad71ce66b1fd299d8d2758b6e1362e4eee6e431fb94bb9445df2d",
-    "scene-alpha-pages.zip": "3d65ab214cb632eec1709d0e7f0638e29eab2aa4c9b74ad4d116e59a0d955064",
-    "scene-compact.zip": "a258e6b5ac9d6472d72e616e11b2ebe5653bae34da99b6f8e368207842c6952a"
+    "scene.zip": "78308d5815eb2bddde69d7e5799192e766080a49fecf1b8bff143842f564ec9a",
+    "scene-alpha-pages.zip": "fe643fcde61c4af583dad28b04ccf93fd0555556405d37582c0989c1ee6d6d2e",
+    "scene-compact.zip": "803e6bcd4073316b91f6221fb5ead0bd785d0c06dba8cbdcef73ffb8f7559659"
   },
   "adopted_content": "ENGLAND static playback",
   "quality_contract": "Original geometry, depth and transparent inputs are preserved. UV quantization and coarse-mip source-colour mixing are accepted for this content.",

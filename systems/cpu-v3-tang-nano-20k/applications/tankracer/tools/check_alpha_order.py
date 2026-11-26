@@ -13,7 +13,7 @@ class Ranks(unittest.TestCase):
     def test_complete_permutations_preserve_depth_and_stable_ids(self):
         rows = []
         for i, xyz in enumerate(((0, 0, 0), (0, 0, 0), (-20, 7, 13), (9, -4, -7))):
-            rows.extend([*(v & 65535 for v in xyz), 1, 1, 1, 2, i, 1, i, 1, 0, i])
+            rows.extend([*(v & 65535 for v in xyz), 1, 1, 1, 2, i, 1, 0, i])
         payload, sectors, thresholds = build(rows, 1)
         ranks = struct.unpack(f'<{len(payload)//2}H', payload)
         self.assertEqual(len(thresholds), (len(PITCH_DEGREES)-1)*2)
@@ -28,7 +28,7 @@ class Ranks(unittest.TestCase):
         self.assertLess(row[0], row[1])
 
     def test_missing_or_duplicate_identity_is_rejected(self):
-        row = [0]*13
+        row = [0]*11
         with self.assertRaisesRegex(ValueError, 'stable IDs'):
             build(row+row, 0)
 
