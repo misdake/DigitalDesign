@@ -84,3 +84,37 @@ pub fn prefix_config(world: &SinglePlayer, id: TankId) -> [i32; 6] {
 pub fn pickup_tuning(world: &SinglePlayer, id: TankId) -> crate::vehicle_scene::pickup::Tuning {
     world.profiles[id.0].pickup
 }
+pub fn projectile_target(
+    state: &mut crate::projectile::State,
+    world: &SinglePlayer,
+) -> Result<(), i32> {
+    state.select_target(&world.vehicles)
+}
+pub fn tank_hit_unown(car: &mut crate::vehicle_startup::Player, part: usize) {
+    car.model.parts[part].as_mut().unwrap().owned = None;
+}
+pub fn explosion_contact(
+    state: &mut crate::explosion::State,
+    car: &crate::vehicle_startup::Player,
+    contact: crate::explosion::Contact,
+    kind: crate::projectile::Kind,
+    seed: &mut u32,
+) -> Result<(), i32> {
+    state.contact(car, contact, kind, seed)
+}
+pub fn explosion_tick(
+    state: &mut crate::explosion::State,
+    origin: [i32; 3],
+    dt: i32,
+    seed: &mut u32,
+    resources: crate::explosion::Resources,
+    owner: Option<crate::pose::Pose>,
+) -> Result<bool, i32> {
+    crate::explosion::tick_with(state, origin, dt, seed, resources, owner, |state, _| {
+        if state.band != u32::MAX || state.ring != u32::MAX {
+            Err(-5)
+        } else {
+            Ok(())
+        }
+    })
+}

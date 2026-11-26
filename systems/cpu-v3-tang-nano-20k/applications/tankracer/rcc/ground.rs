@@ -50,7 +50,7 @@ pub struct World {
 fn n(v: i16) -> fix32 {
     integer::from_i16(v)
 }
-fn zero_hit() -> terrain::Hit {
+pub fn zero_hit() -> terrain::Hit {
     terrain::Hit {
         height: n(0),
         node: n(-1),
@@ -157,6 +157,17 @@ impl World {
         let saved = read_dseg_page(3);
         self.bind(x, z);
         let result = self.terrain.height(x, z);
+        if read_dseg_page(3) != saved {
+            unsafe {
+                write_dseg_page(3, saved);
+            }
+        }
+        result
+    }
+    pub fn query(&mut self, x: fix32, z: fix32, out: &mut terrain::Hit) -> u16 {
+        let saved = read_dseg_page(3);
+        self.bind(x, z);
+        let result = self.terrain.query(x, z, out);
         if read_dseg_page(3) != saved {
             unsafe {
                 write_dseg_page(3, saved);

@@ -8,8 +8,11 @@ pub struct Store {
     // fragment motion=32, attached bindings=64, active fragments=128.
     pub records: Array<u16>,
     pub object_count: u16,
+    pub object_capacity: u16,
     pub colliders: Array<u16>,
     pub collider_stride: u16,
+    pub fixed_count: u16,
+    pub dynamic_page: u16,
     pub generic_class: u16,
     pub obstacle_class: u16,
     pub limit: fix32,
@@ -18,6 +21,92 @@ pub struct Store {
     pub signs: ordered::List,
     pub enter: ordered::List,
     pub leave: ordered::List,
+}
+// Class allocation operates on the same identity, collision and lifetime owners.
+// Tick flags reserve two words per identity backing slot, including future growth.
+pub fn allocate_transient(
+    store: &mut Store,
+    world: &mut scene_world::World,
+    runtime: &mut scene_world::Runtime,
+    entity: fix32,
+) -> entities::Entry {
+    let class = entities::class(&store.identities, entity);
+    if class < n(0) {
+        return entities::Entry {
+            status: 1,
+            id: n(0),
+        };
+    }
+    let mut id = fix32::from_words(world.count, 0);
+    if store.free_objects.count != 0 {
+        store.free_objects.count -= 1;
+        id = attitude::get(store.free_objects.items, store.free_objects.count);
+    }
+    if store.object_count != world.count
+        || store.fixed_count != world.fixed_count
+        || store.dynamic_page != world.dynamic_page
+    {
+        return entities::Entry {
+            status: 1,
+            id: n(0),
+        };
+    }
+    if id.hi_bits() != 0 || id.lo_bits() > world.count {
+        return entities::Entry {
+            status: 4,
+            id: n(0),
+        };
+    }
+    let index = id.lo_bits();
+    if index >= store.object_capacity
+        || (index >= world.fixed_count && index - world.fixed_count >= world.dynamic_capacity)
+        || (index >= world.fixed_count && index - world.fixed_count >= scene_world::DYNAMIC_ROWS)
+    {
+        return entities::Entry {
+            status: 4,
+            id: n(0),
+        };
+    }
+    if index == world.count {
+        world.count += 1;
+        store.object_count += 1;
+    }
+    let collider: Buf<u16, 60> = Buf::new([0; 60]);
+    let properties: Buf<u16, 16> = Buf::new([0; 16]);
+    attitude::put(collider.as_array(), 0, entity);
+    attitude::put(properties.as_array(), 0, class);
+    if !scene_world::store_collider(world, index, collider.as_array())
+        || !scene_world::store_properties(world, index, properties.as_array())
+    {
+        return entities::Entry {
+            status: 4,
+            id: n(0),
+        };
+    }
+    let mut record = at(store.records, index * 8);
+    let mut i = 0u16;
+    while i < 8 {
+        record[i] = 0;
+        i += 1;
+    }
+    record[6u16] = 1;
+    record[7u16] = 3;
+    if entities::bind_handle(&store.identities, entity, 1, id) != 0 {
+        return entities::Entry {
+            status: 1,
+            id: n(0),
+        };
+    }
+    let capacity = attitude::get(store.identities.header, 0).lo_bits();
+    let mut flags = runtime.ticks.flags;
+    i = runtime.ticks.flag_count;
+    while i < capacity {
+        attitude::put(flags, i, n(0));
+        i += 1;
+    }
+    runtime.ticks.flag_count = capacity;
+    attitude::put(flags, entity.lo_bits(), n(0));
+    entities::Entry { status: 0, id: id }
 }
 fn n(value: i16) -> fix32 {
     integer::from_i16(value)
@@ -34,7 +123,7 @@ fn error(status: u16) -> fix32 {
 fn at(words: Array<u16>, offset: u16) -> Array<u16> {
     unsafe { words.as_ptr().add(offset as i16).as_u16_array() }
 }
-fn object(store: &Store, entity: fix32) -> fix32 {
+pub fn object(store: &Store, entity: fix32) -> fix32 {
     let kind = entities::handle_kind(&store.identities, entity);
     if kind == 0 || kind == 3 || kind == 4 {
         return n(-1);
@@ -143,8 +232,26 @@ fn base(
         // ordinary owner. The original slot.take precedes free-list writes.
         row[7u16] = 0;
         if flags & 1 != 0 && flags & 2 != 0 {
-            let collider_entity =
-                attitude::get(at(store.colliders, id.lo_bits() * store.collider_stride), 0);
+            let mut collider_entity = n(0);
+            if id.lo_bits() < store.fixed_count {
+                collider_entity =
+                    attitude::get(at(store.colliders, id.lo_bits() * store.collider_stride), 0);
+            } else {
+                let saved = read_dseg_page(3);
+                if saved != store.dynamic_page {
+                    unsafe {
+                        write_dseg_page(3, store.dynamic_page);
+                    }
+                }
+                let row = unsafe { Ptr::from_addr(0xc000).as_u16_array() };
+                collider_entity =
+                    attitude::get(at(row, (id.lo_bits() - store.fixed_count) * 76), 0);
+                if saved != store.dynamic_page {
+                    unsafe {
+                        write_dseg_page(3, saved);
+                    }
+                }
+            }
             retain(&mut runtime.ordinary, id);
             retain(&mut runtime.special, id);
             retain(&mut store.lap_objects, id);
@@ -214,7 +321,7 @@ fn obstacle_destroy(
     }
     parent_base(scene, store, runtime, entity, store.generic_class)
 }
-fn deactivate(
+pub fn deactivate(
     scene: &scene_query::Scene,
     store: &mut Store,
     runtime: &mut scene_world::Runtime,

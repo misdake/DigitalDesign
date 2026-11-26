@@ -23,6 +23,14 @@ checks candidates/class slots and runs connected Fall/Bounce contacts and motion
 [Collision and body arithmetic](/systems/cpu-v3-tang-nano-20k/applications/tankracer/collision.md)
 describes reflection, pair impulses, body springs, contact hulls and their module checks.
 
+[Weapon and explosion state](weapons.md) describes weapon construction, projectile launch,
+banked flight, targeting, reflection, trails, terrain marks, complete Concussion/Debris
+impact updates, complete Shell/Homing/Warp hits with live mesh damage and temporary
+effects, mine placement/arming/lifetime and complete
+mine contacts with vehicle impulses and electric effects,
+explosion animation, smoke, contact fragments and shared blast slots, with their reference snapshot checks
+and scene integration boundary.
+
 `bench-tankracer-fragments` qualifies authored auxiliary mesh activation,
 real-terrain contact, vertex/center updates and live class completion through normal asset loading; see
 [mutable mesh fragments](collision.md#mutable-mesh-fragments).

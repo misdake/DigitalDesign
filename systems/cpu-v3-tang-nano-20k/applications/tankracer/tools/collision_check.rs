@@ -155,78 +155,92 @@ status
     assert_eq!(cells.len(), 64 * 32768);
     let mut instructions = 0u64;
     let mut checked = 0usize;
+    let mut runs = 0usize;
+    let mut banked_world_cases = 0usize;
     for (index, case) in data["cases"]
         .as_array()
         .ok_or("collision cases")?
         .iter()
         .enumerate()
     {
-        let mut cpu = CpuV3Sim::default();
-        cpu.set_boot_window(&code.words);
-        let memory = cpu.physical_memory_mut();
-        if matches!(case["kind"].as_u64(), Some(27 | 31)) {
-            for (i, pair) in cells.chunks_exact(2).enumerate() {
-                memory[0x100000 + i] = u16::from_le_bytes([pair[0], pair[1]]);
+        let layouts = match case["kind"].as_u64() {
+            Some(23) => 3,
+            Some(28) => 2,
+            _ => 1,
+        };
+        for layout in 0..layouts {
+            let mut cpu = CpuV3Sim::default();
+            cpu.set_boot_window(&code.words);
+            let memory = cpu.physical_memory_mut();
+            if matches!(case["kind"].as_u64(), Some(27 | 31)) {
+                for (i, pair) in cells.chunks_exact(2).enumerate() {
+                    memory[0x100000 + i] = u16::from_le_bytes([pair[0], pair[1]]);
+                }
             }
-        }
-        if case["kind"].as_u64() == Some(30) {
-            for (i, pair) in scene.chunks_exact(2).enumerate() {
-                memory[0x100000 + i] = u16::from_le_bytes([pair[0], pair[1]]);
+            if case["kind"].as_u64() == Some(30) {
+                for (i, pair) in scene.chunks_exact(2).enumerate() {
+                    memory[0x100000 + i] = u16::from_le_bytes([pair[0], pair[1]]);
+                }
             }
-        }
-        if matches!(case["kind"].as_u64(), Some(31 | 33)) {
-            for (i, pair) in scene.chunks_exact(2).enumerate() {
-                memory[0x280000 + i] = u16::from_le_bytes([pair[0], pair[1]]);
+            if matches!(case["kind"].as_u64(), Some(31 | 33)) {
+                for (i, pair) in scene.chunks_exact(2).enumerate() {
+                    memory[0x280000 + i] = u16::from_le_bytes([pair[0], pair[1]]);
+                }
             }
-        }
-        for (base, bytes) in [(0x3000, &sine), (0x8000, &angle)] {
-            for (i, pair) in bytes.chunks_exact(2).enumerate() {
-                memory[base + i] = u16::from_le_bytes([pair[0], pair[1]]);
+            for (base, bytes) in [(0x3000, &sine), (0x8000, &angle)] {
+                for (i, pair) in bytes.chunks_exact(2).enumerate() {
+                    memory[base + i] = u16::from_le_bytes([pair[0], pair[1]]);
+                }
             }
-        }
-        memory[0x1ffe] = case["kind"].as_u64().unwrap() as u16;
-        let values = case["input"].as_array().unwrap();
-        for (i, v) in values.iter().enumerate() {
-            memory[0x2000 + i * 2..0x2002 + i * 2]
-                .copy_from_slice(&words(v.as_i64().unwrap() as i32));
-        }
-        let expected = case["expected"].as_array().unwrap();
-        for i in 0..expected.len() {
-            memory[0x1000 + i * 2..0x1002 + i * 2].copy_from_slice(&words(0x12345678));
-        }
-        let mut passed = false;
-        for step in 1..=1000000 {
-            if let StepOutcome::Halted { signal } = cpu.step().expect("collision instruction") {
-                assert_eq!(signal, PASS, "case {index}");
-                instructions += step;
-                passed = true;
-                break;
+            memory[0x1ffd] = layout;
+            memory[0x1ffe] = case["kind"].as_u64().unwrap() as u16;
+            let values = case["input"].as_array().unwrap();
+            for (i, v) in values.iter().enumerate() {
+                memory[0x2000 + i * 2..0x2002 + i * 2]
+                    .copy_from_slice(&words(v.as_i64().unwrap() as i32));
             }
-        }
-        assert!(passed, "collision case {index} exceeded bound");
-        let memory = cpu.physical_memory_mut();
-        assert_eq!(
-            u64::from(memory[0x1fff]),
-            case["status"].as_u64().unwrap(),
-            "case {index} status"
-        );
-        for (i, v) in expected.iter().enumerate() {
-            let actual = i32::from_le_bytes([
-                memory[0x1000 + i * 2] as u8,
-                (memory[0x1000 + i * 2] >> 8) as u8,
-                memory[0x1001 + i * 2] as u8,
-                (memory[0x1001 + i * 2] >> 8) as u8,
-            ]);
+            let expected = case["expected"].as_array().unwrap();
+            for i in 0..expected.len() {
+                memory[0x1000 + i * 2..0x1002 + i * 2].copy_from_slice(&words(0x12345678));
+            }
+            let mut passed = false;
+            for step in 1..=1000000 {
+                if let StepOutcome::Halted { signal } = cpu.step().expect("collision instruction") {
+                    assert_eq!(signal, PASS, "case {index}, layout {layout}");
+                    instructions += step;
+                    passed = true;
+                    break;
+                }
+            }
+            assert!(passed, "collision case {index} exceeded bound");
+            let memory = cpu.physical_memory_mut();
             assert_eq!(
-                i64::from(actual),
-                v.as_i64().unwrap(),
-                "case {index}, kind {}, field {i}",
-                case["kind"]
+                u64::from(memory[0x1fff]),
+                case["status"].as_u64().unwrap(),
+                "case {index}, layout {layout} status"
             );
-            checked += 1;
+            for (i, v) in expected.iter().enumerate() {
+                let actual = i32::from_le_bytes([
+                    memory[0x1000 + i * 2] as u8,
+                    (memory[0x1000 + i * 2] >> 8) as u8,
+                    memory[0x1001 + i * 2] as u8,
+                    (memory[0x1001 + i * 2] >> 8) as u8,
+                ]);
+                assert_eq!(
+                    i64::from(actual),
+                    v.as_i64().unwrap(),
+                    "case {index}, kind {}, field {i}",
+                    case["kind"]
+                );
+                checked += 1;
+            }
+            runs += 1;
+            if layout != 0 {
+                banked_world_cases += 1;
+            }
         }
     }
     Ok(
-        json!({"cases":data["cases"].as_array().unwrap().len(),"checked_i32_values":checked,"maximum_integer_error":0,"instruction_steps":instructions,"code_bytes":code.total_code_words()*2,"scope":data["scope"],"boundary":"RCC modules with RAM trig and original ENGLAND terrain fixtures; instruction correctness, not normal loading or system timing"}),
+        json!({"cases":data["cases"].as_array().unwrap().len(),"executions":runs,"banked_world_cases":banked_world_cases,"checked_i32_values":checked,"maximum_integer_error":0,"instruction_steps":instructions,"code_bytes":code.total_code_words()*2,"scope":data["scope"],"boundary":"RCC modules with RAM trig and original ENGLAND terrain fixtures; instruction correctness, not normal loading or system timing"}),
     )
 }

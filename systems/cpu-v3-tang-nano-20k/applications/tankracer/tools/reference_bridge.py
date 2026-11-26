@@ -23,6 +23,13 @@ def prepare(root: Path, output: Path, driving=False, lifecycle=False, closer=Fal
             raise FileNotFoundError(scene_bridge)
         suffixes['scene_objects.rs'] = (
             '\n#[path=' + json.dumps(scene_bridge.as_posix()) + '] pub mod rcc_lifecycle_probe;\n').encode()
+        suffixes['scene_objects/projectiles.rs'] = b'''
+impl View<'_> {
+    pub(crate) fn rcc_reflect_projectile(&mut self, id: ObstacleId, vehicle: crate::object_query::TankId) -> Result<bool, i32> {
+        self.reflect_projectile(id, vehicle)
+    }
+}
+'''
     closer_bridge = owner / 'reference_closer.rs'
     meshes_bridge = owner / 'reference_meshes.rs'
     if meshes:

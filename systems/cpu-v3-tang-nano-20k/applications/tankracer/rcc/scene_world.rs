@@ -1,6 +1,7 @@
 //! Live collider geometry and ordered memberships shared by updates and queries.
 use crate::dsl_rt::*;
 use crate::{attitude, collision, lifecycle, object_query, ordered, spatial};
+pub const DYNAMIC_ROWS: u16 = 215;
 pub struct Runtime {
     pub ticks: lifecycle::Ticks,
     pub slot: Array<u16>,
@@ -16,8 +17,78 @@ pub struct World {
     // followed by the six signed mesh bounds (i16). Methods mutate these rows.
     pub properties: Array<u16>,
     pub count: u16,
+    // Fixed rows retain their existing addresses. Appended rows occupy one
+    // 32-KiB bank in global-ID order: collider[60], properties[16].
+    pub fixed_count: u16,
+    pub dynamic_page: u16,
+    pub dynamic_capacity: u16,
     pub grid: spatial::Grid,
     pub deformables: ordered::List,
+}
+fn transfer(world: &World, index: u16, data: Array<u16>, properties: bool, write: bool) -> bool {
+    if index >= world.count {
+        return false;
+    }
+    let mut count = 60u16;
+    let mut row = world.colliders;
+    let mut offset = index * 60;
+    if properties {
+        count = 16;
+        row = world.properties;
+        offset = index * 16;
+    }
+    let mut saved = 0u16;
+    let mut dynamic = false;
+    if index >= world.fixed_count {
+        let local = index - world.fixed_count;
+        if local >= world.dynamic_capacity || local >= DYNAMIC_ROWS {
+            return false;
+        }
+        saved = read_dseg_page(3);
+        dynamic = true;
+        if saved != world.dynamic_page {
+            unsafe {
+                write_dseg_page(3, world.dynamic_page);
+            }
+        }
+        row = unsafe { Ptr::from_addr(0xc000).as_u16_array() };
+        offset = local * 76;
+        if properties {
+            offset += 60;
+        }
+    }
+    let mut i = 0u16;
+    let mut destination = data;
+    let mut rows = row;
+    if write {
+        while i < count {
+            rows[offset + i] = data[i];
+            i += 1;
+        }
+    } else {
+        while i < count {
+            destination[i] = row[offset + i];
+            i += 1;
+        }
+    }
+    if dynamic && read_dseg_page(3) != saved {
+        unsafe {
+            write_dseg_page(3, saved);
+        }
+    }
+    true
+}
+pub fn load_collider(world: &World, index: u16, out: Array<u16>) -> bool {
+    transfer(world, index, out, false, false)
+}
+pub fn store_collider(world: &World, index: u16, data: Array<u16>) -> bool {
+    transfer(world, index, data, false, true)
+}
+pub fn load_properties(world: &World, index: u16, out: Array<u16>) -> bool {
+    transfer(world, index, out, true, false)
+}
+pub fn store_properties(world: &World, index: u16, data: Array<u16>) -> bool {
+    transfer(world, index, data, true, true)
 }
 // Source order selects the first hit. Every candidate reads current geometry;
 // moving, rotating or removing an earlier object is visible to the next query.
@@ -48,10 +119,14 @@ pub fn query(world: &World, q: &object_query::Query, out: &mut object_query::Hit
             return 4;
         }
         let index = id.lo_bits();
-        let mut j = 0u16;
-        while j < 60 {
-            raw[j] = world.colliders[index * 60 + j];
-            j += 1;
+        if index < world.fixed_count {
+            let mut j = 0u16;
+            while j < 60 {
+                raw[j] = world.colliders[index * 60 + j];
+                j += 1;
+            }
+        } else if !load_collider(world, index, raw) {
+            return 4;
         }
         let status = object_query::obstacle_candidate(&collider, index, q, out, d, length);
         if status != 0 {

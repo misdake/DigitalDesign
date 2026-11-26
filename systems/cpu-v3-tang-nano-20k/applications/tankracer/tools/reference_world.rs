@@ -76,6 +76,42 @@ pub fn two_cars(root: &Path, vehicle: u32) -> SinglePlayer {
 pub fn complete(root: &Path) -> tankracer_game::session::Session {
     constructed(root).into_session().unwrap().0
 }
+pub fn race(root: &Path) -> SinglePlayer {
+    let read = |name: &str| {
+        let path = root.join("assets/game").join(name).join("FASTFILE.DAT");
+        assert!(
+            path.is_file(),
+            "missing original archive: {}",
+            path.display()
+        );
+        fs::read(path).unwrap()
+    };
+    let data = read("DATA");
+    let vehicles = [
+        read("TANKS/BRONZE"),
+        read("TANKS/SILVER"),
+        read("TANKS/GOLD"),
+    ];
+    let shared = read("INGAME");
+    let level = read("LEVELS/ENGLAND");
+    let archive = Archive::parse(&level).unwrap();
+    let terrain = Arc::new(TerrainData::decode_bsm(archive.get("ENGLAND.BSM").unwrap()).unwrap());
+    Prepared::load_race(
+        terrain,
+        Files {
+            data: &data,
+            vehicles: &vehicles.each_ref().map(Vec::as_slice),
+            shared: &shared,
+            level: &level,
+        },
+        Selection::default_cup(0, 1).unwrap(),
+        true,
+    )
+    .unwrap()
+    .finish()
+    .unwrap()
+    .world
+}
 pub fn constructed(root: &Path) -> tankracer_game::world_startup::Constructed {
     let read = |name: &str| {
         let path = root.join("assets/game").join(name).join("FASTFILE.DAT");

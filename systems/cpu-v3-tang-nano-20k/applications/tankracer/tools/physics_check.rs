@@ -15,10 +15,16 @@ mod auxiliary_hit_check;
 mod closer_check;
 #[path = "collision_check.rs"]
 mod collision_check;
+#[path = "explosion_blasts_check.rs"]
+mod explosion_blasts_check;
+#[path = "explosion_check.rs"]
+mod explosion_check;
 #[path = "mesh_break_check.rs"]
 mod mesh_break_check;
 #[path = "mesh_store_check.rs"]
 mod mesh_store_check;
+#[path = "mine_check.rs"]
+mod mine_check;
 #[path = "parent_auxiliary_check.rs"]
 mod parent_auxiliary_check;
 #[path = "pickup_light_check.rs"]
@@ -29,12 +35,22 @@ mod polar_check;
 mod powerup_check;
 #[path = "prefix_check.rs"]
 mod prefix_check;
+#[path = "projectile_check.rs"]
+mod projectile_check;
+#[path = "projectile_marks_check.rs"]
+mod projectile_marks_check;
+#[path = "scene_allocation_check.rs"]
+mod scene_allocation_check;
 #[path = "scene_fragment_check.rs"]
 mod scene_fragment_check;
 #[path = "shatter_check.rs"]
 mod shatter_check;
 #[path = "spin_check.rs"]
 mod spin_check;
+#[path = "tank_hit_check.rs"]
+mod tank_hit_check;
+#[path = "temporary_check.rs"]
+mod temporary_check;
 #[path = "trig_check.rs"]
 mod trig_check;
 #[path = "vehicle_core_check.rs"]
@@ -75,7 +91,7 @@ const STATIC_ASSETS: &str = include_str!("../../../rcc/static_assets.rs");
 const GPU_LAYOUT: &str = include_str!("../../../rcc/gpu_layout.rs");
 const OBJECT_QUERY: &str = include_str!("../rcc/object_query.rs");
 const TRIG_ASSET_LOOKUP: &str = include_str!("../rcc/trig_asset_lookup.rs");
-const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
+const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
 
 fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<dyn Error>> {
     let folder = output.join(label);
@@ -83,6 +99,26 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
     let source = format!("{PREAMBLE}{body}");
     fs::write(folder.join("input.rs"), &source)?;
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
+    if label == "scene-allocation"
+        || label == "scene-creation"
+        || label == "scene-mines"
+        || label == "scene-mine-tick"
+        || label == "scene-explosions"
+        || label == "scene-explosion-tick"
+        || label == "scene-weapon-explosion"
+        || label == "scene-mine-explosion"
+        || label == "scene-mine-hit"
+        || label == "scene-projectile-flight"
+        || label == "scene-projectile-area"
+        || label == "scene-projectile-direct"
+        || label == "projectile-marks"
+        || label == "explosion"
+        || label == "explosion-blasts"
+    {
+        options.stack_init = 0x8000;
+        options.heap_begin = 0x6000;
+        options.heap_size = 32;
+    }
     if label == "collision" {
         // Resource-aware surface access makes the allocator reachable, even
         // when RAM-only fixtures never allocate. Keep its startup tags above
@@ -99,7 +135,14 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             options.heap_size = 32;
         }
     }
-    if label == "parent-auxiliary" || label == "powerup" || label == "pickup-light" {
+    if label == "parent-auxiliary"
+        || label == "powerup"
+        || label == "pickup-light"
+        || label == "projectile"
+        || label == "mine"
+        || label == "temporary"
+        || label == "tank-hit"
+    {
         options.heap_begin = 0x7000;
         options.heap_size = 0x2000;
     }
@@ -115,6 +158,13 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "closer" => Ok(include_str!("../rcc/closer.rs").to_owned()),
             "mesh_break" => Ok(include_str!("../rcc/mesh_break.rs").to_owned()),
             "scene_meshes" => Ok(include_str!("../rcc/scene_meshes.rs").to_owned()),
+            "scene_creation" => Ok(include_str!("../rcc/scene_creation.rs").to_owned()),
+            "scene_mines" => Ok(include_str!("../rcc/scene_mines.rs").to_owned()),
+            "scene_projectiles" => Ok(include_str!("../rcc/scene_projectiles.rs").to_owned()),
+            "scene_projectile_impact" => {
+                Ok(include_str!("../rcc/scene_projectile_impact.rs").to_owned())
+            }
+            "scene_explosions" => Ok(include_str!("../rcc/scene_explosions.rs").to_owned()),
             "mesh_storage" => Ok(include_str!("../rcc/mesh_storage.rs").to_owned()),
             "scene_fragments" => Ok(include_str!("../rcc/scene_fragments.rs").to_owned()),
             "suspension" => Ok(SUSPENSION.to_owned()),
@@ -124,6 +174,23 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
                 || label == "prefix"
                 || label == "powerup"
                 || label == "pickup-light"
+                || label == "projectile"
+                || label == "mine"
+                || label == "temporary"
+                || label == "tank-hit"
+                || label == "explosion"
+                || label == "explosion-blasts"
+                || label == "scene-creation"
+                || label == "scene-mines"
+                || label == "scene-mine-tick"
+                || label == "scene-explosions"
+                || label == "scene-explosion-tick"
+                || label == "scene-weapon-explosion"
+                || label == "scene-mine-explosion"
+                || label == "scene-mine-hit"
+                || label == "scene-projectile-flight"
+                || label == "scene-projectile-area"
+                || label == "scene-projectile-direct"
             {
                 TRIG_ASSET_LOOKUP
             } else {
@@ -133,6 +200,18 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "mesh_catalog" => Ok(include_str!("../rcc/mesh_catalog.rs").to_owned()),
             "symbols" => Ok(include_str!("../rcc/symbols.rs").to_owned()),
             "scene_debris" => Ok(include_str!("../rcc/scene_debris.rs").to_owned()),
+            "particle_sprite" => Ok(include_str!("../rcc/particle_sprite.rs").to_owned()),
+            "projectile" => Ok(include_str!("../rcc/projectile.rs").to_owned()),
+            "projectile_marks" => Ok(include_str!("../rcc/projectile_marks.rs").to_owned()),
+            "projectile_sweep" => Ok(include_str!("../rcc/projectile_sweep.rs").to_owned()),
+            "projectile_trail" => Ok(include_str!("../rcc/projectile_trail.rs").to_owned()),
+            "temporary" => Ok(include_str!("../rcc/temporary.rs").to_owned()),
+            "explosion" => Ok(include_str!("../rcc/explosion.rs").to_owned()),
+            "explosion_blasts" => Ok(include_str!("../rcc/explosion_blasts.rs").to_owned()),
+            "tank_hit" => Ok(include_str!("../rcc/tank_hit.rs").to_owned()),
+            "mine" => Ok(include_str!("../rcc/mine.rs").to_owned()),
+            "projectile_ricochet" => Ok(include_str!("../rcc/projectile_ricochet.rs").to_owned()),
+            "projectile_flight" => Ok(include_str!("../rcc/projectile_flight.rs").to_owned()),
             "powerup" => Ok(include_str!("../rcc/powerup.rs").to_owned()),
             "quad_pool" => Ok(include_str!("../rcc/quad_pool.rs").to_owned()),
             "pickup_light" => Ok(include_str!("../rcc/pickup_light.rs").to_owned()),
@@ -606,8 +685,55 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or(600);
         let mode = std::env::args().nth(4);
         let report = match mode.as_deref() {
+            Some("scene-allocation") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-allocation")?
+            }
+            Some("scene-creation") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-creation")?
+            }
+            Some("scene-mines") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-mines")?
+            }
+            Some("scene-mine-tick") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-mine-tick")?
+            }
+            Some("scene-explosions") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-explosions")?
+            }
+            Some("scene-explosion-tick") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-explosion-tick")?
+            }
+            Some("scene-projectile-direct") => scene_allocation_check::run(
+                &output,
+                Path::new(&fixture),
+                "scene-projectile-direct",
+            )?,
+            Some("scene-projectile-area") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-projectile-area")?
+            }
+            Some("scene-projectile-flight") => scene_allocation_check::run(
+                &output,
+                Path::new(&fixture),
+                "scene-projectile-flight",
+            )?,
+            Some("scene-mine-hit") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-mine-hit")?
+            }
+            Some("scene-mine-explosion") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-mine-explosion")?
+            }
+            Some("scene-weapon-explosion") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-weapon-explosion")?
+            }
             Some("collision") => collision_check::run(&output, Path::new(&fixture))?,
             Some("closer") => closer_check::run(&output, Path::new(&fixture))?,
+            Some("temporary") => temporary_check::run(&output, Path::new(&fixture))?,
+            Some("explosion") => explosion_check::run(&output, Path::new(&fixture))?,
+            Some("explosion-blasts") => explosion_blasts_check::run(&output, Path::new(&fixture))?,
+            Some("tank-hit") => tank_hit_check::run(&output, Path::new(&fixture))?,
+            Some("mine") => mine_check::run(&output, Path::new(&fixture))?,
+            Some("projectile-marks") => projectile_marks_check::run(&output, Path::new(&fixture))?,
+            Some("projectile") => projectile_check::run(&output, Path::new(&fixture))?,
             Some("powerup") => powerup_check::run(&output, Path::new(&fixture))?,
             Some("pickup-light") => pickup_light_check::run(&output, Path::new(&fixture))?,
             Some("prefix") => prefix_check::run(&output, Path::new(&fixture))?,

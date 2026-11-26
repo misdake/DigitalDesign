@@ -76,10 +76,13 @@ fn run_live_contact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle:
         i += 1;
     }
     let unused: Buf<u16, 2> = Buf::new([0; 2]);
-    let world = scene_world::World {
+    let mut world = scene_world::World {
         colliders: geometry,
         properties: p,
         count: 1,
+        fixed_count: 1,
+        dynamic_page: 0,
+        dynamic_capacity: 0,
         grid: spatial::Grid {
             page: 65535,
             origin: origin.as_array(),
@@ -94,6 +97,18 @@ fn run_live_contact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle:
             capacity: 1,
         },
     };
+    let layout = unsafe { Ptr::from_addr(0x1ffd).read(0) };
+    if layout != 0 {
+        world.fixed_count = 0;
+        world.dynamic_page = 121;
+        world.dynamic_capacity = 1;
+        if !scene_world::store_collider(&world, 0, geometry)
+            || !scene_world::store_properties(&world, 0, p)
+        {
+            halt(0x7e60);
+        }
+    }
+    let incoming_page = read_dseg_page(3);
     let segment: Buf<u16, 12> = Buf::new([500, 0, 0, 0, 0, 0, 65036, 65535, 0, 0, 0, 0]);
     let q = object_query::Query {
         start: segment.as_array(),
@@ -113,6 +128,11 @@ fn run_live_contact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle:
     let mut calls = 0u16;
     let mut step = 0u16;
     while step < 6 {
+        if !scene_world::load_collider(&world, 0, geometry)
+            || !scene_world::load_properties(&world, 0, p)
+        {
+            halt(0x7e61);
+        }
         attitude::put(velocity.as_array(), 0, -fix32::from_words(53393, 3));
         attitude::put(velocity.as_array(), 1, fix32::zero());
         attitude::put(velocity.as_array(), 2, fix32::zero());
@@ -123,6 +143,23 @@ fn run_live_contact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle:
         if step == 5 {
             attitude::put(geometry, 2, integer::from_i16(10000));
         }
+        if !scene_world::store_collider(&world, 0, geometry)
+            || !scene_world::store_properties(&world, 0, p)
+        {
+            halt(0x7e62);
+        }
+        if layout != 0 {
+            i = 0;
+            while i < 60 {
+                geometry[i] = 0x7777;
+                i += 1;
+            }
+            i = 0;
+            while i < 16 {
+                p[i] = 0x6666;
+                i += 1;
+            }
+        }
         let mut hit = object_query::hit_zero();
         let status = scene_contact::obstacles(
             &world,
@@ -132,6 +169,12 @@ fn run_live_contact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle:
             &env,
             &mut hit,
         );
+        if read_dseg_page(3) != incoming_page {
+            halt(0x7e63);
+        }
+        if !scene_world::load_properties(&world, 0, p) {
+            halt(0x7e64);
+        }
         if status == 1 {
             // Explicit qualification probe, matching the source Effects method.
             calls += 1;
@@ -143,6 +186,9 @@ fn run_live_contact(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle:
             } else if calls == 3 {
                 attitude::put(p, 2, fix32::from_words(65535, 32767));
             }
+        }
+        if !scene_world::store_properties(&world, 0, p) {
+            halt(0x7e65);
         }
         let base = step * 27;
         attitude::put(out, base, fix32::from_words(status, 0));

@@ -25,6 +25,9 @@ fn run_scene_world(input: Array<u16>, out: Array<u16>, sine: Array<i16>) {
         colliders: colliders,
         properties: properties.as_array(),
         count: 2,
+        fixed_count: 2,
+        dynamic_page: 0,
+        dynamic_capacity: 0,
         grid: spatial::Grid {
             page: 65535,
             origin: origin.as_array(),
@@ -39,6 +42,58 @@ fn run_scene_world(input: Array<u16>, out: Array<u16>, sine: Array<i16>) {
             capacity: 2,
         },
     };
+    let mode = unsafe { Ptr::from_addr(0x1ffd).read(0) };
+    if mode > 2 {
+        halt(0x7e40);
+    }
+    world.fixed_count = 2 - mode;
+    world.dynamic_page = 120;
+    world.dynamic_capacity = mode;
+    let caller_page = read_dseg_page(3);
+    if mode == 2 {
+        // Candidate IDs occupy a different window page from dynamic geometry.
+        unsafe {
+            write_dseg_page(3, 119);
+        }
+        let mut mapped = unsafe { Ptr::from_addr(0xc000).as_u16_array() };
+        i = 0;
+        while i < 4 {
+            mapped[i] = origin[i];
+            i += 1;
+        }
+        i = 0;
+        while i < 192 {
+            mapped[4 + i] = ranges[i];
+            i += 1;
+        }
+        i = 0;
+        while i < 512 {
+            mapped[196 + i] = items[i];
+            i += 1;
+        }
+        world.grid.page = 119;
+        world.grid.origin = mapped;
+        world.grid.ranges = unsafe { mapped.as_ptr().add(4).as_u16_array() };
+        world.grid.items = unsafe { mapped.as_ptr().add(196).as_u16_array() };
+    }
+    let incoming = read_dseg_page(3);
+    let mut hidden = world.fixed_count;
+    while hidden < 2 {
+        let source = unsafe { colliders.as_ptr().add((hidden * 60) as i16).as_u16_array() };
+        if !scene_world::store_collider(&world, hidden, source) {
+            halt(0x7e41);
+        }
+        // Stale fixed rows must never satisfy a banked query.
+        i = 0;
+        while i < 60 {
+            colliders[hidden * 60 + i] = 0x7777;
+            i += 1;
+        }
+        hidden += 1;
+    }
+    if read_dseg_page(3) != incoming {
+        halt(0x7e42);
+    }
     let q = object_query::Query {
         start: unsafe { input.as_ptr().add(120).as_u16_array() },
         end: unsafe { input.as_ptr().add(126).as_u16_array() },
@@ -55,17 +110,31 @@ fn run_scene_world(input: Array<u16>, out: Array<u16>, sine: Array<i16>) {
     let mut raw = unsafe { view_of(&mut second).as_ptr().as_u16_array() };
     i = 0;
     while i < 60 {
-        raw[i] = colliders[60 + i];
+        raw[i] = input[60 + i];
         i += 1;
     }
     let mut step = 0u16;
+    let current: Buf<u16, 60> = Buf::new([0; 60]);
+    let mut words = current.as_array();
     while step < 6 {
         if step == 1 {
-            attitude::put(colliders, 2, integer::from_i16(10000));
+            if !scene_world::load_collider(&world, 0, words) {
+                halt(0x7e43);
+            }
+            attitude::put(words, 2, integer::from_i16(10000));
+            if !scene_world::store_collider(&world, 0, words) {
+                halt(0x7e44);
+            }
         }
         if step == 2 {
-            attitude::put(colliders, 2, fix32::zero());
-            attitude::rotate(colliders, 4, 1, integer::from_i16(8192), sine);
+            if !scene_world::load_collider(&world, 0, words) {
+                halt(0x7e45);
+            }
+            attitude::put(words, 2, fix32::zero());
+            attitude::rotate(words, 4, 1, integer::from_i16(8192), sine);
+            if !scene_world::store_collider(&world, 0, words) {
+                halt(0x7e46);
+            }
             spatial::remove(
                 &mut world.grid,
                 integer::from_i16(1),
@@ -96,12 +165,18 @@ fn run_scene_world(input: Array<u16>, out: Array<u16>, sine: Array<i16>) {
         if step == 5 {
             // Original Matrix::from_angles uses a different composition from
             // successive rotations; the independent source matrix is appended.
+            if !scene_world::load_collider(&world, 1, words) {
+                halt(0x7e47);
+            }
             i = 0;
             while i < 18 {
-                colliders[86 + i] = input[138 + i];
+                words[26 + i] = input[138 + i];
                 i += 1;
             }
-            attitude::put(colliders, 59, integer::from_i16(1));
+            attitude::put(words, 29, integer::from_i16(1));
+            if !scene_world::store_collider(&world, 1, words) {
+                halt(0x7e48);
+            }
         }
         let mut hit = object_query::hit_zero();
         attitude::put(hit.point.as_array(), 0, integer::from_i16(11));
@@ -111,6 +186,9 @@ fn run_scene_world(input: Array<u16>, out: Array<u16>, sine: Array<i16>) {
         attitude::put(hit.normal.as_array(), 1, integer::from_i16(55));
         attitude::put(hit.normal.as_array(), 2, integer::from_i16(-66));
         let status = scene_world::query(&world, &q, &mut hit);
+        if read_dseg_page(3) != incoming {
+            halt(0x7e49);
+        }
         let base = step * 14;
         attitude::put(out, base, fix32::from_words(status, 0));
         let values = unsafe { view_of(&mut hit).as_ptr().as_u16_array() };
@@ -132,5 +210,73 @@ fn run_scene_world(input: Array<u16>, out: Array<u16>, sine: Array<i16>) {
             i += 1;
         }
         step += 1;
+    }
+    // The final complete row fits; a following row cannot touch the page guard.
+    world.fixed_count = 0;
+    world.dynamic_capacity = 215;
+    world.count = 215;
+    unsafe {
+        write_dseg_page(3, 120);
+        Ptr::from_addr(0xffff).write(0, 0xa55a);
+        write_dseg_page(3, incoming);
+    }
+    if !scene_world::store_collider(&world, 214, raw) {
+        halt(0x7e4a);
+    }
+    if !scene_world::load_collider(&world, 214, words) {
+        halt(0x7e4b);
+    }
+    i = 0;
+    while i < 60 {
+        if words[i] != raw[i] {
+            halt(0x7e4c);
+        }
+        i += 1;
+    }
+    i = 0;
+    while i < 16 {
+        words[i] = 0xa500 + i;
+        i += 1;
+    }
+    if !scene_world::store_properties(&world, 214, words) {
+        halt(0x7e4d);
+    }
+    i = 0;
+    while i < 16 {
+        words[i] = 0;
+        i += 1;
+    }
+    if !scene_world::load_properties(&world, 214, words) {
+        halt(0x7e4e);
+    }
+    i = 0;
+    while i < 16 {
+        if words[i] != 0xa500 + i {
+            halt(0x7e4f);
+        }
+        i += 1;
+    }
+    world.count = 216;
+    if scene_world::store_collider(&world, 215, raw)
+        || scene_world::load_properties(&world, 215, words)
+    {
+        halt(0x7e50);
+    }
+    if read_dseg_page(3) != incoming {
+        halt(0x7e51);
+    }
+    unsafe {
+        write_dseg_page(3, 120);
+    }
+    if unsafe { Ptr::from_addr(0xffff).read(0) } != 0xa55a {
+        halt(0x7e52);
+    }
+    unsafe {
+        write_dseg_page(3, incoming);
+    }
+    if caller_page != incoming {
+        unsafe {
+            write_dseg_page(3, caller_page);
+        }
     }
 }

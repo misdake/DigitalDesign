@@ -403,6 +403,9 @@ fn main() {
         colliders: colliders,
         properties: properties,
         count: 240,
+        fixed_count: 240,
+        dynamic_page: 0,
+        dynamic_capacity: 0,
         grid: spatial::Grid {
             page: page + 1,
             origin: origin,

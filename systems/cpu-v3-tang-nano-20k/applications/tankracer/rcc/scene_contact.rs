@@ -31,27 +31,52 @@ pub fn obstacles(
         return status;
     }
     let index = hit.object.lo_bits();
-    let properties = unsafe {
-        world
-            .properties
-            .as_ptr()
-            .add((index * 16) as i16)
-            .as_u16_array()
-    };
-    let collider = unsafe {
-        world
-            .colliders
-            .as_ptr()
-            .add((index * 60) as i16)
-            .as_u16_array()
-    };
-    let object = Object {
-        class: attitude::get(properties, 0),
-        weight: attitude::get(properties, 1),
-        threshold: attitude::get(properties, 2),
-        activity: attitude::get(properties, 3),
-        flags: attitude::get(properties, 4),
-        radius: attitude::get(collider, 28),
+    if index < world.fixed_count {
+        let fixed_properties = unsafe {
+            world
+                .properties
+                .as_ptr()
+                .add((index * 16) as i16)
+                .as_u16_array()
+        };
+        let fixed_collider = unsafe {
+            world
+                .colliders
+                .as_ptr()
+                .add((index * 60) as i16)
+                .as_u16_array()
+        };
+        let object: Object = Object {
+            class: attitude::get(fixed_properties, 0),
+            weight: attitude::get(fixed_properties, 1),
+            threshold: attitude::get(fixed_properties, 2),
+            activity: attitude::get(fixed_properties, 3),
+            flags: attitude::get(fixed_properties, 4),
+            radius: attitude::get(fixed_collider, 28),
+        };
+        let response = obstacle(velocity, state, hit.normal.as_array(), &object, env);
+        if response == 0 {
+            return 2;
+        }
+        if response == 2 {
+            return 3;
+        }
+        return 1;
+    }
+    let properties: Buf<u16, 16> = Buf::new([0; 16]);
+    let collider: Buf<u16, 60> = Buf::new([0; 60]);
+    if !scene_world::load_properties(world, index, properties.as_array())
+        || !scene_world::load_collider(world, index, collider.as_array())
+    {
+        return 4;
+    }
+    let object: Object = Object {
+        class: attitude::get(properties.as_array(), 0),
+        weight: attitude::get(properties.as_array(), 1),
+        threshold: attitude::get(properties.as_array(), 2),
+        activity: attitude::get(properties.as_array(), 3),
+        flags: attitude::get(properties.as_array(), 4),
+        radius: attitude::get(collider.as_array(), 28),
     };
     let response = obstacle(velocity, state, hit.normal.as_array(), &object, env);
     if response == 0 {

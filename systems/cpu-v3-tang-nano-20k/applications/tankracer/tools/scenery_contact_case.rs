@@ -214,6 +214,9 @@ fn run_car_scenery(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: 
         colliders: collider,
         properties: props,
         count: 1,
+        fixed_count: 1,
+        dynamic_page: 0,
+        dynamic_capacity: 0,
         grid: spatial::Grid {
             page: 65535,
             origin: unsafe { input.as_ptr().add(2544).as_u16_array() },
