@@ -14,6 +14,174 @@ timer, velocity deltas and damage flags. The cars share one terrain/noise contex
 RNG and line/impact pool. Caller-owned views publish a peer's collision changes
 immediately, before its own scheduled update begins.
 
+## Complete physics qualification
+
+`bench-tankracer-driving --scope complete` loads the same normal application and
+selects continuous two-car driving, opposing cars and an authored Fall contact.
+The reference adapter runs the original vehicle prepare and private
+`Execution::physics` in order, with the parent Tank's intervening field
+publication. Player input/route dispatch remains outside this entry.
+Successful device feedback is external; authored auxiliary models are resolved
+through the existing resource service. Ordinary-contact coverage includes the
+creation of a real auxiliary mesh when the contact produces no velocity delta.
+
+The target executes real contact/power, ordinary/car/deformable/ground collision,
+complete `car_motion::integrate_and_pose`, all of `car_effects::tick` and successful
+`car_motion::finish` on the same persistent owners. Each vehicle update checks
+the existing physical/world snapshots and the full additional effects/pose page.
+The source frame contains independent controls only; the target recomputes
+sampling, collisions, poses, particles, pool allocation and shared RNG.
+
+The prepare phase and immediate effects borrow the same temporary-line core
+and line pool. Prefix hot rows remain in the fixed collision page. Preparation
+maps the complete effects page once, publishes the pose timer, blast protection
+and current sidegrip, then restores the caller's mapping. Boost inputs reach
+power integration after prepare. The `complete-prepare` trajectory activates
+boost, advances spin and expires a temporary effect before physics; at three
+ticks it also requires traction smoke and its synchronous impact batch.
+The smoke contact-index view addresses suspension column two (`corner`), with
+the existing six-column point stride.
+
+The additional image uses 10,468 little-endian u16 words (20,936 bytes) within
+the existing 32-KiB `DRIVING_PICKUP_EFFECTS` allocation. Offsets below are in words.
+
+| Offset | Content |
+| --- | --- |
+| 0 | Pickup banks, quad records and exhausted quad, retaining the pickup layout. |
+| 6772 | Existing pickup boundary guard; padding extends to word 6800. |
+| 6800 | Canonical quad count, followed by padding to word 6810. |
+| 6810 | Two 956-word car rows: extra poses, spray, marks, smoke, lights, debris owner, pose configuration/input and light/prefix fields. |
+| 8722 | Shared debris banks. |
+| 9086 | Shared shield banks. |
+| 9896 | Shared temporary-line state. |
+| 10170 | Sound-draw output and camera position/forward. |
+| 10186 | Spray styles/kinds, smoke sockets and pickup tuning. |
+| 10358 | Two 28-word rows: middle-distance height, stored drive input and original model hull bounds. |
+| 10414 | Two 26-word rows: input flags, saved/live turn limit, yaw lock, turret state and driving flag. |
+| 10466 | Shared analog steering latch. |
+
+The line pool and impact state keep their existing owners. `car_effects::Shared`
+borrows those owners and the quad pool by typed views, including live counts.
+Turret and body smoke poses use distinct views. Contacts retain their 17-column
+stride; track matrices retain their 12-column pose stride. A sixteen-byte local
+travel array supplies the pose kernel from the four suspension rows. Ready is
+a single canonical boolean word. The packed physical diagnostic's acceleration
+columns are refreshed from the live drive acceleration before motion.
+
+The complete tail selects the effects page once and restores the incoming DSEG3
+mapping. Lookup-table reads preserve this binding. The surface-effect slot clear
+runs at its contact boundary. Normal frame assertions and the final page guard
+cover the same owners. These cases retain one model configuration and selected
+active scenery; full startup, enclosing Player/Tank dispatch and mixed gameplay scheduling are
+separate integration boundaries.
+
+`--scope effect` isolates two cars whose surface effects expire during complete
+prepare/physics updates. The ground owner borrows the shared shield page and
+bank view. Sampling clears the selected tail immediately after effect expiry,
+before material, fallback and suspension queries, and restores the terrain page.
+The shared write survives a later contact failure while the vehicle's pending
+sampling/response and RNG remain uncommitted. A requested slot outside 0..2
+returns sampling status 6 before subsequent queries. `shield_page = 65535`
+retains standalone sampling with successful external writes. `contact-effect`
+compares the original sampler's partial state, RNG and tail writes on diagnostic
+planes; its cases distinguish failures before expiry from auxiliary failures
+after the shared write.
+
+## Vehicle construction
+
+`vehicle_startup::construct` takes immutable assembled-model metadata and the
+authored matrix/position. It clears one caller-owned row, installs the shadow
+hull and primary contacts, initializes prefix/control state, then calls the
+existing pose kernel once for a Tank or twice for a Player. It consumes no RNG
+and allocates no heap. Missing shadow vertices return -4 before writing; pose
+errors return -2 with a private candidate row. The caller publishes only success.
+
+The row has 1,760 u16 words (3,520 bytes). Nine rows occupy 31,680 bytes.
+Every block uses little-endian i32 pairs unless noted. Physics fields have one
+owner; the powertrain block contains its nine persistent integers, rather than
+another copy of angular velocity or acceleration.
+
+| Word | Content |
+| --- | --- |
+| 0 | Complete motion/poses, contacts/travel, hull, ready and rates; the hull uses twelve raw i16 vertex coordinates and one u16 radius. |
+| 339 | Powertrain: local velocity, track/boost target, engine, activity, gear and load. |
+| 357 | Four spring rows and the remaining response fields. |
+| 437 | Primary/auxiliary sampling, surface effect, materials and cached query metadata. |
+| 643 | Physical boost followed by the existing fifty-word per-car prefix layout. |
+| 701 | Entity/class/player, presentation counters, input, brake, route/race, turret, inventory, collision and blast fields. The 95 defined integers end at word 891. |
+| 921 | Spray, marks, smoke, lights and debris ownership state. |
+| 1661 | The 27-integer pose configuration, including the instance gun pivot. |
+| 1715 | Pose input; the remaining row words are zero padding. |
+
+`vehicle_startup_assets` writes a 200-word model/spawn record. It contains pose
+configuration at 0, primary-local points at 54, four shadow vertices at 78,
+reset/live grip and alternate controls at 90, spawn at 102, independent
+constructor inputs at 126, shadow count/radius at 144/145, and gun word count
+and original vertices at 146/147. The producer bounds the vertex extent.
+
+The normal `--scope startup` entry constructs two fresh cars and continues their
+complete prepare/physics updates. It uses model/spawn records to initialize the
+cars and their gun geometry. Initial vehicle-state snapshots are excluded from
+this loading path; seed/noise assertions and the surrounding world fixture keep
+their normal roles. Cold publication adapts a successful row to the existing
+driving views. Constructor scratch occupies the unused effects-page suffix at
+word 10,624, within the existing bank. Full world initialization and scheduler
+ownership remain separate from this constructor boundary.
+
+## Middle-distance vehicles
+
+`vehicle_inactive::step` runs the complete non-AI inactive Tank branch over
+caller-owned views. `State` binds physical/part poses, velocity, rates, contact
+sampling, suspension travel, prefix fields and effects directly. Explicit travel
+and contact strides support both the constructor's 1,760-word row and the live
+driving layout. `Input` borrows the instance drive config,
+model hull bounds, pickup tuning and light offset, with current dt/frame/mode,
+device throttle/brake and attitude numerical policy. Stored driving controls
+remain in their own persistent fields. The caller supplies the terrain owner, existing prefix
+shared views, effects owner and impact context on the same pool and RNG.
+
+Boost decay, spin and temporary expiry precede the one-point terrain query.
+Expiry restores both prefix grip and the instance's drive configuration. The
+branch retains countdown, alternating sign, target, auxiliary caches and pose
+timer. Terrain alignment precedes the bespoke power calculation. The incoming
+large-velocity decision is reused for both transforms. Position integrates
+before the local attitude transaction; the full u32 frame controls normalization.
+
+Tracks, turret, gun, attachments and bottom position then follow the body without
+the full pose update. Existing spray clears before pickup fade, lights, temporary
+lines, debris clear and impact animation. Existing smoke clears next, followed
+by shield animation and the simplified hull. Zero particle counts retain their
+payloads. Ready and motion rates retain their source values.
+
+Failure retains every preceding write. A fallback reflection publishes normal
+and velocity before the source's missing non-AI route owner returns -1. A missing
+left track returns -4 only at the final hull boundary. AI route recovery belongs
+to the AI branch. Full parent Tank dispatch remains a separate integration step.
+
+The complete driving entry selects full or middle-distance updates on the same
+vehicle owner. It skips full prepare, four-point contact, collisions and the full
+motion/effects tail for the middle-distance branch. The effects page stays mapped
+through that branch; terrain queries restore it before later field access. The
+selected car's live grip is bound before power calculation. Diagnostic aliases
+of acceleration, angular velocity and rates are read at capture time rather than
+copied between the branches. Contact-pipeline pivot and motion pivot retain their
+distinct source owners.
+
+`--scope visibility --steps 4` drives two cars through visible, middle-distance
+and visible updates, with distinct stored and device controls. Control column 27
+uses bit 8 to publish a visibility choice and bit 0 for its value; zero retains
+the existing owner choice. The fixture changes visibility explicitly and calls
+the original corresponding Tank method; camera visibility and full Player/Tank
+dispatch remain separate integration boundaries.
+
+`vehicle-inactive` compares the complete row, live drive config and shared pools,
+particles, RNG and unaffected view/camera/boost state after each call. Real cell
+and trigonometric assets are immutable. The 29,592-byte fixture includes shared
+state and diagnostic capture within one DSEG2 bank; terrain temporarily borrows
+DSEG3. The checker verifies guards, mappings and input immutability. Its fault
+checker covers physical/part poses, selective particle clearing, grip restoration,
+shared spin/RNG and early/late failure results.
+
 ## Collision working region
 
 The normal driving entry reserves one aligned 64-KiB `DRIVING_WORLD` buffer.
@@ -42,7 +210,8 @@ application entry use CSEG7. Parent methods, auxiliary geometry/motion and mesh
 ownership use CSEG5. The producer assigns these library copies to the parent
 segment; other application entries retain their own placement.
 Vehicle preparation uses CSEG4; pickup flight, collection and light-bank code
-uses CSEG3. Their ordinary far calls retain the same data owners.
+uses CSEG3. Complete motion, poses and immediate effects also use CSEG3. Their
+ordinary far calls retain the same data owners.
 Existing ordinary-ABI far calls preserve DSEG,
 arguments and shared state. The normal CB06 includes the additional code COPY.
 Boundary guards check the unused ends of both working pages. Dedicated checks
@@ -79,7 +248,10 @@ page, and out-of-map terrain reentry with unchanged seed and query result.
 7. `integrate_and_pose` integrates position, applies the attitude transaction,
    advances articulation and gun vertices, and updates eligible player lean.
    Rebuild both physical track poses and publish body/base positions.
-8. The caller advances synchronous effects. Pickup trajectories fade the shared
+8. Complete physics cases run spray/marks, pickup fade, impact animation, smoke,
+   shared debris, ground lights, temporary lines and shield in original order.
+   The narrower component trajectories retain their selected effect boundaries.
+   Pickup trajectories fade the shared
    pickup banks before `impact::tick`, using the live vehicle anchor and pool.
    The driving owner calls `impact::tick`
    with the same world seed, pool and vehicle cooldown used by ground response.
@@ -114,6 +286,274 @@ the external reference basis for impact offsets, and the base-position anchor
 for the last-corner damage point. These are distinct live views. The player body
 uses its original instance-owned mesh and selected damage vertices; successful
 dents repair incident normals.
+
+## Complete post-collision motion
+
+`car_motion::integrate_and_pose` binds physical position, previous position,
+velocity, angular rates, acceleration, pivot, articulation, lean, contacts and
+the full `vehicle_pose::State` directly. It validates positive dt before stores,
+integrates physical position and then runs the source attitude transaction.
+The 116-byte local attitude transaction is required by the source commit rule:
+failed normalization preserves integrated position while leaving the previous
+body matrix/position and angular state intact.
+
+After a successful attitude commit, the existing body kernel updates recoil,
+pitch and selected gun vertices. Invalid vertices retain the earlier body and
+mesh writes. Player lean runs under its original player/mode gate. Complete
+part poses then use the updated articulation recoil/pitch, independent pose
+inputs and four travel values. The sampled pose input's dependent recoil/pitch
+columns are ignored and replaced at this boundary.
+
+`finish` runs only after immediate effects succeed. It publishes the four-point
+contact hull, sets ready and applies the original wrapping multiply and signed
+division to all four `40/dt` rates. Contact stride and gap offsets bind either
+compact contacts or the live terrain rows. Both numerical attitude policies use
+the existing integer kernel and immutable original lookup tables.
+
+`car-motion` compares complete `Motion::integrate_and_pose` and `finish_frame`
+calls using the actual ENGLAND model configuration, including repeated calls
+after normalization, gun-vertex and pose failures. The canonical motion view
+occupies 678 bytes; the representative mutable gun mesh occupies 36 bytes.
+Input/configuration immutability, an external-bank guard and DSEG restoration
+are checked. `car_motion_checker_check.py` exercises selected answer mutations.
+Complete physics cases select this motion/effects sequence; the narrower
+component trajectories retain their existing selected pose boundary.
+
+## Player controls
+
+`player_control` supplies the ordered control kernels before parent Tank dispatch.
+`Input` borrows the seven drive columns, two start-held/fast-start columns,
+the separately owned prefix countdown throttle, and shared analog latch.
+Its drive columns match `drive::Frame` at 19..26.
+Device sampling supplies five key bits and two normalized axes; device access
+and its failures remain outside this arithmetic boundary. The input kernel
+retains reverse selection, signed ramping, digital precedence, analog latch,
+twin-track mixing, countdown launch locks and the original clamping locations.
+It returns driving and auxiliary-down bits for subsequent calls.
+
+The turret kernel borrows its velocity, cooldown, centering, moving, center-lock
+and two pressed fields. Its signed-i16 angle occupies the raw i32 pose column;
+each angle store performs the original i16 wrap and publishes sign extension.
+Cooldown equality, ordered left/right acceleration, both-key centering,
+damping and sign-crossing stops preserve the original narrow arithmetic.
+
+`Brake` directly binds the same drive columns, saved turn limit, reverse-braking
+flag, live maximum turn and yaw lock through independent views. `brake` implements the fast handbrake
+override and temporary-effect transition; `restore` performs gradual restoration.
+Surface slide remains unsigned when comparing against the signed live override.
+The saved turn limit, rotation and lateral override retain their i16 conversions.
+
+`Collision` uses the same adjacent impact/marker counters as scenery response,
+plus live ground/tank deltas and obstacle impulse. `collision_decay` keeps
+unsigned magnitude comparisons, signed marker saturation and impact expiration.
+It runs after input and before route/turret/fire when driving is active; race
+activity controls its mutations. These kernels consume no RNG.
+
+`player-control` compares the full shared state after each original input,
+turret, brake, restore or collision call, including ordered short prefixes.
+The two input flags, countdown throttle, saved turn and reverse-braking fields
+use separate addresses with boundary guards, so adjacency cannot hide a stale
+field offset. The same views bind the continuous driving owner.
+
+`--scope controls --steps 6` connects sampled countdown, launch eligibility,
+steering, turret and auxiliary-brake updates to full Tank prepare/physics.
+`--scope fast-controls --steps 2` starts from a moving car with consistent
+world/local velocity, activates the fast brake and restores its live model turn
+limit. Source coverage checks require the corresponding state transitions.
+The model maximum turn is selected per car before power calculation. Sampled
+keys and the external start/driving gates are independent controls; derived
+drive columns are overwritten by the target's own input result before physics.
+Control column 29 uses high-word bit 0 to enable sampling, low-word bits 0..8
+for keys, bits 9..12 for the start stage and bit 13 for the force-surface flag.
+The sampling protocol is decoded before physics; column 29 then holds only
+the original force-surface boolean. These trajectories qualify sampled
+controls followed by Tank updates. Full Player route/lap/fire dispatch and the
+outer race clock retain their separate integration boundaries.
+It checks read-only controls/tuning and buffer guards as well as answer words.
+The representative state occupies 128 bytes and the kernel allocates no heap.
+`player_control_checker_check.py` exercises selected answer mutations. The
+enclosing route/fire and parent Tank dispatch retain their separate owners.
+
+## Player route and clock
+
+`player_route::Routes` borrows linked checkpoint metadata, the original 8x8
+cell ranges and ordered object IDs. Each point has seven i32 columns: presence,
+progress, next-binding kind/entity, lap, hairpin and width. The nine header
+columns hold grid origin/shifts/radii and backwards/fallback metadata. The
+caller binds the metadata bank for the query phase; collider reads retain the
+current DSEG mappings. Route queries use the shared live identity and collision
+owners and consume no RNG.
+
+`search` selects progress or nearest queries. Both retain the original row,
+column and item traversal, unsigned work limit and stable first-hit ties.
+Nearest uses all three position components and unsigned approximate distance.
+Progress uses the original forward-plane and hairpin tests, signed XZ metric,
+linked-point score correction and lap scaling. An unresolved next binding is
+an error only when the original query actually needs that binding. Outputs
+are committed on successful queries, including the original no-match result.
+
+`Car` binds 44 bytes of player-route state and the shared 12-byte racer row.
+`cross` uses the published pre-movement position, commits checkpoint/passed
+before lap-record writes and retains the signed-i16 lap increment. `progress`
+publishes the score before applying fallback and staggered wrong-way updates.
+`warning` always publishes previous score, including frames without a warning
+test. The timer narrows to i16 at the original writes.
+
+`clock` updates countdown, GO release and display stage in a 12-byte view, then
+visits contiguous three-column racer rows in order. The launch edge enables
+driving without adding countdown overshoot to elapsed race time. `physics_dt`
+clamps raw elapsed time independently to 10..100. Input/countdown control,
+route crossing and progress remain before parent Tank movement in the owner.
+
+`player-route` compares every ENGLAND gate, real spatial queries, partial
+failures, fallback, wrong-way state and three-racer clocks in short sequences.
+It checks complete read-only metadata images, identities, colliders, controls
+and bank guards. Cases use both CPU metadata and a separate DSEG3 phase bank.
+`player_control_checker_check.py --routes` exercises selected answer mutations.
+
+## Player scene stage
+
+`scene_player::prepare` connects the primary non-AI Player stage to the shared
+identity, collision, lifecycle and weapon owners. Its car fields are views of
+the existing input, pose, collision, inventory and tuning data. The caller
+resolves the Player Tick and finish takeover before entering this stage; Tank
+visibility, preparation and physical motion follow it.
+
+With sampled keys, input/countdown runs first. An active driving result enables
+collision decay, then real gate crossing and lap events when the race route is
+active. Changed laps run immediate visibility actions before the delayed queues
+are flushed. Turret control follows, then fire uses the real shared factories.
+Brake updates consume the same input and live model tuning. Only a restoration
+branch reads the previous material's slide multiplier; an invalid material can
+therefore fail after a successfully created projectile and committed inventory.
+The launch-eligible output resets on entry and commits after successful input
+and brake processing, including the countdown path.
+
+Route progress follows even when sampled keys are absent or driving is gated.
+The route metadata bank is selected only for a route query and restored before
+lap actions or fire. First-map route-weather selection retains the source's
+unsigned score, first-frame and stagger rules, including the unchanged/sentinel
+fast paths and unsupported-weather error. It consumes no random values.
+
+The authored lap directory remains fixed. A transient weapon's visibility and
+mesh presence belong to its normal component/header, so the qualification
+derives its extra lap-binding projection from those same fields instead of
+maintaining a second mutable directory. The method return from fire is discarded
+by Player; its committed world, inventory, recoil, effect and RNG state remain
+part of the comparison.
+
+`scene-player` compares this combined stage against a body extracted verbatim
+from the original Player method. The reference overlay preserves every source
+file's original bytes and appends that body plus its private-call entry;
+source/body/bridge hashes and append readback are recorded before compilation.
+Cases cover input gates, real lap transitions and queues, firing different
+weapons, material failures after fire, route errors, weather errors and
+successive calls after partial failures. `scene_allocation_checker_check.py
+--player` exercises selected answer mutations. Parent Tank and complete mixed
+world scheduling retain their separate integration boundary.
+
+## Track particles and ground effects
+
+`track_effects` exposes direct spray, mark and ground-light updates for the
+post-movement effects stage. The caller supplies views of live vehicle inputs;
+kind, contact, track and height strides are expressed in i32 columns, so the
+entry points can read existing contact/pose arrays directly.
+
+Spray has a three-column timer/side/count header and eight twelve-column
+particles (396 bytes). Existing particles advance before the last free slot
+is chosen. Narrow life, size, floor, kind and rotation fields retain their
+source conversions. The kind table contains sixteen sign-extended i8 values;
+each of six arithmetic style rows supplies spin, initial size and gain/shift.
+The retained particle kind identifies its render style. Invalid kinds or
+material/side indices preserve all earlier particle/count/timer changes.
+
+Ground marks occupy 352 bytes: two active flags, movement, FIFO counters,
+endpoints and 68 quad handles. Shared strided contacts and track matrices
+produce the joining quad. FIFO release precedes allocation; a tail error
+retains the newly allocated quad. Pool exhaustion, overflow handles and
+material changes retain the source's active flags and ordered writes.
+
+Brake/reverse ground lights occupy twenty bytes: mode, active flags and two
+handles. Player visibility and non-player active/disabled gates keep their
+different rules. Steady zero-throttle braking releases before allocating again.
+Existing-light updates change positions only; their material and color persist.
+New quads use the source additive style, color, UVs and reversed corner order.
+Allocation exhaustion still publishes the source active flag and alias handle.
+
+The complete representative spray/marks/lights state and shared quad/line pool
+occupy 14,320 bytes, including 13,552 pool bytes. They fit in one 32-KiB phase
+bank; the updates allocate no heap. `track-effects` compares all these fields
+after each source call, including full pools, aliases, invalid handles, FIFO
+boundaries, signed overflow and ordered shared-pool sequences. It also checks
+input/style immutability, bank restoration and the unused bank guard.
+`track_effects_checker_check.py` exercises selected answer mutations. The
+remaining vehicle effects and enclosing complete Tank Tick are separate entries.
+
+## Vehicle smoke, debris and shield
+
+`vehicle_smoke` directly updates 700 bytes of damage/traction smoke state. The
+ten-column header holds the timer, side, penetration memory, count, damage,
+sockets and damage timers; fifteen eleven-column rows hold the particles.
+Fields with byte or word semantics are extended to i32 at their source writes.
+Incoming free slots first serve turret/body damage, then ordinary smoke. Socket
+lookup follows the RNG draw and particle stores, retaining partial failure.
+Severe player slip calls the existing `impact::emit` synchronously with the same
+cooldown, contact points, seed and line pool used by collisions earlier in the
+vehicle update. Position and corner strides bind live contact arrays directly.
+
+`vehicle_debris` owns two 364-byte banks. Each has eight particles, a floor and
+an optional entity owner. Borrowed owner rows contain entity, active marker,
+cooldown and previous-plane byte; their i32 stride is supplied by the caller.
+Bank theft finds the first matching live entity and immediately clears that
+car's active marker before assigning the new owner. Missing owners retain the
+earlier sound RNG, cooldown and collision-accumulator writes. Behind-camera
+non-player emission retains its distinct state/RNG prefix. Particle colors keep
+the three discarded draws per component. `clear` resets active markers, owner
+and cooldown while preserving geometry, colors, floor and previous-plane state.
+Sound output publishes its consumed random value; device playback remains external.
+
+`vehicle_shield` stores nine 180-byte orbit banks. Each contains four orbits and
+one tail column. Initialization consumes five shared draws per orbit and leaves
+position payloads intact. Enabled updates validate the selected bank, seek yaw
+rate and pitch in source order, transform the four orbit positions and advance
+size/spin with the original integer semantics. Disabled updates skip validation
+and RNG. Immutable trigonometry tables use the existing asset lookup backend.
+
+`vehicle-effects` compares all three modules, peer-owner state, the shared seed
+and the complete synchronous impact/line-pool snapshot after every call. It
+covers selective reset, pool exhaustion, delayed socket errors, bank theft,
+arithmetic/angle failures and mixed calls on one seed. Persistent data lives in
+an external phase bank while table lookups borrow and restore the other window;
+input/tuning immutability and the unused phase-bank suffix are checked.
+`vehicle_effects_checker_check.py` checks selected answer mutations.
+
+## Ordered car effects
+
+`car_effects::tick` runs the complete source effects stage: spray and marks
+(subject to the special-player gate), pickup fade, impact animation, smoke with
+synchronous impact emission, shared debris, brake/reverse lights, temporary
+electric lines and shield orbits. Each call returns immediately on its first
+failure, preserving earlier state, pool allocation and RNG changes.
+
+`State` binds the current car's persistent particles and marks. `Shared` binds
+the existing shared effect banks, peer debris rows and quad pool. The impact
+context's line pool is borrowed directly by temporary effects; there is one
+live count and one set of exhaustion aliases. `Input` contains sampled scalar
+values and views of the authoritative contacts, transforms and poses. Pickup,
+debris, temporary lines and shield follow base position; the lights use physical
+position. Spray uses the reference basis while lights/shield use the optional
+external basis. These distinct inputs retain their source meaning.
+
+The `car-effects` qualifier calls the original private `car::effects` method
+through an appended reference adapter. It loads the actual ENGLAND car/profile
+and initializes pickup/electric effects through their real factories. Three-call
+sequences compare every effect, pool alias, peer row and shared RNG, including
+errors in early and late stages, an oversized owner directory and repeated calls
+after failures. The external phase bank holds 26,400 bytes of diagnostic state,
+including a duplicate impact-pool capture used only for comparison. Bank guards,
+mapping restoration and immutable input/tuning checks bound each sequence.
+`car_effects_checker_check.py` exercises selected answer mutations. Parent Tank
+physics, full initialization and mixed-world scheduling remain distinct owners.
 
 ## Pickup state and collection
 
@@ -302,13 +742,16 @@ Additional state fields read directly into their final CPU views. Lifetime
 loading uses a bounded 256-word temporary buffer. These are qualification
 snapshot loaders, separate from authored game initialization.
 
-Impact and whole-world capture each use their own short-lived 2,576-word stack
-buffer; the two checks run sequentially. Whole-world comparison scratch is
-64 words. Changed collider/property packets are read in separate 60/16-word
-parts. The four unused impact phase probes are explicitly zeroed before writing
-live fields. Persistent vehicle, identity and world storage stays live throughout
-these checks. Explicit non-inlining keeps loading/capture scratch out of the
-continuous update frame. No additional heap or external bank is needed.
+Impact comparison reads the line pool directly and serializes one 22-word
+particle row at a time. Batch headers share that row; the four unused phase
+probes are checked as zero. Whole-world comparison uses an eight-word row for
+canonical identities and component records, plus the existing 64-word comparison
+scratch. The row writers also serve the full diagnostic serializers. Every
+original field remains checked, including inactive particle payloads and retired
+identity slots. Changed collider/property packets are read in separate 60/16-word
+parts. The 111-word motion reservation table lives only in its loading function.
+Persistent vehicle, identity and world storage stays live throughout these checks;
+the checks use the existing heap and external-bank reservations.
 
 Deformable query errors clear material but preserve the previous attachment.
 A successful miss clears the attachment. A hit publishes it before reflection

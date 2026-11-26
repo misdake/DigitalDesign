@@ -25,6 +25,12 @@ impl Prepared {
 '''
     car_bridge = owner / 'reference_car.rs'
     scene_bridge = owner / 'reference_scene.rs'
+    contact_bridge = owner / 'reference_contact.rs'
+    if driving:
+        if not contact_bridge.is_file():
+            raise FileNotFoundError(contact_bridge)
+        suffixes['contact_pipeline.rs'] = (
+            '\n#[path=' + json.dumps(contact_bridge.as_posix()) + '] pub mod rcc_probe;\n').encode()
     if lifecycle:
         if not scene_bridge.is_file():
             raise FileNotFoundError(scene_bridge)
@@ -85,6 +91,7 @@ impl View<'_> {
     (output / 'reference-overlay.json').write_text(json.dumps(dict(
         scope='Original implementation bytes preserved; appended private-call bridge only.',
         bridge=dict(file=str(bridge), sha256=hashlib.sha256(bridge.read_bytes()).hexdigest()),
+        contact_bridge=dict(file=str(contact_bridge), sha256=hashlib.sha256(contact_bridge.read_bytes()).hexdigest()) if driving else None,
         car_bridge=dict(file=str(car_bridge), sha256=hashlib.sha256(car_bridge.read_bytes()).hexdigest()) if driving else None,
         scene_bridge=dict(file=str(scene_bridge), sha256=hashlib.sha256(scene_bridge.read_bytes()).hexdigest()) if lifecycle else None,
         closer_bridge=dict(file=str(closer_bridge), sha256=hashlib.sha256(closer_bridge.read_bytes()).hexdigest()) if closer else None,

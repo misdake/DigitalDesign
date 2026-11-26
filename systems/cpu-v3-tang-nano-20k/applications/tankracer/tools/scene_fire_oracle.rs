@@ -10,7 +10,7 @@ use tankracer_game::{
     scene_objects::rcc_lifecycle_probe,
     vehicle_runtime::{SinglePlayer, rcc_car_probe},
 };
-fn snapshot(world: &SinglePlayer, shot: Option<EntityId>) -> Value {
+pub(super) fn snapshot(world: &SinglePlayer, shot: Option<EntityId>) -> Value {
     let mut out = scene_mines_oracle::snapshot(world);
     let car = world.vehicles.entries[0].as_ref().unwrap();
     let v = &car.physics;

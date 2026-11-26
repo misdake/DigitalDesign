@@ -23,7 +23,8 @@ fn check_words(
 }
 pub fn run(output: &Path, fixture: &Path, label: &str) -> Result<Value, Box<dyn Error>> {
     let creation = label != "scene-allocation";
-    let fire_mode = label == "scene-fire";
+    let player_mode = label == "scene-player";
+    let fire_mode = label == "scene-fire" || player_mode;
     let laps = label == "scene-laps";
     let trains = label == "scene-train";
     let emitters = label == "scene-emitter";
@@ -140,16 +141,35 @@ fn flock_geometry(index:u16)->scene_flock::Geometry{let m=pointer(0x6500+index*6
     } else {
         "halt(0x7e87);"
     };
-    let lap_setup = if laps {
+    let lap_setup = if laps || player_mode {
         r#"
  world.grid=spatial::Grid{page:119,origin:pointer(0xf2c0),shift_x:scene.header[14u16],shift_z:scene.header[15u16],items:pointer(0xd200),ranges:pointer(0xf200)};
  world.deformables=ordered::List{items:pointer(0x7000),count:pointer(0x6f90)[0u16],capacity:128};
  let mut attachments:Buf<scene_laps::Attachment,16>=Buf::new([scene_laps::Attachment{object:0,present:pointer(0),attached:pointer(0)};16]);
  let mut i=0u16;while i<pointer(0x6f88)[0u16]{attachments[i]=scene_laps::Attachment{object:pointer(0x6f40)[i],present:pointer(0x6f00+i*2),attached:pointer(0x6f01+i*2)};i+=1;}
- let mut lap_context:Buf<scene_laps::Context,1>=Buf::new([scene_laps::Context{objects:pointer(0x6100),count:pointer(0x6f8a)[0u16],backups:pointer(0x6d00),backup_count:pointer(0x6f89)[0u16],attachments:attachments.as_array(),attachment_count:pointer(0x6f88)[0u16],camera:pointer(0x7100),lap:0,flush:false}]);
+ let mut lap_context:Buf<scene_laps::Context,1>=Buf::new([scene_laps::Context{objects:pointer(if PLAYER{0x6700}else{0x6100}),count:pointer(0x6f8a)[0u16],backups:pointer(0x6d00),backup_count:pointer(0x6f89)[0u16],attachments:attachments.as_array(),attachment_count:pointer(0x6f88)[0u16],camera:pointer(0x7100),lap:0,flush:false}]);
 "#
     } else {
         ""
+    };
+    let player_setup = if player_mode {
+        r#"
+ let fields=pointer(0x7200);let player_angle=pointer(0x7224);
+ let input=player_control::Input{drive:fields,state:at(fields,14),countdown:at(fields,18),analog_latch:at(fields,20)};
+ let car=scene_player::Car{input,collision:player_control::Collision{counters:pointer(0x6105),ground_delta:at(fields,46),tank_delta:at(fields,52),obstacle_impulse:at(fields,58)},route:player_route::Car{route:at(fields,70),race:at(fields,92)},brake:player_control::Brake{saved_turn:at(fields,38),reverse_braking:at(fields,40),drive:fields,max_turn:at(fields,42),yaw_lock:at(fields,44)},turret:at(fields,22),angle:player_angle,speed:at(fields,60),effect_timer:at(fields,62),temporary_timer:at(fields,64),material:at(fields,66),weather:at(fields,68),position:pointer(0x7480),rotational_drag:pointer(0x74a0)[0u16] as i16};
+ let mut player_stage=scene_player::Stage{car,frame:scene_player::Frame{entity:launch.owner.entity,number:integer::from_i16(0),dt:integer::from_i16(0),keys:0,has_keys:false,start_stage:integer::from_i16(4),race_active:pointer(0x74a4)[0u16]!=0,mode:integer::from_i16(0)},routes:player_route::Routes{header:pointer(0xc000),points:pointer(0xc100),count:pointer(0x74a2)[0u16],ranges:pointer(0xd000),items:pointer(0xd100)},route_count:pointer(0x74a3)[0u16],route_page:135,weather_table:pointer(0x7380),slides:pointer(0x7300),slide_count:pointer(0x74a1)[0u16],tuning:pointer(0x7460),laps:lap_context.as_array(),fire:view_of(&mut fire),launch_eligible:at(fields,98)};
+"#
+    } else {
+        ""
+    };
+    let player_call = if player_mode {
+        r#"
+ player_stage.frame.dt=g(c,1);player_stage.frame.number=g(c,2);player_stage.frame.keys=g(c,3).lo_bits()&511;player_stage.frame.has_keys=g(c,3).lo_bits()&512!=0;player_stage.frame.start_stage=g(c,5);placement.frame=g(c,2);
+ status=scene_player::prepare(&scene,&mut store,&mut runtime,&mut world,&mut weapons,&player_stage);
+ let mut published=pointer(0x6f90);published[0u16]=world.deformables.count;
+"#
+    } else {
+        "halt(0x7e8e);"
     };
     let lap_call = if laps {
         r#"
@@ -464,6 +484,7 @@ fn flock_geometry(index:u16)->scene_flock::Geometry{let m=pointer(0x6500+index*6
         label,
         &r#"
 const CREATION:bool=$CREATION;
+const PLAYER:bool=$PLAYER;
 const AREA:bool=$AREA;const UFOPROJECTILE:bool=$UFOPROJECTILE;
 fn ufo_car(i:u16)->scene_ufos::Car{
  if UFOPROJECTILE {
@@ -555,6 +576,7 @@ fn main(){
  $MINE_SETUP
  $FIRE_SETUP
  $LAP_SETUP
+ $PLAYER_SETUP
  $TRAIN_SETUP
  $EMITTER_SETUP
  $FLOCK_SETUP
@@ -580,6 +602,7 @@ fn main(){
    }else if operation==6{$EXPLOSION_CALL
    }else if operation==7{$EXPLOSION_TICK_CALL
    }else if operation==8{$WEAPON_CALL
+   }else if operation==25{$PLAYER_CALL
    }else if operation==24{$AMBIENT_CALL
    }else if operation==23{$FLOCK_CALL
    }else if operation==22{$EMITTER_CALL
@@ -628,7 +651,7 @@ fn main(){
  $MINE_FINISH
  unsafe{write_dseg_page(3,initial3);write_dseg_page(2,initial2);}halt(0x600d);
 }
-"#.replace("$AMBIENT_SETUP",ambient_setup).replace("$AMBIENT_CALL",ambient_call).replace("$FLOCK_HELPERS",flock_helpers).replace("$FLOCK_SETUP",flock_setup).replace("$FLOCK_CALL",flock_call).replace("$EMITTER_SETUP",emitter_setup).replace("$EMITTER_CALL",emitter_call).replace("$TRAIN_SETUP",train_setup).replace("$TRAIN_CALL",train_call).replace("$LAP_SETUP",lap_setup).replace("$LAP_CALL",lap_call).replace("$FIRE_SETUP",fire_setup).replace("$FIRE_CALL",fire_call).replace("$ACTOR_SETUP",actor_setup).replace("$ACTOR_CALL",actor_call).replace("$OBSTACLE_SETUP",obstacle_setup).replace("$OBSTACLE_CALL",obstacle_call).replace("$VEHICLE_SETUP",&vehicle_setup).replace("$VEHICLE_CALL",vehicle_call).replace("$UFOPROJECTILE",if projectile_ufo {"true"}else{"false"}).replace("$UFO_PAGES",if has_ufos {"1"}else{"0"}).replace("$CREATION",if creation {"true"}else{"false"}).replace("$MINE_SETUP",mine_setup).replace("$PROJECTILE_SETUP",projectile_setup).replace("$UFO_CONTEXT",ufo_context).replace("$UFO_SETUP",ufo_setup).replace("$UFO_CALL",ufo_call).replace("$AREA_SETUP",area_setup).replace("$AREA_CALL",area_call).replace("$AREA",if projectile_area {"true"}else{"false"}).replace("$PROJECTILE_CALL",projectile_call).replace("$REFLECTION_CALL",reflection_call).replace("$MINE_HIT_SETUP",mine_hit_setup).replace("$MINE_HIT_CALL",mine_hit_call).replace("$MINE_CALL",mine_call).replace("$MINE_TICK",mine_tick).replace("$EXPLOSION_CALL",explosion_call).replace("$EXPLOSION_PUBLISH",explosion_publish).replace("$EXPLOSION_TICK_SETUP",explosion_tick_setup).replace("$EXPLOSION_TICK_CALL",explosion_tick_call).replace("$WEAPON_SETUP",weapon_setup).replace("$WEAPON_CALL",weapon_call).replace("$MINE_EXPLOSION_CALL",mine_explosion_call).replace("$EXPLOSION_SETUP",if explosions {"unsafe{write_dseg_page(2,128);}copy(overflow,pointer(0x9a58),16);unsafe{write_dseg_page(2,120);}"}else{""}).replace("$MINE_FINISH",if mines || projectile_flight || fire_mode {"map.terrain.finish();"}else{""}),
+"#.replace("$PLAYER_SETUP",player_setup).replace("$PLAYER_CALL",player_call).replace("$PLAYER",if player_mode {"true"}else{"false"}).replace("$AMBIENT_SETUP",ambient_setup).replace("$AMBIENT_CALL",ambient_call).replace("$FLOCK_HELPERS",flock_helpers).replace("$FLOCK_SETUP",flock_setup).replace("$FLOCK_CALL",flock_call).replace("$EMITTER_SETUP",emitter_setup).replace("$EMITTER_CALL",emitter_call).replace("$TRAIN_SETUP",train_setup).replace("$TRAIN_CALL",train_call).replace("$LAP_SETUP",lap_setup).replace("$LAP_CALL",lap_call).replace("$FIRE_SETUP",fire_setup).replace("$FIRE_CALL",fire_call).replace("$ACTOR_SETUP",actor_setup).replace("$ACTOR_CALL",actor_call).replace("$OBSTACLE_SETUP",obstacle_setup).replace("$OBSTACLE_CALL",obstacle_call).replace("$VEHICLE_SETUP",&vehicle_setup).replace("$VEHICLE_CALL",vehicle_call).replace("$UFOPROJECTILE",if projectile_ufo {"true"}else{"false"}).replace("$UFO_PAGES",if has_ufos {"1"}else{"0"}).replace("$CREATION",if creation {"true"}else{"false"}).replace("$MINE_SETUP",mine_setup).replace("$PROJECTILE_SETUP",projectile_setup).replace("$UFO_CONTEXT",ufo_context).replace("$UFO_SETUP",ufo_setup).replace("$UFO_CALL",ufo_call).replace("$AREA_SETUP",area_setup).replace("$AREA_CALL",area_call).replace("$AREA",if projectile_area {"true"}else{"false"}).replace("$PROJECTILE_CALL",projectile_call).replace("$REFLECTION_CALL",reflection_call).replace("$MINE_HIT_SETUP",mine_hit_setup).replace("$MINE_HIT_CALL",mine_hit_call).replace("$MINE_CALL",mine_call).replace("$MINE_TICK",mine_tick).replace("$EXPLOSION_CALL",explosion_call).replace("$EXPLOSION_PUBLISH",explosion_publish).replace("$EXPLOSION_TICK_SETUP",explosion_tick_setup).replace("$EXPLOSION_TICK_CALL",explosion_tick_call).replace("$WEAPON_SETUP",weapon_setup).replace("$WEAPON_CALL",weapon_call).replace("$MINE_EXPLOSION_CALL",mine_explosion_call).replace("$EXPLOSION_SETUP",if explosions {"unsafe{write_dseg_page(2,128);}copy(overflow,pointer(0x9a58),16);unsafe{write_dseg_page(2,120);}"}else{""}).replace("$MINE_FINISH",if mines || projectile_flight || fire_mode {"map.terrain.finish();"}else{""}),
         output,
     )?;
     let cases = data["cases"].as_array().ok_or("scene allocation cases")?;
@@ -965,10 +988,12 @@ fn main(){
                 memory[0x6312 + i] = u16::from(sound.as_bool().unwrap());
             }
         }
-        if laps {
+        if laps || player_mode {
             let bindings = u16s(&initial["lap_bindings"]);
             assert!(bindings.len() <= 0xc00);
-            memory[0x6100..0x6100 + bindings.len()].copy_from_slice(&bindings);
+            let address = if player_mode { 0x6700 } else { 0x6100 };
+            assert!(bindings.len() <= if player_mode { 0x600 } else { 0xc00 });
+            memory[address..address + bindings.len()].copy_from_slice(&bindings);
             memory[0x6f8a] = (bindings.len() / 6) as u16;
             let backups = u16s(&initial["lap_backups"]);
             assert!(backups.len() <= 0x200);
@@ -1021,6 +1046,39 @@ fn main(){
             memory[0x66f2] = (u16s(&case["transfer_occupied"]).len() / 2) as u16;
             memory[0x66f3] = u16::from(case["vehicles_present"].as_bool().unwrap());
             memory[0x66f4] = u16::from(case["car_present"].as_bool().unwrap());
+        }
+        if player_mode {
+            let fields = u16s(&initial["player_fields"]);
+            assert_eq!(fields.len(), 100);
+            memory[0x7200..0x7264].copy_from_slice(&fields);
+            for (address, name, maximum) in [
+                (0x7300, "player_slides", 128),
+                (0x7380, "player_weather", 192),
+                (0x7480, "player_position", 6),
+            ] {
+                let data = u16s(&case[name]);
+                assert!(data.len() <= maximum);
+                memory[address..address + data.len()].copy_from_slice(&data);
+            }
+            for (address, name, maximum) in [
+                (0, "player_route_header", 18),
+                (0x100, "player_route_points", 0xf00),
+                (0x1000, "player_route_ranges", 128),
+                (0x1100, "player_route_items", 0x700),
+            ] {
+                let data = u16s(&case[name]);
+                assert!(data.len() <= maximum);
+                let start = 135 * 16384 + address;
+                memory[start..start + data.len()].copy_from_slice(&data);
+            }
+            for (i, value) in [800, 70, 800, 720, 720, 700].into_iter().enumerate() {
+                memory[0x7460 + i * 2..0x7462 + i * 2].copy_from_slice(&words(value));
+            }
+            memory[0x74a0] = case["player_rotation"].as_i64().unwrap() as u16;
+            memory[0x74a1] = u16s(&case["player_slides"]).len() as u16;
+            memory[0x74a2] = (u16s(&case["player_route_points"]).len() / 14) as u16;
+            memory[0x74a3] = case["player_route_count"].as_u64().unwrap() as u16;
+            memory[0x74a4] = u16::from(case["player_race_active"].as_bool().unwrap());
         }
         if fire_mode {
             memory[0x6100..0x6149].copy_from_slice(&u16s(&initial["fire_state"]));
@@ -1158,7 +1216,9 @@ fn main(){
                     || ambient
                 {
                     assert!(
-                        sp >= if vehicle_methods || laps {
+                        sp >= if player_mode {
+                            0x7500
+                        } else if vehicle_methods || laps {
                             0x7400
                         } else {
                             0x7000
@@ -1822,18 +1882,33 @@ fn main(){
                         &format!("{label} player position"),
                     )?;
                 }
-                if laps {
+                if laps || player_mode {
                     for (address, name) in [
-                        (0x6100, "lap_bindings"),
+                        (if player_mode { 0x6700 } else { 0x6100 }, "lap_bindings"),
                         (0x6d00, "lap_backups"),
                         (0x7000, "lap_deformables"),
                     ] {
-                        checked += check_words(
-                            memory,
-                            address,
-                            &u16s(&state[name]),
-                            &format!("{label} {name}"),
-                        )?;
+                        let mut want = u16s(&state[name]);
+                        if player_mode && name == "lap_bindings" {
+                            let fixed_words = u16s(&initial["lap_bindings"]).len();
+                            for (index, row) in want[fixed_words..].chunks_exact(6).enumerate() {
+                                // New weapons retain their ordinary visibility in their
+                                // component header; the authored lap directory is fixed.
+                                let id = fixed_words / 6 + index;
+                                let record = 0x1300 + id * 8;
+                                let shape = u16::from(
+                                    memory[record + 7] & 1 != 0 && memory[record + 3] & 2 != 0,
+                                );
+                                checked += check_words(
+                                    &[0, 0, 0, shape, 0, 0],
+                                    0,
+                                    row,
+                                    &format!("{label} dynamic lap binding {id}"),
+                                )?;
+                            }
+                            want.truncate(fixed_words);
+                        }
+                        checked += check_words(memory, address, &want, &format!("{label} {name}"))?;
                     }
                     let expected = u16s(&state["lap_attachments"]);
                     for (i, row) in expected.chunks_exact(3).enumerate() {
@@ -1863,6 +1938,30 @@ fn main(){
                         &format!("{label} camera inputs"),
                     )?;
                 }
+                if player_mode {
+                    checked += check_words(
+                        memory,
+                        0x7200,
+                        &u16s(&state["player_fields"]),
+                        &format!("{label} player fields"),
+                    )?;
+                    for (address, name) in [
+                        (0x7300, "player_slides"),
+                        (0x7380, "player_weather"),
+                        (0x7480, "player_position"),
+                        (135 * 16384, "player_route_header"),
+                        (135 * 16384 + 0x100, "player_route_points"),
+                        (135 * 16384 + 0x1000, "player_route_ranges"),
+                        (135 * 16384 + 0x1100, "player_route_items"),
+                    ] {
+                        checked += check_words(
+                            memory,
+                            address,
+                            &u16s(&case[name]),
+                            &format!("{label} {name}"),
+                        )?;
+                    }
+                }
                 if fire_mode {
                     checked += check_words(
                         memory,
@@ -1870,12 +1969,14 @@ fn main(){
                         &u16s(&state["fire_state"]),
                         &format!("{label} fire state"),
                     )?;
-                    checked += check_words(
-                        memory,
-                        0x6160,
-                        &u16s(&state["fire_shot"]),
-                        &format!("{label} fire shot"),
-                    )?;
+                    if !player_mode {
+                        checked += check_words(
+                            memory,
+                            0x6160,
+                            &u16s(&state["fire_shot"]),
+                            &format!("{label} fire shot"),
+                        )?;
+                    }
                     checked += check_words(
                         memory,
                         0x6400,

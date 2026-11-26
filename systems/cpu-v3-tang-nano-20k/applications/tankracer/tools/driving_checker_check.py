@@ -17,6 +17,7 @@ def main():
     parser.add_argument('artifact', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('--runtime', type=Path, required=True)
+    parser.add_argument('--complete', action='store_true')
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError('Fresh output required')
@@ -30,56 +31,79 @@ def main():
         ('seed-final-partial-block', 'frames-0.bin', 60 + values * 2 + 1, 0x7f05),
     ]
     files = json.loads((assets / 'assets.json').read_text())['resources']
-    surfaces = [r['file'] for r in files if re.fullmatch(r'surfaces-\d+\.bin', r['file'])]
-    surfaces.sort(key=lambda name: int(name[9:-4]))
-    surface_values = artifact.constants['DRIVING_SURFACE_VALUES']['value']
-    mutations.append(('surface-final-partial-block', surfaces[0], surface_values * 2 - 1,
-                      0x8000 + (surface_values - 1) * 2))
-    versions = [r['file'] for r in files if re.fullmatch(r'mesh-versions-\d+\.bin', r['file'])]
-    versions.sort(key=lambda name: int(name[14:-4]))
-    mutations.append(('shared-resource-revision', versions[0], 0, 0x8000))
-    parents = [r['file'] for r in files if re.fullmatch(r'parents-\d+\.bin', r['file'])]
-    parents.sort(key=lambda name: int(name[8:-4]))
-    packet = (assets / parents[0]).read_bytes()
-    parent_words = struct.unpack('<' + 'H' * (len(packet) // 2), packet)
-    cursor = 3 + parent_words[2] + 1 + 7
-    found_motion = False
-    for _ in range(7):
-        if parent_words[cursor + 1] == 0:
-            cursor += 2
-            continue
-        faces = parent_words[cursor + 7]
-        cursor += 8
-        if faces:
-            mutations.append(('parent-fragment-velocity', parents[0], cursor + 8,
-                              0x8000 + cursor + 8))
-            found_motion = True
-            break
-    if not found_motion:
-        raise ValueError('An activated parent fragment is required')
-    scenes = [r['file'] for r in files if re.fullmatch(r'scenery-\d+\.bin', r['file'])]
-    scenes.sort(key=lambda name: int(name[8:-4]))
-    found = False
-    for name in scenes:
-        data = (assets / name).read_bytes()
-        words = struct.unpack('<' + 'H' * (len(data) // 2), data)
-        position = 0
-        while position < len(words):
-            header = words[position:position + 24]
-            if len(header) != 24 or header[:2] != (0x5346, 1) or header[2] < 24:
-                raise ValueError('Invalid semantic scene packet')
-            if header[12]:
-                # The first changed row contains ID, 60 collider words and
-                # 16 property words. Bounds start at property word ten.
-                mutations.append(('changed-scene-property', name,
-                                  position + header[11] + 71, 0x8000 + 70))
-                found = True
+    if args.complete:
+        complete=[r['file'] for r in files if re.fullmatch(r'complete-\d+\.bin',r['file'])]
+        complete.sort(key=lambda name:int(name[9:-4]))
+        if not complete:
+            raise ValueError('Complete physics answers required')
+        cases=json.loads((assets/'assets.json').read_text())['cases']
+        name=next((r for r in complete if cases[int(r[9:-4])]['name']=='complete-prepare'),complete[0])
+        peer=next(r for r in complete if cases[int(r[9:-4])]['cars']>1)
+        stride=artifact.constants['DRIVING_COMPLETE_WORDS']['value']
+        mutations=[
+            ('complete-first-car-smoke',name,6810+480,0x8000+6810+480),
+            ('complete-second-car-smoke',peer,6810+956+480,0x8000+6810+956+480),
+            ('complete-shared-shield',name,9086,0x8000+9086),
+            ('complete-later-frame-light',name,stride+6810+830,0x8000+6810+830),
+            ('complete-final-partial-block',name,stride-1,0x8000+stride-1),
+        ]
+        if artifact.constants['DRIVING_STEPS']['value']>=3 and cases[int(name[9:-4])]['name']=='complete-prepare':
+            mutations.append(('complete-emitted-smoke',name,2*stride+6810+500,0x8000+6810+500))
+        prefixes=[r['file'] for r in files if re.fullmatch(r'prefix-\d+\.bin',r['file'])]
+        if prefixes and cases[int(name[9:-4])]['name']=='complete-prepare':
+            prefix='prefix-'+name[9:]
+            mutations.append(('complete-expired-temporary',prefix,8,0x8000+8))
+    else:
+        surfaces = [r['file'] for r in files if re.fullmatch(r'surfaces-\d+\.bin', r['file'])]
+        surfaces.sort(key=lambda name: int(name[9:-4]))
+        surface_values = artifact.constants['DRIVING_SURFACE_VALUES']['value']
+        mutations.append(('surface-final-partial-block', surfaces[0], surface_values * 2 - 1,
+                          0x8000 + (surface_values - 1) * 2))
+        versions = [r['file'] for r in files if re.fullmatch(r'mesh-versions-\d+\.bin', r['file'])]
+        versions.sort(key=lambda name: int(name[14:-4]))
+        mutations.append(('shared-resource-revision', versions[0], 0, 0x8000))
+        parents = [r['file'] for r in files if re.fullmatch(r'parents-\d+\.bin', r['file'])]
+        parents.sort(key=lambda name: int(name[8:-4]))
+        packet = (assets / parents[0]).read_bytes()
+        parent_words = struct.unpack('<' + 'H' * (len(packet) // 2), packet)
+        cursor = 3 + parent_words[2] + 1 + 7
+        found_motion = False
+        for _ in range(7):
+            if parent_words[cursor + 1] == 0:
+                cursor += 2
+                continue
+            faces = parent_words[cursor + 7]
+            cursor += 8
+            if faces:
+                mutations.append(('parent-fragment-velocity', parents[0], cursor + 8,
+                                  0x8000 + cursor + 8))
+                found_motion = True
                 break
-            position += header[2]
-        if found:
-            break
-    if not found:
-        raise ValueError('A changed scene row is required')
+        if not found_motion:
+            raise ValueError('An activated parent fragment is required')
+        scenes = [r['file'] for r in files if re.fullmatch(r'scenery-\d+\.bin', r['file'])]
+        scenes.sort(key=lambda name: int(name[8:-4]))
+        found = False
+        for name in scenes:
+            data = (assets / name).read_bytes()
+            words = struct.unpack('<' + 'H' * (len(data) // 2), data)
+            position = 0
+            while position < len(words):
+                header = words[position:position + 24]
+                if len(header) != 24 or header[:2] != (0x5346, 1) or header[2] < 24:
+                    raise ValueError('Invalid semantic scene packet')
+                if header[12]:
+                    # The first changed row contains ID, 60 collider words and
+                    # 16 property words. Bounds start at property word ten.
+                    mutations.append(('changed-scene-property', name,
+                                      position + header[11] + 71, 0x8000 + 70))
+                    found = True
+                    break
+                position += header[2]
+            if found:
+                break
+        if not found:
+            raise ValueError('A changed scene row is required')
     args.output.mkdir(parents=True)
     results = []
     for tag, name, word, signal in mutations:
@@ -106,7 +130,7 @@ def main():
         results.append(dict(test=tag, source=name, source_word=word, halt_signal=signal,
                             mutated_package_sha256=hashlib.sha256(changed).hexdigest()))
     report = dict(passed=True, artifact_id=artifact.manifest['artifact_id'],
-                  scope='Single-bit changes to frame/surface/world/resource/fragment answers; source code and game inputs unchanged',
+                  scope=('Single-bit changes to complete pose/effect and prepare answers' if args.complete else 'Single-bit changes to frame/surface/world/resource/fragment answers')+'; source code and game inputs unchanged',
                   tests=results)
     (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(dict(passed=True, tests=len(results))))

@@ -23,7 +23,7 @@ pub struct PickupContact {
     pub own: u16,
     pub mode: fix32,
 }
-fn read_pickup_stage(out: Array<u16>, asset: AssetBytes, offset: u16, count: u16) {
+pub(super) fn read_pickup_stage(out: Array<u16>, asset: AssetBytes, offset: u16, count: u16) {
     let scratch: Buf<u16, 64> = Buf::new([0; 64]);
     let mut done = 0u16;
     while done < count {

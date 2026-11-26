@@ -29,50 +29,50 @@ pub fn write(
     i = 0;
     while i < 4 {
         let batch = &mut state.batches[i];
-        attitude::put(out, cursor, batch.kind);
-        attitude::put(out, cursor + 1, batch.corner);
-        attitude::put(out, cursor + 2, batch.owner);
-        let mut active = fix32::zero();
-        if batch.active {
-            active = integer::from_i16(1);
-        }
-        attitude::put(out, cursor + 3, active);
-        attitude::put(out, cursor + 4, batch.age);
-        attitude::put(out, cursor + 5, batch.frame);
+        write_batch(batch, unsafe {
+            out.as_ptr().add((cursor * 2) as i16).as_u16_array()
+        });
         cursor += 6;
         j = 0;
         while j < 10 {
             let particle = &mut batch.particles[j];
-            attitude::put(out, cursor, integer::from_i16(particle.distance[0u16]));
-            attitude::put(out, cursor + 1, integer::from_i16(particle.distance[1u16]));
-            let mut k = 0u16;
-            while k < 2 {
-                attitude::put(
-                    out,
-                    cursor + 2 + k,
-                    attitude::get(particle.speed.as_array(), k),
-                );
-                attitude::put(
-                    out,
-                    cursor + 4 + k,
-                    attitude::get(particle.pitch.as_array(), k),
-                );
-                attitude::put(
-                    out,
-                    cursor + 6 + k,
-                    attitude::get(particle.yaw.as_array(), k),
-                );
-                attitude::put(
-                    out,
-                    cursor + 9 + k,
-                    fix32::from_words(particle.colors[k * 2], particle.colors[k * 2 + 1]),
-                );
-                k += 1;
-            }
-            attitude::put(out, cursor + 8, particle.line);
+            write_particle(particle, unsafe {
+                out.as_ptr().add((cursor * 2) as i16).as_u16_array()
+            });
             cursor += 11;
             j += 1;
         }
         i += 1;
     }
+}
+
+// Row writers also support bounded streaming comparison without a full image.
+pub fn write_batch(batch: &mut impact::Batch, out: Array<u16>) {
+    attitude::put(out, 0, batch.kind);
+    attitude::put(out, 1, batch.corner);
+    attitude::put(out, 2, batch.owner);
+    let mut active = fix32::zero();
+    if batch.active {
+        active = integer::from_i16(1);
+    }
+    attitude::put(out, 3, active);
+    attitude::put(out, 4, batch.age);
+    attitude::put(out, 5, batch.frame);
+}
+pub fn write_particle(particle: &mut impact::Particle, out: Array<u16>) {
+    attitude::put(out, 0, integer::from_i16(particle.distance[0u16]));
+    attitude::put(out, 1, integer::from_i16(particle.distance[1u16]));
+    let mut k = 0u16;
+    while k < 2 {
+        attitude::put(out, 2 + k, attitude::get(particle.speed.as_array(), k));
+        attitude::put(out, 4 + k, attitude::get(particle.pitch.as_array(), k));
+        attitude::put(out, 6 + k, attitude::get(particle.yaw.as_array(), k));
+        attitude::put(
+            out,
+            9 + k,
+            fix32::from_words(particle.colors[k * 2], particle.colors[k * 2 + 1]),
+        );
+        k += 1;
+    }
+    attitude::put(out, 8, particle.line);
 }

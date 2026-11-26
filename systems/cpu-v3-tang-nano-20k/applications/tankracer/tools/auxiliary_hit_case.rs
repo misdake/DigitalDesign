@@ -214,6 +214,8 @@ pub fn auxiliary_map(cells: static_assets::AssetBytes, directory: Array<u16>) ->
         directory: directory,
         seed: fix32::zero(),
         noise: Buf::new([0; 16]),
+        shield_page: 65535,
+        shield: unsafe { Ptr::from_addr(0).as_u16_array() },
     }
 }
 pub fn run_auxiliary_hit(

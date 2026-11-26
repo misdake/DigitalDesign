@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 from reference_bridge import prepare
+from reference_player import append_player_probe
 
 
 def main():
@@ -19,6 +20,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     owner = Path(__file__).resolve().parent
     game = prepare(root,out,driving=True,lifecycle=True,meshes=True)
+    append_player_probe(root, out, game)
     project = out / 'reference-tool'
     project.mkdir(exist_ok=True)
     manifest = ('[package]\nname="tankracer-projectile-assets"\nversion="0.1.0"\nedition="2024"\n'
@@ -83,6 +85,12 @@ def main():
     outputs += ['scene-projectile-flight.json'] + [f'scene-projectile-flight-{i}.bin' for i in range(33)]
     outputs += ['vehicle-pose.json', 'vehicle-transfer.json']
     outputs += ['scene-vehicle-transfer.json'] + [f'scene-vehicle-transfer-{i}.bin' for i in range(60)]
+    sources += [owner / 'player_control_oracle.rs', owner / 'player_route_oracle.rs', owner / 'scene_player_oracle.rs', owner / 'reference_player.py', owner / 'reference_player.rs']
+    outputs += ['scene-player.json'] + [f'scene-player-{i}.bin' for i in range(48)]
+    sources += [owner / 'track_effects_oracle.rs', owner / 'pickup_snapshot.rs', owner / 'vehicle_effects_oracle.rs', owner / 'impact_snapshot.rs', owner / 'car_effects_oracle.rs', owner / 'car_motion_oracle.rs']
+    outputs += ['player-control.json', 'player-route.json', 'track-effects.json', 'vehicle-effects.json', 'car-effects.json', 'car-motion.json']
+    sources += [owner/'contact_effect_oracle.rs', owner/'sampling_snapshot.rs', owner/'reference_contact.rs', owner/'vehicle_startup_oracle.rs', owner/'vehicle_inactive_oracle.rs', owner/'drive_oracle.rs']
+    outputs += ['vehicle-startup.json', 'vehicle-inactive.json', 'contact-effect.json'] + [f'contact-effect-cells-{i}.bin' for i in range(3)]
     outputs += ['scene-ambient.json'] + [f'scene-ambient-{i}.bin' for i in range(61)]
     outputs += ['scene-flock.json'] + [f'scene-flock-{i}.bin' for i in range(48)]
     outputs += ['scene-emitter.json'] + [f'scene-emitter-{i}.bin' for i in range(50)]

@@ -3,6 +3,8 @@ use super::*;
 use std::collections::BTreeSet;
 use tankracer_game::{entity_factory as factory, scene_entity::Handle};
 pub struct Setup<'a> {
+    pub complete: bool,
+    pub sample_controls: u16,
     pub terrain: &'a TerrainData,
     pub surfaces: &'a tankracer_assets::config::Surfaces,
     pub tank: &'a tankracer_assets::config::Tank,
@@ -35,6 +37,9 @@ pub fn step(
     number: u32,
     mut context: Option<&mut factory::Context<'_, Handle>>,
 ) -> Step {
+    if setup.complete {
+        return complete_driving_step::step(world, setup, own, input, number, context);
+    }
     if setup.prepare {
         rcc_car_probe::prepare_with_context(
             world,

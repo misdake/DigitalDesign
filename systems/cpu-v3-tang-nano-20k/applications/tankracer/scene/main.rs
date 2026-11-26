@@ -442,6 +442,8 @@ fn check_hits(scene: &scene_query::Scene, world: &mut scene_world::World) {
         directory: dir,
         seed: attitude::get(h, 6),
         noise: Buf::new([0; 16]),
+        shield_page: 65535,
+        shield: unsafe { Ptr::from_addr(0).as_u16_array() },
     };
     let mut noise = map.noise.as_array();
     i = 0;

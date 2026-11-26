@@ -369,7 +369,7 @@ pub fn check_live(
     let asset = expected.asset;
     let base = expected.offset;
     let comparison: Buf<u16, 64> = Buf::new([0; 64]);
-    let capture: Buf<u16, 2576> = Buf::new([0; 2576]);
+    let capture: Buf<u16, 8> = Buf::new([0; 8]);
     let scratch = comparison.as_array();
     let actual = capture.as_array();
     let header: Buf<u16, 24> = Buf::new([0; 24]);
@@ -388,17 +388,24 @@ pub fn check_live(
     check_value(attitude::get(runtime.seed, 0), at(h, 15), 0);
     check_value(runtime.ticks.next, at(h, 17), 0);
     mark(10);
-    let id_words = identity_capture::write(&store.identities, actual);
-    if id_words != h[6u16] {
+    let ids = attitude::get(store.identities.header, 0).lo_bits();
+    if 12 + ids * 6 != h[6u16] {
         halt(0x7f25);
     }
-    compare_block(
-        actual,
-        asset,
-        base + fix32::from_words(h[5u16], 0),
-        id_words,
-        scratch,
-    );
+    let identity_base = base + fix32::from_words(h[5u16], 0);
+    compare_block(store.identities.header, asset, identity_base, 12, scratch);
+    let mut identity = 0u16;
+    while identity < ids {
+        identity_capture::write_row(&store.identities, identity, actual);
+        compare_block(
+            actual,
+            asset,
+            identity_base + fix32::from_words(12 + identity * 6, 0),
+            6,
+            scratch,
+        );
+        identity += 1;
+    }
     compare_block(
         runtime.ticks.flags,
         asset,
@@ -408,17 +415,17 @@ pub fn check_live(
     );
     // Only a live Rust Option has component state/configuration to compare.
     // Resource offsets describe each encoding and are not game state.
-    read(
-        actual,
-        asset,
-        base + fix32::from_words(h[4u16], 0),
-        world.count * 8,
-    );
     let mut i = 0u16;
     while i < world.count {
         mark(11);
         let r = at(store.records, (i * 8) as i16);
-        let e = at(actual, (i * 8) as i16);
+        read(
+            actual,
+            asset,
+            base + fix32::from_words(h[4u16] + i * 8, 0),
+            8,
+        );
+        let e = actual;
         if r[0u16] != e[0u16] || r[7u16] != e[7u16] {
             halt(0x7f26);
         }

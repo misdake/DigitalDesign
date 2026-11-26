@@ -15,8 +15,36 @@ production terrain kernels against reference queries; see
 lazy auxiliary queries, track poses and immediate car/ground collisions to
 ordered persistent vehicle updates sharing one RNG and effect pool;
 see [real-map driving](/systems/cpu-v3-tang-nano-20k/applications/tankracer/driving.md).
+Its `--scope complete --steps 3` cases compare the complete original prepare and physics
+method for continuous two-car driving, car collisions and an authored object hit,
+including all part poses, the complete immediate effects sequence, boost,
+temporary-effect expiration and smoke's synchronous impact generation.
+`--scope startup` constructs the cars from model/spawn metadata before driving;
+the reusable `vehicle-startup` qualifier checks the full fresh Player state.
+`vehicle-inactive` qualifies the complete non-AI middle-distance Tank branch
+over the constructor row, real terrain and shared effects/RNG. The kernel also
+binds the full driving owner's fields directly; `--scope visibility --steps 4`
+checks both branch transitions in continuous two-car updates.
+`--scope effect` exercises both game-owned surface-effect slots through complete
+vehicle updates; `contact-effect` checks synchronous publication across query errors.
 Its reusable complete part-pose and route-restoration kernels also have independent
 `vehicle-pose` and `vehicle-transfer` qualification entries.
+`player-control` qualifies sampled input/countdown, turret, auxiliary brake
+restoration and collision indication on shared live fields before Tank dispatch.
+`--scope controls --steps 6` connects those sampled fields to continuous Tank
+updates; `--scope fast-controls --steps 2` covers fast braking and restoration.
+`player-route` covers actual ENGLAND checkpoint/progress queries, lap records,
+wrong-way state and the raw-time race clock.
+`scene-player` connects input, lap events, turret/fire, brake and route progress
+to the same scene/vehicle owners before parent Tank visibility and preparation.
+`track-effects` qualifies track spray, ground-mark FIFO and brake/reverse lights
+on one shared quad/line phase bank.
+`vehicle-effects` qualifies damage/traction smoke with synchronous impact emission,
+shared debris ownership and shield initialization/update using the same game RNG.
+`car-effects` executes the complete ordered vehicle-effects stage on those owners,
+including pickup fade, impact animation, track effects and temporary electric lines.
+`car-motion` qualifies complete post-collision movement and all part poses, with
+explicit successful-tick hull/rate publication after the intervening effects stage.
 
 `bench-tankracer-scene` loads the complete initial ENGLAND collision metadata,
 checks candidates/class slots and runs connected Fall/Bounce contacts and motion; see

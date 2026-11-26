@@ -70,9 +70,32 @@ pub fn expect_block(actual: Array<u16>, expected: &mut Reference, base: u16, cou
     }
 }
 fn check_car(car: &mut driving::Car, expected: &mut Reference, base: u16) {
-    expect_block(car.attitude, expected, base, 58);
-    expect_block(car.suspension, expected, base + 58, 88);
-    expect_block(car.drive, expected, base + 146, 32);
+    if car.visible {
+        expect_block(car.attitude, expected, base, 58);
+        expect_block(car.suspension, expected, base + 58, 88);
+        expect_block(car.drive, expected, base + 146, 32);
+    } else {
+        // Packed diagnostic columns alias these authoritative fields. Read them
+        // at capture time instead of copying state between update branches.
+        expect_block(car.attitude, expected, base, 48);
+        expect_value(attitude::get(car.drive, 14), expected, base / 2 + 24);
+        expect_value(attitude::get(car.drive, 13), expected, base / 2 + 25);
+        expect_block(at(car.attitude, 52), expected, base + 52, 6);
+        expect_block(car.suspension, expected, base + 58, 88);
+        let mut i = 0u16;
+        while i < 16 {
+            let mut actual = attitude::get(car.drive, i);
+            if i >= 3 && i < 6 {
+                actual = attitude::get(car.attitude, 18 + i);
+            } else if i == 9 {
+                actual = attitude::get(car.motion, 15);
+            } else if i == 12 {
+                actual = attitude::get(car.motion, 14);
+            }
+            expect_value(actual, expected, base / 2 + 73 + i);
+            i += 1;
+        }
+    }
     expect_block(car.motion, expected, base + 178, 32);
     expect_block(car.boost, expected, base + 210, 8);
     expect_block(car.tracks, expected, base + 218, 48);
@@ -163,6 +186,48 @@ pub fn check_surfaces(components: Array<deform_contact::Component>, expected: &m
         halt(0x7f10);
     }
 }
+// Compare every canonical impact word while retaining only one particle row.
+fn check_impacts(
+    state: &mut impact::State,
+    vehicle: &impact::Vehicle,
+    context: &mut impact::Context,
+    expected: &mut Reference,
+) {
+    let mut i = 0u16;
+    while i < 4 {
+        expect_value(fix32::zero(), expected, 295 + i);
+        i += 1;
+    }
+    expect_value(attitude::get(context.seed, 0), expected, 299);
+    expect_value(state.next, expected, 300);
+    expect_value(attitude::get(vehicle.cooldown, 0), expected, 301);
+    expect_value(context.pool.count, expected, 302);
+    expect_block(context.pool.lines, expected, 606, 1600);
+    expect_block(
+        unsafe { view_of(&mut context.pool.overflow).as_ptr().as_u16_array() },
+        expected,
+        2206,
+        16,
+    );
+    expect_block(context.pool.exhausted, expected, 2222, 16);
+    let row: Buf<u16, 22> = Buf::new([0; 22]);
+    let mut cursor = 2238u16;
+    i = 0;
+    while i < 4 {
+        let batch = &mut state.batches[i];
+        impact_capture::write_batch(batch, row.as_array());
+        expect_block(row.as_array(), expected, cursor, 12);
+        cursor += 12;
+        let mut j = 0u16;
+        while j < 10 {
+            impact_capture::write_particle(&mut batch.particles[j], row.as_array());
+            expect_block(row.as_array(), expected, cursor, 22);
+            cursor += 22;
+            j += 1;
+        }
+        i += 1;
+    }
+}
 #[inline(never)]
 pub fn check_snapshot(
     actors: Array<driving::Car>,
@@ -175,18 +240,7 @@ pub fn check_snapshot(
     let mut actors = actors;
     check_car(&mut actors[0u16], expected, 0);
     check_car(&mut actors[1u16], expected, 3566);
-    let captured: Buf<u16, 2576> = Buf::new([0; 2576]);
-    let extra = captured.as_array();
-    // This driver has no impact-module phase probes; the capture reserves
-    // four zero phase values before the live shared impact state.
-    let mut prefix = extra;
-    let mut i = 0u16;
-    while i < 8 {
-        prefix[i] = 0;
-        i += 1;
-    }
-    impact_capture::write(impacts, &peers.vehicles[0u16].impact, effects, extra);
-    expect_block(extra, expected, 590, 2576);
+    check_impacts(impacts, &peers.vehicles[0u16].impact, effects, expected);
     check_mesh(&peers.vehicles[0u16].damage, expected, 1583, 1596);
     check_mesh(&peers.vehicles[1u16].damage, expected, 2086, 2096);
     expect_value(attitude::get(aux, 1), expected, 1779);

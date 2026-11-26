@@ -1,4 +1,6 @@
 //! Persistent two-car trajectories through the original private collision entries.
+mod complete_driving_step;
+mod complete_scene_assets;
 mod debris_scene_assets;
 mod deform_assets;
 mod driving_capture;
@@ -20,6 +22,7 @@ mod reference_world;
 mod scene_export;
 mod scenery_assets;
 mod scenery_frame;
+mod vehicle_startup_assets;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 use tankracer_assets::{config::Part, terrain::TerrainData};
@@ -28,7 +31,7 @@ use tankracer_game::{
     math::Matrix,
     motion, pose, powertrain,
     sampling::Transform,
-    suspension, terrain,
+    suspension, terrain, vehicle,
     vehicle_runtime::{SinglePlayer, rcc_car_probe, rcc_probe},
     vehicle_startup::Player,
     velocity,
@@ -325,6 +328,79 @@ fn main() {
         }
     }
     for (name, velocities, separation, object, ordinary, retire, transient) in [
+        ("complete-startup", [0, 0], 1600, None, false, false, false),
+        (
+            "complete-fast-controls",
+            [600000, 0],
+            16000,
+            None,
+            false,
+            false,
+            false,
+        ),
+        (
+            "complete-controls",
+            [600000, 0],
+            16000,
+            None,
+            false,
+            false,
+            false,
+        ),
+        (
+            "complete-visibility",
+            [100000, 0],
+            1600,
+            None,
+            false,
+            false,
+            false,
+        ),
+        (
+            "complete-effect",
+            [100000, 0],
+            1600,
+            None,
+            false,
+            false,
+            false,
+        ),
+        (
+            "complete-prepare",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
+            "complete-drive",
+            [100000, 0],
+            1600,
+            None,
+            false,
+            false,
+            false,
+        ),
+        (
+            "complete-pair",
+            [300000, -300000],
+            1000,
+            None,
+            false,
+            false,
+            false,
+        ),
+        (
+            "complete-wall",
+            [300000, 0],
+            1600,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
         (
             "pickup-186",
             [300000, 0],
@@ -658,6 +734,7 @@ fn main() {
             }
             fs::write(path, encoded).unwrap();
         }
+        let mut startup_models = Vec::new();
         for (i, original) in originals.iter().enumerate() {
             let mut p = original.clone();
             let v = &mut p.physics;
@@ -721,6 +798,9 @@ fn main() {
                 )
                 .unwrap();
             v.motion.velocity = [0, 0, velocities[i]];
+            if name == "complete-fast-controls" {
+                v.powertrain.local_velocity = v.motion.velocity;
+            }
             if ordinary && i == 0 {
                 v.motion.velocity = [-400000, -100000, 200000];
             }
@@ -732,7 +812,41 @@ fn main() {
                 v.contact.sampling.primary.points[j].local = p.model.primary_local[j];
                 v.contact.response.points[j].corner = j as u32;
             }
+            if name == "complete-startup" {
+                let spawn = pose::Pose {
+                    matrix: Matrix::IDENTITY,
+                    position: v.motion.poses.physical_position,
+                };
+                let environment = tankracer_game::vehicle_startup::Environment {
+                    ambient_wobble: false,
+                    session_active: true,
+                    ambient_phase: 0,
+                    gun_pivot: [0; 3],
+                };
+                startup_models.extend(vehicle_startup_assets::encode(
+                    &p.model,
+                    spawn,
+                    environment,
+                    v.entity,
+                    v.class,
+                    v.player,
+                ));
+                p = Player::construct(v.entity, v.class, p.model, spawn, environment, v.player)
+                    .unwrap();
+                p.slot = i as u8;
+            }
             world.vehicles.entries[i] = Some(p);
+        }
+        if !startup_models.is_empty() {
+            assert_eq!(startup_models.len(), vehicle_startup_assets::WORDS * 2);
+            fs::write(
+                out.join("startup-models.bin"),
+                startup_models
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
         }
         world.vehicles.racers = [None; 9];
         world.vehicles.racers[0] = Some(tankracer_game::object_query::TankId(0));
@@ -799,6 +913,21 @@ fn main() {
                 fs::write(out.join(filename), bytes).unwrap();
             }
         }
+        if name == "complete-visibility" {
+            for car in world.vehicles.entries[..2].iter_mut().flatten() {
+                car.input.drive.throttle = 12000;
+                car.input.drive.steering = -4000;
+            }
+        }
+        if name == "complete-effect" {
+            for car in world.vehicles.entries[..2].iter_mut().flatten() {
+                car.physics.contact.sampling.effect.timer = 1;
+                car.physics.contact.sampling.effect.active = 1;
+                car.physics.contact.sampling.effect.restore = car.physics.pose.turret_offset[2];
+            }
+            world.shared.shield.banks[0].tail = 0x12345678;
+            world.shared.shield.banks[1].tail = 0x87654321;
+        }
         let initial_seed = world.shared.random;
         let pickup_initial = if name.starts_with("pickup-") {
             pickup_scene_assets::capture(world)
@@ -806,7 +935,7 @@ fn main() {
             Vec::new()
         };
         let mut prefix_initial = Vec::new();
-        if name.starts_with("prefix-") {
+        if name.starts_with("prefix-") || name == "complete-prepare" {
             let s = &mut world.vehicles.entries[0].as_mut().unwrap().prefix;
             s.boost.start(entity, false, 0, &mut world.shared.boost);
             s.boost.camera_timer = 199;
@@ -835,12 +964,26 @@ fn main() {
             )
             .unwrap();
         }
+        if name.starts_with("complete-") && name != "complete-prepare" {
+            prefix_initial = prefix_scene_assets::encode(world);
+            let cfg = rcc_car_probe::prefix_config(world, tankracer_game::object_query::TankId(0));
+            fs::write(
+                out.join("prefix-config.bin"),
+                cfg.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+            )
+            .unwrap();
+        }
         let noise = world.shared.noise;
         let mut stages = std::array::from_fn(|i| {
             let p = world.vehicles.entries[i].as_ref().unwrap();
             reference::drive_fixture::flatten(&p.physics.powertrain.drive_state(&p.physics.motion))
         });
         let initial = snapshot(&world, &stages);
+        let complete_initial = if name.starts_with("complete-") {
+            complete_scene_assets::capture(world)
+        } else {
+            Vec::new()
+        };
         let car_bindings = debris_scene_assets::cars(world);
         let racer_slots = world
             .vehicles
@@ -876,6 +1019,14 @@ fn main() {
             visited.insert((x + z * 8) as usize);
         }
         let setup = driving_step::Setup {
+            complete: name.starts_with("complete-"),
+            sample_controls: if name == "complete-controls" {
+                1
+            } else if name == "complete-fast-controls" {
+                2
+            } else {
+                0
+            },
             terrain: &terrain,
             surfaces: &surfaces,
             tank,
@@ -885,19 +1036,27 @@ fn main() {
             environment: env,
             deform: object.is_some(),
             ordinary,
-            prepare: name.starts_with("prefix-"),
+            prepare: name.starts_with("prefix-") || name.starts_with("complete-"),
             pickups: name.starts_with("pickup-"),
             models: if name.starts_with("auxiliary-")
                 || name.starts_with("debris-")
                 || name.starts_with("prefix-")
                 || name.starts_with("pickup-")
+                || name == "complete-wall"
+                || name == "complete-prepare"
             {
                 &models
             } else {
                 &[]
             },
         };
-        let case_steps = if retire {
+        let case_steps = if name == "complete-fast-controls" {
+            steps.clamp(2, 3)
+        } else if name == "complete-controls" {
+            steps.max(6)
+        } else if name == "complete-visibility" {
+            steps.max(4)
+        } else if retire {
             steps.clamp(3, 4)
         } else if name.starts_with("pickup-") {
             steps.clamp(2, 4)
@@ -910,6 +1069,10 @@ fn main() {
             let number = frame as u32 + 1;
             world.frame = number;
             for own in 0..actors {
+                if name == "complete-visibility" {
+                    world.vehicles.entries[own].as_mut().unwrap().visible =
+                        !((frame == 1 && own == 0) || (frame == 2 && own == 1));
+                }
                 let input = drive::Input {
                     throttle: if name.starts_with("pickup-") {
                         0
@@ -998,10 +1161,11 @@ fn main() {
                 };
                 frames.push(
                     json!({"control":control,"expected":expected,"surface":surface,"scenery":live,"resource_versions":resource_versions,
-                        "prefix": if name.starts_with("prefix-") {prefix_scene_assets::encode(world)}else{Vec::new()},
+                        "complete":if setup.complete {complete_scene_assets::capture(world)}else{Vec::new()},
+                        "prefix": if setup.prepare {prefix_scene_assets::encode(world)}else{Vec::new()},
                         "pickup":if name.starts_with("pickup-"){pickup_scene_assets::capture(world)}else{Vec::new()},
                         "debris": if name.starts_with("debris-") {debris_scene_assets::capture(world)} else {Vec::new()},
-                        "parents": if name.starts_with("auxiliary-") || name.starts_with("debris-") || name.starts_with("prefix-") || name.starts_with("pickup-") { parent_scene_assets::capture(world, &bindings) } else { Vec::new() }}),
+                        "parents": if name.starts_with("auxiliary-") || name.starts_with("debris-") || name.starts_with("prefix-") || name.starts_with("pickup-") || name=="complete-wall" || name=="complete-prepare" { parent_scene_assets::capture(world, &bindings) } else { Vec::new() }}),
                 );
                 if retire && frame >= 1 {
                     let id = object.unwrap();
@@ -1053,9 +1217,45 @@ fn main() {
             hits > 0
                 || (deform_hits > 0 && changed_vertices > 0)
                 || ordinary_hits > 0
-                || name.starts_with("pickup-"),
+                || name.starts_with("pickup-")
+                || name == "complete-controls"
+                || name == "complete-fast-controls",
             "paired trajectories must exercise real car collisions: {name}, ordinary {ordinary_hits}"
         );
+        if name == "complete-controls" {
+            assert_eq!(
+                frames[2]["complete"][10416].as_u64(),
+                Some(1),
+                "late countdown press must arm fast start"
+            );
+            assert_eq!(
+                frames[4]["complete"][7723].as_u64(),
+                Some(65535),
+                "right turret key must publish a negative signed angle"
+            );
+            assert_eq!(
+                frames[6]["complete"][7758].as_u64(),
+                Some(1),
+                "auxiliary brake must publish reverse braking"
+            );
+        }
+        if name == "complete-fast-controls" {
+            assert_eq!(
+                frames[0]["complete"][10368].as_u64(),
+                Some(1),
+                "fast auxiliary override must activate"
+            );
+            assert_eq!(
+                frames[0]["complete"][10420].as_u64(),
+                Some(310),
+                "fast brake must publish the live model turn limit"
+            );
+            assert_eq!(
+                frames[2]["complete"][10370].as_u64(),
+                Some(frames[0]["complete"][10370].as_u64().unwrap() + 66),
+                "release must advance the surface override restoration"
+            );
+        }
         if object.is_some() && !ordinary && steps >= 2 {
             assert!(
                 sampled_points > 0,
@@ -1115,7 +1315,20 @@ fn main() {
                 );
             }
         }
-        if name.starts_with("prefix-") {
+        if name == "complete-effect" {
+            assert_eq!(world.shared.shield.banks[0].tail, 0);
+            assert_eq!(world.shared.shield.banks[1].tail, 0);
+            assert!(
+                world.vehicles.entries[..2].iter().flatten().all(|c| c
+                    .physics
+                    .contact
+                    .sampling
+                    .effect
+                    .timer
+                    <= 0)
+            );
+        }
+        if name.starts_with("prefix-") || name == "complete-prepare" {
             let s = &world.vehicles.entries[0].as_ref().unwrap().prefix;
             assert_eq!(
                 s.boost.applied, 1,
@@ -1134,6 +1347,17 @@ fn main() {
                 s.spin.speed > 0 && world.shared.random != initial_seed,
                 "shared prefix RNG must advance"
             );
+            if name == "complete-prepare" && steps >= 3 {
+                let p = world.vehicles.entries[0].as_ref().unwrap();
+                assert!(
+                    p.smoke.particles.iter().any(|p| p.life > 0),
+                    "continuous driving must emit smoke after its timer threshold"
+                );
+                assert!(
+                    world.shared.impacts.batches.iter().any(|b| b.active),
+                    "traction smoke must emit its synchronous impact batch"
+                );
+            }
         }
         if name.starts_with("pickup-") {
             let p = world.vehicles.entries[0].as_ref().unwrap();
@@ -1155,7 +1379,7 @@ fn main() {
             );
         }
         cells.extend(visited.iter().copied());
-        exported.push(json!({"name":name,"cars":actors,"car_bindings":car_bindings,"prefix_initial":prefix_initial,"pickup_initial":pickup_initial,"racer_slots":racer_slots,"entities":entities,"initial":initial,"seed_after_noise":initial_seed,"noise":noise,
+        exported.push(json!({"name":name,"complete_initial":complete_initial,"cars":actors,"car_bindings":car_bindings,"prefix_initial":prefix_initial,"pickup_initial":pickup_initial,"racer_slots":racer_slots,"entities":entities,"initial":initial,"seed_after_noise":initial_seed,"noise":noise,
             "frames":frames,"cells":visited,"fallback_contacts":0,"tank_contacts":hits,"deform_contacts":deform_hits,
             "deformed_vertices":changed_vertices,"surface_sample_points":sampled_points,"deform_spark_events":spark_events,"scene":object.is_some(),"scenery":ordinary,"ordinary_contacts":ordinary_hits,"scenery_ticks":scenery_ticks,
             "retirement":retire,"transient":transient,"retire_object":if retire {object.unwrap()+1} else {0},

@@ -35,6 +35,7 @@ def main():
     group.add_argument('--emitters',action='store_true')
     group.add_argument('--flocks',action='store_true')
     group.add_argument('--ambient',action='store_true')
+    group.add_argument('--player',action='store_true')
     args = parser.parse_args()
     fixture = args.fixture.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -60,6 +61,7 @@ def main():
     if args.emitters:mode='scene-emitter'
     if args.flocks:mode='scene-flock'
     if args.ambient:mode='scene-ambient'
+    if args.player:mode='scene-player'
     data = json.loads((fixture / (mode + '.json')).read_text())
     faults = [('transient-1', 'object'), ('transient-0', 'properties'),
               ('transient-6', 'free-pop'), ('transient-0', 'growth'),
@@ -233,12 +235,30 @@ def main():
                 ('ambient-22','negative-age'),('ambient-37','rotation-wrap'),('ambient-26','distance-freeze'),
                 ('ambient-38','sprite-material'),('ambient-50','independent-noisy'),('ambient-44','invalid-selected'),
                 ('ambient-51','region-leave'),('ambient-60','sequence-sharing'),('ambient-0','gameplay-RNG')]
+    if args.player:
+        faults=[('player-0','input'),('player-2','countdown'),('player-6','late-ammo'),('player-6','late-projectile'),
+                ('player-10','failed-route-input'),('player-14','lap-event'),('player-21','shared-RNG'),
+                ('player-22','dynamic-shape'),('player-29','lap-error-prefix'),('player-30','weather-error'),
+                ('player-34','turret'),('player-38','fast-brake'),('player-33','inactive-race'),
+                ('player-47','named-gate'),('player-1','without-keys'),('player-36','held-fire')]
     results = []
     for index, (tag, kind) in enumerate(faults):
         case = copy.deepcopy(next(c for c in data['cases'] if c['tag'] == tag))
         frame = 0
         expected = 'call 0 word 0:'
-        if args.ambient:
+        if args.player:
+            frame=2 if kind=='without-keys' else 1 if kind=='inactive-race' else 0;state=case['frames'][frame]['state']
+            if kind=='shared-RNG':state['random']^=1;expected=f'call {frame} RNG word 0:'
+            elif kind in ['weather-error','named-gate']:case['frames'][frame]['status']^=1
+            elif kind in ['late-ammo','inactive-race','held-fire']:
+                word={'late-ammo':2,'inactive-race':5,'held-fire':3}[kind];state['fire_state'][word]^=1;expected=f'fire state word {word}:'
+            elif kind=='late-projectile':
+                weapon=state['weapons'][0];weapon['payload'][0]^=1;expected=f"weapon {weapon['id']} payload word 0:"
+            elif kind=='dynamic-shape':state['lap_bindings'][1443]^=1;expected='dynamic lap binding 240 word 3:'
+            elif kind=='lap-event':state['lap_bindings'][75*6+2]^=1;expected=f'lap_bindings word {75*6+2}:'
+            else:
+                word={'input':0,'countdown':18,'failed-route-input':0,'lap-error-prefix':74,'turret':22,'fast-brake':10,'without-keys':86}[kind];state['player_fields'][word]^=1;expected=f'player fields word {word}:'
+        elif args.ambient:
             frame=2 if kind=='sequence-sharing' else 1 if kind=='distance-freeze' else 0;state=case['frames'][frame]['state']
             if kind in ['sequence','sequence-sharing']:state['smoke_sequence']^=1;expected=f'call {frame} smoke sequence word 0:'
             elif kind=='gameplay-RNG':state['random']^=1;expected='call 0 RNG word 0:'
@@ -629,10 +649,10 @@ def main():
         changed = dict(data, cases=[case])
         (folder / (mode + '.json')).write_text(json.dumps(changed))
         shutil.copyfile(fixture / case['scene'], folder / case['scene'])
-        if args.creation or args.mines or args.mine_tick or args.explosions or args.explosion_tick or args.weapon_explosion or args.mine_explosion or args.mine_hit or args.projectile_flight or args.projectile_area or args.projectile_direct or args.ufos or args.projectile_ufo or args.vehicle_methods or args.obstacle_methods or args.ufo_transfer or args.fire or args.laps or args.trains or args.emitters or args.flocks or args.ambient:
+        if args.creation or args.mines or args.mine_tick or args.explosions or args.explosion_tick or args.weapon_explosion or args.mine_explosion or args.mine_hit or args.projectile_flight or args.projectile_area or args.projectile_direct or args.ufos or args.projectile_ufo or args.vehicle_methods or args.obstacle_methods or args.ufo_transfer or args.fire or args.laps or args.trains or args.emitters or args.flocks or args.ambient or args.player:
             for name in ['sine.i16.bin', 'angle.i16.bin']:
                 shutil.copyfile(fixture / name, folder / name)
-        if args.mines or args.mine_tick or args.projectile_flight or args.projectile_area or args.projectile_direct or args.projectile_ufo or args.fire:shutil.copyfile(fixture/'projectile-cells.bin',folder/'projectile-cells.bin')
+        if args.mines or args.mine_tick or args.projectile_flight or args.projectile_area or args.projectile_direct or args.projectile_ufo or args.fire or args.player:shutil.copyfile(fixture/'projectile-cells.bin',folder/'projectile-cells.bin')
         result = subprocess.run([str(args.checker.resolve()), str(folder / 'check'),
                                  str(folder), '0', mode],
                                 capture_output=True, text=True, timeout=120)

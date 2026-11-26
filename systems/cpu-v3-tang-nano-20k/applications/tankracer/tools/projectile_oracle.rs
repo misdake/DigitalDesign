@@ -1,4 +1,7 @@
 //! Original projectile methods, with full compact state after each call.
+mod car_effects_oracle;
+mod car_motion_oracle;
+mod contact_effect_oracle;
 mod explosion_blasts_oracle;
 mod explosion_oracle;
 #[allow(dead_code)]
@@ -7,6 +10,9 @@ mod mine_oracle;
 #[allow(dead_code)]
 #[path = "terrain_assets.rs"]
 mod pages;
+mod pickup_snapshot;
+mod player_control_oracle;
+mod player_route_oracle;
 mod projectile_marks_oracle;
 #[allow(dead_code)]
 mod reference_world;
@@ -28,6 +34,7 @@ mod scene_mine_hit_oracle;
 mod scene_mine_tick_oracle;
 mod scene_mines_oracle;
 mod scene_obstacle_transfer_oracle;
+mod scene_player_oracle;
 mod scene_projectile_area_oracle;
 mod scene_projectile_direct_oracle;
 mod scene_projectile_flight_oracle;
@@ -39,7 +46,11 @@ mod scene_vehicle_transfer_oracle;
 mod scene_weapon_explosion_oracle;
 mod tank_hit_oracle;
 mod temporary_oracle;
+mod track_effects_oracle;
+mod vehicle_effects_oracle;
+mod vehicle_inactive_oracle;
 mod vehicle_pose_oracle;
+mod vehicle_startup_oracle;
 mod vehicle_transfer_oracle;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
@@ -403,6 +414,16 @@ fn main() {
     projectile_marks_oracle::export(root, out);
     tank_hit_oracle::export(out, world);
     temporary_oracle::export(out);
+    player_control_oracle::export(out);
+    player_route_oracle::export(root, out);
+    track_effects_oracle::export(out);
+    vehicle_effects_oracle::export(out);
+    car_effects_oracle::export(root, out);
+    car_motion_oracle::export(out, &reference_world::full_race(root));
+    vehicle_startup_oracle::export(out, &reference_world::full_race(root));
+    vehicle_inactive_oracle::export(root, out);
+    contact_effect_oracle::export(out);
+    scene_player_oracle::export(root, out);
     vehicle_pose_oracle::export(out, world);
     vehicle_transfer_oracle::export(root, out);
     scene_vehicle_transfer_oracle::export(root, out);

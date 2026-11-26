@@ -254,6 +254,8 @@ fn run_car_scenery(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: 
         directory: dir,
         seed: attitude::get(input, 6),
         noise: Buf::new([0; 16]),
+        shield_page: 65535,
+        shield: unsafe { Ptr::from_addr(0).as_u16_array() },
     };
     let slot: Buf<u16, 2> = Buf::new([0; 2]);
     attitude::put(slot.as_array(), 0, attitude::get(input, 9));

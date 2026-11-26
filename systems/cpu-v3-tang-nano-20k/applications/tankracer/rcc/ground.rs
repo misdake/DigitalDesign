@@ -46,6 +46,9 @@ pub struct World {
     pub directory: Array<u16>,
     pub seed: fix32,
     pub noise: Buf<u16, 16>,
+    // Game-owned shield banks in DSEG3; 65535 keeps the sampler standalone.
+    pub shield_page: u16,
+    pub shield: Array<u16>,
 }
 fn n(v: i16) -> fix32 {
     integer::from_i16(v)
@@ -129,6 +132,8 @@ impl World {
             directory: directory,
             seed: seed,
             noise: Buf::new([0; 16]),
+            shield_page: 65535,
+            shield: unsafe { Ptr::from_addr(0).as_u16_array() },
         };
         let mut i = 0u16;
         while i < 16 {
@@ -395,6 +400,19 @@ pub fn sample(
     );
     if sampling::raw(state.effect.as_array(), 7) != n(0) {
         state.clear_slot = fix32::from_words(sampling::raw(env, 2).lo_bits() & 255, 0);
+        if world.shield_page != 65535 {
+            if state.clear_slot >= n(2) {
+                return 6;
+            }
+            let saved = read_dseg_page(3);
+            unsafe {
+                write_dseg_page(3, world.shield_page);
+            }
+            sampling::put(world.shield, state.clear_slot.lo_bits() * 45 + 44, n(0));
+            unsafe {
+                write_dseg_page(3, saved);
+            }
+        }
     }
     state.fallback_mode = n(0);
     if state.flagged_ground == n(4) {

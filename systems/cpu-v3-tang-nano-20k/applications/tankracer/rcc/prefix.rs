@@ -98,17 +98,16 @@ fn apply(state: &State, config: Array<u16>, player: bool) {
     p(b, 1, g(config, index));
     p(b, 2, g(config, index + 1));
 }
-fn decay(state: &State, frame: &Frame) {
-    let b = state.boost;
+pub fn decay(b: Array<u16>, control: Array<u16>, dt: fix32, player: bool) {
     if g(b, 3) > n(0) {
-        let timer = (g(b, 3).lo_bits() as i16) - (frame.dt.lo_bits() as i16);
+        let timer = (g(b, 3).lo_bits() as i16) - (dt.lo_bits() as i16);
         p(b, 3, integer::from_i16(timer));
-        p(b, 1, larger(g(b, 1) - fmul_lo32(g(b, 2), frame.dt), n(0)));
-        if timer < 1 && (!frame.player || g(state.boost_control, 5) == n(8)) {
+        p(b, 1, larger(g(b, 1) - fmul_lo32(g(b, 2), dt), n(0)));
+        if timer < 1 && (!player || g(control, 5) == n(8)) {
             p(b, 0, n(0));
             p(b, 3, n(0));
             p(b, 1, n(0));
-            p(state.boost_control, 3, n(0));
+            p(control, 3, n(0));
         }
     }
 }
@@ -230,7 +229,7 @@ fn boost_step(
     }
     n(0)
 }
-fn expire(shared: &Shared, slot: fix32) -> fix32 {
+pub fn expire(shared: &Shared, slot: fix32) -> fix32 {
     if slot < n(0) || slot >= n(4) {
         return n(-1);
     }
@@ -278,7 +277,7 @@ pub fn prepare(
     auxiliary[0u16].cached = n(0);
     auxiliary[1u16].cached = n(0);
     p(core, 3, n(-1));
-    decay(state, frame);
+    decay(state.boost, state.boost_control, dt, frame.player);
     if g(state.spin, 7) > n(0) {
         let tuning: Buf<u16, 12> =
             Buf::new([27955, 0, 16307, 0, 931, 0, 1, 2049, 1, 2305, 5, 3585]);
