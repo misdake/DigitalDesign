@@ -40,6 +40,31 @@ pub(super) fn snapshot(world: &SinglePlayer) -> serde_json::Value {
             weapons.push((id, 3, payload));
         }
     }
+    for (id, state) in world.objects.components.ufos.iter().enumerate() {
+        if let Some(s) = state {
+            let mut payload = Vec::new();
+            super::ints(&mut payload, [s.target.0 as i32, s.flags as i32]);
+            super::ints(&mut payload, s.destination);
+            super::ints(&mut payload, s.point);
+            super::ints(
+                &mut payload,
+                [
+                    s.departure_speed,
+                    i32::from(s.arrived),
+                    i32::from(s.timer),
+                    i32::from(s.fade),
+                    i32::from(s.view),
+                    i32::from(s.reserved.is_some()),
+                    s.reserved.map_or(0, |v| v.0 as i32),
+                    i32::from(s.was_special),
+                    i32::from(s.was_collidable),
+                ],
+            );
+            super::sprite(&mut payload, s.sprite);
+            assert_eq!(payload.len(), 56);
+            weapons.push((id, 4, payload));
+        }
+    }
     weapons.sort_by_key(|r| r.0);
     out["weapons"] = json!(
         weapons

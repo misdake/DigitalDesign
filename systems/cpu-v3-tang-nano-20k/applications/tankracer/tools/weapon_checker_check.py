@@ -16,6 +16,8 @@ def main():
     scope.add_argument('--explosion', action='store_true', help='check explosion method snapshots')
     scope.add_argument('--explosion-blasts', action='store_true', help='check shared blast snapshots')
     scope.add_argument('--projectile-marks', action='store_true', help='check terrain mark queue snapshots')
+    scope.add_argument('--vehicle-pose', action='store_true', help='check complete vehicle pose snapshots')
+    scope.add_argument('--vehicle-transfer', action='store_true', help='check route restoration snapshots')
     args = parser.parse_args()
     checker = args.checker.resolve()
     fixture = args.fixture.resolve()
@@ -63,6 +65,34 @@ def main():
             ('projectile-marks','marks-2',0,2,'exhaustion retains count'),
             ('projectile-marks','marks-5',0,0,'invalid oldest handle status'),
             ('projectile-marks','marks-8',0,5200,'quad overflow line alias'),
+        ]
+    if args.vehicle_pose:
+        faults=[
+            ('vehicle-pose','pose-2',0,52,'body wobble'),
+            ('vehicle-pose','pose-12',0,56,'first track before second-track failure'),
+            ('vehicle-pose','pose-12',0,80,'unwritten second track'),
+            ('vehicle-pose','pose-23',0,122,'external recoil'),
+            ('vehicle-pose','pose-20',0,146,'gun pivot'),
+            ('vehicle-pose','pose-3',0,170,'attachment'),
+            ('vehicle-pose','pose-8',0,28,'masked travel shift'),
+            ('vehicle-pose','pose-24',1,4,'accumulated physical position'),
+            ('vehicle-pose','pose-19',0,206,'recoil factor'),
+            ('vehicle-pose','pose-11',0,0,'arithmetic failure status'),
+        ]
+    if args.vehicle_transfer:
+        faults=[
+            ('vehicle-transfer','transfer-0',0,212,'restored checkpoint'),
+            ('vehicle-transfer','transfer-4',0,214,'passed count wrap'),
+            ('vehicle-transfer','transfer-21',0,216,'signed lap wrap'),
+            ('vehicle-transfer','transfer-0',0,218,'input reset'),
+            ('vehicle-transfer','transfer-0',0,224,'velocity reset'),
+            ('vehicle-transfer','transfer-25',0,52,'temporary timer pose'),
+            ('vehicle-transfer','transfer-10',0,2,'physical position before work-limit failure'),
+            ('vehicle-transfer','transfer-13',0,212,'checkpoint before point failure'),
+            ('vehicle-transfer','transfer-14',0,214,'passed count before point failure'),
+            ('vehicle-transfer','transfer-16',0,50,'pose error prefix'),
+            ('vehicle-transfer','transfer-22',0,244,'negative ground height result'),
+            ('vehicle-transfer','transfer-0',1,20,'subsequent restored basis'),
         ]
     for index, (kind, tag, frame, word, label) in enumerate(faults):
         folder = output / str(index)

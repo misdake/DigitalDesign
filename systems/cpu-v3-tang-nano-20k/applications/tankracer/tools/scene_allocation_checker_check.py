@@ -24,6 +24,13 @@ def main():
     group.add_argument('--projectile-flight',action='store_true')
     group.add_argument('--projectile-area',action='store_true')
     group.add_argument('--projectile-direct',action='store_true')
+    group.add_argument('--ufos',action='store_true')
+    group.add_argument('--projectile-ufo',action='store_true')
+    group.add_argument('--vehicle-methods',action='store_true')
+    group.add_argument('--obstacle-methods',action='store_true')
+    group.add_argument('--ufo-transfer',action='store_true')
+    group.add_argument('--fire',action='store_true')
+    group.add_argument('--laps',action='store_true')
     args = parser.parse_args()
     fixture = args.fixture.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -38,6 +45,13 @@ def main():
     if args.projectile_flight:mode='scene-projectile-flight'
     if args.projectile_area:mode='scene-projectile-area'
     if args.projectile_direct:mode='scene-projectile-direct'
+    if args.ufos:mode='scene-ufos'
+    if args.projectile_ufo:mode='scene-projectile-ufo'
+    if args.vehicle_methods:mode='scene-vehicle-transfer'
+    if args.obstacle_methods:mode='scene-obstacle-transfer'
+    if args.ufo_transfer:mode='scene-ufo-transfer'
+    if args.fire:mode='scene-fire'
+    if args.laps:mode='scene-laps'
     data = json.loads((fixture / (mode + '.json')).read_text())
     faults = [('transient-1', 'object'), ('transient-0', 'properties'),
               ('transient-6', 'free-pop'), ('transient-0', 'growth'),
@@ -127,12 +141,183 @@ def main():
                 ('projectile-direct-6','reflection'),('projectile-direct-7','spin-filter'),
                 ('projectile-direct-17','inventory'),('projectile-direct-2','child-update'),
                 ('projectile-direct-28','part-prefix'),('projectile-direct-29','ownership-prefix')]
+    if args.ufos:
+        faults=[('ufo-factory-0','point'),('ufo-factory-0','target'),
+                ('ufo-factory-3','special'),('ufo-factory-4','collidable'),
+                ('ufo-factory-6','view'),('ufo-factory-7','emitter'),
+                ('ufo-factory-8','wrapped-height'),('ufo-factory-20','default-sprite'),
+                ('ufo-factory-16','interface'),('ufo-factory-19','reuse'),
+                ('ufo-factory-10','resource-prefix'),('ufo-factory-0','RNG')]
+    if args.projectile_ufo:
+        faults=[('projectile-ufo-0','attachment'),('projectile-ufo-0','ufo-target'),
+                ('projectile-ufo-0','follow'),('projectile-ufo-0','rotated-basis'),
+                ('projectile-ufo-11','released'),('projectile-ufo-11','retirement'),
+                ('projectile-ufo-5','lifecycle'),('projectile-ufo-6','pool-free'),
+                ('projectile-ufo-2','protected'),('projectile-ufo-20','existing-link'),
+                ('projectile-ufo-24','terrain-priority'),('projectile-ufo-25','resource-priority'),
+                ('projectile-ufo-27','partial-allocation'),('projectile-ufo-30','view'),
+                ('projectile-ufo-31','emitter'),('projectile-ufo-33','slot-restore')]
+    if args.vehicle_methods:
+        faults=[('vehicle-methods-1','spin'),('vehicle-methods-8','collision'),
+                ('vehicle-methods-9','driving'),('vehicle-methods-0','checkpoint'),
+                ('vehicle-methods-0','velocity'),('vehicle-methods-24','pose-prefix'),
+                ('vehicle-methods-17','failed-result'),('vehicle-methods-55','nested-slot'),
+                ('vehicle-methods-35','outer-slot'),('vehicle-methods-39','cursor'),
+                ('vehicle-methods-10','notification'),('vehicle-methods-53','activation'),
+                ('vehicle-methods-34','nested-reset'),('vehicle-methods-56','nested-move'),
+                ('vehicle-methods-0','RNG')]
+    if args.obstacle_methods:
+        faults=[('obstacle-methods-0','mode-order'),('obstacle-methods-2','duplicate-grid'),
+                ('obstacle-methods-0','move-cell'),('obstacle-methods-10','height'),
+                ('obstacle-methods-18','position-prefix'),('obstacle-methods-21','failed-position'),
+                ('obstacle-methods-39','partial-grid'),('obstacle-methods-40','partial-move'),
+                ('obstacle-methods-19','failed-result'),('obstacle-methods-26','maximum-slot'),
+                ('obstacle-methods-13','default-radius'),('obstacle-methods-28','class-result'),
+                ('obstacle-methods-36','banked-position'),('obstacle-methods-0','RNG')]
+    if args.ufo_transfer:
+        faults=[('ufo-transfer-4','approach'),('ufo-transfer-4','disabled'),
+                ('ufo-transfer-28','coll-prefix'),('ufo-transfer-5','checkpoint'),
+                ('ufo-transfer-5','reservation'),('ufo-transfer-5','visibility'),
+                ('ufo-transfer-7','fade-start'),('ufo-transfer-14','fade-delay'),
+                ('ufo-transfer-14','fade-release'),('ufo-transfer-35','overlap'),
+                ('ufo-transfer-39','missing-body-prefix'),('ufo-transfer-18','occupied-error'),
+                ('ufo-transfer-19','parent-error'),('ufo-transfer-16','occupied-release'),
+                ('ufo-transfer-0','departure'),('ufo-transfer-43','travel'),
+                ('ufo-transfer-44','negative-travel'),('ufo-transfer-45','arrival'),
+                ('ufo-transfer-46','wrapped-math'),('ufo-transfer-47','packed-dt'),
+                ('ufo-transfer-12','external-basis'),('ufo-transfer-12','sprite'),
+                ('ufo-transfer-34','hidden-prefix'),('ufo-transfer-33','pose-prefix'),
+                ('ufo-transfer-58','unsigned-car-radius'),('ufo-transfer-59','unsigned-obstacle-radius'),
+                ('ufo-transfer-60','detached-target'),('ufo-transfer-61','detached-reset'),
+                ('ufo-transfer-0','RNG')]
+    if args.fire:
+        faults=[('fire-3','cooldown-gate'),('fire-1','recoil'),('fire-5','mine-ammo'),
+                ('fire-50','boost-control'),('fire-50','boost-feedback'),('fire-51','spin-count'),
+                ('fire-54','spin-hold'),('fire-54','spin-RNG'),('fire-47','selection-prefix'),
+                ('fire-47','private-output'),('fire-63','factory-prefix'),('fire-65','racer-order'),
+                ('fire-71','collision-wrap'),('fire-72','recoil-wrap'),('fire-75','second-gate')]
+    if args.laps:
+        faults=[('laps-8','entered'),('laps-16','delayed'),('laps-32','flush-cursor'),
+                ('laps-34','shared-limit'),('laps-39','failed-slot'),('laps-40','fall-basis'),
+                ('laps-40','fall-alias'),('laps-41','external-basis'),('laps-46','restore-prefix'),
+                ('laps-61','attached-stop'),('laps-63','missing-records'),('laps-64','enter-prefix'),
+                ('laps-69','reused-identity'),('laps-68','wrapped-near'),('laps-0','RNG')]
     results = []
     for index, (tag, kind) in enumerate(faults):
         case = copy.deepcopy(next(c for c in data['cases'] if c['tag'] == tag))
         frame = 0
         expected = 'call 0 word 0:'
-        if args.projectile_direct:
+        if args.laps:
+            state=case['frames'][0]['state']
+            if kind in ['shared-limit','missing-records']:
+                case['frames'][0]['status']^=1
+            elif kind in ['entered','reused-identity']:
+                word=(75 if kind=='entered' else 76)*6+2;state['lap_bindings'][word]^=1;expected=f'lap_bindings word {word}:'
+            elif kind in ['delayed','flush-cursor','wrapped-near']:
+                list_index=9 if kind=='flush-cursor' else 8;state['lists'][list_index][0]^=1;expected=f'list {list_index} word 0:'
+            elif kind=='failed-slot':state['slot']^=1;expected='dispatch slot word 0:'
+            elif kind in ['fall-basis','fall-alias','external-basis','restore-prefix']:
+                id=state['lap_backups'][0];word=26 if kind in ['fall-alias','external-basis'] else 68 if kind=='restore-prefix' else 8
+                state['colliders'][id][word]^=1;expected=f'properties {id} word 8:' if kind=='restore-prefix' else f'collider {id} word {word}:'
+            elif kind=='attached-stop':state['lists'][1][0]^=1;expected='list 1 word 0:'
+            elif kind=='enter-prefix':state['lap_deformables'][-2]^=1;expected=f"lap_deformables word {len(state['lap_deformables'])-2}:"
+            else:state['random']^=1;expected='call 0 RNG word 0:'
+        elif args.fire:
+            frame=1 if kind=='second-gate' else 0;state=case['frames'][frame]['state']
+            if kind=='spin-RNG':state['random']^=1;expected='RNG word 0:'
+            elif kind=='private-output':state['fire_shot'][0]^=1;expected='fire shot word 0:'
+            elif kind in ['factory-prefix','racer-order']:
+                parent=state['weapons'][-1];word=30 if kind=='racer-order' else 8
+                parent['payload'][word]^=1;expected=f"weapon {parent['id']} payload word {word}:"
+            else:
+                word={'cooldown-gate':5,'recoil':9,'mine-ammo':2,'boost-control':19,'boost-feedback':57,'spin-count':63,'spin-hold':31,'selection-prefix':3,'collision-wrap':7,'recoil-wrap':11,'second-gate':9}[kind]
+                state['fire_state'][word]^=1;expected=f'fire state word {word}:'
+        elif args.ufo_transfer:
+            frame=len(case['frames'])-1 if kind=='departure' else 1 if kind in ['fade-start','fade-release'] else 0
+            state=case['frames'][frame]['state'];ufo=next(w for w in state['weapons'] if w['kind']==4)
+            if kind in ['disabled','coll-prefix','checkpoint','pose-prefix']:
+                word={'disabled':244,'coll-prefix':244,'checkpoint':210,'pose-prefix':52}[kind]
+                state['transfer_cars'][word]^=1;expected=f'transfer car 0 word {word}:'
+            elif kind in ['reservation','occupied-error']:
+                state['transfer_occupied'][0]^=1;expected='transfer_occupied word 0:'
+            elif kind in ['visibility','occupied-release']:
+                name='transfer_visible' if kind=='visibility' else 'transfer_occupied'
+                state[name].extend([0,0]);expected=f'{name} count'
+            elif kind=='fade-start':state['overlay'][1]^=1;expected='overlay word 1:'
+            elif kind in ['parent-error','detached-target','detached-reset']:state['slot']^=1;expected='dispatch slot word 0:'
+            elif kind=='departure':
+                entity=case['frames'][frame]['entity'];state['flags'][entity]^=2;expected=f'tick flags {entity} word 0:'
+            elif kind=='external-basis':
+                id=ufo['id'];state['colliders'][id][26]^=1;expected=f'collider {id} word 26:'
+            elif kind=='RNG':state['random']^=1;expected='RNG word 0:'
+            else:
+                word={'approach':12,'fade-delay':2,'fade-release':2,'overlap':2,'missing-body-prefix':20,'travel':10,'negative-travel':14,'arrival':18,'wrapped-math':10,'packed-dt':12,'sprite':36,'hidden-prefix':2,'unsigned-car-radius':2,'unsigned-obstacle-radius':2}[kind]
+                ufo['payload'][word]^=1;expected=f"weapon {ufo['id']} payload word {word}:"
+        elif args.obstacle_methods:
+            frame=2 if kind=='move-cell' else 1 if kind=='duplicate-grid' else 2 if kind=='banked-position' else 0
+            state=case['frames'][frame]['state'];id=case['frames'][frame]['object']
+            if kind=='mode-order':state['lists'][4][-1]^=1;expected='list 4 word 0:'
+            elif kind in ['position-prefix','failed-position','banked-position']:
+                state['colliders'][id][2]^=1;expected=f'collider {id} word 2:'
+            elif kind=='move-cell':state['records'][id][4]^=1;expected=f'metadata {id} word 4:'
+            elif kind in ['height','failed-result','class-result']:state['transfer_result'][0]^=1;expected='transfer_result word 0:'
+            elif kind=='maximum-slot':state['slot']^=1;expected='dispatch slot word 0:'
+            elif kind=='partial-move':state['colliders'][id][2]^=1;expected=f'collider {id} word 2:'
+            elif kind=='partial-grid':
+                cell=next(i for i,(a,b) in enumerate(zip(case['initial']['grid'],state['grid'])) if len(a)!=len(b))
+                state['grid'][cell].append(id);expected=f'grid {cell} count'
+            elif kind in ['duplicate-grid','default-radius']:
+                cell=next(i for i,v in enumerate(state['grid']) if id in v);word=state['grid'][cell].index(id)
+                state['grid'][cell][word]^=1;expected=f'grid {cell} item {word} word 0:'
+            else:state['random']^=1;expected='call 0 RNG word 0:'
+        elif args.vehicle_methods:
+            frame=6 if kind in ['checkpoint','velocity'] else 1 if kind=='notification' else 0
+            state=case['frames'][frame]['state']
+            if kind in ['spin','collision','driving','checkpoint','velocity','pose-prefix','nested-reset','nested-move']:
+                word={'spin':244,'collision':246,'driving':248,'checkpoint':210,'velocity':222,'pose-prefix':52,'nested-reset':248,'nested-move':0}[kind]
+                state['transfer_car'][word]^=1;expected=f'transfer_car word {word}:'
+            elif kind=='failed-result':state['transfer_result'][0]^=1;expected='transfer_result word 0:'
+            elif kind in ['nested-slot','outer-slot']:state['slot']^=1;expected=f'call {frame} dispatch slot word 0:'
+            elif kind=='cursor':state['next']^=1;expected=f'call {frame} tick cursor word 0:'
+            elif kind=='notification':state['lists'][1][0]^=1;expected='list 1 word 0:'
+            elif kind=='activation':
+                entity=case['frames'][frame]['entity'];state['flags'][entity]^=2;expected=f'call {frame} tick flags {entity} word 0:'
+            else:state['random']^=1;expected=f'call {frame} RNG word 0:'
+        elif args.projectile_ufo:
+            frame=2 if kind in ['follow','rotated-basis','retirement'] else 0
+            state=case['frames'][frame]['state']
+            parent=next(w for w in state['weapons'] if w['kind']==1)
+            if kind in ['attachment','released','lifecycle','pool-free','existing-link']:
+                word=54 if kind=='attachment' else 52 if kind=='existing-link' else 8
+                parent['payload'][word]^=1;expected=f"weapon {parent['id']} payload word {word}:"
+            elif kind in ['ufo-target','view']:
+                weapon=next(w for w in state['weapons'] if w['kind']==4);word=24 if kind=='view' else 0
+                weapon['payload'][word]^=1;expected=f"weapon {weapon['id']} payload word {word}:"
+            elif kind=='emitter':
+                weapon=next(w for w in state['weapons'] if w['kind']==4);weapon['meta'][7]^=1;expected=f"weapon {weapon['id']} scene data word 7:"
+            elif kind in ['follow','terrain-priority','resource-priority']:
+                id=parent['id'];state['colliders'][id][2]^=1;expected=f'collider {id} word 2:'
+            elif kind=='rotated-basis':state['ufo_car_basis'][0]^=1;expected='UFO car 0 basis word 0:'
+            elif kind=='protected':
+                weapon=next(w for w in state['weapons'] if w['kind']==3);weapon['payload'][8]^=1;expected=f"weapon {weapon['id']} payload word 8:"
+            elif kind=='retirement':
+                entity=case['frames'][frame]['entity'];state['flags'][entity]^=2;expected=f'call {frame} tick flags {entity} word 0:'
+            else:state['slot']^=1;expected=f'call {frame} dispatch slot word 0:'
+        elif args.ufos:
+            frame=2 if kind=='reuse' else 0
+            state=case['frames'][frame]['state']
+            if kind in ['point','target','special','collidable','view','wrapped-height','default-sprite']:
+                word={'point':10,'target':0,'special':30,'collidable':32,'view':24,'wrapped-height':12,'default-sprite':34}[kind]
+                weapon=state['weapons'][-1];weapon['payload'][word]^=1
+                expected=f"weapon {weapon['id']} payload word {word}:"
+            elif kind=='emitter':
+                weapon=state['weapons'][-1];weapon['meta'][8]^=1;expected=f"weapon {weapon['id']} scene data word 8:"
+            elif kind=='interface':state['slot']^=1;expected='dispatch slot word 0:'
+            elif kind=='resource-prefix':case['frames'][frame]['status']=-4
+            elif kind=='reuse':
+                weapon=state['weapons'][-1];weapon['meta'][3]^=1;expected=f"weapon {weapon['id']} scene data word 3:"
+            else:state['random']^=1;expected='call 0 RNG word 0:'
+        elif args.projectile_direct:
             frame=1 if kind=='child-update' else 0
             state=case['frames'][frame]['state']
             if kind in ['impulse','spin-filter']:
@@ -362,10 +547,10 @@ def main():
         changed = dict(data, cases=[case])
         (folder / (mode + '.json')).write_text(json.dumps(changed))
         shutil.copyfile(fixture / case['scene'], folder / case['scene'])
-        if args.creation or args.mines or args.mine_tick or args.explosions or args.explosion_tick or args.weapon_explosion or args.mine_explosion or args.mine_hit or args.projectile_flight or args.projectile_area or args.projectile_direct:
+        if args.creation or args.mines or args.mine_tick or args.explosions or args.explosion_tick or args.weapon_explosion or args.mine_explosion or args.mine_hit or args.projectile_flight or args.projectile_area or args.projectile_direct or args.ufos or args.projectile_ufo or args.vehicle_methods or args.obstacle_methods or args.ufo_transfer or args.fire or args.laps:
             for name in ['sine.i16.bin', 'angle.i16.bin']:
                 shutil.copyfile(fixture / name, folder / name)
-        if args.mines or args.mine_tick or args.projectile_flight or args.projectile_area or args.projectile_direct:shutil.copyfile(fixture/'projectile-cells.bin',folder/'projectile-cells.bin')
+        if args.mines or args.mine_tick or args.projectile_flight or args.projectile_area or args.projectile_direct or args.projectile_ufo or args.fire:shutil.copyfile(fixture/'projectile-cells.bin',folder/'projectile-cells.bin')
         result = subprocess.run([str(args.checker.resolve()), str(folder / 'check'),
                                  str(folder), '0', mode],
                                 capture_output=True, text=True, timeout=120)

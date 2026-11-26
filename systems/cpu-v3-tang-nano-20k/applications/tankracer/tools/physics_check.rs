@@ -55,6 +55,10 @@ mod temporary_check;
 mod trig_check;
 #[path = "vehicle_core_check.rs"]
 mod vehicle_core_check;
+#[path = "vehicle_pose_check.rs"]
+mod vehicle_pose_check;
+#[path = "vehicle_transfer_check.rs"]
+mod vehicle_transfer_check;
 
 const INPUT: usize = 0x2000;
 const COUNT: usize = 0x1ffe;
@@ -91,7 +95,7 @@ const STATIC_ASSETS: &str = include_str!("../../../rcc/static_assets.rs");
 const GPU_LAYOUT: &str = include_str!("../../../rcc/gpu_layout.rs");
 const OBJECT_QUERY: &str = include_str!("../rcc/object_query.rs");
 const TRIG_ASSET_LOOKUP: &str = include_str!("../rcc/trig_asset_lookup.rs");
-const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
+const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod vehicle_pose; mod vehicle_transfer; mod scene_vehicle_transfer; mod scene_obstacle_transfer; mod scene_ufo_transfer; mod scene_fire; mod scene_laps; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_ufos; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
 
 fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<dyn Error>> {
     let folder = output.join(label);
@@ -111,6 +115,15 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         || label == "scene-projectile-flight"
         || label == "scene-projectile-area"
         || label == "scene-projectile-direct"
+        || label == "scene-ufos"
+        || label == "scene-projectile-ufo"
+        || label == "vehicle-pose"
+        || label == "vehicle-transfer"
+        || label == "scene-vehicle-transfer"
+        || label == "scene-obstacle-transfer"
+        || label == "scene-ufo-transfer"
+        || label == "scene-fire"
+        || label == "scene-laps"
         || label == "projectile-marks"
         || label == "explosion"
         || label == "explosion-blasts"
@@ -158,6 +171,18 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "closer" => Ok(include_str!("../rcc/closer.rs").to_owned()),
             "mesh_break" => Ok(include_str!("../rcc/mesh_break.rs").to_owned()),
             "scene_meshes" => Ok(include_str!("../rcc/scene_meshes.rs").to_owned()),
+            "scene_fire" => Ok(include_str!("../rcc/scene_fire.rs").to_owned()),
+            "scene_laps" => Ok(include_str!("../rcc/scene_laps.rs").to_owned()),
+            "scene_ufo_transfer" => Ok(include_str!("../rcc/scene_ufo_transfer.rs").to_owned()),
+            "scene_obstacle_transfer" => {
+                Ok(include_str!("../rcc/scene_obstacle_transfer.rs").to_owned())
+            }
+            "scene_vehicle_transfer" => {
+                Ok(include_str!("../rcc/scene_vehicle_transfer.rs").to_owned())
+            }
+            "vehicle_transfer" => Ok(include_str!("../rcc/vehicle_transfer.rs").to_owned()),
+            "vehicle_pose" => Ok(include_str!("../rcc/vehicle_pose.rs").to_owned()),
+            "scene_ufos" => Ok(include_str!("../rcc/scene_ufos.rs").to_owned()),
             "scene_creation" => Ok(include_str!("../rcc/scene_creation.rs").to_owned()),
             "scene_mines" => Ok(include_str!("../rcc/scene_mines.rs").to_owned()),
             "scene_projectiles" => Ok(include_str!("../rcc/scene_projectiles.rs").to_owned()),
@@ -177,6 +202,13 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
                 || label == "projectile"
                 || label == "mine"
                 || label == "temporary"
+                || label == "vehicle-pose"
+                || label == "vehicle-transfer"
+                || label == "scene-vehicle-transfer"
+                || label == "scene-obstacle-transfer"
+                || label == "scene-ufo-transfer"
+                || label == "scene-fire"
+                || label == "scene-laps"
                 || label == "tank-hit"
                 || label == "explosion"
                 || label == "explosion-blasts"
@@ -191,6 +223,8 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
                 || label == "scene-projectile-flight"
                 || label == "scene-projectile-area"
                 || label == "scene-projectile-direct"
+                || label == "scene-ufos"
+                || label == "scene-projectile-ufo"
             {
                 TRIG_ASSET_LOOKUP
             } else {
@@ -703,6 +737,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             Some("scene-explosion-tick") => {
                 scene_allocation_check::run(&output, Path::new(&fixture), "scene-explosion-tick")?
             }
+            Some("scene-projectile-ufo") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-projectile-ufo")?
+            }
+            Some("scene-ufos") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-ufos")?
+            }
             Some("scene-projectile-direct") => scene_allocation_check::run(
                 &output,
                 Path::new(&fixture),
@@ -727,6 +767,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Some("collision") => collision_check::run(&output, Path::new(&fixture))?,
             Some("closer") => closer_check::run(&output, Path::new(&fixture))?,
+            Some("scene-laps") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-laps")?
+            }
+            Some("scene-fire") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-fire")?
+            }
+            Some("scene-ufo-transfer") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-ufo-transfer")?
+            }
+            Some("scene-obstacle-transfer") => scene_allocation_check::run(
+                &output,
+                Path::new(&fixture),
+                "scene-obstacle-transfer",
+            )?,
+            Some("scene-vehicle-transfer") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-vehicle-transfer")?
+            }
+            Some("vehicle-transfer") => vehicle_transfer_check::run(&output, Path::new(&fixture))?,
+            Some("vehicle-pose") => vehicle_pose_check::run(&output, Path::new(&fixture))?,
             Some("temporary") => temporary_check::run(&output, Path::new(&fixture))?,
             Some("explosion") => explosion_check::run(&output, Path::new(&fixture))?,
             Some("explosion-blasts") => explosion_blasts_check::run(&output, Path::new(&fixture))?,

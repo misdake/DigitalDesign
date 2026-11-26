@@ -1,5 +1,39 @@
 //! Qualification-only access to the original private ground response.
 use super::*;
+pub fn fire(
+    world: &mut SinglePlayer,
+    id: TankId,
+    mode: i32,
+    limit: u32,
+) -> Result<Option<crate::object_query::EntityId>, i32> {
+    let car = world.vehicles.entries[id.0].as_mut().ok_or(-1)?;
+    let env = world.registry.environment(limit);
+    let shot = super::super::weapons::Fire {
+        objects: &mut world.objects,
+        shared: &mut world.shared,
+        context: world.identity.context(),
+        environment: env,
+        mode,
+    }
+    .apply(&mut car.physics, &mut car.inventory, &mut car.prefix)?;
+    if let Some(entity) = shot {
+        let object = world
+            .identity
+            .entities
+            .record(entity)
+            .and_then(|r| r.object)
+            .and_then(Handle::obstacle)
+            .ok_or(-4)?;
+        world
+            .objects
+            .components
+            .projectiles
+            .get_mut(object)
+            .ok_or(-4)?
+            .select_target(&world.vehicles)?;
+    }
+    Ok(shot)
+}
 pub fn ground(world: &mut SinglePlayer, id: TankId, dt: i32, number: u32) -> Result<(), i32> {
     let player = world
         .vehicles

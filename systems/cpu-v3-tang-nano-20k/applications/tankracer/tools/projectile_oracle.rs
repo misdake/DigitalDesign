@@ -16,18 +16,27 @@ mod scene_explosion_tick_oracle;
 mod scene_explosions_oracle;
 #[allow(dead_code)]
 mod scene_export;
+mod scene_fire_oracle;
+mod scene_laps_oracle;
 #[allow(dead_code)]
 mod scene_lifecycle_assets;
 mod scene_mine_explosion_oracle;
 mod scene_mine_hit_oracle;
 mod scene_mine_tick_oracle;
 mod scene_mines_oracle;
+mod scene_obstacle_transfer_oracle;
 mod scene_projectile_area_oracle;
 mod scene_projectile_direct_oracle;
 mod scene_projectile_flight_oracle;
+mod scene_projectile_ufo_oracle;
+mod scene_ufo_transfer_oracle;
+mod scene_ufos_oracle;
+mod scene_vehicle_transfer_oracle;
 mod scene_weapon_explosion_oracle;
 mod tank_hit_oracle;
 mod temporary_oracle;
+mod vehicle_pose_oracle;
+mod vehicle_transfer_oracle;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 use tankracer_game::{
@@ -385,9 +394,18 @@ fn main() {
     scene_projectile_flight_oracle::export(root, out);
     scene_projectile_area_oracle::export(root, out);
     scene_projectile_direct_oracle::export(root, out);
+    scene_ufos_oracle::export(root, out);
+    scene_projectile_ufo_oracle::export(root, out);
     projectile_marks_oracle::export(root, out);
     tank_hit_oracle::export(out, world);
     temporary_oracle::export(out);
+    vehicle_pose_oracle::export(out, world);
+    vehicle_transfer_oracle::export(root, out);
+    scene_vehicle_transfer_oracle::export(root, out);
+    scene_obstacle_transfer_oracle::export(root, out);
+    scene_ufo_transfer_oracle::export(root, out);
+    scene_fire_oracle::export(root, out);
+    scene_laps_oracle::export(root, out);
     scene_allocation_oracle::export(root, out);
     scene_creation_oracle::export(root, out);
     scene_mines_oracle::export(root, out);

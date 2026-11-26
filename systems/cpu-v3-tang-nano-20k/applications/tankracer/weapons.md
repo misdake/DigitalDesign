@@ -239,6 +239,52 @@ failure before launch completes and ordinary-list failure after activation.
 Null allocate-slot fixtures also retain the source's allocated identity/class
 and subsequent initialization failure, with the active interface preserved.
 
+## Player fire
+
+`scene_fire::apply` connects inventory fire to the shared projectile/mine
+factories and immediate target selection. Its `Car` contains views of the live
+inventory, contact-response cooldown, collision feedback, articulation rates,
+recoil mode, boost control and spin state. `Fire` borrows the existing launch
+and mine-placement descriptors, shared boost feedback and spin count/pulse,
+racer geometry and the output shot. Poses, velocity and physical position remain
+in the car owner. Audio is an external successful operation after the cooldown
+gate and collision-feedback writes.
+
+A cooldown of at least one returns before gameplay writes. An eligible player
+adds 75 to impact accumulation and 50 to the unsigned collision size. Inventory
+0/9 fires Shell, 3 Homing, 4 UFO, 5 Concussion and 10 Warp. Inventory 1/2 places
+the corresponding repeating mine. The factory runs before ammunition changes.
+Successful projectiles publish recoil mode, subtract 600/900 from recoil/pitch
+rates and set cooldown 1000. Successful mines set cooldown 300. Ammunition wraps
+as u8; reaching zero selects the default weapon. Default shells retain ammunition.
+
+Inventory 7 starts the boost camera/application sequence and publishes feedback
+`[-16, 1300, 110]`. The following prepare phase applies the configured physical
+gain through the real boost method. Inventory 8 calls the existing spin start
+with the same mode, shared count/pulse and RNG. Both consume one ammunition byte
+and set cooldown 300. Other inventory values set cooldown 300 immediately.
+
+After successful projectile application, target selection resolves its live
+component and calls the existing Homing/Warp selection kernel with the current
+vehicle entries and racer order. A selection failure preserves the earlier
+factory, ammunition, recoil and cooldown writes. The caller's shot output
+commits only after this selection succeeds. Factory errors retain collision
+feedback and the factory's original partial state. This entry covers the fire
+operation and immediate non-AI selection; the frame owner controls its input,
+prepare and scheduler boundaries.
+
+The `scene-fire` qualifier calls the original private player fire operation and
+its actual post-fire selection on FullRace resources. It compares complete
+scene/pool/flight state, inventory and narrow-field wrap, boost/spin/shared RNG,
+recoil, collision feedback, private output and live racer inputs. Cases include
+all inventory types, cooldown gates, real terrain mines, class/resource failures,
+late selection failure, target order, unsigned collision wrap and repeated calls.
+
+```powershell
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/fire-check target/weapon-reference 0 scene-fire
+python -B "$tools/scene_allocation_checker_check.py" target/release/tankracer-physics-check.exe target/weapon-reference target/fire-fault-check --fire
+```
+
 ## Explosion construction and resource retirement
 
 `scene_explosions::spawn` uses the actual explosion class and shared constructor.
@@ -446,7 +492,8 @@ car blast columns, and follows impact with parent and child updates. It covers
 owner/protection/range boundaries, distinct base and physical positions, visibility,
 camera, emitter propagation, resource failures and interface slots. Direct
 Shell/Homing/Warp contact uses the same dispatcher and the separate qualifier below.
-UFO transfer and whole-world native frames retain their integration boundaries.
+The UFO actor has its own connected transfer qualifier below. Mixed whole-world
+native frames retain their integration boundary.
 
 ```powershell
 cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/projectile-area-check target/weapon-reference 0 scene-projectile-area
@@ -493,6 +540,132 @@ integration boundaries.
 ```powershell
 cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/projectile-direct-check target/weapon-reference 0 scene-projectile-direct
 python -B "$tools/scene_allocation_checker_check.py" target/release/tankracer-physics-check.exe target/weapon-reference target/projectile-direct-fault-check --projectile-direct
+```
+
+## UFO construction and retirement
+
+`scene_ufos::spawn` resolves a live vehicle or obstacle target before checking
+resources and class. It reads the current base/collider position, creates through
+the ordinary class table, publishes emitter, beam mesh and visibility, then
+initializes the UFO point 102,400 units above that target with wrapping arithmetic.
+Vehicle views provide player, slot and collision state; obstacle membership is
+read from the live special list and all current spatial cells. These flags record
+the target's actual state for transfer ownership. Construction consumes no RNG.
+
+The component directory uses kind 4. A UFO record is 172 bytes: the common
+60-byte scene header, seventeen i32 state fields and the ordinary 44-byte sprite.
+Each 32-KiB bank holds 190 records. Allocate method 124 shares transient identity
+and collision allocation; Deactivate method 126 calls the Generic parent before
+removing special membership. Successful release uses the same component-retirement
+boundary as the other weapon kinds. Partial constructors retain their class slot,
+identity, mesh and scene writes. Player flags and view publish after activation
+and special-list insertion.
+
+The `scene-ufos` qualifier starts from the original FullRace preparation path
+with one vehicle. A temporary source bridge exposes that existing loader mode;
+its original implementation bytes remain unchanged. It compares actual original
+factory calls, shared constructor/deactivation/release methods, all identity,
+scene, component and spatial memberships, and immutable vehicle inputs. Cases
+cover both target kinds, collision/display flags, wide emitters, height wrapping,
+resource/target failures, null and bounded methods, repeated creation and ID reuse.
+The transfer Tick and projectile attachment use the same component directory and
+have their own connected qualifiers below.
+
+```powershell
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/ufo-factory-check target/weapon-reference 0 scene-ufos
+python -B "$tools/scene_allocation_checker_check.py" target/release/tankracer-physics-check.exe target/weapon-reference target/ufo-factory-fault-check --ufos
+```
+
+## UFO projectile attachment
+
+`scene_projectile_impact::dispatch` also runs the UFO projectile Tick. Before
+terrain/resource checks, `scene_ufos::carrier` resolves an active attachment
+through the shared identity, UFO component and target vehicle. The carrier views
+address that vehicle's current base position and reference matrix; UFO flag 2
+publishes release. Retired/trailing projectiles skip this lookup. The mutable
+Tick frame contains only call controls and borrowed views; carrier resolution
+changes those frame views without copying persistent vehicle state.
+
+A first UFO contact checks the live target's protection timer. Protection below
+one and an empty attachment call the same UFO factory with a zero destination
+and no emitter, then publish its entity, the original local hit point and flag 4
+on the projectile. This branch precedes reflection, explosion, Simulation and
+effect-pool requirements. A hit already carrying flag 4 returns immediately.
+Protected or previously linked contacts continue through the ordinary explosion
+prefix, with the original emitter and retirement semantics. UFO does not use the
+direct-hit damage kernel or shield reflection.
+
+The `scene-projectile-ufo` qualifier uses original FullRace resources and calls
+the complete original class-table Tick. It checks creation, local attachment,
+a moved/rotated target, release and parent retirement, missing or wrong carrier
+handles/components/targets, protection, partial construction and interface bounds.
+Carrier errors retain priority over missing terrain and projectile resources.
+All scene, pool, component and spatial state is compared after each operation;
+car basis and base-position updates are explicit fixture inputs. Transfer actor
+Tick remains a separate owner of the UFO flags and vehicle methods.
+
+```powershell
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/projectile-ufo-check target/weapon-reference 0 scene-projectile-ufo
+python -B "$tools/scene_allocation_checker_check.py" target/release/tankracer-physics-check.exe target/weapon-reference target/projectile-ufo-fault-check --projectile-ufo
+```
+
+## UFO transfer update
+
+`scene_ufo_transfer::dispatch` runs the actual UFO Tick interface over the
+existing 172-byte record. It holds the component bank in DSEG3 for the call;
+nested grid, collider, class and trigonometric operations restore their incoming
+mapping. Caller views remain valid while that bank is selected. The target's
+initial XYZ and a MOVE payload each use twelve CPU scratch bytes. Component
+state, vehicle poses, motion and lifecycle memberships remain in their owners.
+
+`Tick.vehicles` points to one live `scene_vehicle_transfer::View`; its route
+owner contains the shared occupied-checkpoint list. `Tick.visible` points to
+the vehicle drawing-list owner. Per-car metadata has four i32 columns: entity,
+player, body presence and unsigned-u16 body radius. The nine racer slots use
+65535 for an absent racer. `shapes` contains the resource owner's current
+mesh-resolution result per object, and `overlay` borrows the existing presence
+and four byte columns. Counts in the list owners update in place.
+
+The incoming flags select the phase. Approach follows target XZ, advances the
+packed vertical approach and wraps the i16 timer. After 800 units, MODE(1)
+precedes COLLIDABLE(0). Transfer begins after the player/non-player time threshold
+and any player fade: SHOW(0), RESET and MOVE run in that order. A vehicle MOVE
+restores its real checkpoint and complete poses; its returned height publishes
+before checkpoint reservation. Timer/phase changes precede visibility removal.
+
+Player transit uses the original arrival timer. Other targets move toward their
+current XZ using signed downscaling, clamping and the original approximate
+`length2`, with checked division and sign-crossing clamps. This approximation is
+the source algorithm. Vertical approach preserves packed `0x07010003`: a signed
+low-word step, low-byte damping factor and sign/magnitude shift.
+
+An arrived target is shown before its arrival timer advances. Release requires
+the timer threshold, zero fade and a clear overlap query. That query walks the
+nine racer slots in order and tests wrapped absolute X/Z against eight times the
+sum of the unsigned radii. It skips the target entity before checking a peer's
+body. COLLIDABLE(1), RESET and MODE(0) precede clearing the transfer flags. Fade
+decay follows this release test, so reaching zero permits release on the next
+Tick. Departure advances speed/height, removes the reserved checkpoint and calls
+the actual UFO Deactivate interface.
+
+The final publication copies the point to the sprite. Flag 4 also rotates the
+live collider around Y, publishes its position at resource-height offset and
+updates its external basis. Failure keeps earlier writes and the failing slot;
+success restores the caller's slot. Nested target dispatch uses the current
+identity, so a successfully detached target makes the following class lookup
+fail before installing another slot. These actor operations consume no RNG.
+
+`scene-ufo-transfer` compares original FullRace actor calls with full scene,
+component, car-pose/motion, route reservation, visibility, overlay, lifecycle and
+RNG snapshots. It includes continuous player, non-player and obstacle transfers,
+branch thresholds, large unsigned radii, overlap failures, packed arithmetic
+wrap, partial restores, nested errors and departure. The actor qualifier ends at
+its queued lifecycle effects; mixed scheduler/drain execution is a separate frame
+boundary. Answer mutations check each affected state boundary.
+
+```powershell
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/ufo-transfer-check target/weapon-reference 0 scene-ufo-transfer
+python -B "$tools/scene_allocation_checker_check.py" target/release/tankracer-physics-check.exe target/weapon-reference target/ufo-transfer-fault-check --ufo-transfer
 ```
 
 ## Mine placement and memberships

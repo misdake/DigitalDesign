@@ -6,7 +6,7 @@ use crate::{
 };
 
 pub struct Weapons {
-    // Two CPU words per object: kind (0 absent, 1 projectile, 2 mine, 3 explosion), pool slot.
+    // Two CPU words per object: kind (0 absent, 1 projectile, 2 mine, 3 explosion, 4 UFO), pool slot.
     pub directory: Array<u16>,
     pub object_capacity: u16,
     pub projectile_page: u16,
@@ -15,6 +15,8 @@ pub struct Weapons {
     pub mine_pages: u16,
     pub explosion_page: u16,
     pub explosion_pages: u16,
+    pub ufo_page: u16,
+    pub ufo_pages: u16,
     // Five i32 world fields, then fifteen presence/entity/frame slot triples.
     pub explosion_world: Array<u16>,
     pub blasts: explosion_blasts::State,
@@ -124,13 +126,16 @@ fn enter(
 // Each record starts with 30 words of scene data. Word 0 is object ID + 1,
 // word 1 is signed sort position; words 2..4 are optional mesh presence/ID.
 // Remaining words retain visibility/emitter data for the factory stages.
-// Payloads are 610 projectile words, eighteen mine words or 676 explosion words.
+// Payloads are 610 projectile words, eighteen mine, 676 explosion or 56 UFO words.
 pub fn stride(kind: u16) -> u16 {
     if kind == 1 {
         return 640;
     }
     if kind == 3 {
         return 706;
+    }
+    if kind == 4 {
+        return 86;
     }
     48
 }
@@ -141,6 +146,9 @@ pub fn slots(kind: u16) -> u16 {
     if kind == 3 {
         return 23;
     }
+    if kind == 4 {
+        return 190;
+    }
     341
 }
 pub fn page(weapons: &Weapons, kind: u16, slot: u16) -> u16 {
@@ -150,6 +158,9 @@ pub fn page(weapons: &Weapons, kind: u16, slot: u16) -> u16 {
     }
     if kind == 3 {
         first = weapons.explosion_page;
+    }
+    if kind == 4 {
+        first = weapons.ufo_page;
     }
     first + slot / slots(kind)
 }
@@ -175,6 +186,9 @@ fn insert(weapons: &Weapons, id: u16, kind: u16) -> fix32 {
     }
     if kind == 3 {
         pages = weapons.explosion_pages;
+    }
+    if kind == 4 {
+        pages = weapons.ufo_pages;
     }
     let saved = read_dseg_page(3);
     let count = slots(kind);
@@ -411,7 +425,7 @@ pub fn dispatch(
     }
     let mut status = n(0);
     if method.status == 1 {
-        if method.id == 116 || method.id == 119 || method.id == 92 {
+        if method.id == 116 || method.id == 119 || method.id == 92 || method.id == 124 {
             let allocated = scene_lifecycle::allocate_transient(store, world, runtime, entity);
             if allocated.status != 0 {
                 status = n(-1);
@@ -425,6 +439,9 @@ pub fn dispatch(
                 }
                 if method.id == 92 {
                     kind = 3;
+                }
+                if method.id == 124 {
+                    kind = 4;
                 }
                 status = insert(weapons, allocated.id.lo_bits(), kind);
             }
@@ -471,13 +488,19 @@ pub fn dispatch(
                     attitude::get(weapons.mine_count, 0) - n(1),
                 );
             }
-        } else if method.id == 118 {
+        } else if method.id == 118 || method.id == 126 {
             let id = scene_lifecycle::object(store, entity);
             if id < n(0) {
                 return id;
             }
             status =
                 scene_lifecycle::parent_base(scene, store, runtime, entity, store.generic_class);
+            if status == n(0) && method.id == 126 {
+                let removed = ordered::remove_first(&mut runtime.special, id, store.limit);
+                if removed != 0 {
+                    return error(removed);
+                }
+            }
         } else {
             let id = entities::handle(&store.identities, entity);
             if (method.id == 37 || method.id == 38)

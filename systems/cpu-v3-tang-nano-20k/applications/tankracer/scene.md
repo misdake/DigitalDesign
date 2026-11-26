@@ -674,3 +674,38 @@ neither shared rendering traffic nor complete game-frame timing.
 code and reports belong to qualification. Object methods publish geometry and
 memberships to the live world. Connecting their complete dispatch and vehicle
 scheduler remains a separate integration boundary.
+
+## Lap gates and restoration
+
+`scene_laps::step` processes the live lap-object list or flushes the delayed
+enter/leave queues. `Context` borrows six words per object: signed add/remove
+lap, entered flag, resolved shape presence, pending Crush presence and actor
+kind. Surface attachment flags are direct views into their live owners.
+Fall restoration reads sorted object IDs with nine original basis columns.
+The caller supplies camera XYZ in the original one-eighth world scale.
+
+An add-lap match takes precedence over remove-lap. Objects whose wrapped X/Z
+camera distances are both strictly below 19,200 queue their entity IDs;
+others execute the actual class Enter/Leave immediately. Deferred entries
+resolve the current entity binding when flushed, including ID reuse. The work
+counter is shared across enter and leave queues. Removing a queue entry also
+advances the cursor once; removing the tail restarts at the first entry.
+
+Ordinary actions mutate ordered membership and the live spatial grid. Crush
+actions mutate deformable and special lists, then activate or queue Stop when
+records are attached. Pickup, train, flock and background actors retain their
+class activation and list/grid rules. Successful actions publish `entered`
+after dispatch. Errors retain prior list/grid writes and the active dispatch
+slot. Null and above-maximum interfaces preserve their usual slot behavior.
+
+After lap events, off-camera Fall objects with a basis backup, flag bit zero
+set and zero activity restore that basis and flags to 32 before grid insertion.
+An external basis equal to the old pose basis follows the restored value;
+other external bases retain their value. A failed insertion retains the pose
+and property writes. This path consumes no RNG and restores borrowed DSEG pages.
+
+`scene-laps` compares complete reference class calls on FullRace ENGLAND,
+including persistent lap sequences, delayed queues, attachment/pending states,
+near-boundary wrapping, stale/reused identities, limits and committed failures.
+`scene_allocation_checker_check.py --laps` checks selected answer mutations.
+The mixed race scheduler calls this module at its own lap and camera boundaries.

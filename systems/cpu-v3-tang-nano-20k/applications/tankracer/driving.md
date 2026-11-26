@@ -426,3 +426,111 @@ inventory byte boundaries, light start/fade/projection, reset and pool aliases.
 Each original call's result and committed state is checked. The fault checker
 changes one answer bit in flight, collected inventory and an allocated quad;
 it executes the modified package independently of artifact identity validation.
+
+## Route restoration and part poses
+
+`vehicle_pose::update` implements the complete original part-pose update over
+caller-owned views. The logical state is 104 i32 values (416 bytes): physical,
+reference and base positions/basis, body, two tracks, turret, gun, two attachments,
+bottom position and recoil factor/shift. Each contiguous part pose stores nine
+basis values followed by XYZ. Physical and body-position views keep their distinct
+commit points, including an error on the second track. The caller supplies stable
+views of each logical column; this stage owns twelve scratch bytes for one vector.
+
+The 27-i32 configuration contains travel gain/shift and track length, both track
+offsets, turret/gun offsets, both attachment offsets, bottom offset and gun pivot.
+The serialized 18-i32 environment retains source timer, ambient/session flags,
+phase, recoil mode, signed turret yaw, recoil/pitch, external-basis kind and its
+nine custom matrix values. `Environment.timer` selects the current call's u16
+timer separately from that serialized template. Travel is four raw i32 values.
+Trigonometry uses the existing exact asset tables and restores its mapped page.
+
+Body/reference publication precedes timer and ambient wobble. Each track uses its
+own travel pair and removes the last applicable wobble before rotation. Turret
+recoil uses the selected external basis; the gun then rotates around its authored
+pivot. The unchanged turret basis is exactly the gun basis before pivot rotation,
+so the pivot difference reads that basis directly. Attachments, base position,
+physical commit and bottom position follow in original order. Wrapped products,
+arithmetic versus truncating shifts and original angle errors remain explicit.
+The result is zero or -2, and prior writes survive failure.
+
+`vehicle_transfer::restore` walks the ordered checkpoint list backward, skipping
+non-progress and occupied checkpoints. It borrows current scene colliders and
+identity bindings, a point-presence/progress table and the occupied list. The
+checkpoint and unsigned passed count publish at their original positions in the
+search. Signed-i16 laps wrap when the selected progress crosses the circuit.
+Work accounting uses unsigned comparisons and preserves each failure prefix.
+
+After resolving source and saved positions, restore writes physical XYZ with the
+6,144-unit lift, transforms the direction through the current body basis, scales
+it into the angle range and rotates yaw. It calls the complete pose stage with
+the live temporary timer. Only then does it clear driving input, velocity,
+acceleration, angular motion and track-slip rate. Status and height have separate
+outputs; a negative returned ground height is successful. Height publishes only
+after the whole operation succeeds. Both modules borrow persistent state directly
+and consume no gameplay RNG.
+
+`vehicle-pose` qualifies complete original `pose::State::update` calls, including
+both wobble sources, recoil modes/bases, pivot/offset wrap, legacy shifts, and
+first/second-track failures. `vehicle-transfer` calls the original restore routine
+on real ENGLAND checkpoints, colliders and identity data. It compares every pose field and all affected
+car columns, and verifies the scene, route, configuration and identity inputs
+remain unchanged. Cases include occupied points, missing bindings, work limits,
+passed/lap wrap, signed heights, pose failures and subsequent restores. These
+entry points qualify the reusable kernels. The UFO actor combines them with the
+ordered target-method sequence described in [weapon state](weapons.md#ufo-transfer-update).
+
+`scene_vehicle_transfer::dispatch` resolves the actual vehicle class table and
+executes MODE, COLLIDABLE, SHOW, RESET and MOVE on these same car views. MODE
+sets the spin-disabled byte; COLLIDABLE sets collision-disabled; RESET toggles
+driving. Their Value payload defaults to zero for other payload kinds. MOVE
+uses ordered checkpoint restoration and returns its signed ground height as raw
+u32 bits, independently of its status. These mutations require a live vehicle
+component, while SHOW can queue a Stop or dispatch Activate without that component.
+
+Common identity/tick/queue methods execute before vehicle lookup. SHOW's nested
+Activate uses normal entity dispatch, so class overrides retain their actual
+method semantics. Successful calls restore the saved slot and publish their
+result; failed calls retain the current slot and committed state while leaving
+the caller's prior result unchanged. An above-maximum interface succeeds with
+zero and retains the requested slot. MODE, COLLIDABLE and RESET retain the source
+behavior at a zero work limit; tick and queue operations apply their own limits.
+The dispatcher consumes no RNG and borrows the live route, identity and lifecycle
+owners. A bound class with an absent or session object returns -1 for a vehicle
+method; a vehicle handle whose component/context is missing returns -4. Vehicle
+and obstacle target methods share the UFO actor's ordered call sequence.
+
+`scene_obstacle_transfer::dispatch` implements obstacle MODE, COLLIDABLE and
+MOVE using the same class, identity, collider, component metadata and grid owners.
+MODE removes the first matching ordinary/special membership and appends to the
+other list, preserving duplicates. COLLIDABLE inserts into or removes from the
+spatial grid. Removal retains the stored cell; a successful insertion publishes
+the new cell. The caller resolves the current object's mesh in the resource
+owner and supplies `shape_present`. A resolved mesh uses `(radius + 352) * 16`;
+the absent shape uses 5,632 units. Radius and position come from the live collider.
+
+MOVE publishes XYZ before removing the old grid membership, then inserts at the
+new position and returns Y as raw u32 bits. A later component or traversal error
+preserves the new position and any earlier cell removals. The same path supports
+fixed and banked colliders; grid and collider helpers restore their borrowed
+DSEG mapping. Position payload and output views must remain valid while these
+helpers borrow DSEG3. Class-table null, above-maximum, base methods and output
+commit retain the existing scene dispatch behavior.
+
+The `scene-vehicle-transfer` qualifier uses real FullRace ENGLAND class/resource
+tables and captures the whole scene, live car state, dispatch output, queues,
+tick cursor and route inputs after each call. It includes nested class overrides,
+missing vehicle/context, signed height, partial pose failure and work limits.
+`scene_allocation_checker_check.py --vehicle-methods` mutates selected expected
+states to verify the answer checker catches failures at their affected boundaries.
+`scene-obstacle-transfer` additionally covers live grid order, duplicate inserts,
+default shape radius, missing components, signed/out-of-map moves, appended
+colliders, and partial grid removal before work exhaustion. The corresponding
+answer mutations use `scene_allocation_checker_check.py --obstacle-methods`.
+
+```powershell
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/pose-check target/weapon-reference 0 vehicle-pose
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/transfer-check target/weapon-reference 0 vehicle-transfer
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/vehicle-methods-check target/weapon-reference 0 scene-vehicle-transfer
+cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/obstacle-methods-check target/weapon-reference 0 scene-obstacle-transfer
+```

@@ -16,6 +16,13 @@ def prepare(root: Path, output: Path, driving=False, lifecycle=False, closer=Fal
         'vehicle_runtime/car_objects.rs': (
             '\n#[path=' + json.dumps(bridge.as_posix()) + '] pub mod rcc_probe;\n').encode(),
     }
+    suffixes['session/loading.rs'] = b'''
+impl Prepared {
+    pub fn rcc_load_full_race(terrain: Arc<TerrainData>, files: Files<'_>, selection: Selection) -> Result<Self, Box<dyn Error>> {
+        Self::load_with(terrain, files, selection, true, scenery::Content::FullRace, None)
+    }
+}
+'''
     car_bridge = owner / 'reference_car.rs'
     scene_bridge = owner / 'reference_scene.rs'
     if lifecycle:

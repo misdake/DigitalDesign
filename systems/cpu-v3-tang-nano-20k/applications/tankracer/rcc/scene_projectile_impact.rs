@@ -2,8 +2,8 @@
 use crate::dsl_rt::*;
 use crate::{
     attitude, blast, entities, explosion, integer, projectile_flight, projectile_marks,
-    scene_creation, scene_explosions, scene_lifecycle, scene_projectiles, scene_query, scene_world,
-    tank_hit, temporary,
+    scene_creation, scene_explosions, scene_lifecycle, scene_projectiles, scene_query, scene_ufos,
+    scene_world, tank_hit, temporary,
 };
 pub struct Car {
     pub present: bool,
@@ -45,6 +45,7 @@ pub struct Tick {
     pub flight: scene_projectiles::Frame,
     pub impact: Impact,
     pub damage: Damage,
+    pub ufos: scene_ufos::Context,
 }
 pub struct HitVehicle {
     pub present: bool,
@@ -498,7 +499,7 @@ pub fn dispatch(
     runtime: &mut scene_world::Runtime,
     world: &mut scene_world::World,
     weapons: &mut scene_creation::Weapons,
-    tick: &Tick,
+    tick: &mut Tick,
 ) -> fix32 {
     let class = entities::class(&store.identities, tick.call.entity);
     if class < n(0) || class >= fix32::from_words(scene.header[4u16], 0) {
@@ -531,8 +532,10 @@ pub fn dispatch(
             unsafe {
                 write_dseg_page(3, stage);
             }
-            if kind == n(3) {
-                return n(-4);
+            status =
+                scene_ufos::carrier(store, weapons, id, &tick.ufos.cars, &mut tick.flight.flight);
+            if status != n(0) {
+                return status;
             }
             let mut actions = tick.impact.action;
             status = scene_projectiles::advance(world, weapons, &tick.flight, &mut actions[0u16]);
@@ -559,6 +562,77 @@ pub fn dispatch(
                     let car = action.contact.vehicle;
                     if car.hi_bits() != 0 || car.lo_bits() >= tick.impact.vehicle_count {
                         return n(-4);
+                    }
+                    if kind == n(3) {
+                        unsafe {
+                            write_dseg_page(
+                                3,
+                                scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+                            );
+                        }
+                        let state = at(scene_creation::record(weapons, id, 3), 30);
+                        let flags = g(state, 4);
+                        let attached = g(state, 25) != n(0);
+                        unsafe {
+                            write_dseg_page(3, stage);
+                        }
+                        if flags.lo_bits() & 4 != 0 {
+                            p(runtime.slot, 0, saved);
+                            return n(0);
+                        }
+                        let index = car.lo_bits();
+                        if !tick.impact.has_vehicles || !tick.impact.cars[index].present {
+                            return n(-4);
+                        }
+                        if g(tick.impact.cars[index].blast, 3) < n(1) && !attached {
+                            let destination: Buf<u16, 6> = Buf::new([0; 6]);
+                            let request = scene_ufos::Spawn {
+                                class: tick.ufos.class,
+                                resources_present: tick.ufos.resources_present,
+                                mesh: tick.ufos.mesh,
+                                material: tick.ufos.material,
+                                target: tick.impact.cars[index].entity,
+                                emitter_present: false,
+                                emitter: n(0),
+                                destination: destination.as_array(),
+                                cars: tick.ufos.cars,
+                            };
+                            let ufo =
+                                scene_ufos::spawn(scene, store, runtime, world, weapons, &request);
+                            if ufo < n(0) {
+                                return ufo;
+                            }
+                            if !component(weapons, id) {
+                                return n(-4);
+                            }
+                            unsafe {
+                                write_dseg_page(
+                                    3,
+                                    scene_creation::page(weapons, 1, weapons.directory[id * 2 + 1]),
+                                );
+                            }
+                            let state = at(scene_creation::record(weapons, id, 3), 30);
+                            p(state, 25, n(1));
+                            p(state, 26, ufo);
+                            let mut words = at(state, 54);
+                            let local = action.contact.local.point.as_array();
+                            let mut i = 0u16;
+                            while i < 6 {
+                                words[i] = local[i];
+                                i += 1;
+                            }
+                            let flags = g(state, 4);
+                            p(
+                                state,
+                                4,
+                                fix32::from_words(flags.lo_bits() | 4, flags.hi_bits()),
+                            );
+                            unsafe {
+                                write_dseg_page(3, stage);
+                            }
+                            p(runtime.slot, 0, saved);
+                            return n(0);
+                        }
                     }
                     let reflection = scene_projectiles::Reflection {
                         object: id,
