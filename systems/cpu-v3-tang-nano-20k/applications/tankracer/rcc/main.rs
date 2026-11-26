@@ -3,11 +3,13 @@ use crate::dsl_rt::*;
 mod boot_resources;
 mod gpu_api;
 mod gpu_board;
+mod playback;
 mod prepared_map;
 mod world;
 use boot_resources::*;
 use gpu_api::*;
 use gpu_board::*;
+use playback::Playback;
 use world::World;
 
 fn main() {
@@ -24,13 +26,16 @@ fn main() {
     let mut display = Display::open();
     let mut last_present = display.frame_index();
     let mut world = World::new();
-    world.record(&mut commands, 0, 0, color_b.ptr(), depth.ptr());
+    let mut playback = Playback::new();
+    world.record(
+        &mut commands,
+        playback.next(),
+        0,
+        color_b.ptr(),
+        depth.ptr(),
+    );
     gpu.submit(commands);
     let mut completed_color = color_b.ptr();
-    let mut frame: u16 = 1;
-    if frame == CAMERA_COUNT {
-        frame = 0;
-    }
     let mut odd = true;
     loop {
         let mut back = color_b.ptr();
@@ -43,7 +48,7 @@ fn main() {
         if odd {
             bank = 1;
         }
-        world.record(&mut recording, frame, bank, back, depth.ptr());
+        world.record(&mut recording, playback.next(), bank, back, depth.ptr());
         let completed = gpu.wait();
         // Keep one scanout between swaps. A frame that already ran past that
         // scanout can queue immediately for the next edge.
@@ -58,9 +63,5 @@ fn main() {
         recording = completed;
         completed_color = back;
         odd = !odd;
-        frame += 1;
-        if frame == CAMERA_COUNT {
-            frame = 0;
-        }
     }
 }

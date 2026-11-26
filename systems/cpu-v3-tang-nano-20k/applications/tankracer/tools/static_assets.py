@@ -16,6 +16,7 @@ import export_route
 import route_ring
 import alpha_order
 import view_pvs
+import camera_path
 
 from gpu_mesh_layout import native_record
 from mesh_partition import partition
@@ -376,11 +377,11 @@ def build(output, route_path=None):
     if recording not in ('always', 'reuse', 'prepared'):
         raise ValueError('recording must be always, reuse or prepared')
     map_path = os.getenv("TANKRACER_MAP_INPUT")
-    camera_path = os.getenv("TANKRACER_CAMERA_INPUT")
-    if not map_path or not camera_path:
+    camera_input = os.getenv("TANKRACER_CAMERA_INPUT")
+    if not map_path or not camera_input:
         raise ValueError("the static map build requires --map and --camera")
     map_data = Path(map_path).read_bytes()
-    camera_data = Path(camera_path).read_bytes()
+    camera_data = Path(camera_input).read_bytes()
     route_path = route_path or os.getenv("TANKRACER_ROUTE_INPUT")
     route_input = read_json(route_path) if route_path else None
     assets = Sources(output)
@@ -468,9 +469,7 @@ def build(output, route_path=None):
     assets.bytes('MAP_OPAQUE_RING', struct.pack(f'<{len(command_ring)}H', *command_ring))
     mesh_asset(assets, records)
     assets.bytes("MAP_GROUP_DATA", struct.pack(f"<{len(packed)}H", *packed))
-    cameras = json.loads(camera_data)
-    if not isinstance(cameras, list) or not 1 <= len(cameras) <= 192:
-        raise ValueError("expected 1..192 camera samples in the supplied sequence")
+    cameras, camera_fps, camera_loop_ms = camera_path.expand(json.loads(camera_data))
     camera_words = [w for camera in cameras for w in view_words(camera, origin, scale)]
     assets.bytes("MAP_CAMERA_DATA", struct.pack(f"<{len(camera_words)}H", *camera_words))
     pvs, pvs_info = view_pvs.build([] if ring is None else ring[0], location, scale,
@@ -519,6 +518,7 @@ def build(output, route_path=None):
         GROUP_SCRATCH_WORDS=scratch_words, OPAQUE_COUNT=opaque_count,
         CLUSTER_COUNT=len(cluster_counts), CLUSTER_WORDS=CLUSTER_WORDS,
         CAMERA_COUNT=len(cameras),
+        CAMERA_FPS=camera_fps, CAMERA_LOOP_MS=camera_loop_ms,
         RING_SEGMENT_COUNT=0 if ring is None else ring[2]["segment_count"],
         RING_GROUP_COUNT=0 if ring is None else ring[2]["group_count"],
         MAP_FAR_LOW=q16(far)[0], MAP_FAR_HIGH=q16(far)[1],
@@ -542,10 +542,11 @@ def build(output, route_path=None):
     if ring is None:
         extra += "pub const MAP_RING_GROUP_DATA:AssetBytes=MAP_GROUP_DATA;\n"
     extra += material_code
-    manifest = assets.write_manifest("tankracer_static.rs", sources=[__file__, export_route.__file__, route_ring.__file__, alpha_order.__file__, view_pvs.__file__], extra=extra)
+    manifest = assets.write_manifest("tankracer_static.rs", sources=[__file__, export_route.__file__, route_ring.__file__, alpha_order.__file__, view_pvs.__file__, camera_path.__file__], extra=extra)
     manifest.update(candidate_source=candidates, map_sha256=hashlib.sha256(map_data).hexdigest(),
                     view_pvs=pvs_info,
                     camera_sha256=hashlib.sha256(camera_data).hexdigest(),
+                    camera_playback=dict(frames_per_second=camera_fps, loop_ms=camera_loop_ms),
                     origin=origin, render_scale=scale, position_shift=shift, display_distance=display,
                     selection=dict(group_record_bytes=GROUP_WORDS * 2,
                                    group_asset_bytes=len(packed) * 2,

@@ -4,12 +4,14 @@ mod boot_resources;
 mod gpu_api;
 mod gpu_board;
 mod gpu_window;
+mod playback;
 mod static_buffer;
 mod world;
 use boot_resources::*;
 use gpu_api::*;
 use gpu_board::*;
 use gpu_window::gpu_window_asset_read;
+use playback::Playback;
 use static_buffer::StaticBuffer;
 use world::{DrawSpan, Selection, World};
 
@@ -175,12 +177,12 @@ pub fn run() {
     let mut world = World::new();
     let atlas = PreparedMap::new(&mut world);
     let ranges: Buf<u16, 90> = Buf::new([0; 90]);
-    let mut frame: u16 = 0;
+    let mut playback = Playback::new();
     let mut odd = false;
     let mut active = false;
     let mut completed_color = color_b.ptr();
     loop {
-        let selected = world.select_frame(frame);
+        let selected = world.select_frame(playback.next());
         let plan = atlas.plan(&world, &selected, ranges.as_array());
         let mut back = color_b.ptr();
         if odd {
@@ -219,15 +221,11 @@ pub fn run() {
             // Dropping a configured CB would permanently retire its slot.
             loop {
                 odd = !odd;
-                frame += 1;
-                if frame == CAMERA_COUNT {
-                    frame = 0;
-                }
                 let mut next_back = color_b.ptr();
                 if odd {
                     next_back = color_a.ptr();
                 }
-                let next = world.select_frame(frame);
+                let next = world.select_frame(playback.next());
                 world.record_fallback(&mut recording, &next, next_back, depth.ptr());
                 let completed = gpu.wait();
                 last_present = present_frame(&mut display, last_present, completed_color);
@@ -246,9 +244,5 @@ pub fn run() {
         }
         completed_color = back;
         odd = !odd;
-        frame += 1;
-        if frame == CAMERA_COUNT {
-            frame = 0;
-        }
     }
 }

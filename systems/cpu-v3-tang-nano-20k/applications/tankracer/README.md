@@ -500,7 +500,11 @@ not change runtime order.
 
 ## Camera input and workload
 
-Use a JSON list of 1–192 views with three-component `eye` and `target` and an
+For board playback, use `assets/england/cameras-loop.json`: one complete recorded
+lap, linearly resampled at 30 Hz and paced by the wall clock at 60 seconds per lap.
+The build and regeneration commands are in [camera playback](../../docs/tankracer-camera-playback.md).
+
+Use a JSON list of 1–2730 views with three-component `eye` and `target` and an
 optional `up` vector and `label`. Keep quick and full sequences as separate
 camera files. Include rear and off-route viewpoints for geometry coverage.
 
