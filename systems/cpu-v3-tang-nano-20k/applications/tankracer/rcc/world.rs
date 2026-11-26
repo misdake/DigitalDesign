@@ -36,6 +36,7 @@ pub struct World {
     material: Material,
     opaque: RenderState,
     blended: RenderState,
+    cutout: RenderState,
     groups: Ptr,
     // Prepared: three selected words per ring item, then two ordered words
     // per visible item. UnlitBank: tightly packed first/count/material triples.
@@ -58,6 +59,7 @@ pub struct World {
 
 pub struct Selection {
     pub opaque: u16,
+    pub cutout: u16,
     pub blended: u16,
 }
 
@@ -105,6 +107,11 @@ impl World {
             blended: RenderState::new(
                 state
                     .with_depth(DepthFunc::LessEqual, false)
+                    .with_blend(BlendMode::SrcOver),
+            ),
+            cutout: RenderState::new(
+                state
+                    .with_depth(DepthFunc::LessEqual, true)
                     .with_blend(BlendMode::SrcOver),
             ),
             groups,
@@ -190,6 +197,9 @@ impl World {
                     let mut state = self.opaque.ptr();
                     if words[at + 10] >= OPAQUE_COUNT {
                         state = self.blended.ptr();
+                        if MAP_MATERIALS[material * 4 + 1] & 8 != 0 {
+                            state = self.cutout.ptr();
+                        }
                     }
                     let texture_id = MAP_MATERIALS[material * 4];
                     if texture_id == 0 {
@@ -197,8 +207,8 @@ impl World {
                     } else {
                         let texture = map_texture(texture_id - 1);
                         let mut view = texture.view();
-                        view.set_min_mip_size(MAP_MATERIALS[material * 4 + 1] >> 1);
-                        if MAP_MATERIALS[material * 4 + 1] != 0 {
+                        view.set_min_mip_size((MAP_MATERIALS[material * 4 + 1] >> 1) & 3);
+                        if MAP_MATERIALS[material * 4 + 1] & 1 != 0 {
                             view.set_address_mode(TextureAddressMode::ClampToEdge);
                         }
                         map[index] =
@@ -258,7 +268,7 @@ impl World {
         depth: DepthBufferPtr,
         selected: &Selection,
     ) {
-        let count = selected.opaque + selected.blended;
+        let count = selected.opaque + selected.cutout + selected.blended;
         let mut previous_count = self.count_a;
         let mut cache = self.cache_a;
         if bank != 0 {
@@ -285,6 +295,7 @@ impl World {
             );
             let opaque = unsafe { self.opaque_draws.as_u16_array() };
             self.draw_list(&mut pass, opaque, selected.opaque, OPAQUE_DRAW_WORDS);
+            self.draw_cutouts(&mut pass, selected.blended, selected.cutout);
             if GROUP_COUNT != OPAQUE_COUNT {
                 let blended = unsafe { self.blended_draws.as_u16_array() };
                 self.draw_list(&mut pass, blended, selected.blended, 6);
@@ -339,8 +350,8 @@ impl World {
         } else {
             let texture = map_texture(texture_id - 1);
             let mut view = texture.view();
-            view.set_min_mip_size(MAP_MATERIALS[at + 1] >> 1);
-            if MAP_MATERIALS[at + 1] != 0 {
+            view.set_min_mip_size((MAP_MATERIALS[at + 1] >> 1) & 3);
+            if MAP_MATERIALS[at + 1] & 1 != 0 {
                 view.set_address_mode(TextureAddressMode::ClampToEdge);
             }
             part.draw(self.transform.ptr(), mesh, self.material.ptr(), &view);
@@ -375,8 +386,8 @@ impl World {
             } else {
                 let texture = map_texture(texture_id - 1);
                 let mut view = texture.view();
-                view.set_min_mip_size(MAP_MATERIALS[at + 1] >> 1);
-                if MAP_MATERIALS[at + 1] != 0 {
+                view.set_min_mip_size((MAP_MATERIALS[at + 1] >> 1) & 3);
+                if MAP_MATERIALS[at + 1] & 1 != 0 {
                     view.set_address_mode(TextureAddressMode::ClampToEdge);
                 }
                 pass.draw(self.transform.ptr(), mesh, self.material.ptr(), &view);
@@ -404,6 +415,7 @@ impl World {
             pass.draw_unlit(&self.unlit, binding, span.first, span.count);
             index += 1;
         }
+        self.draw_cutouts(&mut pass, selected.blended, selected.cutout);
         if selected.blended != 0 {
             let blended = unsafe { self.blended_draws.as_u16_array() };
             self.draw_list(&mut pass, blended, selected.blended, 6);
@@ -417,12 +429,16 @@ impl World {
         let order = unsafe { self.blended_order.as_u16_array() };
         let mut same = compare;
         let mut i: u16 = 0;
-        while i < selected.opaque + selected.blended {
+        while i < selected.opaque + selected.cutout + selected.blended {
             let mut input = opaque;
             let mut at = i * 3;
             if i >= selected.opaque {
                 input = blended;
-                at = order[i - selected.opaque] * 6;
+                if i < selected.opaque + selected.cutout {
+                    at = order[selected.blended + i - selected.opaque] * 6;
+                } else {
+                    at = order[i - selected.opaque - selected.cutout] * 6;
+                }
             }
             let mut word: u16 = 0;
             while word < 3 {
@@ -461,6 +477,7 @@ impl World {
         let mut blended = unsafe { self.blended_draws.as_u16_array() };
         let mut result = Selection {
             opaque: 0,
+            cutout: 0,
             blended: 0,
         };
         let mut same_blended = self.previous_blended != 0;
@@ -555,8 +572,13 @@ impl World {
                             let draw_material = words[record + 9];
                             if words[record + 10] >= OPAQUE_COUNT {
                                 let mut output = blended;
-                                let target = result.blended * 6;
-                                if same_blended {
+                                let cutout =
+                                    MAP_MATERIALS[(draw_material & 32767) * 4 + 1] & 8 != 0;
+                                let mut target = result.blended * 6;
+                                if cutout {
+                                    target = (GROUP_COUNT - OPAQUE_COUNT - 1 - result.cutout) * 6;
+                                }
+                                if !cutout && same_blended {
                                     if result.blended >= self.previous_blended {
                                         same_blended = false;
                                     } else if output[target + 3] != words[record + 10] {
@@ -569,7 +591,11 @@ impl World {
                                 output[target] = draw_first;
                                 output[target + 1] = draw_count;
                                 output[target + 2] = draw_material;
-                                result.blended += 1;
+                                if cutout {
+                                    result.cutout += 1;
+                                } else {
+                                    result.blended += 1;
+                                }
                             } else {
                                 if TANKRACER_PREPARED != 0 {
                                     let item = MAP_OPAQUE_RING_INDEX[words[record + 10]];
@@ -609,7 +635,57 @@ impl World {
         } else if !blended_ordered(blended, order, result.blended) {
             repair_blended_order(blended, order, result.blended);
         }
+        self.order_cutouts(result.blended, result.cutout);
         result
+    }
+
+    fn order_cutouts(&mut self, blended_count: u16, count: u16) {
+        if count == 0 {
+            return;
+        }
+        // Rank seeding has finished with these two buffers. Reuse them for a
+        // fixed texture/stable-ID order, independent of the candidate window.
+        let mut mask = unsafe { self.alpha_mask.as_u16_array() };
+        let mut ordinals = unsafe { self.alpha_ordinals.as_u16_array() };
+        let records = unsafe { self.blended_draws.as_u16_array() };
+        let blocks = (GROUP_COUNT - OPAQUE_COUNT + 15) / 16;
+        let mut i: u16 = 0;
+        while i < blocks {
+            mask[i] = 0;
+            i += 1;
+        }
+        i = 0;
+        while i < count {
+            let ordinal = GROUP_COUNT - OPAQUE_COUNT - 1 - i;
+            let id = records[ordinal * 6 + 3] - OPAQUE_COUNT;
+            ordinals[id] = ordinal;
+            mask[id >> 4] |= 1u16 << (id & 15);
+            i += 1;
+        }
+        let mut output = unsafe { self.blended_order.as_u16_array() };
+        let mut cursor = blended_count;
+        let mut texture: u16 = 1;
+        while texture <= MAP_TEXTURE_COUNT {
+            let mut bucket: u16 = 0;
+            while bucket < blocks {
+                let mut bits = mask[bucket];
+                let mut id = bucket * 16;
+                while bits != 0 {
+                    if bits & 1 != 0 {
+                        let ordinal = ordinals[id];
+                        let material = records[ordinal * 6 + 2] & 32767;
+                        if MAP_MATERIALS[material * 4] == texture {
+                            output[cursor] = ordinal;
+                            cursor += 1;
+                        }
+                    }
+                    bits >>= 1;
+                    id += 1;
+                }
+                bucket += 1;
+            }
+            texture += 1;
+        }
     }
 
     fn seed_blended(
@@ -652,21 +728,12 @@ impl World {
             mask[rank >> 4] |= 1u16 << (rank & 15);
             index += 1;
         }
-        bucket = 0;
-        index = 0;
-        while bucket < (GROUP_COUNT - OPAQUE_COUNT + 15) / 16 {
-            let mut bits = mask[bucket];
-            let mut at = bucket * 16;
-            while bits != 0 {
-                if bits & 1 != 0 {
-                    order[index] = ordinals[at];
-                    index += 1;
-                }
-                at += 1;
-                bits >>= 1;
-            }
-            bucket += 1;
-        }
+        gather_ordinals(
+            mask,
+            ordinals,
+            order,
+            (GROUP_COUNT - OPAQUE_COUNT + 15) / 16,
+        );
     }
 
     fn ordered_opaque(&mut self, words: Array<u16>) -> u16 {
@@ -731,6 +798,26 @@ impl World {
         count
     }
 
+    fn draw_cutouts(&mut self, pass: &mut Pass, start: u16, count: u16) {
+        let words = unsafe { self.blended_draws.as_u16_array() };
+        let map = unsafe { self.bindings.as_u16_array() };
+        let order = unsafe { self.blended_order.as_u16_array() };
+        let mut i: u16 = 0;
+        // Fixed texture/stable-ID order, after terrain and before SrcOver.
+        // The two ends of the existing scratch hold disjoint classes.
+        while i < count {
+            let at = order[start + i] * 6;
+            let key = words[at + 2];
+            pass.draw_unlit(
+                &self.unlit,
+                map[(key & 32767) * 2 + (key >> 15)],
+                words[at],
+                words[at + 1],
+            );
+            i += 1;
+        }
+    }
+
     fn draw_list(&mut self, pass: &mut Pass, words: Array<u16>, count: u16, stride: u16) {
         let order = unsafe { self.blended_order.as_u16_array() };
         let map = unsafe { self.bindings.as_u16_array() };
@@ -757,6 +844,24 @@ impl World {
             pass.draw_unlit(&self.unlit, binding, first, length);
             i += 1;
         }
+    }
+}
+
+fn gather_ordinals(mask: Array<u16>, ordinals: Array<u16>, mut output: Array<u16>, blocks: u16) {
+    let mut bucket: u16 = 0;
+    let mut index: u16 = 0;
+    while bucket < blocks {
+        let mut bits = mask[bucket];
+        let mut at = bucket * 16;
+        while bits != 0 {
+            if bits & 1 != 0 {
+                output[index] = ordinals[at];
+                index += 1;
+            }
+            at += 1;
+            bits >>= 1;
+        }
+        bucket += 1;
     }
 }
 

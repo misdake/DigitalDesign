@@ -124,8 +124,10 @@ impl Workload {
             for x in 0..400 {
                 let index = ((x / 16) * 16 + y / 16) * 256 + (y % 16) * 16 + x % 16;
                 let z = depth as usize / 2 + index;
-                if actual[z] != self.opaque_only[z] {
-                    return Err("billboards changed the depth plane".into());
+                // Binary-alpha billboards now test alpha and write depth. Their
+                // accepted pixels can only bring LessEqual depth nearer.
+                if actual[z] > self.opaque_only[z] {
+                    return Err("billboard depth moved behind the opaque reference".into());
                 }
                 opaque_pixels += usize::from(actual[z] != u16::MAX);
                 let rgb = color as usize / 2 + index;

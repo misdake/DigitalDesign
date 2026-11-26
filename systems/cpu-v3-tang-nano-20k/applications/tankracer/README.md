@@ -58,8 +58,18 @@ RGB vertices are `[x,y,z,r,g,b]`, and textured vertices are `[x,y,z,u,v]`.
 A vertical billboard group sets `billboard: true`, references a blended
 texture, and uses `[x,y,z,side,u,v]` vertices. The position lies on its center
 line, and `side` is the signed camera-right displacement in source units.
-Each blended group is a sort unit. Keep intersecting foliage or blended
-geometry in suitably small groups to preserve depth order.
+The packer automatically classifies blended RGBA textures with binary base-level
+alpha and opaque uniform tint as cutouts. This includes billboards. They use
+SrcOver with depth writes: color keeps normal filtered alpha blending; only full
+final Q6 alpha writes Z, so a hedge's holes cannot hide trees behind it. Cutouts
+follow opaque terrain in texture/stable-ID order. Full-opacity samples resolve
+visibility through Z; filtered partial-alpha edge colors follow this fixed
+submission order. This scene uses that order instead of a camera-dependent sort.
+The [GPU alpha/depth rule](/ip/gpu-v2/docs/framebuffer.md#alpha-qualified-depth-writes)
+qualifies Z only and keeps normal color blending.
+Fractional source or uniform alpha retains SrcOver without depth writes; each
+such blended group remains a sort unit. Keep intersecting blended geometry in
+suitably small groups to preserve depth order.
 
 The asset manifest contains source hashes, per-group inventory, meshlet
 counts, native extents and selection storage. Native assets remain in SDRAM.
@@ -77,8 +87,12 @@ Q9.7 extents, an unsigned Q9.7 radius, one meshlet first/count pair, a material
 with billboard bit 15, and the original stable group ID. Bounds round outward;
 the packer rejects unrepresentable ranges. Native geometry keeps its original
 order. Opaque selections sort by first meshlet and coalesce adjacent compatible
-ranges. Transparent selections sort by depth and original ID. Drawing reuses a
-texture/view across each consecutive run with the same texture and address mode.
+ranges. Ordinary transparent selections sort by depth and original ID. Cutouts
+occupy the other end of the same six-word record scratch. After blended rank
+seeding finishes, its mask and ordinal buffers build texture/stable-ID order
+into the unused suffix of the existing order array, without another allocation.
+Drawing reuses a texture/view across each consecutive run with the same texture
+and address mode.
 Material tint and billboard selection stay per draw. Shared texture descriptors
 use an indexed table independent of material tints.
 Transparent sorting moves u16 indices while its six-word draw records remain in
@@ -177,9 +191,10 @@ must contain the required alpha support intersected with the original quad's
 actual UV domain.
 
 Original quads remain in `bounds_geometry`, providing conservative visibility
-and depth-sort bounds at the selected billboard precision. The renderer sorts
-these bounds by depth and stable ID; refining their precision can change the
-order of nearly equal-depth items. A collapsed outline retains its original quad. Textures, materials, anchors and render states retain the
+and depth-sort bounds at the selected billboard precision. Fractional-alpha
+groups sort by depth and stable ID; refining their precision can change the
+order of nearly equal-depth items. Binary-alpha cutouts use fixed texture/stable-ID
+order instead. A collapsed outline retains its original quad. Textures, materials, anchors and render states retain the
 compact page layout. Native u16 UV and fixed-point triangle interpolation allow
 small color changes; depth and renderer state are checked independently.
 The GPU's quantized N27 edge coefficients can also change isolated boundary
@@ -259,8 +274,10 @@ deterministic conversion. Use the sampler probe and `tools/check_atlas_probe.py`
 on the intended camera sequence to check actual weighted-tap isolation. A grid
 does not infer arbitrary UV wrapping or primitive ownership from the source.
 
-The default archive uses this grid conversion. The retained bordered and native
-archives stay available. Regenerate into a fresh destination:
+The default archive uses this grid conversion. Cutout classification happens
+when packing the application, from actual texture alpha rather than material
+names. The retained bordered and native archives stay available. Regenerate into
+a fresh destination:
 
 ```powershell
 python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/grid_atlas.py "$assets/scene-compact.zip" --side 1024 --grid-log2 3 --output target/tankracer-grid-source
@@ -527,7 +544,7 @@ cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-static-workload -- t
 
 The camera exporter preserves recording world coordinates. Build with a
 scene that uses the same basis. The probe emits one row per GPU submission
-with geometry and billboard counts, opaque depth coverage, visible billboard
+with geometry and billboard counts, depth coverage including cutouts, visible billboard
 pixels, and RGB565 and D16 fingerprints. Measure raster overdraw and timing
 separately through the [application profiling workflow](../../docs/application-profiling.md).
 The CSV also reports CPU instruction advances since the preceding submission;

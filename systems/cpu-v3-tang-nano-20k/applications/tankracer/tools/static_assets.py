@@ -174,6 +174,7 @@ def read_materials(assets, package, materials):
     words = []
     textures = {}
     texture_indices = {}
+    binary_alpha = {}
     for index, material in enumerate(materials):
         texture = material.get("texture")
         clamp = material.get("clamp", False)
@@ -205,6 +206,9 @@ def read_materials(assets, package, materials):
                 if type(size) is not int:
                     raise ValueError("native texture size must be an integer")
                 assets.texture(symbol, payload, size, pixel_format, mipmaps)
+                base = payload[-max(512, size * size * 2):]
+                binary_alpha[key] = rgba and all((value[0] & 15) in (0, 15)
+                                                 for value in struct.iter_unpack('<H', base))
             elif encoding == "image":
                 from PIL import Image
                 with Image.open(io.BytesIO(payload)) as image:
@@ -212,12 +216,17 @@ def read_materials(assets, package, materials):
                         raise ValueError("map textures must be square")
                     assets.texture_pixels(symbol, image.width, image.convert("RGBA").getdata(),
                                           pixel_format, mipmaps=mipmaps)
+                    histogram = image.convert('RGBA').getchannel('A').histogram()
+                    binary_alpha[key] = rgba and not any(histogram[1:255])
             else:
                 raise ValueError("unsupported map texture encoding")
             textures[key] = symbol
             texture_indices[key] = len(texture_indices)
         words[index * 4] = texture_indices[key] + 1
+        if blend and rgba and tint[3] == 255 and binary_alpha[key]:
+            words[index * 4 + 1] |= 8
     extra = word_table("MAP_MATERIALS", words)
+    extra += f"pub const MAP_TEXTURE_COUNT:u16={len(textures)};\n"
     if textures:
         extra += f"pub static MAP_TEXTURES: Buf<TextureDesc, {len(textures)}> = Buf::new([\n"
         extra += ",\n".join(textures.values()) + "\n]);\n"

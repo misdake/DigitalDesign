@@ -20,9 +20,9 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     world = Path(__file__).resolve().parents[1] / "rcc/world.rs"
     source = world.read_text()
-    start = source.index("                            if same_blended {")
-    end = source.index("                            output[target + 4]", start)
-    member = source[start:end].replace("self.previous_blended", "previous").replace(
+    start = source.index("                                if !cutout && same_blended {")
+    end = source.index("                                output[target + 4]", start)
+    member = source[start:end].replace("!cutout && ", "").replace("self.previous_blended", "previous").replace(
         "result.blended", "count").replace("words[record + 10]", "identity")
     fixture = PRELUDE + TESTS.replace("MEMBER_GUARD", member) + function(source, "blended_ordered") + function(source, "sort_back_to_front")
     path = args.output / "fixture.rs"
