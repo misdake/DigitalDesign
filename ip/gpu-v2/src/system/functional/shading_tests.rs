@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn final_alpha_gates_only_depth_and_preserves_blended_color() {
+    let mut state = DrawState {
+        global: Global {
+            far: 100 * 65536,
+            light: light::Light {
+                direction: [0, 0, 16384],
+                ambient: 256,
+                directional: 0,
+            },
+            projection: light::Projection {
+                ray_scale: [1, 1],
+                k: 1,
+            },
+            mode: 0,
+            code: 0,
+        },
+        render: RenderState {
+            texture: Texture::decode(1 << 24).unwrap(),
+            lod_bias: 0,
+            specular: [0; 3],
+            control: 3 | 8,
+        },
+        target: [0, 128],
+        color: u32::MAX,
+        rgb: false,
+    };
+    for blend in [false, true] {
+        state.render.control = if blend { 3 | 8 | 16 } else { 3 | 8 };
+        for alpha in [0, 1, 127, 128, 253, 254, 255] {
+            let mut words = vec![0; 256];
+            words[0] = 0x07e0;
+            words[128] = 100;
+            let mut memory = super::super::Memory {
+                words: &mut words,
+                access: None,
+                effects: Default::default(),
+            };
+            let result = rop(&mut memory, [0, 0], 50, [255, 0, 0, alpha], &state).unwrap();
+            let weight = if blend {
+                (u32::from(alpha) + 2) / 4
+            } else {
+                64
+            };
+            assert_eq!(result, Some(weight as u8));
+            let red = (255 * weight + 32) / 64;
+            let green = (255 * (64 - weight) + 32) / 64;
+            let expected = (((red * 62 + 255) / 510) << 11) | (((green * 126 + 255) / 510) << 5);
+            assert_eq!(memory.load(0).unwrap(), expected as u16);
+            assert_eq!(
+                memory.load(128).unwrap(),
+                if weight == 64 { 50 } else { 100 }
+            );
+        }
+    }
+}
+
+#[test]
 fn atlas_grid_clamps_each_mip_and_never_samples_a_neighboring_cell() {
     for grid in 1..=3 {
         for filter in 0..=2 {
@@ -18,7 +75,7 @@ fn atlas_grid_clamps_each_mip_and_never_samples_a_neighboring_cell() {
                         // Uniform cell colours at every permitted mip make any
                         // neighbor tap or forbidden coarse mip observable.
                         words[texture.prefix(level as u8) + offset] =
-                            if (x / cell + y / cell) % 2 == 0 {
+                            if (x / cell + y / cell).is_multiple_of(2) {
                                 0xf800
                             } else {
                                 0x07e0

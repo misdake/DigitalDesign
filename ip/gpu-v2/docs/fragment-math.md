@@ -176,6 +176,10 @@ nearest /255 and Q6 quantization. RGB565 therefore retains the original uniform
 alpha exactly. Alpha does not participate in diffuse/specular lighting.
 RGB565 packing, alpha quantization and depth comparison happen
 later in [framebuffer](/ip/gpu-v2/docs/framebuffer.md#pixel-update).
+SrcOver uses combined uniform/texture alpha for color blending. An enabled depth
+write additionally requires final Q6 alpha 64; alpha does not suppress color.
+See the [alpha/depth rule](/ip/gpu-v2/docs/framebuffer.md#alpha-qualified-depth-writes)
+for quantization boundaries and the shared-register implementation.
 
 The [reference difference table](/ip/gpu-v2/docs/references/README.md) identifies which APIs use
 RNE of the combined Final sum or exact Color normalization. Their outputs can

@@ -551,14 +551,14 @@ pub(super) fn rop<M: PixelMemory>(
     if !passing {
         return Ok(None);
     }
-    if render.control & 8 != 0 {
-        memory.store(target[1] + offset, incoming_depth)?;
-    }
     let alpha = if render.control & 16 != 0 {
         (u32::from(color[3]) + 2) / 4
     } else {
         64
     };
+    if render.control & 8 != 0 && alpha == 64 {
+        memory.store(target[1] + offset, incoming_depth)?;
+    }
     let old = expand(memory.load(target[0] + offset)?);
     let blended = std::array::from_fn(|c| {
         ((64 - alpha) * u32::from(old[c]) + alpha * u32::from(color[c]) + 32) / 64

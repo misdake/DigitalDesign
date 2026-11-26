@@ -446,7 +446,9 @@ impl Rop {
             }
             n.output_valid = s.v3;
             n.color_written = s.gate2;
-            n.depth_written = bit_and(s.gate2, s.dw2);
+            if i.shade_phase {
+                n.depth_written = bit_and(bit_and(s.gate2, s.dw2), s.alpha2.slice(6, 1));
+            }
             let rgb: [Bits; 3] = std::array::from_fn(|c| {
                 binary(
                     s.destination2[c],

@@ -718,7 +718,24 @@ impl TangNano20K {
                 // Keep the existing address-register I/O packing and clocks.
                 .add_cst_constraint(
                     "INS_LOC \"u_sdram_bridge/u_controller/state_2_s0\" R[8:12]C[45:49];",
+                )
+                // Keep the prepare-wait/address cone near the registered pads
+                // with the full-alpha depth-write gate in the shared ROP.
+                .add_cst_constraint(
+                    "INS_LOC \"u_sdram_bridge/u_controller/prep_wait_1_s4\" R[12:16]C[44:48];",
                 );
+            for report in [
+                "\nreport_timing -setup -from [get_clocks {controller_clk}] -to [get_clocks {controller_clk}] -max_paths 12 -max_common_paths 1",
+                "report_timing -setup -from [get_clocks {cpu_clk}] -to [get_clocks {cpu_clk}] -max_paths 12 -max_common_paths 1",
+                "report_timing -setup -from [get_clocks {cpu_clk}] -to [get_clocks {controller_clk}] -max_paths 12 -max_common_paths 1",
+                "report_timing -setup -from [get_clocks {controller_clk}] -to [get_clocks {cpu_clk}] -max_paths 12 -max_common_paths 1",
+                "report_timing -setup -from [get_ports {IO_sdram_dq*}] -to [get_clocks {controller_clk}] -max_paths 12 -max_common_paths 1",
+                "report_timing -setup -from [get_clocks {controller_clk}] -to [get_ports {O_sdram_cke O_sdram_cs_n O_sdram_cas_n O_sdram_ras_n O_sdram_wen_n O_sdram_dqm* O_sdram_addr* O_sdram_ba* IO_sdram_dq*}] -max_paths 24 -max_common_paths 1",
+                "report_timing -setup -max_paths 72 -max_common_paths 1",
+                "report_timing -hold -max_paths 32 -max_common_paths 1",
+            ] {
+                extension = extension.add_sdc_constraint(report);
+            }
         }
         let mut binding = (if ds2 {
             Self::ds2_user_io_binding()

@@ -434,6 +434,17 @@ the bias. Its signed byte shares the high byte of the existing filter word and
 is copied to the existing Material24 raster-bias byte; slot and snapshot sizes do not grow.
 Untextured native packets retain zero bias. The default is zero on new/reused slots.
 
+On the production GPU, `SrcOver` blends color normally and permits an enabled
+depth write only when final Q6 alpha is 64 (combined A8 alpha 254 or 255). Binary
+RGBA textures can therefore use `SrcOver` with depth writes without filling holes
+in Z; filtered partial-alpha edges retain their blended color. Uniform alpha
+participates through the existing texture/uniform multiplication. `Replace`
+uses effective alpha 64 and retains its original color/depth behavior.
+This is a depth-write condition, not a color-discard threshold; the selected
+depth comparison is unchanged. The [GPU alpha/depth contract](/ip/gpu-v2/docs/framebuffer.md#alpha-qualified-depth-writes)
+defines the quantization boundary and register timing. No additional API flag
+is needed: select `SrcOver` and enable depth writes for binary-alpha surfaces.
+
 Pass setters copy Camera and RenderState values into desired snapshots; later
 source-object changes cannot alter them. Draw preparation reads Transform, Material
 and texture descriptions, creates static World/material bytes and prepares the

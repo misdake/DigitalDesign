@@ -121,13 +121,15 @@ the selected compact Q13 RSQRT ROM, rather than a second hand-maintained table.
 | Sampling | Column texture addressing, smallest-first complete mip chains, repeated small-level padding, periodic POT UV or fixed400x240 framebuffer view; conserved 511 tap weights, per-tap half-up rounding and low8 wrap |
 | Lighting | Signed floor prescale, compact Q13 RSQRT decode/interpolation, native normalization and dot quantization, ties-to-even intensity products and selected H9 interpolation with the `+32` tail |
 | Final | Exact nearest `/255` uniform RGB modulation, separate floor diffuse/specular `/256`, then 8-bit saturation |
-| ROP | All eight D16 comparisons, independent depth writes, carry-preserving `Q6=(A8+2)>>2`, half-up `/64` blend and rounded RGB565 packing |
+| ROP | All eight D16 comparisons, enabled depth writes qualified by final Q6 alpha 64, carry-preserving `Q6=(A8+2)>>2`, half-up `/64` blend and rounded RGB565 packing |
 
 Wide software accumulators prevent host overflow; each retained hardware field
 is explicitly narrowed, shifted or saturated at its native boundary. Unsupported
-numerical domains fail with the command diagnostic. There is no mesh alpha-test:
-an alpha-zero fragment can still write depth when its depth test passes. UI's
-binary atlas alpha is a separate operation and leaves depth untouched.
+numerical domains fail with the command diagnostic. Mesh color keeps normal
+blending. An enabled mesh depth write additionally requires effective final Q6
+alpha 64; SrcOver combines uniform and texture alpha, while Replace uses 64.
+See [alpha-qualified depth writes](/ip/gpu-v2/docs/framebuffer.md#alpha-qualified-depth-writes).
+UI's binary atlas alpha is a separate operation and leaves depth untouched.
 
 The former six-file `system::oracle` whole renderer and its optional Rayon
 composition are retired. Independent compact Lighting, continuous Triangle,

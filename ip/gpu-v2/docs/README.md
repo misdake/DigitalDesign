@@ -21,7 +21,7 @@ through the GPU; use the later chapters to look up encodings and schedules.
 | [Fragment arithmetic](/ip/gpu-v2/docs/fragment-math.md) | How do normal, UV or RGB become the final RGBA value? |
 | [Execution and storage](/ip/gpu-v2/docs/execution.md) | How are partial results held, scheduled and retired under stalls? |
 | [Sampling throughput](/ip/gpu-v2/docs/sampling-throughput.md) | Which local rates, latency and tile/mip costs determine the pixel budget? |
-| [Framebuffer](/ip/gpu-v2/docs/framebuffer.md) | How do fragments update color/depth and reach external memory? |
+| [Framebuffer](/ip/gpu-v2/docs/framebuffer.md) | How do final alpha, depth and blending update color/depth and reach external memory? |
 | [Framebuffer texture views](/ip/gpu-v2/docs/framebuffer-texture-view.md) | How does the production column backend sample completed 400x240 render targets? |
 | [Memory interface](/ip/gpu-v2/docs/memory.md) | How do the three masters transfer and terminate transactions? |
 

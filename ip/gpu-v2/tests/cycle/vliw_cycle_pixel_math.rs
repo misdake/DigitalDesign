@@ -119,7 +119,7 @@ impl Pixel {
             rgb565,
             self.z.into(),
             u64::from(depth_pass),
-            u64::from(depth_pass && self.dw),
+            u64::from(depth_pass && self.dw && alpha == 64),
         )
     }
 }

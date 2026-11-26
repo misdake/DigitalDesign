@@ -32,8 +32,9 @@ color/depth contents seen by refills and later readers.
 A fragment reaches ROP after [Final RGBA](/ip/gpu-v2/docs/fragment-math.md#final-rgba), with its
 interpolated D16. Depth encodings 0..7 are NEVER, LESS, EQUAL, LESS_EQUAL,
 GREATER, NOT_EQUAL, GREATER_EQUAL, ALWAYS. A covered passing fragment writes
-color and optionally depth. Zero alpha does not disable a passing depth write.
-The depth test occurs here, after shading.
+color and optionally depth. The depth test occurs here, after shading,
+independently of alpha. The production command profile additionally qualifies
+depth writes with [final alpha](#alpha-qualified-depth-writes).
 
 In the command profile, the producer's depth result RAM stores `{uniform_alpha8,Z16}`
 in one36-bit BSRAM row. C acceptance requests that row; its synchronous Q is held
@@ -63,6 +64,41 @@ B5 = nearest(blended_B*31/255)
 The packer implements those nearest values using bounded head/low-bit
 corrections. The selected source-over rule is Q6 alpha; the generic framebuffer
 oracle's ideal alpha/255 is a separate numerical profile.
+
+## Alpha-qualified depth writes
+
+The production command GPU tests effective final alpha only for writing Z.
+Color keeps its normal Replace or SrcOver operation, including filtered
+partial-alpha edges. Coverage, the selected depth comparison and fragment
+retirement keep their original behavior.
+
+Let `a` be the existing effective Q6 blend weight in 0..64:
+
+| Blend mode | Effective alpha | Color after a passing depth test | Enabled Z write |
+| --- | --- | --- | --- |
+| Replace | 64 | Replace destination color | Yes |
+| SrcOver | 0..63 | Normal blending; zero leaves destination color unchanged | No |
+| SrcOver | 64 | Normal blending at full opacity | Yes |
+
+```text
+color_written = covered && depth_pass
+depth_written = covered && depth_pass && depth_write_enable && (a == 64)
+```
+
+For SrcOver, `combined_A8 = floor((uniform_A8 * filtered_texture_A8 + 127)/255)`
+and `a = floor((combined_A8 + 2)/4)`. Thus combined A8 values 254 and 255 both
+mean final opacity 1 (`a == 64`); 253 gives 63. Uniform alpha participates in
+this rule. RGB attributes and RGB565 supply texture alpha 255. Replace uses
+effective alpha 64 regardless of uniform alpha, preserving its original behavior.
+The existing depth-write enable must still be set; alpha never enables a write
+that the application disabled. No new command bit or API switch is required.
+
+The implementation reads bit 6 of the existing registered effective weight
+`a2`: its bounded range makes that bit exactly the full-opacity test. The
+existing `depth_written` register captures the qualified result on the shared
+ROP product edge, alongside the depth payload, and holds through the original
+return edge. This reuses the depth-payload phase enable, with no alpha shadow
+register, additional DSP, result storage or pipeline edge.
 
 ## Resident half-tiles and row ownership
 
@@ -100,7 +136,7 @@ in each phase. Relative to a lane's actual C acceptance:
 | 0 | Accept C; capture texture alpha in DSP AREG; read old color if needed |
 | 1 | Consume old C; accept D; register uniform×texture alpha; read old depth if needed |
 | 2 | Consume old D and compare; quantize alpha; another C may be accepted |
-| 3 | Issue the shared ROP product |
+| 3 | Issue the shared ROP product; capture depth-write/full-alpha predicate |
 | 4 | Blend, quantize and pack |
 | 5 | Capture the fixed arithmetic return |
 | 6 | Write passing, enabled D; mark dirty on actual write |

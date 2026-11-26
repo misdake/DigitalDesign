@@ -157,7 +157,15 @@ module gpu_v2_rop_tdp (
         delta_b2<=$signed({1'b0,sb1})-$signed({1'b0,expand5(oc1[4:0])});
         v3<=v2;if(shade_phase)sd3<=sd1;
                 out_valid<=v3;
-        color_written<=gate2;depth_written<=gate2&&dw2;
+        color_written<=gate2;
+`ifdef GPU_V2_COMMAND_PORTS
+        // The existing Q6 alpha register is valid on the shared product edge.
+        // Only 64 has bit 6 set. Hold this result through the original return
+        // edge; reuse the depth-payload phase enable without changing color.
+        if(shade_phase)depth_written<=gate2&&dw2&&a2[6];
+`else
+        depth_written<=gate2&&dw2;
+`endif
         new_color<={exactq5(nr3[13:6]),exactq6(ng3[13:6]),exactq5(nb3[13:6])};
       end
     end

@@ -121,6 +121,9 @@ fn quad(n: usize) -> (usize, usize, u8) {
         [15, 10, 2, 4, 8, 1, 7, 14][n % 8],
     )
 }
+fn texture_alpha(n: usize, lane: usize) -> u8 {
+    [0, 1, 127, 128, 254, 255][(n * 4 + lane) % 6]
+}
 fn apply(expected: &mut [u16], n: usize, case: usize) {
     let (x, y, mask) = quad(n);
     for lane in 0..4 {
@@ -130,6 +133,7 @@ fn apply(expected: &mut [u16], n: usize, case: usize) {
         let p = offset(x + (lane & 1), y + (lane >> 1));
         let zindex = 0x140000 / 2 + p;
         let (rgb, alpha, z) = pixel(n, lane);
+        let texture_alpha = texture_alpha(n, lane);
         if case == 1 && z > expected[zindex] {
             continue;
         }
@@ -142,7 +146,7 @@ fn apply(expected: &mut [u16], n: usize, case: usize) {
         let weight = if case == 0 {
             64
         } else {
-            (u32::from(alpha) + 2) / 4
+            ((u32::from(alpha) * u32::from(texture_alpha) + 127) / 255 + 2) / 4
         };
         let mut packed = 0;
         for c in 0..3 {
@@ -151,7 +155,7 @@ fn apply(expected: &mut [u16], n: usize, case: usize) {
             packed |= (((channel * max * 2 + 255) / 510) as u16) << [11, 5, 0][c];
         }
         expected[colorindex] = packed;
-        if case == 0 {
+        if weight == 64 {
             expected[zindex] = z;
         }
     }
@@ -220,7 +224,7 @@ fn run(case: usize) -> Vec<Edge> {
             row_index: row as u8,
             data: Bits::new(
                 if row & 1 == 0 {
-                    u64::from(rgb) | (255 << 24)
+                    u64::from(rgb) | (u64::from(texture_alpha(n, lane)) << 24)
                 } else {
                     z.into()
                 },
@@ -228,7 +232,7 @@ fn run(case: usize) -> Vec<Edge> {
             ),
             alpha: Bits::new(alpha.into(), 8),
             depth_func: if case == 0 { 7 } else { 3 },
-            depth_write: case == 0,
+            depth_write: true,
             blend: case == 1,
             color_base: 2048,
             depth_base: 2560,
