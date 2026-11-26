@@ -77,6 +77,9 @@ pub enum Phase {
     CopyRequest = 20,
     CopyWait = 21,
     CopyDone = 22,
+    TableLoad = 23,
+    TableRead = 24,
+    TableLatch = 25,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProcessorInput {
@@ -117,7 +120,9 @@ pub struct ProcessorOutput {
     pub auxiliary: AuxiliaryOutput,
 }
 /// Facts from one successful physical edge, never from an outputs/settle read.
-/// PCs are submission-relative byte offsets, not the wrapping 64-word RAM PC.
+/// Flat PCs are submission-relative byte offsets. Segmented PCs are relative
+/// to the current slice's first sector, matching the RTL diagnostic cursor.
+/// They are distinct from the wrapping 64-word instruction RAM PC.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommandEdge {
     pub submit: Option<(u32, u32)>,  // physical byte base, byte length
@@ -167,6 +172,9 @@ pub struct Processor {
     diagnostic_pc: u32,
     limit: u32,
     count_seen: bool,
+    segmented: bool,
+    segment_cursor: u8,
+    segment_tail: u8,
     draw: Option<draw::Draw>,
     auxiliary: Option<auxiliary::Auxiliary>,
 }
@@ -217,9 +225,13 @@ impl Processor {
             busy: self.busy,
             stop,
             ram_read: !stop
-                && self.phase == Phase::Fetch
-                && self.cache_pages & (1 << (self.pc >> 5)) != 0,
-            ram_address: 448 | (u16::from(self.pc >> 5) << 4) | u16::from((self.pc & 31) >> 1),
+                && (self.phase == Phase::TableRead
+                    || self.phase == Phase::Fetch && self.cache_pages & (1 << (self.pc >> 5)) != 0),
+            ram_address: if self.phase == Phase::TableRead {
+                480 | u16::from((self.segment_cursor & 31) >> 1)
+            } else {
+                448 | (u16::from(self.pc >> 5) << 4) | u16::from((self.pc & 31) >> 1)
+            },
             cache: Cache {
                 valid: self.busy
                     && !stop
@@ -227,7 +239,8 @@ impl Processor {
                     && self.fetch_left != 0
                     && !self.cache_inflight
                     && self.cache_pages & (1 << u8::from(self.fetch_bank)) == 0,
-                source_halfword: u32::from(self.fetch_line) << 6,
+                source_halfword: (u32::from(self.fetch_line) << 6)
+                    | u32::from(self.phase == Phase::TableLoad),
                 bank: self.fetch_bank,
             },
             flush_request: self.phase == Phase::Flushing && !stop,
@@ -248,12 +261,28 @@ impl Processor {
         o
     }
     fn advance(&mut self, old: &Self) {
-        if old.pc & 31 == 31 {
+        let segment_end = old.segment_end();
+        if old.pc & 31 == 31 || segment_end {
             self.cache_pages &= !(1 << (old.pc >> 5));
         }
         self.pc = (old.pc + 1) & 63;
-        self.phase = Phase::Fetch;
+        self.phase = if segment_end {
+            Phase::TableRead
+        } else {
+            Phase::Fetch
+        };
         self.diagnostic_pc = (old.diagnostic_pc + 4) & 0x1ffff;
+        if segment_end && old.segment_cursor & 32 != 0 {
+            self.failed = true;
+            self.phase = Phase::Failed;
+            self.fetch_left = 0;
+        }
+    }
+    fn segment_end(&self) -> bool {
+        self.segmented
+            && self.fetch_left == 0
+            && (self.pc >> 5 != u8::from(self.fetch_bank))
+            && self.pc & 31 == self.segment_tail
     }
     pub fn clock(&mut self, i: ProcessorInput) -> Result<(), Error> {
         self.clock_observing(i).map(|_| ())
@@ -282,9 +311,24 @@ impl Processor {
         let o = self.outputs(i);
         let check = |ok, rule| require(ok, "command_processor", rule);
         check(
-            !i.bus.count() || o.submit_ready && i.bus.data & 0xc000 == 0,
+            !i.bus.count()
+                || o.submit_ready
+                    && crate::system::command::abi::DeviceSubmission::valid_count_word(i.bus.data),
             "CP count SEND contract",
         )?;
+        if i.ce && !o.stop && self.phase == Phase::TableLatch {
+            let descriptor = if self.segment_cursor & 1 != 0 {
+                (i.ram_q >> 32) as u32
+            } else {
+                i.ram_q as u32
+            };
+            let pages = descriptor >> 26;
+            check(
+                (pages != 0 || (descriptor >> 16 & 31) <= (descriptor >> 21 & 31))
+                    && (descriptor & 65535) + pages < 65536,
+                "CP segment descriptor contract",
+            )?;
+        }
         check(
             !i.bus.submit()
                 || o.submit_ready
@@ -312,9 +356,9 @@ impl Processor {
                 15 => check(
                     payload == 0
                         && self.diagnostic_pc + 4 == self.limit
-                        && self.stored
-                        && self.all_fence
-                        && !i.work_busy,
+                        && (!self.segmented || self.segment_end())
+                        && (self.segmented && self.segment_cursor & 32 == 0
+                            || self.stored && self.all_fence && !i.work_busy),
                     "CP END contract",
                 )?,
                 13 | 14 => check(false, "CP opcode contract")?,
@@ -343,6 +387,8 @@ impl Processor {
             }
         }
         if i.bus.count() && o.submit_ready {
+            n.segmented = i.bus.data & 0x8000 != 0;
+            n.segment_cursor = (!i.bus.data & 31) as u8;
             n.fetch_left = ((i.bus.data & 0x3fff) >> 5) + 1;
             n.limit = u32::from(i.bus.data & 0x3fff) * 4 + 4;
             n.count_seen = true;
@@ -351,11 +397,17 @@ impl Processor {
             n.cache_inflight = true;
             n.fetch_line = self.fetch_line.wrapping_add(1);
             n.fetch_left = self.fetch_left.wrapping_sub(1) & 1023;
-            n.fetch_bank = !self.fetch_bank;
+            if self.phase != Phase::TableLoad {
+                n.fetch_bank = !self.fetch_bank;
+            }
         }
         if i.cache_done {
             n.cache_inflight = false;
-            n.cache_pages |= 1 << u8::from(i.cache_done_bank);
+            if self.phase == Phase::TableLoad {
+                n.phase = Phase::TableRead;
+            } else {
+                n.cache_pages |= 1 << u8::from(i.cache_done_bank);
+            }
         }
         if self.busy && self.phase == Phase::Ending && i.render_idle && i.dma_idle && !i.memory_busy
         {
@@ -376,9 +428,29 @@ impl Processor {
             if let Some(d) = &mut n.draw {
                 d.new_submission();
             }
-            n.phase = Phase::Fetch;
+            n.phase = if self.segmented {
+                Phase::TableLoad
+            } else {
+                Phase::Fetch
+            };
         } else if i.ce && !o.stop {
             match self.phase {
+                Phase::TableRead if i.ram_ready => n.phase = Phase::TableLatch,
+                Phase::TableLatch => {
+                    let descriptor = if self.segment_cursor & 1 != 0 {
+                        (i.ram_q >> 32) as u32
+                    } else {
+                        i.ram_q as u32
+                    };
+                    n.fetch_line = descriptor as u16;
+                    n.fetch_left = (descriptor >> 26) as u16 + 1;
+                    n.pc = (u8::from(self.fetch_bank) << 5) | (descriptor >> 16 & 31) as u8;
+                    n.segment_tail = (descriptor >> 21 & 31) as u8;
+                    n.segment_cursor = (self.segment_cursor + 1) & 63;
+                    n.diagnostic_pc = (descriptor >> 16 & 31) * 4;
+                    n.limit = (descriptor >> 21) * 4 + 4;
+                    n.phase = Phase::Fetch;
+                }
                 Phase::Fetch => {
                     if self.cache_pages & (1 << (self.pc >> 5)) != 0 && i.ram_ready {
                         n.phase = Phase::Latch;
@@ -425,8 +497,12 @@ impl Processor {
                     }
                     9 => n.advance(self),
                     15 => {
-                        n.fetch_left = 0;
-                        n.phase = Phase::Ending;
+                        if self.segmented && self.segment_cursor & 32 == 0 {
+                            n.advance(self);
+                        } else {
+                            n.fetch_left = 0;
+                            n.phase = Phase::Ending;
+                        }
                     }
                     _ => unreachable!(),
                 },
@@ -501,10 +577,15 @@ impl Processor {
         let command = (self.diagnostic_pc, self.command);
         let enabled = i.ce && !o.stop;
         let execute = enabled && self.phase == Phase::Exec;
-        let advanced = self.busy && !i.bus.submit() && n.diagnostic_pc != self.diagnostic_pc;
+        let advanced = self.busy
+            && !i.bus.submit()
+            && self.phase != Phase::TableLatch
+            && n.diagnostic_pc != self.diagnostic_pc;
         let edge = CommandEdge {
-            submit: (i.bus.submit() && o.submit_ready)
-                .then_some((u32::from(i.bus.data) * 128, self.limit)),
+            submit: (i.bus.submit() && o.submit_ready).then_some((
+                u32::from(i.bus.data) * 128,
+                if self.segmented { 128 } else { self.limit },
+            )),
             latched: (enabled && self.phase == Phase::Latch)
                 .then_some((self.diagnostic_pc, n.command)),
             execute: execute.then_some(command),

@@ -82,6 +82,24 @@ fn program(long: bool) -> Vec<u32> {
 
 /// One native MC owner. Backend idle/flush and source availability are peers.
 pub fn native(long: bool, bad: Option<&str>) -> Run {
+    native_inner(long, bad, None)
+}
+
+pub fn segmented(long: bool, intermediate_end: bool) -> Run {
+    native_inner(long, None, Some(SegmentFixture::Split(intermediate_end)))
+}
+
+pub fn full_table() -> Run {
+    native_inner(false, None, Some(SegmentFixture::FullTable))
+}
+
+#[derive(Clone, Copy)]
+enum SegmentFixture {
+    Split(bool),
+    FullTable,
+}
+
+fn native_inner(long: bool, bad: Option<&str>, segmented: Option<SegmentFixture>) -> Run {
     let mut memory = Memory::new();
     let mut model = Control::default();
     let mut ram = Ram::default();
@@ -97,6 +115,9 @@ pub fn native(long: bool, bad: Option<&str>) -> Run {
         Some("early_end") => first[0] = 0xf000_0000,
         Some("unsupported") => first[0] = 0x9000_0000,
         _ => {}
+    }
+    if matches!(segmented, Some(SegmentFixture::Split(true))) {
+        first[0] = 0xf000_0000;
     }
     let mut backing = std::collections::BTreeMap::new();
     for (base, code) in [(0x1000usize, first.as_slice()), (0x1800, second.as_slice())] {
@@ -114,8 +135,34 @@ pub fn native(long: bool, bad: Option<&str>) -> Run {
             );
         }
     }
-    let mut scheduled =
-        VecDeque::from([(2usize, 0u8, (first.len() - 1) as u16), (3, 1, 0x1000 / 64)]);
+    let mut count = (first.len() - 1) as u16;
+    let mut base = 0x1000 / 64;
+    if segmented.is_some() {
+        use gpu_v2::system::command::abi::{CommandSlice, DeviceSubmission};
+        let cuts = if long { [0, 1, 33, 65] } else { [0, 1, 2, 4] };
+        let mut slices: Vec<_> = cuts
+            .windows(2)
+            .map(|pair| CommandSlice::new(0x2000 + pair[0] * 4, (pair[1] - pair[0]) * 4).unwrap())
+            .collect();
+        if matches!(segmented, Some(SegmentFixture::FullTable)) {
+            slices = vec![CommandSlice::new(0x2000, 4).unwrap(); 31];
+            slices.push(CommandSlice::new(0x2000, 16).unwrap());
+        }
+        let (submission, table) = DeviceSubmission::segment_table(0x4000, &slices).unwrap();
+        let words: Vec<_> = table
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| u16::from_le_bytes(pair))
+            .collect();
+        memory.preload(0x2000, &words);
+        for (i, pair) in table.as_chunks::<8>().0.iter().enumerate() {
+            backing.insert(0x2000 + i as u32 * 4, u64::from_le_bytes(*pair));
+        }
+        count = submission.count_minus_one;
+        base = submission.base_sector;
+    }
+    let mut scheduled = VecDeque::from([(2usize, 0u8, count), (3, 1, base)]);
     let mut jobs: VecDeque<(u32, bool, usize)> = VecDeque::new();
     let mut run = Run {
         trace: Vec::new(),
@@ -275,9 +322,16 @@ pub fn native(long: bool, bad: Option<&str>) -> Run {
                 let j = jobs.front_mut().unwrap();
                 assert_eq!(
                     o.transport.dma.ram_address,
-                    448 + u16::from(j.1) * 16 + j.2 as u16
+                    if j.0 & 1 != 0 {
+                        480
+                    } else {
+                        448 + u16::from(j.1) * 16
+                    } + j.2 as u16
                 );
-                assert_eq!(o.transport.dma.ram_data, backing[&(j.0 + j.2 as u32 * 4)]);
+                assert_eq!(
+                    o.transport.dma.ram_data,
+                    backing[&((j.0 & !1) + j.2 as u32 * 4)]
+                );
                 j.2 += 1;
                 run.stats.writes += 1;
                 if !i.ce {
@@ -325,8 +379,21 @@ pub fn native(long: bool, bad: Option<&str>) -> Run {
         if run.stats.completed == 2 && o.transport.dma.idle && !o.transport.router.busy {
             assert!(bad.is_none() || bad == Some("abort_reset"));
             assert!(jobs.is_empty());
-            assert_eq!(run.stats.writes, if long { 64 } else { 32 });
-            assert_eq!(run.stats.cache_fetches, if long { 4 } else { 2 });
+            let fetches = if matches!(segmented, Some(SegmentFixture::FullTable)) {
+                34
+            } else if segmented.is_some() {
+                if long {
+                    7
+                } else {
+                    5
+                }
+            } else if long {
+                4
+            } else {
+                2
+            };
+            assert_eq!(run.stats.writes, fetches * 16);
+            assert_eq!(run.stats.cache_fetches, fetches);
             for row in 0..16 {
                 assert_eq!(
                     ram.cells[448 + row],

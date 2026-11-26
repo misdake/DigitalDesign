@@ -10,6 +10,34 @@ use gpu_v2::system::vliw_cycle::{
 };
 
 #[test]
+fn segmented_tables_use_dma_and_preserve_fences_at_unaligned_boundaries() {
+    for long in [false, true] {
+        for intermediate_end in [false, true] {
+            let run = support::segmented(long, intermediate_end);
+            assert_eq!(run.stats.submits, 2);
+            assert_eq!(run.stats.completed, 2);
+            assert_eq!(run.stats.commands, if long { 69 } else { 8 });
+            assert!(run.error.is_none());
+        }
+    }
+    let run = support::full_table();
+    assert_eq!(run.stats.completed, 2);
+    assert_eq!(run.stats.commands, 39);
+    assert_eq!(run.stats.cache_fetches, 34);
+}
+
+#[test]
+#[ignore = "segmented table and unaligned slice cycle differential against production RTL"]
+fn segmented_command_dma_and_slice_switches_match_production_rtl() {
+    let root = support::root();
+    for (label, long, end) in [("short-list", false, true), ("paged-list", true, false)] {
+        let run = support::segmented(long, end);
+        support::rtl(&root, label, &run, None, false);
+    }
+    support::rtl(&root, "full-table", &support::full_table(), None, false);
+}
+
+#[test]
 fn native_cb_control_uses_dma_ram_old_q_and_resubmits_without_ack() {
     for long in [false, true] {
         let r = support::native(long, None);

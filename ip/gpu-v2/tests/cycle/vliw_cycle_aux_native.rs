@@ -211,8 +211,9 @@ fn run(clear: bool, abort: u8, capture: bool) -> Vec<Edge> {
                     let word = usize::from(ui.pixel_word) + usize::from(ui.pixel_half) * 32;
                     let lane = bank ^ if word & 4 != 0 { 2 } else { 0 };
                     let flat = word * 4 + lane;
-                    let x = usize::from(ui.tile % 25) * 16 + flat % 16;
-                    let y = usize::from(ui.tile / 25) * 16 + flat / 16;
+                    // UI now exports the physical column/row tile address.
+                    let x = usize::from(ui.tile >> 4) * 16 + flat % 16;
+                    let y = usize::from(ui.tile & 15) * 16 + flat / 16;
                     let cell = y / 16 * 50 + x / 8;
                     let id = match cell {
                         127 => 1,

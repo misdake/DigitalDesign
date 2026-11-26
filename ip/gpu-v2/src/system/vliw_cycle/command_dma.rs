@@ -4,6 +4,7 @@ use super::{require, ContractError, Request, Response};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cache {
     pub valid: bool,
+    /// Sector-aligned halfword source; bit0 selects the table's RAM rows480..495.
     pub source_halfword: u32,
     pub bank: bool,
 }
@@ -187,7 +188,7 @@ impl Dma {
                 )?;
             }
             require(
-                !o.cache_ready || i.cache.source_halfword & 63 == 0,
+                !o.cache_ready || i.cache.source_halfword & 62 == 0,
                 "command_dma",
                 "cache source alignment",
             )?;
@@ -247,7 +248,11 @@ impl Dma {
                         cache: true,
                         last: false,
                         source: (i.cache.source_halfword >> 4) & 0x3ffff,
-                        destination: 448 | (u16::from(i.cache.bank) << 4),
+                        destination: if i.cache.source_halfword & 1 != 0 {
+                            480
+                        } else {
+                            448 | (u16::from(i.cache.bank) << 4)
+                        },
                         count: 3,
                     };
                 } else if self.issued != self.put {
