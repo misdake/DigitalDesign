@@ -152,5 +152,6 @@ fn gpu_config_drop_buffer(slot: u16) -> bool {
     }
     c[GPU_RECORD_PHASE] = 0;
     // The configured CB is not a pool allocation: Drop does not reissue it.
+    gpu_record_discard_list(slot);
     true
 }

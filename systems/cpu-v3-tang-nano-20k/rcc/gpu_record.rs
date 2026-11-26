@@ -4,6 +4,8 @@ mod gpu_schema;
 use gpu_schema::*;
 mod gpu_storage;
 use gpu_storage::*;
+mod gpu_arena;
+use gpu_arena::*;
 
 // Two records of GPU_API_CB_WORDS; checked by the recording-layout fixtures.
 static GPU_CB_RECORDS: Buf<u16, 320> = Buf::new([0; 320]);
@@ -13,8 +15,43 @@ static GPU_NATIVE_SCRATCH: Buf<u16, 271> = Buf::new([0; 271]);
 static GPU_CB_RESOURCE_FACTS: Buf<u16, 512> = Buf::new([0; 512]);
 // Never reset with a context: copied binding locations cannot regain an epoch.
 static GPU_RECORD_GENERATION: Buf<u16, 2> = Buf::new([0; 2]);
+// Per-CB owned table and the first not-yet-linked dynamic command (32-bit units).
+static GPU_CB_LISTS: Buf<u16, 4> = Buf::new([0; 4]);
 // Transient record and facts are acquired only while recording a prepared part.
 static GPU_PREPARED_CONTEXT: u16 = 0;
+
+fn gpu_list_table_address(allocation: u16) -> u16 {
+    (allocation + GPU_LIST_METADATA_WORDS + GPU_LIST_TABLE_WORDS - 1) & 0xffc0
+}
+fn gpu_api_list_metadata(allocation: u16) -> Array<u16> {
+    unsafe { Ptr::from_addr(allocation).as_u16_array() }
+}
+fn gpu_api_list_parts(allocation: u16) -> Array<u16> {
+    unsafe {
+        Ptr::from_addr(gpu_list_table_address(allocation) + GPU_LIST_TABLE_WORDS).as_u16_array()
+    }
+}
+fn gpu_record_release_list_parts(allocation: u16) {
+    let count = gpu_api_list_metadata(allocation)[GPU_LIST_USED];
+    let parts = gpu_api_list_parts(allocation);
+    let mut index: u16 = 0;
+    while index < count {
+        let owner = parts[index];
+        if owner != 0 {
+            let mut data = gpu_arena_data(owner);
+            data[GPU_PREPARED_LIST_REFS] -= 1;
+        }
+        index += 1;
+    }
+    free(Ptr::from_addr(allocation));
+}
+fn gpu_record_discard_list(slot: u16) {
+    let allocation = GPU_CB_LISTS[slot * 2];
+    if allocation != 0 {
+        GPU_CB_LISTS[slot * 2] = 0;
+        gpu_record_release_list_parts(allocation);
+    }
+}
 
 fn gpu_native_scratch() -> Array<u16> {
     unsafe { Ptr::from_addr((GPU_NATIVE_SCRATCH.as_ptr().addr() + 15) & 65520).as_u16_array() }
@@ -470,6 +507,7 @@ fn gpu_record_reset(slot: u16) -> bool {
     {
         return false;
     }
+    gpu_record_discard_list(slot);
     c[GPU_RECORD_PHASE] = RecordPhase::Ready as u16;
     let mut i: u16 = GPU_RECORD_COMMAND_USED;
     while i < GPU_API_CB_WORDS {

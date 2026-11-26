@@ -7,7 +7,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 ## Documents
 
 - [Using the GPU resource API](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-guide.md): reading route, one frame and startup, sampling/lifetimes, costs and reuse choices. Start here when reading GPU applications.
-- [GPU command lists](/systems/cpu-v3-tang-nano-20k/docs/gpu-command-lists.md) covers ordered CB submission and prepared slice replay.
+- [GPU command lists](/systems/cpu-v3-tang-nano-20k/docs/gpu-command-lists.md) covers ordered CB submission, interleaved dynamic/Prepared recording and checked shared-state replay.
 - [Application quickstart](/systems/cpu-v3-tang-nano-20k/docs/application-quickstart.md): first build/frame, target language restrictions and application/static-content integration.
 - [Constructing SDK values](/systems/cpu-v3-tang-nano-20k/docs/sdk-values.md): readable numbers/colors, asset/framebuffer descriptions and the small dynamic Billboard writer.
 - [Static assets](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md): constant descriptions, source includes, external placement and loader-owned CPU data images.

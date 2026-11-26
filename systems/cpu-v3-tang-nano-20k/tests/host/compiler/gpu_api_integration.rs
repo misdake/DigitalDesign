@@ -124,6 +124,12 @@ fn main(){
 }"#;
     let run = "gpu.submit_list(list);if gpu.try_wait_list(){halt(0xbad);}gpu.wait_list();";
     let selection = "list.push_prepared_range(prepared.ptr(),first,end);";
+    let shared = application
+        .replace("let material=", "let mut material=")
+        .replace(
+            "part.set_state(state.ptr());",
+            "part.share_state();part.set_state(state.ptr());",
+        );
     let lighting = application
         .replace("unlit:true", "unlit:false")
         .replace(
@@ -142,8 +148,119 @@ fn main(){
         )
         .replace("CommandList::new(4)", "CommandList::new(3)")
         .replace(" list.push_prepared_range(prepared.ptr(),start,first);\n", "");
+    let linked = shared
+        .replace(
+            "let mut setup=gpu.command_buffer();",
+            "let mut setup=gpu.command_buffer();setup.begin_list(4);",
+        )
+        .replace(
+            r#" let mut tail=gpu.command_buffer();
+ {let pass=tail.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());}
+ let mut list=CommandList::new(4);
+ list.push(setup);
+ list.push_prepared_range(prepared.ptr(),first,end);
+ list.push_prepared_range(prepared.ptr(),start,first);
+ list.push(tail);"#,
+            r#" setup.link_prepared_range(prepared.ptr(),first,end);
+ setup.link_prepared_range(prepared.ptr(),start,first);
+ {let pass=setup.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());}
+ let list=setup.finish_list();"#,
+        );
+    assert!(linked.contains("let list=setup.finish_list();"));
     let cases = [
+        (
+            "linked-terminal",
+            linked.replace("{let pass=setup.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());}", ""),
+            run.into(),
+            0x600d,
+            1,
+        ),
+        ("shared-valid-linked-release", linked.clone(), run.into(), 0x600d, 1),
+        ("shared-valid-linked-debug", linked.clone(), run.into(), 0x600d, 1),
+        ("linked-record-pin", linked.replace("let list=setup.finish_list();", "draws.invalidate();let list=setup.finish_list();"), run.into(), 0xe001, 0),
+        ("linked-reset", linked.replace("let list=setup.finish_list();\n RETIRE", "setup.reset();draws.invalidate();"), run.into(), 0x600d, 0),
+        ("linked-drop", linked.replace("let list=setup.finish_list();\n RETIRE", "drop(setup);draws.invalidate();"), run.into(), 0x600d, 0),
+        ("linked-direct-rejected", linked.replace("let list=setup.finish_list();\n RETIRE", "gpu.submit(setup);"), run.into(), 0xe001, 0),
+        ("linked-wrong-count", linked.replace("begin_list(4)", "begin_list(3)"), run.into(), 0xe001, 0),
+        ("linked-double-buffer", linked.clone(), r#"
+ gpu.submit_list(list);
+ if dev_recv(4,2)==0 {halt(0xbad);}
+ let mut next=gpu.command_buffer();next.begin_list(1);
+ {let pass=next.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());}
+ let ready=next.finish_list();
+ if gpu.try_wait_list(){halt(0xbad);}gpu.wait_list();
+ gpu.submit_list(ready);gpu.wait_list();
+ "#.into(), 0x600d, 2),
         ("valid", application.to_owned(), run.to_owned(), 0x600d, 1),
+        (
+            "shared-valid-release",
+            shared.clone(),
+            run.into(),
+            0x600d,
+            1,
+        ),
+        ("shared-valid-debug", shared.clone(), run.into(), 0x600d, 1),
+        (
+            "shared-empty",
+            shared.replace("let mut setup=", r#"
+ let mut empty=PreparedDraws::new(PreparedMemory::new(unsafe{GpuMemory::from_sectors(0xb880,8)},unsafe{GpuMemory::from_sectors(0xb980,32)}));
+ {let mut empty_part=empty.record();empty_part.share_state();empty_part.finish();}
+ let mut setup="#).replace("pass.set_camera(camera.ptr());", "pass.draw_prepared(empty.ptr());pass.set_camera(camera.ptr());"),
+            run.into(),
+            0x600d,
+            1,
+        ),
+        (
+            "shared-wrong-entry",
+            shared.replace("let mut setup=", "material.set_unlit(false);let mut setup="),
+            run.into(),
+            0xe001,
+            0,
+        ),
+        (
+            "shared-wrong-response",
+            shared.replace(
+                "let mut setup=",
+                "material.set_response(fix!(0.5),fix!(1));let mut setup=",
+            ),
+            run.into(),
+            0xe001,
+            0,
+        ),
+        (
+            "shared-record-change",
+            shared.replace(
+                "let first=part.mark_slice();",
+                "let first=part.mark_slice();material.set_unlit(false);",
+            ),
+            run.into(),
+            0xe001,
+            0,
+        ),
+        (
+            "shared-tint",
+            shared.replace(
+                "let mut setup=",
+                "material.set_uniform_color(Rgba8::rgb(20,40,60));let mut setup=",
+            ),
+            run.into(),
+            0x600d,
+            1,
+        ),
+        (
+            "shared-unknown-after-general",
+            shared.replace("let mut setup=", r#"
+ let mut ordinary=PreparedDraws::new(PreparedMemory::new(unsafe{GpuMemory::from_sectors(0xb880,8)},unsafe{GpuMemory::from_sectors(0xb980,32)}));
+ let mut other=ordinary.record();other.set_state(state.ptr());material.set_unlit(false);
+ let ordinary_begin=other.mark_slice();other.draw_colored(model.ptr(),mesh.ptr(),material.ptr());let ordinary_end=other.mark_slice();
+ other.finish();
+ material.set_unlit(true);let mut setup="#)
+                .replace("CommandList::new(4)", "CommandList::new(5)")
+                .replace(selection, "list.push_prepared_range(ordinary.ptr(),ordinary_begin,ordinary_end);list.push_prepared_range(prepared.ptr(),first,end);"),
+            run.into(),
+            0xe001,
+            0,
+        ),
         (
             "lighting-outside-range",
             lighting.clone(),
@@ -254,7 +371,7 @@ fn main(){
     ];
     for (name, source, retire, expected_halt, submissions) in cases {
         let source = source.replace("RETIRE", &retire);
-        let debug = name == "valid" || name.starts_with("lighting-");
+        let debug = name == "valid" || name.starts_with("lighting-") || name.ends_with("-debug");
         let ir = super::gpu_api_resources::parse(&source, name, debug).unwrap();
         let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         options.gpu_debug = debug;
@@ -276,11 +393,27 @@ fn main(){
             _ => None,
         });
         let [first, end, total] = marks;
-        assert!(first > 0 && first < end && end < total, "{name}");
+        if name != "shared-record-change" {
+            assert!(first > 0 && first < end && end < total, "{name}");
+        }
         let trace = trace.borrow();
         assert_eq!(halt, Some(expected_halt), "{name}");
         assert_eq!(trace.images.len(), submissions, "{name}");
-        if name != "valid" {
+        if name == "linked-terminal" {
+            let table = &trace.images[0];
+            let descriptor = table[63];
+            let first_slot = usize::from(descriptor & 31);
+            let length =
+                usize::from(descriptor >> 10) * 32 + usize::from((descriptor >> 5) & 31) + 1
+                    - first_slot;
+            assert_eq!(length, 3);
+            let start = usize::from(table[62]) * 64 + first_slot * 2;
+            assert_eq!(
+                &cpu.physical_memory_mut()[start..start + 6],
+                &[3, 0x4000, 0, 0x7000, 0, 0xf000]
+            );
+        }
+        if name != "valid" && !name.starts_with("shared-valid") {
             continue;
         }
         assert_eq!(trace.count, 0x8003);
@@ -296,14 +429,31 @@ fn main(){
             .flat_map(|word| word.to_le_bytes())
             .collect::<Vec<_>>();
         assert_eq!(actual, &expected[120..]);
+        if name.contains("linked") {
+            assert_eq!(trace.images[0][56], 0x9800);
+            assert!((0x9800..0x9a00).contains(&trace.images[0][62]));
+            assert_ne!(trace.images[0][56..58], trace.images[0][62..64]);
+        }
         let commands = &cpu.physical_memory_mut()[0xb800 * 64..][first * 2..end * 2];
         assert_eq!(
             commands
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .filter(|command| command[1] >> 12 == 3)
                 .count(),
             1
         );
+        if name.starts_with("shared-valid") {
+            assert!(
+                !commands
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|c| { matches!(c[1] >> 12, 5 | 6) || c[1] >> 12 == 4 && c[0] & 2 != 0 }),
+                "shared slice emitted a state change or full-render fence"
+            );
+        }
     }
 }
 

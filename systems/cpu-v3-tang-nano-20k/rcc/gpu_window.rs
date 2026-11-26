@@ -18,6 +18,12 @@ fn gpu_window_words(dst: Ptr, src: Ptr, words: u16) {
     let mut destination = dst;
     let mut source = src;
     let mut count = words;
+    while count >= 8 {
+        vec4::export(vec4::import(source), destination);
+        destination = destination.add(8);
+        source = source.add(8);
+        count -= 8;
+    }
     while count >= 4 {
         unsafe {
             destination.write(0, source.read(0));

@@ -28,6 +28,15 @@ pub const GPU_API_SCRATCH_WORDS: u16 = 256;
 pub const GPU_API_STORAGE_CHUNK_WORDS: u16 = 64;
 pub const GPU_API_PUSH_CHUNK_WORDS: u16 = 128;
 pub const GPU_API_PLANE_SECTORS: u16 = 1600;
+// CPU submission table layout, shared by record ownership and execution.
+pub const GPU_LIST_MAX_SEGMENTS: u16 = 32;
+pub const GPU_LIST_TABLE_WORDS: u16 = 64;
+pub const GPU_LIST_METADATA_WORDS: u16 = 5;
+pub const GPU_LIST_COUNT: u16 = 0;
+pub const GPU_LIST_USED: u16 = 1;
+pub const GPU_LIST_SLOTS: u16 = 2;
+pub const GPU_LIST_SCENE_SLOT: u16 = 3;
+pub const GPU_LIST_SHARED_STATE_VALID: u16 = 4;
 
 // Camera: unreflected source-world affine view, focal, far, native ray, zero.
 pub const GPU_CAMERA_VIEW: u16 = 0;
@@ -99,8 +108,11 @@ pub const GPU_GROUP_META_HEADER_WORDS: u16 = 4;
 #[cfg(gpu_debug)]
 pub const GPU_GROUP_META_HEADER_WORDS: u16 = 8;
 pub const GPU_GROUP_META_EXIT: u16 = GPU_GROUP_META_HEADER_WORDS;
-pub const GPU_GROUP_META_FACTS: u16 = GPU_GROUP_META_EXIT + 12;
+pub const GPU_GROUP_META_RESPONSE: u16 = GPU_GROUP_META_EXIT + 12;
+pub const GPU_GROUP_META_FACTS: u16 = GPU_GROUP_META_RESPONSE + 4;
 pub const GPU_GROUP_META_COMMAND_COUNT: u16 = 2;
+// Prepared recording has no terminal command; reuse that context word.
+pub const GPU_GROUP_SHARED_STATE: u16 = 14;
 #[cfg(gpu_debug)]
 pub const GPU_GROUP_RESPONSE_MAX: u16 = GPU_CB_GLOBAL + 16;
 #[repr(u16)]

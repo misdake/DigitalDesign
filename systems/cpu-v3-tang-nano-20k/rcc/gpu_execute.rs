@@ -6,9 +6,6 @@ mod gpu_record;
 use gpu_record::*;
 
 const GPU_LIST_OWNER: u16 = 3;
-const GPU_LIST_MAX_SEGMENTS: u16 = 32;
-const GPU_LIST_TABLE_WORDS: u16 = 64;
-const GPU_LIST_METADATA_WORDS: u16 = 4;
 
 #[repr(u16)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,12 +128,6 @@ fn gpu_execute_publish_memory() -> bool {
         return gpu_execute_fail(ExecutionError::UnexpectedDeviceStatus);
     }
     true
-}
-
-// CPU pointers are word addresses. A 64-word aligned table fits inside one
-// DSEG page, so its physical 128-byte sector needs only that page's mapping.
-fn gpu_list_table_address(allocation: u16) -> u16 {
-    (allocation + GPU_LIST_METADATA_WORDS + GPU_LIST_TABLE_WORDS - 1) & 0xffc0
 }
 
 fn gpu_execute_submit_list(allocation: u16, count: u16) -> bool {

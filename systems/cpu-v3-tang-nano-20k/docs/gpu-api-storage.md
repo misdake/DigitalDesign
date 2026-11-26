@@ -239,12 +239,20 @@ reference before mutation. Pool Drop checks all children before releasing
 any. List retirement and unsubmitted list Drop release their references.
 
 Heap metadata stores padded command length in CPU words, fact count, and the
-unpadded 32-bit instruction count in header word 2. It also holds the 12-word
-final material snapshot and four-word resource facts. Debug tracks response maxima
+unpadded 32-bit instruction count in header word 2. Header word 3 identifies a
+shared-state recording. Metadata also holds the 12-word final material snapshot,
+four-word lighting-response snapshot and four-word resource facts. Debug tracks response maxima
 for the whole part and for each nonempty marked group. A range validates only
 its selected groups against the installed scene light. Nonempty append includes the part's persistent push
 extent in the frame facts, so target-only relocation cannot overlap it. Commands
 contain no END. A failed transport poisons the destination before submission.
+
+`PreparedPart::share_state()` reuses transient terminal word 14 (unused by a
+Prepared recorder): 1 awaits the first draw's state, 2 has captured it. Every
+draw uses the normal encoder, but validates the fixed CP state and omits its
+SET/drain operations. Marked entry still invalidates World residency. Lists
+retain one additional CPU metadata word for the shared-state proof; the
+DMA-visible table and hardware protocol are unchanged.
 
 Standalone appends compute one aligned payload offset and preflight their extent.
 Mesh/binding operations preflight their complete layout once. They write one
@@ -515,8 +523,11 @@ the publication boundary for CPU stores.
 World responses and Material packets. Up to 256 World keys share the same world
 lighting. The native mesh and texture bytes stay resident through retirement.
 
-`prepare_unlit` on an empty command buffer reserves its push prefix: a 64-word
-View packet, then one 64-word World slot per unique binding. The Transform snapshot
+`prepare_unlit` reserves a block at the current push cursor rounded up to
+64 words: a 64-word View packet, then one 64-word World slot per unique binding.
+The block starts at zero for an empty CB and can follow a linked Prepared range
+and earlier dynamic payload in the same CB. Two per-slot base words relocate
+View and World references within the existing push allocation. The Transform snapshot
 is taken once for that recording. `draw_unlit` fills each used World slot once
 and uses the same binding and meshlet command encoders as ordinary draws.
 Vertical billboard offsets use the shared View basis and the existing DRAW
@@ -526,7 +537,8 @@ For a completed bank-only recording, `patch_unlit` updates View and Target
 while leaving the World packets and command stream resident. Target overlap
 checks precede the writes, and submission checks the GPU/Display leases.
 A normal draw, prepared draw, UI or copy ends the bank phase. A later bank
-draw or replay requires reset and preparation.
+draw requires preparation again. View/Target patch replay remains restricted to
+a completed bank-only recording; interleaved frame lists are recorded afresh.
 
 ## Command records
 

@@ -194,6 +194,13 @@ fn gpu_group_mark_slice(owner: u16, offset: u16) -> bool {
 fn gpu_group_slice_marked(bits: Array<u16>, offset: u16) -> bool {
     bits[offset >> 4] & (1u16 << (offset & 15)) != 0
 }
+fn gpu_group_shared_matches(slot: u16, meta: Array<u16>) -> bool {
+    let c = gpu_record_data(slot);
+    c[GPU_RECORD_VALID] & (2 | GPU_BIND_RESPONSE_VALID) == (2 | GPU_BIND_RESPONSE_VALID)
+        && gpu_bind_equal(c, GPU_CB_RENDER, meta, GPU_GROUP_META_EXIT, 8)
+        && gpu_bind_equal(c, GPU_CB_RENDER + 10, meta, GPU_GROUP_META_EXIT + 10, 2)
+        && gpu_bind_equal(c, GPU_CB_RESPONSE, meta, GPU_GROUP_META_RESPONSE, 4)
+}
 fn gpu_group_slice_valid(owner: u16, first: u16, end: u16, scene: u16) -> bool {
     let data = gpu_arena_data(owner);
     let marks = data[GPU_PREPARED_SLICE_MARKS];
@@ -205,6 +212,9 @@ fn gpu_group_slice_valid(owner: u16, first: u16, end: u16, scene: u16) -> bool {
         return false;
     }
     let meta = unsafe { Ptr::from_addr(data[GPU_PREPARED_META]).as_u16_array() };
+    if meta[3u16] != 0 && !gpu_group_shared_matches(scene - 1, meta) {
+        return false;
+    }
     if first >= end || end > meta[GPU_GROUP_META_COMMAND_COUNT] {
         return false;
     }
@@ -472,12 +482,13 @@ fn gpu_group_end(slot: u16) -> bool {
     meta[0u16] = words;
     meta[1u16] = count + 1;
     meta[GPU_GROUP_META_COMMAND_COUNT] = command_count;
-    meta[3u16] = 0;
+    meta[3u16] = (c[GPU_GROUP_SHARED_STATE] != 0) as u16;
     #[cfg(gpu_debug)]
     {
         gpu_bind_copy(meta, 4, c, GPU_GROUP_RESPONSE_MAX, 4);
     }
     gpu_bind_copy(meta, GPU_GROUP_META_EXIT, c, GPU_CB_RENDER, 12);
+    gpu_bind_copy(meta, GPU_GROUP_META_RESPONSE, c, GPU_CB_RESPONSE, 4);
     gpu_bind_copy(
         meta,
         GPU_GROUP_META_FACTS,
@@ -520,6 +531,9 @@ fn gpu_group_part_append(slot: u16, owner: u16) -> bool {
     let count = meta[1u16];
     if words == 0 {
         return true;
+    }
+    if meta[3u16] != 0 && !gpu_group_shared_matches(slot, meta) {
+        return false;
     }
     if c[GPU_RECORD_VALID] & 24 != 24 {
         return false;
@@ -589,6 +603,10 @@ fn gpu_group_part_append(slot: u16, owner: u16) -> bool {
     gpu_bind_copy(c, GPU_CB_RENDER, meta, GPU_GROUP_META_EXIT, 12);
     // Only the last material is known; the last World packet is not CPU-cached.
     c[GPU_RECORD_VALID] = (c[GPU_RECORD_VALID] | 2) & (65535 ^ (4 | GPU_BIND_RESPONSE_VALID));
+    if meta[3u16] != 0 {
+        gpu_bind_copy(c, GPU_CB_RESPONSE, meta, GPU_GROUP_META_RESPONSE, 4);
+        c[GPU_RECORD_VALID] |= GPU_BIND_RESPONSE_VALID;
+    }
     c[GPU_RECORD_UI_CLEAN] = 0;
     true
 }

@@ -377,10 +377,6 @@ pub struct CommandBuffer {
 pub struct CommandList {
     allocation: u16,
 }
-const GPU_LIST_COUNT: u16 = 0;
-const GPU_LIST_USED: u16 = 1;
-const GPU_LIST_SLOTS: u16 = 2;
-const GPU_LIST_SCENE_SLOT: u16 = 3;
 #[rcc_resource(parent=CommandBuffer)]
 pub struct Pass {
     slot: u16,
@@ -423,6 +419,7 @@ impl Gpu {
     }
     pub fn submit(&mut self, buffer: CommandBuffer) {
         let slot = buffer.slot;
+        gpu_api_checked(GPU_CB_LISTS[slot * 2] == 0, GpuCheck::Prepared);
         resource_disarm(buffer);
         gpu_api_submit(slot);
     }
@@ -550,18 +547,7 @@ fn gpu_api_release_list(allocation: u16) {
         }
         slot += 1;
     }
-    let parts = gpu_api_list_parts(allocation);
-    let count = meta[GPU_LIST_USED];
-    let mut index: u16 = 0;
-    while index < count {
-        let owner = parts[index];
-        if owner != 0 {
-            let mut data = gpu_arena_data(owner);
-            data[GPU_PREPARED_LIST_REFS] -= 1;
-        }
-        index += 1;
-    }
-    free(Ptr::from_addr(allocation));
+    gpu_record_release_list_parts(allocation);
 }
 
 impl CommandList {
@@ -581,12 +567,14 @@ impl CommandList {
         meta[GPU_LIST_USED] = 0;
         meta[GPU_LIST_SLOTS] = 0;
         meta[GPU_LIST_SCENE_SLOT] = 0;
+        meta[GPU_LIST_SHARED_STATE_VALID] = 0;
         Self { allocation }
     }
 
     /// Consume one recorded CB. It must fit in one segment (8 KiB).
     pub fn push(&mut self, buffer: CommandBuffer) {
         let slot = buffer.slot;
+        gpu_api_checked(GPU_CB_LISTS[slot * 2] == 0, GpuCheck::Prepared);
         if !gpu_record_seal(slot) {
             gpu_api_fail(GpuFault::CommandList, slot, 0);
         }
@@ -612,6 +600,9 @@ impl CommandList {
         } else {
             0
         };
+        meta[GPU_LIST_SHARED_STATE_VALID] = ((record[GPU_RECORD_VALID]
+            & (2 | GPU_BIND_RESPONSE_VALID))
+            == (2 | GPU_BIND_RESPONSE_VALID)) as u16;
         resource_disarm(buffer);
     }
 
@@ -622,26 +613,14 @@ impl CommandList {
         gpu_api_list_append(self.allocation, commands, first, length, 0);
         let mut meta = gpu_api_list_metadata(self.allocation);
         meta[GPU_LIST_SCENE_SLOT] = 0;
+        meta[GPU_LIST_SHARED_STATE_VALID] = 0;
     }
 
     /// Replay whole marked draw groups in `[first, end)` from a finished part.
     /// A recorded CB establishes Target and View before the range, and a later
     /// segment ends the batch. The list protects the part until it retires or is dropped.
     pub fn push_prepared_range(&mut self, part: PreparedDrawsPtr, first: u16, end: u16) {
-        let owner = part.data();
-        let meta = gpu_api_list_metadata(self.allocation);
-        if meta[GPU_LIST_USED] + 1 >= meta[GPU_LIST_COUNT]
-            || !gpu_group_slice_valid(owner, first, end, meta[GPU_LIST_SCENE_SLOT])
-        {
-            gpu_api_fail(GpuFault::CommandList, first, end);
-        }
-        let mut data = gpu_arena_data(owner);
-        let commands = GpuMemory {
-            first_sector: data[GPU_PREPARED_COMMAND],
-            sector_count: data[GPU_PREPARED_COMMAND_CAPACITY] >> 6,
-        };
-        gpu_api_list_append(self.allocation, commands, first, end - first, owner);
-        data[GPU_PREPARED_LIST_REFS] += 1;
+        gpu_api_list_prepared_range(self.allocation, part, first, end);
     }
 }
 impl Drop for CommandList {
@@ -649,13 +628,29 @@ impl Drop for CommandList {
         gpu_api_release_list(self.allocation);
     }
 }
-fn gpu_api_list_metadata(allocation: u16) -> Array<u16> {
-    unsafe { Ptr::from_addr(allocation).as_u16_array() }
-}
-fn gpu_api_list_parts(allocation: u16) -> Array<u16> {
-    // CPU-only part references follow the DMA-visible table.
-    let address = gpu_list_table_address(allocation) + GPU_LIST_TABLE_WORDS;
-    unsafe { Ptr::from_addr(address).as_u16_array() }
+fn gpu_api_list_prepared_range(allocation: u16, part: PreparedDrawsPtr, first: u16, end: u16) {
+    let owner = part.data();
+    let mut meta = gpu_api_list_metadata(allocation);
+    if meta[GPU_LIST_USED] + 1 >= meta[GPU_LIST_COUNT]
+        || !gpu_group_slice_valid(owner, first, end, meta[GPU_LIST_SCENE_SLOT])
+    {
+        gpu_api_fail(GpuFault::CommandList, first, end);
+    }
+    let part_meta =
+        unsafe { Ptr::from_addr(gpu_arena_data(owner)[GPU_PREPARED_META]).as_u16_array() };
+    if part_meta[3u16] != 0 && meta[GPU_LIST_SHARED_STATE_VALID] == 0 {
+        gpu_api_fail(GpuFault::CommandList, first, end);
+    }
+    let mut data = gpu_arena_data(owner);
+    let commands = GpuMemory {
+        first_sector: data[GPU_PREPARED_COMMAND],
+        sector_count: data[GPU_PREPARED_COMMAND_CAPACITY] >> 6,
+    };
+    gpu_api_list_append(allocation, commands, first, end - first, owner);
+    data[GPU_PREPARED_LIST_REFS] += 1;
+    if part_meta[3u16] == 0 {
+        meta[GPU_LIST_SHARED_STATE_VALID] = 0;
+    }
 }
 fn gpu_api_list_append(allocation: u16, commands: GpuMemory, first: u16, length: u16, owner: u16) {
     let mut meta = gpu_api_list_metadata(allocation);
@@ -858,6 +853,88 @@ fn gpu_api_copy_plane(slot: u16, s: Array<u16>, d: Array<u16>, kind: ResourceFac
     };
 }
 impl CommandBuffer {
+    /// Start one frame's interleaved dynamic/Prepared list. Dynamic commands
+    /// keep this sole writable owner until finish_list consumes it.
+    pub fn begin_list(&mut self, segment_count: u16) {
+        let c = gpu_record_data(self.slot);
+        gpu_api_checked(
+            c[GPU_RECORD_PHASE] == RecordPhase::Ready as u16
+                && c[GPU_RECORD_COMMAND_USED] == 0
+                && GPU_CB_LISTS[self.slot * 2] == 0,
+            GpuCheck::Prepared,
+        );
+        let list = CommandList::new(segment_count);
+        GPU_CB_LISTS[self.slot * 2] = list.allocation;
+        GPU_CB_LISTS[self.slot * 2 + 1] = 0;
+        resource_disarm(list);
+    }
+
+    /// Insert immutable marked commands between closed passes without copying.
+    /// Prepared storage is pinned immediately, including before submission.
+    /// The next dynamic draw reloads World; shared Render/response stay known.
+    pub fn link_prepared_range(&mut self, part: PreparedDrawsPtr, first: u16, end: u16) {
+        let allocation = GPU_CB_LISTS[self.slot * 2];
+        let mut c = gpu_record_data(self.slot);
+        gpu_api_checked(
+            allocation != 0
+                && c[GPU_RECORD_PHASE] == RecordPhase::Ready as u16
+                && c[GPU_RECORD_TARGET_WORD] != 0
+                && c[GPU_CB_VIEW_WORD] != 0
+                && gpu_bind_scene_current(self.slot),
+            GpuCheck::Prepared,
+        );
+        let at = c[GPU_RECORD_COMMAND_USED] >> 1;
+        let previous = GPU_CB_LISTS[self.slot * 2 + 1];
+        if at != previous {
+            let memory = GpuMemory {
+                first_sector: c[GPU_RECORD_COMMAND_BASE],
+                sector_count: c[GPU_RECORD_COMMAND_CAPACITY] >> 6,
+            };
+            gpu_api_list_append(allocation, memory, previous, at - previous, 0);
+            GPU_CB_LISTS[self.slot * 2 + 1] = at;
+        }
+        let mut meta = gpu_api_list_metadata(allocation);
+        meta[GPU_LIST_SCENE_SLOT] = self.slot + 1;
+        meta[GPU_LIST_SHARED_STATE_VALID] = ((c[GPU_RECORD_VALID] & (2 | GPU_BIND_RESPONSE_VALID))
+            == (2 | GPU_BIND_RESPONSE_VALID)) as u16;
+        gpu_api_list_prepared_range(allocation, part, first, end);
+        gpu_unlit_end(self.slot);
+        let data = gpu_arena_data(part.data());
+        let part_meta = unsafe { Ptr::from_addr(data[GPU_PREPARED_META]).as_u16_array() };
+        c[GPU_RECORD_VALID] &= 65535 ^ 4;
+        if part_meta[3u16] == 0 {
+            c[GPU_RECORD_VALID] &= 65535 ^ (2 | GPU_BIND_RESPONSE_VALID);
+        }
+        c[GPU_RECORD_INSTANCE_WORD] = 0;
+        c[GPU_RECORD_UI_CLEAN] = 0;
+        // Linked draws execute after the last dynamic pass's terminal fence.
+        c[GPU_RECORD_TERMINAL] = 0;
+    }
+
+    /// Seal the last dynamic range and transfer this one CB owner to the list.
+    pub fn finish_list(self) -> CommandList {
+        let allocation = GPU_CB_LISTS[self.slot * 2];
+        gpu_api_checked(allocation != 0, GpuCheck::Prepared);
+        gpu_api_checked(gpu_record_seal(self.slot), GpuCheck::Prepared);
+        let c = gpu_record_data(self.slot);
+        let first = GPU_CB_LISTS[self.slot * 2 + 1];
+        let end = c[GPU_RECORD_COMMAND_USED] >> 1;
+        let memory = GpuMemory {
+            first_sector: c[GPU_RECORD_COMMAND_BASE],
+            sector_count: c[GPU_RECORD_COMMAND_CAPACITY] >> 6,
+        };
+        gpu_api_list_append(allocation, memory, first, end - first, 0);
+        let mut meta = gpu_api_list_metadata(allocation);
+        gpu_api_checked(
+            meta[GPU_LIST_USED] == meta[GPU_LIST_COUNT],
+            GpuCheck::Prepared,
+        );
+        meta[GPU_LIST_SLOTS] = 1u16 << self.slot;
+        GPU_CB_LISTS[self.slot * 2] = 0;
+        resource_disarm(self);
+        CommandList { allocation }
+    }
+
     /// Copy the 400x256 physical RGB565 plane between nonoverlapping surfaces.
     /// Records source-read/destination-write ownership; allocation tails remain
     /// untouched. Call between passes. Submission publication/leases are shared
@@ -1750,6 +1827,18 @@ impl Drop for PreparedPart {
     }
 }
 impl PreparedPart {
+    /// Before any draw, require replay in a matching CP material/response state.
+    /// The first ordinary World draw defines that state; subsequent draws may
+    /// vary transform/tint. Billboards and state changes are rejected. No entry
+    /// restoration commands are recorded, and each marked range uploads World.
+    pub fn share_state(&mut self) {
+        let mut record = gpu_record_data(self.slot);
+        gpu_api_checked(
+            record[GPU_RECORD_COMMAND_USED] == 0 && record[GPU_RECORD_PUSH_USED] == 0,
+            GpuCheck::Prepared,
+        );
+        record[GPU_GROUP_SHARED_STATE] = 1;
+    }
     /// Mark a range endpoint and return its unpadded instruction offset.
     /// A draw that follows the mark establishes its own World and material.
     pub fn mark_slice(&mut self) -> u16 {
@@ -1763,7 +1852,11 @@ impl PreparedPart {
         {
             record[GPU_GROUP_SLICE_START] = first;
         }
-        record[GPU_RECORD_VALID] &= 65535 ^ (2 | 4 | GPU_BIND_RESPONSE_VALID);
+        if record[GPU_GROUP_SHARED_STATE] == 0 {
+            record[GPU_RECORD_VALID] &= 65535 ^ (2 | 4 | GPU_BIND_RESPONSE_VALID);
+        } else {
+            record[GPU_RECORD_VALID] &= 65535 ^ 4;
+        }
         first
     }
 

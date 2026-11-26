@@ -193,6 +193,20 @@ fn gpu_bind_plan_fields(
             changes |= 4;
         }
     }
+    if !scene_only && part && c[GPU_GROUP_SHARED_STATE] != 0 {
+        if world != 1 || native[GPU_SCRATCH_BILLBOARD] != 0 {
+            return false;
+        }
+        if c[GPU_GROUP_SHARED_STATE] == 2
+            && (!gpu_bind_equal(c, GPU_CB_RENDER, native, GPU_SCRATCH_RENDER, 8)
+                || !gpu_bind_equal(c, GPU_CB_RENDER + 10, native, GPU_SCRATCH_RENDER + 10, 2)
+                || !gpu_bind_equal(c, GPU_CB_RESPONSE, native, GPU_SCRATCH_INSTANCE + 26, 4))
+        {
+            return false;
+        }
+        // Entry requires this CP state; every marked range still uploads World.
+        changes &= 65535 ^ (2 | 8);
+    }
     plan[GPU_BIND_PLAN_MODEL] = 0;
     plan[GPU_BIND_PLAN_VIEW_OFFSET] = 0;
     plan[GPU_BIND_PLAN_WORLD_OFFSET] = 0;
@@ -347,6 +361,10 @@ fn gpu_bind_payload(slot: u16, native: Array<u16>, plan: Array<u16>) -> bool {
 fn gpu_bind_commit(slot: u16, native: Array<u16>, plan: Array<u16>) {
     let mut c = gpu_record_data(slot);
     let changes = plan[GPU_BIND_PLAN_CHANGES];
+    if c[GPU_GROUP_RECORDING] != 0 && c[GPU_GROUP_SHARED_STATE] != 0 {
+        c[GPU_GROUP_SHARED_STATE] = 2;
+        c[GPU_RECORD_VALID] |= 2;
+    }
     if changes & 1 != 0 {
         gpu_bind_copy(c, GPU_CB_GLOBAL, native, 0, 16);
         c[GPU_RECORD_GLOBAL_WORD] = if changes & GPU_BIND_PLAN_VIEW != 0 {

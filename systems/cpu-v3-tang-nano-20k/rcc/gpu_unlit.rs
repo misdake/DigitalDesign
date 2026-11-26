@@ -29,6 +29,7 @@ static GPU_UNLIT_EPOCH: Buf<u16, 4> = Buf::new([0; 4]);
 const BANK_READY_WORDS: u16 = BANK_KEY_LIMIT / 16;
 static GPU_UNLIT_READY: Buf<u16, 32> = Buf::new([0; 32]);
 static GPU_UNLIT_LAST: Buf<u16, 2> = Buf::new([0; 2]);
+static GPU_UNLIT_BASE: Buf<u16, 2> = Buf::new([0; 2]);
 
 fn gpu_unlit_array(data: Array<u16>, at: u16) -> Array<u16> {
     unsafe { data.as_ptr().add(at as i16).as_u16_array() }
@@ -126,7 +127,7 @@ fn gpu_unlit_write_view(slot: u16, bank: Array<u16>, camera: Array<u16>) -> bool
     let mut c = gpu_record_data(slot);
     if !gpu_window_write_words(
         c[GPU_RECORD_PUSH_BASE],
-        0,
+        GPU_UNLIT_BASE[slot],
         gpu_unlit_array(native, GPU_SCRATCH_VIEW),
         64,
     ) {
@@ -145,19 +146,17 @@ fn gpu_unlit_prepare(
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != RecordPhase::Ready as u16
-        || c[GPU_RECORD_COMMAND_USED] != 0
-        || c[GPU_RECORD_PUSH_USED] != 0
-        || bank[BANK_KEY_COUNT] == 0
-    {
+    if c[GPU_RECORD_PHASE] != RecordPhase::Ready as u16 || bank[BANK_KEY_COUNT] == 0 {
         return false;
     }
     let prefix = (1 + bank[BANK_KEY_COUNT]) * 64;
-    if prefix > c[GPU_RECORD_PUSH_CAPACITY] {
+    let base = (c[GPU_RECORD_PUSH_USED] + 63) & 65472;
+    if base > c[GPU_RECORD_PUSH_CAPACITY] || prefix > c[GPU_RECORD_PUSH_CAPACITY] - base {
         return false;
     }
     let plan: Buf<u16, 64> = Buf::new([0; 64]);
     let facts = gpu_unlit_array(bank, BANK_FACTS);
+    GPU_UNLIT_BASE[slot] = base;
     if !gpu_record_resource_room(slot, facts, bank[BANK_FACT_COUNT], plan.as_array())
         || !gpu_unlit_write_view(slot, bank, camera)
     {
@@ -173,7 +172,7 @@ fn gpu_unlit_prepare(
         GPU_SCRATCH_INSTANCE,
         64,
     );
-    c[GPU_RECORD_PUSH_USED] = prefix;
+    c[GPU_RECORD_PUSH_USED] = base + prefix;
     bank[BANK_FROZEN] = 1;
     GPU_UNLIT_OWNER[slot] = bank.as_ptr().addr();
     GPU_UNLIT_EPOCH[slot * 2] = c[GPU_RECORD_GENERATION_LOW];
@@ -250,8 +249,9 @@ fn gpu_unlit_draw(slot: u16, bank: Array<u16>, binding: u16, first: u16, total: 
     } else {
         1u16
     };
-    let world = id * 64;
-    let plan: Buf<u16, 7> = Buf::new([changes, 0, 0, world, c[GPU_RECORD_PUSH_USED], 0, mode]);
+    let base = GPU_UNLIT_BASE[slot];
+    let world = base + id * 64;
+    let plan: Buf<u16, 7> = Buf::new([changes, 0, base, world, c[GPU_RECORD_PUSH_USED], 0, mode]);
     let native = gpu_native_scratch();
     let code = gpu_unlit_array(native, GPU_SCRATCH_COMMAND);
     let words = gpu_bind_code(slot, plan.as_array(), code);
