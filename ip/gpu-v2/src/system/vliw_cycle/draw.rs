@@ -115,6 +115,7 @@ impl Gpu {
                 sampling_config: super::sampling::pipeline::Config {
                     base: c.texture_base,
                     n: c.texture_n,
+                    min_n: c.texture_min_n,
                     mip: c.texture_mip,
                     rgba4444: c.texture_rgba4444,
                     clamp: c.texture_clamp,
@@ -162,7 +163,11 @@ impl Gpu {
                             far_z: c.far_z,
                             tex_u: c.texture_n,
                             tex_v: c.texture_n,
-                            max_mip: if c.texture_mip { c.texture_n } else { 0 },
+                            max_mip: if c.texture_mip {
+                                c.texture_n.wrapping_sub(c.texture_min_n) & 15
+                            } else {
+                                0
+                            },
                             bias: c.lod_bias,
                         },
                         ..Default::default()

@@ -60,7 +60,7 @@ module gpu_v2_vliw_command(
  wire mesh_begin,mesh_done,mesh_slot,mesh_begin_slot,mesh_done_slot,uniform_done;wire[1:0]uniform_bank;
  wire header_we=dma_we&&dma_addr[8:3]==6'd32&&dma_addr[1:0]==0;
  wire[31:0]cfg_far_z;wire signed[7:0]cfg_lod_bias;
- wire[15:0]texture_base;wire[3:0]texture_n;wire texture_mip,texture_rgba4444,texture_clamp,texture_fb400240;wire[1:0]texture_filter;
+ wire[15:0]texture_base;wire[3:0]texture_n;wire[1:0]texture_min_n;wire texture_mip,texture_rgba4444,texture_clamp,texture_fb400240;wire[1:0]texture_filter;
  wire draw_unlit,world_transform,billboard_vertical;wire[23:0]specular;
  wire[13:0]color_base,depth_base;wire[31:0]mesh_color;
  wire[2:0]depth_func;wire depth_write,blend;
@@ -99,7 +99,7 @@ module gpu_v2_vliw_command(
  .work_busy(work_busy),.dma_idle(dma_idle),.dma_fault(dma_fault),.mesh_loading(mesh_loading),.mesh_begin(mesh_begin),.mesh_done(mesh_done),.mesh_slot(mesh_slot),.mesh_begin_slot(mesh_begin_slot),.mesh_done_slot(mesh_done_slot),
  .uniform_done(uniform_done),.uniform_bank(uniform_bank),.header_we(header_we),.header_slot(dma_addr[2]),.header_data(dma_data),
  .cfg_far_z(cfg_far_z),.cfg_lod_bias(cfg_lod_bias),
- .texture_base(texture_base),.texture_n(texture_n),.texture_mip(texture_mip),.texture_rgba4444(texture_rgba4444),.texture_clamp(texture_clamp),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),
+ .texture_base(texture_base),.texture_n(texture_n),.texture_min_n(texture_min_n),.texture_mip(texture_mip),.texture_rgba4444(texture_rgba4444),.texture_clamp(texture_clamp),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),
  .color_base(color_base),.depth_base(depth_base),.mesh_color(mesh_color),.world_transform(world_transform),
  .draw_unlit(draw_unlit),.specular(specular),.depth_func(depth_func),.depth_write(depth_write),.blend(blend),.texture_invalidate(texture_invalidate),
  .context_epoch(context_epoch),.context_mode(context_mode),.context_code(context_code),.light_x(light_x),.light_y(light_y),.light_z(light_z),.ray_x(ray_x),.ray_y(ray_y),.ray_k(ray_k),
@@ -168,7 +168,7 @@ module gpu_v2_vliw_command(
  .dma_data(dma_data),
  .output_ready(output_ready),
  .cfg_far_z(cfg_far_z),
- .texture_base(texture_base),.texture_n(texture_n),.texture_mip(texture_mip),.texture_rgba4444(texture_rgba4444),.texture_clamp(texture_clamp),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),.texture_invalidate(texture_invalidate),
+ .texture_base(texture_base),.texture_n(texture_n),.texture_min_n(texture_min_n),.texture_mip(texture_mip),.texture_rgba4444(texture_rgba4444),.texture_clamp(texture_clamp),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),.texture_invalidate(texture_invalidate),
  .cfg_lod_bias(cfg_lod_bias),
  .color_base(color_base),.depth_base(depth_base),.mesh_color(mesh_color),.world_transform(world_transform),
  .draw_unlit(draw_unlit),

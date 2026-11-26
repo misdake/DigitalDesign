@@ -230,6 +230,8 @@ bridge timing lists accompany the global report so pad paths cannot hide them.
 The Tang Nano 20K build uses shared read/write SDRAM bank preparation with one
 address register enable for I/O packing. See
 [SDRAM memory controller](/hardware/vendor/gowin/doc/sdram-memory-controller.md).
+The shared-controller board constraints retain qualified regions for its
+`state_0_s0` and `state_2_s0` controls; address registers remain in the I/O cells.
 
 The production cold-start target selects CL3/RCD3/RP3, capture latency 3,
 RFC9/WR2, routing option 2 and registered 64-bit read return. DQM and each DQ

@@ -66,15 +66,21 @@ fn main(){
 
 #[test]
 fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
-    for (debug, rgba4444, clamp) in [
-        (false, false, false),
-        (true, false, false),
-        (false, true, false),
-        (true, true, false),
-        (false, false, true),
-        (true, false, true),
-        (false, true, true),
-        (true, true, true),
+    for (debug, rgba4444, clamp, atlas_grid) in [
+        (false, false, false, 0),
+        (true, false, false, 0),
+        (false, true, false, 0),
+        (true, true, false, 0),
+        (false, false, true, 0),
+        (true, false, true, 0),
+        (false, true, true, 0),
+        (true, true, true, 0),
+        (false, false, true, 1),
+        (true, false, true, 1),
+        (false, false, true, 2),
+        (true, false, true, 2),
+        (false, false, true, 3),
+        (true, false, true, 3),
     ] {
         let mut source = if rgba4444 {
             SOURCE.replace("TextureFormat::Rgb565", "TextureFormat::Rgba4444")
@@ -83,6 +89,10 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
         };
         if clamp {
             source = source.replace("let texture_view=texture.view();", "let mut texture_view=texture.view();texture_view.set_address_mode(TextureAddressMode::ClampToEdge);");
+        }
+        if atlas_grid != 0 {
+            source=source.replace("texture_view.set_address_mode(TextureAddressMode::ClampToEdge);",
+                &format!("texture_view.set_atlas_grid({atlas_grid});texture_view.set_address_mode(TextureAddressMode::Repeat);texture_view.set_address_mode(TextureAddressMode::ClampToEdge);"));
         }
         let parsed = super::gpu_api_resources::parse(&source, "public-b-scene", debug)
             .unwrap_or_else(|error| panic!("{error}"));
@@ -156,11 +166,14 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
             .collect();
         assert_eq!(kinds, [5, 6, 1, 2, 4, 3]);
         let output = crate::checked_flat_fixture::output_root().join(format!(
-            "public-scene-budget-{debug}-rgba{rgba4444}-clamp{clamp}.json"
+            "public-scene-budget-{debug}-rgba{rgba4444}-clamp{clamp}-grid{atlas_grid}.json"
         ));
         std::fs::write(output,serde_json::to_vec_pretty(&serde_json::json!({"static_bytes":static_words*2,"observed_stack_bytes":stack_words*2,"max_frame_words":program.debug.functions.iter().map(|function|function.frame_size).max().unwrap_or(0),"fact_words":&memory[facts..facts+24],"commands":&memory[0x9800*64..0x9800*64+usize::from(memory[record+5])],"push":&memory[0x9a00*64..0x9a00*64+usize::from(memory[record+6])]})).unwrap()).unwrap();
         let push = &memory[0x9a00 * 64..0x9a00 * 64 + usize::from(memory[record + 6])];
-        let header = 0x36 | if rgba4444 { 0x100 } else { 0 } | if clamp { 0x200 } else { 0 };
+        let header = 0x36
+            | if rgba4444 { 0x100 } else { 0 }
+            | if clamp { 0x200 } else { 0 }
+            | (atlas_grid << 10);
         assert!(
             push.windows(4).any(|w| w == [0xa800, header, 0xffff, 0xff]),
             "native format and mip/filter bits lost during public recording"
@@ -257,7 +270,7 @@ fn main(){
             let mut view = vec![0; 64];
             let mut world = vec![0; 64];
             let mut result = Vec::new();
-            for code in commands.chunks_exact(2) {
+            for code in commands.as_chunks::<2>().0 {
                 let opcode = code[1] >> 12;
                 if opcode == 1 {
                     let sector = (usize::from(code[1] & 4095) << 4) | usize::from(code[0] >> 12);
@@ -344,7 +357,12 @@ fn main(){
             let used = usize::from(memory[records + 5]);
             let commands = &memory[0x9800 * 64..0x9800 * 64 + used];
             assert_eq!(
-                commands.chunks_exact(2).filter(|p| p[1] >> 12 == 3).count(),
+                commands
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .filter(|p| p[1] >> 12 == 3)
+                    .count(),
                 2,
                 "generic tail must append, then bank resumption rejects before its draw"
             );

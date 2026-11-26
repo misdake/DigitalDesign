@@ -12,6 +12,7 @@ pub struct Input {
     pub mask: u8,
     pub lod: u8,
     pub max_n: u8,
+    pub min_n: u8,
     pub mip: bool,
     pub filter: u8,
     pub framebuffer: bool,
@@ -48,7 +49,7 @@ pub struct Direct {
     pub read: u8,
     pub occupied: u8,
     pub completed: u8,
-    source_guard: Option<(u16, u8, bool, bool, bool)>,
+    source_guard: Option<(u16, u8, bool, bool, bool, u8)>,
 }
 impl Default for Direct {
     fn default() -> Self {
@@ -136,7 +137,11 @@ fn axis(i: Input, u: bool, physical: u8) -> u32 {
             fine as u32 & 0x1ffff
         }
     } else if i.clamp {
-        fine.clamp(0, ((1i32 << physical) - 1) * 256) as u32
+        {
+            let cell = physical - i.min_n;
+            let first = ((u32::from(uv) >> (16 - i.min_n)) as i32) << cell;
+            fine.clamp(first * 256, (first + (1 << cell) - 1) * 256) as u32
+        }
     } else {
         let mask = ((1u32 << physical) - 1) & 1023;
         ((fine as u32 >> 8 & mask) << 8) | (fine as u32 & 255)
@@ -203,6 +208,7 @@ impl Direct {
                             i.filter == 0,
                             i.framebuffer,
                             i.clamp,
+                            i.min_n,
                         )),
                     "serial coordinate",
                     "coordinate V input changed before its source-Q consumption",
@@ -234,6 +240,7 @@ impl Direct {
                 i.filter == 0,
                 i.framebuffer,
                 i.clamp,
+                i.min_n,
             ));
         }
         if self.valid & 2 != 0 {

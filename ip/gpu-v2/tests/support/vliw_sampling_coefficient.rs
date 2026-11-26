@@ -24,6 +24,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     ] {
         pin!(n, 1, v, false);
     }
+    pin!("texture_min_n", 2, i.min_n, false);
     pin!("in_owner", 38, i.owner.value, false);
     pin!("in_result", 36, i.result.value, false);
     pin!("work_available", 8, i.available, false);

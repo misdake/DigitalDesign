@@ -79,6 +79,8 @@ Creation/static `*Desc` values remain plain copyable values.
 `TextureView` stores its six words directly. `Pass`, `PreparedPart` and
 `UnlitBank::add` borrow it only while recording or registering a binding.
 The recorded binding retains the physical extent and sampling fields.
+The existing flags word also holds the two-bit mip minimum/fixed-grid exponent;
+no additional arena words or recorded payload are allocated for it.
 
 For example, `let mesh = Mesh::from_native(desc); let mesh_ptr = mesh.ptr();`
 creates one owner and a copyable reference. Calls to `pass.draw(transform_ptr, mesh_ptr, ...)`

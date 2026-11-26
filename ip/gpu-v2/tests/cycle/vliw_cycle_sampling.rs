@@ -63,7 +63,14 @@ fn reference(p: Pixel, c: Config) -> u32 {
         let uv = (p.uv >> (16 * a)) as u16;
         let q = i64::from(u32::from(uv) * side / 256) - if c.filter == 0 { 0 } else { 128 };
         let q = if c.framebuffer || c.clamp {
-            q.clamp(0, i64::from((side - 1) * 256))
+            {
+                let width = side >> c.min_n;
+                let first = u32::from(uv) >> (16 - c.min_n);
+                q.clamp(
+                    i64::from(first * width * 256),
+                    i64::from((first * width + width - 1) * 256),
+                )
+            }
         } else {
             q
         };
@@ -85,7 +92,9 @@ fn reference(p: Pixel, c: Config) -> u32 {
             for a in 0..2 {
                 let raw = i64::from((p.uv >> (16 * a)) as u16);
                 let q = raw * side / 256 - if c.filter == 0 { 0 } else { 128 };
-                let q = q.clamp(0, (side - 1) * 256);
+                let width = side >> c.min_n;
+                let first = (raw >> (16 - c.min_n)) * width;
+                let q = q.clamp(first * 256, (first + width - 1) * 256);
                 xy[a] = q / 256;
                 uv[a] = if c.filter == 0 { 0 } else { (q % 256) as u32 };
             }
@@ -175,7 +184,15 @@ struct Transfer {
 }
 fn run(config: Config, profile: Profile) -> (usize, usize, usize) {
     let mut s = Sampler::new(profile);
-    let source = pixels();
+    let source = pixels()
+        .into_iter()
+        .map(|mut p| {
+            if config.min_n != 0 {
+                p.lod = p.lod.min((config.n - config.min_n) * 8);
+            }
+            p
+        })
+        .collect::<Vec<_>>();
     let mut index = 0;
     let mut loan = false;
     let mut returns = VecDeque::new();
@@ -302,6 +319,7 @@ fn complete_sampler_matches_independent_integer_pixels() {
                 Config {
                     base: 0x200,
                     n: 6,
+                    min_n: 0,
                     mip: true,
                     rgba4444: false,
                     clamp: false,
@@ -315,6 +333,7 @@ fn complete_sampler_matches_independent_integer_pixels() {
             Config {
                 base: 0x400,
                 n: 9,
+                min_n: 0,
                 mip: false,
                 rgba4444: false,
                 clamp: false,
@@ -334,6 +353,7 @@ fn rgba4444_sampler_keeps_cache_and_calendar_with_and_without_mips() {
                 let original = Config {
                     base: 0x200,
                     n: 6,
+                    min_n: 0,
                     mip,
                     rgba4444: false,
                     clamp: false,
@@ -366,6 +386,7 @@ fn clamp_sampler_matches_independent_per_mip_coordinates() {
                     Config {
                         base: 0x200,
                         n,
+                        min_n: 0,
                         mip: true,
                         rgba4444: true,
                         clamp: true,
@@ -412,5 +433,30 @@ fn clamp_uses_signed_source_uv_before_wrapping() {
             sampler.clock(input).unwrap();
         }
         assert!(seen);
+    }
+}
+
+#[test]
+fn atlas_grid_matches_independent_per_mip_cell_clamp() {
+    for profile in [Profile::Portable, Profile::Native] {
+        for min_n in 1..=3 {
+            for n in min_n..=10 {
+                for filter in 0..3 {
+                    run(
+                        Config {
+                            base: 0x200,
+                            n,
+                            min_n,
+                            mip: true,
+                            rgba4444: false,
+                            clamp: true,
+                            filter,
+                            framebuffer: false,
+                        },
+                        profile,
+                    );
+                }
+            }
+        }
     }
 }

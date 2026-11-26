@@ -32,7 +32,7 @@ fn dependency_closed_no_extra_store() {
         );
     }
     assert!(s.contains("if(reset||texture_invalidate)begin state_initialized<=0;"));
-    assert!(s.contains("cfg_max_mip=texture_mip?{1'b0,texture_n}:5'd0"));
+    assert!(s.contains("cfg_max_mip=texture_mip?{1'b0,texture_lod_limit}:5'd0"));
     assert!(s.contains("output[34:0]out_packet"));
     let cache = s
         .split("module gpu_v2_texture_runtime_cache_unique #")

@@ -23,7 +23,7 @@ input wire draw_bank,draw_unlit,
  input wire depth_event_valid,input wire[4:0]depth_event_pid,input wire[15:0]depth_event_z16,input wire depth_event_pass,
  input wire lod_valid,input wire[2:0]lod_id,input wire[7:0]lod_value,
  output wire empty_skipped,output wire[5:0]producer_used,
- input[15:0]texture_base,input[3:0]texture_n,input texture_mip,texture_rgba4444,texture_clamp,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,input wire[23:0]specular,
+ input[15:0]texture_base,input[3:0]texture_n,input[1:0]texture_min_n,input texture_mip,texture_rgba4444,texture_clamp,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,input wire[23:0]specular,
 `ifndef GPU_V2_COMMAND_PORTS
 input wire[7:0]alpha,
 `endif
@@ -118,7 +118,7 @@ wire[15:0]depth_data;
  .depth_read(sink_color_accept),.depth_read_address({retire_slot,out_lane}),.depth_data(depth_data),
  .rop_row7_accepted(raw_retire_proposal),.rop_slot(retire_slot),.retire_slot(retire_slot),
  .global_used(global_used),.light_used(light_used),.sample_used(sample_used),.producer_used(producer_used),
- .public_credit(public_credit),.texture_base(texture_base),.texture_n(texture_n),.texture_mip(texture_mip),.texture_rgba4444(texture_rgba4444),.texture_clamp(texture_clamp),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),.texture_invalidate(texture_invalidate),
+ .public_credit(public_credit),.texture_base(texture_base),.texture_n(texture_n),.texture_min_n(texture_min_n),.texture_mip(texture_mip),.texture_rgba4444(texture_rgba4444),.texture_clamp(texture_clamp),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),.texture_invalidate(texture_invalidate),
  .sample_fire(sample_fire),.sample_row(sample_row),.sample_descriptor(sample_descriptor),
  .packet_enable(1'b1),.result_ready(sr),.result_valid(sv),.result_key(sk),.result_rgb(sRGB),.result_alpha(sAlpha),
  .work_reserved(work_reserved),.work_count(work_count),

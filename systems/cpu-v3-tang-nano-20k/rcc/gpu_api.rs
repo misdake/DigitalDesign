@@ -1668,7 +1668,30 @@ impl TextureView {
     pub fn set_address_mode(&mut self, mode: TextureAddressMode) {
         let mut data = self.data();
         gpu_api_checked(data[GPU_VIEW_FLAGS] & 2 == 0, GpuCheck::View);
-        data[GPU_VIEW_FLAGS] = (data[GPU_VIEW_FLAGS] & 7) | ((mode as u16) << 3);
+        data[GPU_VIEW_FLAGS] = (data[GPU_VIEW_FLAGS] & 55) | ((mode as u16) << 3);
+    }
+
+    /// Limit the chain to a minimum side of 1, 2, 4 or 8 texels.
+    /// ClampToEdge also clamps each selected grid cell independently.
+    pub fn set_min_mip_size(&mut self, size_log2: u16) {
+        let mut data = self.data();
+        gpu_api_checked(
+            size_log2 <= 3 && size_log2 <= data[GPU_VIEW_EXPONENT],
+            GpuCheck::View,
+        );
+        gpu_api_checked(
+            size_log2 == 0 || data[GPU_VIEW_FLAGS] & 3 == 1,
+            GpuCheck::View,
+        );
+        data[GPU_VIEW_FLAGS] = (data[GPU_VIEW_FLAGS] & 15) | (size_log2 << 4);
+    }
+
+    /// Divide each axis into 1, 2, 4 or 8 cells and clamp within the UV's cell.
+    /// Full mips are required for nonzero grids. UV endpoints must stay inside
+    /// their intended cell; a boundary belongs to the next cell.
+    pub fn set_atlas_grid(&mut self, grid_log2: u16) {
+        self.set_min_mip_size(grid_log2);
+        self.set_address_mode(TextureAddressMode::ClampToEdge);
     }
 
     pub fn width(&self) -> u16 {

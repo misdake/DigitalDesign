@@ -33,6 +33,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
         ("in_mask", 4, u64::from(i.mask)),
         ("in_lod", 8, u64::from(i.lod)),
         ("in_max_n", 4, u64::from(i.max_n)),
+        ("texture_min_n", 2, u64::from(i.min_n)),
         ("in_filter", 2, u64::from(i.filter)),
     ] {
         pin!(n, w, v, false);

@@ -117,12 +117,14 @@ fn gpu_scene_render_values(
     let mut texture_flags: u16 = 0;
     let mut fixed: u16 = 0;
     let mut filter: u16 = 0;
+    let mut min_mip: u16 = 0;
     if textured {
         base = view[GPU_VIEW_BASE];
         exponent = view[GPU_VIEW_EXPONENT];
         texture_flags = (view[GPU_VIEW_FLAGS] & 1) | ((view[GPU_VIEW_FLAGS] >> 1) & 6);
         fixed = (view[GPU_VIEW_FLAGS] >> 1) & 1;
         filter = state[GPU_STATE_FILTER];
+        min_mip = (view[GPU_VIEW_FLAGS] >> 4) & 3;
     }
     if fixed != 0 && filter > 1 {
         return false;
@@ -133,7 +135,8 @@ fn gpu_scene_render_values(
         | ((texture_flags & 1) << 4)
         | ((texture_flags & 6) << 7)
         | (filter << 5)
-        | (fixed << 7);
+        | (fixed << 7)
+        | (min_mip << 10);
     native[start + 2] = material[GPU_MATERIAL_SPECULAR];
     native[start + 3] = material[GPU_MATERIAL_SPECULAR + 1];
     native[start + 4] = state[GPU_STATE_CONTROL] | ((material[GPU_MATERIAL_FLAGS] & 1) << 5);

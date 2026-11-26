@@ -710,9 +710,15 @@ impl TangNano20K {
             .add_sdc_constraint("\nreport_timing -setup -from [get_clocks {controller_clk}] -to [get_clocks {controller_clk}] -max_paths 20 -max_common_paths 4")
             .add_sdc_constraint("report_timing -setup -from [get_clocks {cpu_clk}] -to [get_clocks {controller_clk}] -max_paths 12 -max_common_paths 4");
         if shared_bank_prepare {
-            extension = extension.add_cst_constraint(
-                "INS_LOC \"u_sdram_bridge/u_controller/state_0_s0\" R[10:12]C[44:48];",
-            );
+            extension = extension
+                .add_cst_constraint(
+                    "INS_LOC \"u_sdram_bridge/u_controller/state_0_s0\" R[10:12]C[44:48];",
+                )
+                // The state-to-address path limits the two-bit grid GPU fit.
+                // Keep the existing address-register I/O packing and clocks.
+                .add_cst_constraint(
+                    "INS_LOC \"u_sdram_bridge/u_controller/state_2_s0\" R[8:12]C[45:49];",
+                );
         }
         let mut binding = (if ds2 {
             Self::ds2_user_io_binding()

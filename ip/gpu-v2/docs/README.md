@@ -16,7 +16,7 @@ through the GPU; use the later chapters to look up encodings and schedules.
 | [Fixed-grid UI](/ip/gpu-v2/docs/ui.md) | How do 8x16 chars draw through shared DMA and framebuffer storage? |
 | [Raw DRAM copy](/ip/gpu-v2/docs/memcpy.md) | How does aligned MEMCPY reuse maintenance storage without another DMA engine? |
 | [DRAM commands](/ip/gpu-v2/docs/commands.md) | How does a prewritten command buffer execute a complete standalone frame? |
-| [Data formats](/ip/gpu-v2/docs/formats.md) | How are vertices, indices, matrices, metadata and texture assets encoded? |
+| [Data formats](/ip/gpu-v2/docs/formats.md) | How are vertices, matrices, texture assets and fixed-grid sampling descriptors encoded? |
 | [Geometry](/ip/gpu-v2/docs/geometry.md) | How do transformed vertices become covered, interpolated fragments? |
 | [Fragment arithmetic](/ip/gpu-v2/docs/fragment-math.md) | How do normal, UV or RGB become the final RGBA value? |
 | [Execution and storage](/ip/gpu-v2/docs/execution.md) | How are partial results held, scheduled and retired under stalls? |

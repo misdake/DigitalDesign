@@ -11,6 +11,7 @@ pub struct Input {
     pub result: Bits,
     pub available: u8,
     pub clamp: bool,
+    pub min_n: u8,
     pub out_ready: bool,
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -287,8 +288,16 @@ impl Coefficient {
             let meta = (owner >> 31 & 63) << 30
                 | (owner >> 27 & 15) << 26
                 | u64::from(n) << 22
-                | u64::from(y & 1 == 0 && fv & 128 == 0 && !(i.clamp && y == 0)) << 21
-                | u64::from(x & 1 == 0 && fu & 128 == 0 && !(i.clamp && x == 0)) << 20
+                | u64::from(
+                    y & 1 == 0
+                        && fv & 128 == 0
+                        && !(i.clamp && y & ((1u64 << n.saturating_sub(i.min_n)) - 1) == 0),
+                ) << 21
+                | u64::from(
+                    x & 1 == 0
+                        && fu & 128 == 0
+                        && !(i.clamp && x & ((1u64 << n.saturating_sub(i.min_n)) - 1) == 0),
+                ) << 20
                 | y << 10
                 | x;
             self.metadata[usize::from(self.cwr)] = Bits::new(meta, 36);
@@ -350,13 +359,13 @@ impl Coefficient {
             }
             if o.accepted {
                 let clipped = |base: u64, frac: u64| {
-                    let mask = (1u64 << n.max(1)) - 1;
+                    let mask = (1u64 << n.saturating_sub(i.min_n)) - 1;
                     i.clamp
                         && !nearest
-                        && (n <= 1
-                            || base == 0 && frac < 128
-                            || base == mask
-                            || base == (mask ^ 1) && frac >= 128)
+                        && (n <= i.min_n + 1
+                            || base & mask == 0 && frac < 128
+                            || base & mask == mask
+                            || base & mask == (mask ^ 1) && frac >= 128)
                 };
                 self.coarse_clamped = u8::from(clipped(x, fu)) | (u8::from(clipped(y, fv)) << 1);
                 self.input_stage = Bits::new(

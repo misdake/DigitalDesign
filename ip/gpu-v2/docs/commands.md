@@ -72,8 +72,11 @@ port reads descriptors. The internal command request selects this destination
 with an alignment bit that is discarded from the SDRAM address. Each descriptor
 reuses the flat stream's fetch address, page count and two alternating command
 pages. The CP fetches the next slice after the current slice retires, so
-prefetch overlap is available within a slice. Contiguous-command snapshots and
-cycle profiling cover single-CB submissions.
+prefetch overlap is available within a slice. The cycle model follows the same
+table DMA, scratchpad reads, slice boundaries and retained state for both forms.
+Its command events expose the RTL diagnostic PC relative to the current slice's
+first sector; flat events remain relative to the CB base. Existing contiguous
+command snapshots and linked source attribution cover single-CB submissions.
 
 ### Instruction encoding
 

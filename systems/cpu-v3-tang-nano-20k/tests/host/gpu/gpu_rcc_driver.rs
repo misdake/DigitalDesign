@@ -497,6 +497,7 @@ fn main() {
         gpu_v2::system::vliw_command::TextureDescriptor {
             base_sector: 40000,
             size_log2: 10,
+            min_size_log2: 0,
             full_mip: true,
             rgba4444: false,
             clamp: false,

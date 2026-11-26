@@ -8,6 +8,7 @@ pub fn framebuffer_texture_word(base_sector: u16, filter: u8) -> Result<u32, &'s
     Ok(TextureDescriptor {
         base_sector,
         size_log2: 9,
+        min_size_log2: 0,
         full_mip: false,
         rgba4444: false,
         clamp: false,
@@ -25,6 +26,8 @@ pub fn framebuffer_texture_word(base_sector: u16, filter: u8) -> Result<u32, &'s
 pub struct TextureDescriptor {
     pub base_sector: u16,
     pub size_log2: u8,
+    /// Minimum sampled side exponent, 0..=3; zero preserves the full chain.
+    pub min_size_log2: u8,
     pub full_mip: bool,
     pub rgba4444: bool,
     pub clamp: bool,
@@ -38,6 +41,7 @@ impl TextureDescriptor {
             | ((self.full_mip as u32) << 20)
             | ((self.rgba4444 as u32) << 24)
             | ((self.clamp as u32) << 25)
+            | ((self.min_size_log2 as u32 & 3) << 26)
             | ((self.filter as u32 & 3) << 21)
             | ((self.framebuffer_view as u32) << 23)
     }
@@ -442,6 +446,7 @@ mod tests {
             TextureDescriptor {
                 base_sector: 0x1234,
                 size_log2: 6,
+                min_size_log2: 0,
                 full_mip: true,
                 rgba4444: false,
                 clamp: false,

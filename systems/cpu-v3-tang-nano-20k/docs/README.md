@@ -29,7 +29,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 - [How a GPU command buffer works](/systems/cpu-v3-tang-nano-20k/docs/gpu-command-recording.md): required transfers, concrete native bytes and GPU consumption.
 - [GPU resource and recording internals](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md): resource storage, native recording, submission, unique retirement and Display handoff; lookup after the public guide.
-- [Prepared scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md): source-world transforms, resident World/View conversion, material/state, independent texture views and persistent external UI updates.
+- [Prepared scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md): source-world transforms, material/state, independent texture views, fixed-grid atlas sampling and persistent UI updates.
 
 - [Explicit GPU application callers](/systems/cpu-v3-tang-nano-20k/docs/gpu-explicit-examples.md): migrated examples, application-owned completion, RTT, input and bounded caller qualification.
 - [GPU board throughput suite](/systems/cpu-v3-tang-nano-20k/examples/bench_gpu/README.md): static native workloads, headless timing, UART sample statistics and HDMI validation.

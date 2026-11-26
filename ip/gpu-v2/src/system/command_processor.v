@@ -12,7 +12,7 @@ module gpu_command_processor(
  input work_busy,dma_idle,dma_fault,mesh_loading,mesh_begin,mesh_done,mesh_slot,mesh_begin_slot,mesh_done_slot,
  input uniform_done,input[1:0]uniform_bank,
  input header_we,header_slot,input[63:0]header_data,
- output reg[31:0]cfg_far_z,output reg[15:0]texture_base,output reg[3:0]texture_n,output billboard_vertical,
+ output reg[31:0]cfg_far_z,output reg[15:0]texture_base,output reg[3:0]texture_n,output reg[1:0]texture_min_n,output billboard_vertical,
  output reg texture_mip,texture_rgba4444,texture_clamp,texture_fb400240,output reg[1:0]texture_filter,
  output reg signed[7:0]cfg_lod_bias,output reg draw_unlit,
  output reg[13:0]color_base,depth_base,output reg[31:0]mesh_color,output reg world_transform,
@@ -161,7 +161,7 @@ module gpu_command_processor(
    color_base<=0;depth_base<=0;mesh_color<=32'hffffffff;world_transform<=0;
    fetch_line<=0;fetch_left<=0;fetch_bank<=0;cache_inflight<=0;cache_pages<=0;page_valid<=0;
    uniform_valid<=0;page_uniform<=0;object_index<=0;
-   cfg_far_z<=0;texture_base<=0;texture_n<=0;texture_mip<=0;texture_rgba4444<=0;texture_clamp<=0;texture_fb400240<=0;texture_filter<=0;cfg_lod_bias<=0;
+   cfg_far_z<=0;texture_base<=0;texture_n<=0;texture_min_n<=0;texture_mip<=0;texture_rgba4444<=0;texture_clamp<=0;texture_fb400240<=0;texture_filter<=0;cfg_lod_bias<=0;
    draw_unlit<=0;specular<=0;depth_func<=0;depth_write<=0;blend<=0;
    context_epoch<=0;context_mode<=0;context_code<=0;light_x<=0;light_y<=0;light_z<=0;
    ray_x<=0;ray_y<=0;ray_k<=0;ambient<=0;directional<=0;
@@ -244,7 +244,7 @@ module gpu_command_processor(
      color_base<={cp_q[13:7],7'd0};depth_base<={cp_q[27:21],7'd0};target_valid<=1;stored<=0;advance();
     end else begin
      if(apply_render)case(render_index)
-      0:begin texture_base<=cp_q[15:0];texture_n<=cp_q[19:16];texture_mip<=cp_q[20];texture_rgba4444<=cp_q[24];texture_clamp<=cp_q[25];texture_fb400240<=cp_q[23];texture_filter<=cp_q[22:21];
+      0:begin texture_base<=cp_q[15:0];texture_n<=cp_q[19:16];texture_min_n<=cp_q[27:26];texture_mip<=cp_q[20];texture_rgba4444<=cp_q[24];texture_clamp<=cp_q[25];texture_fb400240<=cp_q[23];texture_filter<=cp_q[22:21];
        specular<=cp_q[55:32];end
       1:begin depth_func<=cp_q[2:0];depth_write<=cp_q[3];blend<=cp_q[4];draw_unlit<=cp_q[5];
        if(extended_state)begin cfg_lod_bias<=cp_q[15:8];end

@@ -320,6 +320,7 @@ fn scene_commands_and_objects(memory: &[u16], objects: usize) -> Vec<Command> {
     render[0] = TextureDescriptor {
         base_sector: 0x9c20,
         size_log2: 0,
+        min_size_log2: 0,
         full_mip: false,
         rgba4444: false,
         clamp: false,

@@ -49,11 +49,11 @@ fn source_q_body(command: bool) -> String {
     let (view_port, slot_port, input_contract, preflight, coord_view, owner_slot, stop) = if command
     {
         (
-            "input texture_fb400240,texture_clamp,",
+            "input texture_fb400240,texture_clamp,input[1:0]texture_min_n,",
             "",
             "!in_mask[in_lane]",
             "1'b0",
-            ".texture_fb400240(texture_fb400240),.texture_clamp(texture_clamp),",
+            ".texture_fb400240(texture_fb400240),.texture_clamp(texture_clamp),.texture_min_n(texture_min_n),",
             "4'd0",
             COMMAND_STOP,
         )

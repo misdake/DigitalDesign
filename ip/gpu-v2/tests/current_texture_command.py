@@ -64,13 +64,18 @@ always @(posedge clk)begin
   else if(wa&&fb_w_data_ready)begin image[wb+wi]=fb_w_data;wi=wi+1;if(wi==16)wa=0;end
   if(dut.start_fire)begin
    if(dut.texture_base!==(starts==1?16'h60:16'h40)||
-      dut.texture_n!==(starts==1?4'd3:4'd4)||dut.texture_mip!==(starts!=1)||dut.texture_filter!==starts[1:0])
+      dut.texture_n!==(starts==1?4'd3:4'd4)||dut.texture_mip!==(starts!=1)||dut.texture_filter!==starts[1:0]||dut.texture_min_n!==(starts==1?0:@GRID@)||
+      dut.texture_clamp!==((starts!=1)&&(@GRID@!=0)))
     $fatal(1,"installed descriptor mismatch");
    if(dut.core.cfg_tex_w_log2!==dut.core.cfg_tex_h_log2||
       dut.core.cfg_tex_w_log2!=={1'b0,dut.texture_n}||
-      dut.core.cfg_max_mip!==(dut.texture_mip?{1'b0,dut.texture_n}:5'd0))
+      dut.core.cfg_max_mip!==(dut.texture_mip?({1'b0,dut.texture_n}-{3'd0,dut.texture_min_n}):5'd0))
     $fatal(1,"LOD/sampler descriptor diverged");
    starts=starts+1;
+  end
+  if(ce&&dut.core.lod_valid&&@GRID@!=0&&starts!=2)begin
+   if(dut.core.lod_value!==(({4'd0,dut.texture_n}-{6'd0,dut.texture_min_n})<<3))
+    $fatal(1,"grid producer did not saturate LOD at selected minimum");
   end
   if(dut.texture_invalidate)invalidates=invalidates+1;
   if(commit_valid)commits=commits+1;
@@ -96,7 +101,7 @@ initial begin
  while(busy)tick;
  if(active||ra||wa)$fatal(1,"result before memory drain");
  if(mode)begin if(device_read_data[1]!=4||invalidates!=1)$fatal(1,"missing WAIT guard");end
- else if(device_read_data[1]||starts!=3||invalidates!=@INVALIDATES@||flushes!=3||commits!=3||texture_reads!=@TEXTURE_READS@)
+ else if(device_read_data[1]||starts!=3||invalidates!=@INVALIDATES@||flushes!=3||commits!=3||("@GRID@"=="0"&&texture_reads!=@TEXTURE_READS@))
   $fatal(1,"conservation error=%0d draws=%0d inv=%0d flush=%0d commits=%0d texture_reads=%0d",device_read_data[1],starts,invalidates,flushes,commits,texture_reads);
  $display("PASS CP texture mode=%0d cycles=%0d draws=%0d invalidates=%0d flushes=%0d texture_reads=%0d error=%0d",mode,cycle,starts,invalidates,flushes,texture_reads,device_read_data[1]);
  $finish;
@@ -113,6 +118,7 @@ def main():
     ap.add_argument('--physical', action='store_true', help='Switch descriptors without invalidation; retained A must hit')
     ap.add_argument('--vary-bias', action='store_true', help='Change signed LOD bias only after a full drain')
     ap.add_argument('--no-monitors', action='store_true', help='Same datapath with simulation assertions omitted')
+    ap.add_argument('--grid-log2',type=int,choices=range(4),default=0)
     ap.add_argument('--hardware-errors', action='store_true', help='Legacy pre-monitor diagnostic baseline')
     args = ap.parse_args()
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=False)
@@ -122,13 +128,18 @@ def main():
     record, size = records[3]
     q = struct.unpack_from('<Q', memory, record+8)[0]
     struct.pack_into('<Q', memory, record+8, q & ~16)  # same tiny triangle, UV route
+    if args.grid_log2:
+        # Exercise a real derivative and the new producer saturation, rather
+        # than a constant UV whose zero footprint bypasses LOD/bias entirely.
+        for vertex,uv in enumerate([0,0x0000ffff,0xffff0000]):
+            struct.pack_into('<I',memory,record+128+vertex*12+8,uv)
     put(0x2000, struct.pack('<H', 0xf800)*1280)
     put(0x3000, struct.pack('<H', 0x07e0)*256)
     for address, base, n, mip, filter_code in [(0x4100,0x2000,4,True,0),
                                               (0x4140,0x3000,3,False,1),
                                               (0x4180,0x2000,4,True,2)]:
-        lod_bias = [0, 3, -2][filter_code] if args.vary_bias else 0
-        put(address, struct.pack('<8I', texture_word(base,n,mip,filter_code),0,7|(1<<5),lod_bias & 255,0,0,0,0))
+        lod_bias = ([127,3,127] if args.grid_log2 else [0,3,-2])[filter_code] if args.vary_bias else 0
+        put(address, struct.pack('<8I', texture_word(base,n,mip,filter_code)|((args.grid_log2 if mip else 0)<<26)|((1<<25) if args.grid_log2 and mip else 0),0,7|(1<<5),lod_bias & 255,0,0,0,0))
     def program(bad):
         cb = CommandBuffer()
         cb.emit('DMA',272,0x4000,64);cb.emit('DMA',320,0x4280,128)
@@ -160,6 +171,7 @@ def main():
     tb = TB.replace('@PORTS@','\n'.join(declarations)).replace('@BYTES@',str(len(normal))).replace('@BAD_BYTES@',str(len(bad)))
     # Filtered A crosses one additional periodic tile boundary. The retained
     # nearest A line must hit. Every256-byte line retires two128-byte children.
+    tb = tb.replace('@GRID@',str(args.grid_log2))
     tb = tb.replace('@INVALIDATES@',str(1 if args.physical else 3)).replace('@TEXTURE_READS@',str(6 if args.physical else 8))
     tb = tb.replace('@GSR@',"GSR GSR(.GSRI(1'b1));" if args.native else '')
     if args.vary_bias:
@@ -168,7 +180,7 @@ def main():
    if(dut.core.front.interpolator.lc_bias!==dut.cfg_lod_bias ||
       dut.core.front.interpolator.lc_tex_u!=={1'b0,dut.texture_n} ||
       dut.core.front.interpolator.lc_tex_v!=={1'b0,dut.texture_n} ||
-      dut.core.front.interpolator.lc_max!==(dut.texture_mip?{1'b0,dut.texture_n}:5'd0))
+      dut.core.front.interpolator.lc_max!==(dut.texture_mip?({1'b0,dut.texture_n}-{3'd0,dut.texture_min_n}):5'd0))
     $fatal(1,"prepared current descriptor/bias diverged at context publication");
   end
   if(dut.texture_invalidate)""")

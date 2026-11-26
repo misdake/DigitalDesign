@@ -185,19 +185,36 @@ sector count; the physical image spans 1600 sectors.
 The prepared flags word keeps mip in bit0 and fixed shape in bit1, with
 RGBA4444 in bit2 and POT ClampToEdge in bit3. Fixed color views
 remain RGB565. The raw internal `GpuTexture`/`GpuRender.texture_flags` packs
-mip in bit0, RGBA4444 in bit1 and ClampToEdge in bit2.
+mip in bit0, RGBA4444 in bit1 and ClampToEdge in bit2. The two-bit minimum mip
+exponent occupies prepared flags5:4 and raw flags4:3.
 
 `TextureView::set_address_mode(TextureAddressMode::ClampToEdge)` changes the
 view's copied POT description; `Repeat` is the default and can be restored with
 the same setter. Addressing is independent of format, mip and filter. Fixed
 color views reject this setter and retain their implicit framebuffer clamp.
 
+`view.set_min_mip_size(g)` accepts an exponent 0..3, at most the texture's
+exponent; nonzero requires full mips and rejects fixed framebuffer views. It
+limits the smallest sampled side to 1,2,4 or8. With ClampToEdge, the same field
+selects 1,2,4 or8 atlas cells per axis and clamps each sampled mip inside its
+selected cell. `view.set_atlas_grid(g)` sets this field and ClampToEdge together.
+Changing address mode preserves the minimum exponent; Repeat retains only the
+LOD limit. Both setters affect future recordings and preserve existing ones.
+
+For a 1024-square texture, `set_atlas_grid(3)` selects 128-square base cells and
+stops at the 8-square atlas mip, where each cell has one texel. UVs identify the
+cell implicitly: an exact upper boundary belongs to the next cell. Keep each
+primitive inside its intended cell with enough room for interpolation rounding.
+This does not validate arbitrary source UVs or infer sub-image identity.
+The complete mip allocation remains required; command and queue formats do not grow.
+
 `gpu_scene_material_prepare` writes Material24 directly at scratch116..127
 (World tail), plus raw responses and required padding in that same World packet.
 The test-only legacy `gpu_scene_render_prepare` writes scratch32..47. Fixed400 shape
 occupies Render word 1 bit 7, equivalently bit 23 of its first 32-bit word.
 RGBA4444 occupies that first32-bit word's bit24, alongside existing mip/filter
-bits; POT ClampToEdge occupies bit25. Recording equality includes format and
+bits; POT ClampToEdge occupies bit25 and the minimum exponent bits27:26.
+Recording equality includes the minimum exponent, format and
 address mode, so either change installs new Render state and follows the same
 drain boundary without invalidating immutable cache data.
 Trilinear filtering of that shape fails before modifying output. The RGB

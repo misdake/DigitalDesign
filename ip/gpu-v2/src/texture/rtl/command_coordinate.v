@@ -1,7 +1,7 @@
 // Immutable-command POT/RTT source-Q coordinate owner.
 module gpu_v2_texture_serial_coord(
  input clk,ce,reset,in_valid,output in_ready,fault,out_valid,
- input texture_fb400240,texture_clamp,input in_nearest,input[3:0]in_size_log2,
+ input texture_fb400240,texture_clamp,input[1:0]texture_min_n,input in_nearest,input[3:0]in_size_log2,
  input[15:0]in_wrapped_uv_0,in_wrapped_uv_1,
  output[7:0]out_f0_0,out_f0_1,output[9:0]out_t0_0_0,out_t0_1_0
 );
@@ -32,14 +32,22 @@ module gpu_v2_texture_serial_coord(
  wire signed[18:0]fine=$signed({1'b0,shared_scaled})-(in_nearest?19'sd0:19'sd128);
  // Only virtual endpoint weights change; adjacent tap addresses remain intact.
  wire clamp_mode=texture_fb400240||texture_clamp;
- wire clamp_negative=clamp_mode&&fine[18];
+ wire[3:0]cell_n=in_size_log2-{2'd0,texture_min_n};
+ wire[9:0]cell_mask={(cell_n>9),(cell_n>8),(cell_n>7),(cell_n>6),(cell_n>5),
+   (cell_n>4),(cell_n>3),(cell_n>2),(cell_n>1),(cell_n>0)};
+ // The grid comes from high normalized UV bits. Detect the half-texel
+ // borrow at the cell's left edge before it becomes a neighboring cell.
+ wire cell_first=(scaled_uv[17:8]&cell_mask)==0;
+ wire clamp_negative=clamp_mode&&((texture_fb400240&&fine[18])||
+   (texture_clamp&&cell_first&&!scaled_uv[7]&&!in_nearest));
  wire[9:0]index=fine[17:8];
- wire pot_last=&(index|~mask0);
+ wire pot_last=&(index|~cell_mask);
  // 399=0x18f and239=0x0ef share every bit except8,6,5.
  wire view_last=!(index[9]||index[4])&&index[7]&&(&index[3:0])&&
    (index[8]==phase[0])&&(index[6]==!phase[0])&&(index[5]==!phase[0]);
  wire clamp_fraction=clamp_negative||(clamp_mode&&((texture_fb400240&&view_last)||(texture_clamp&&pot_last)));
- wire[17:0]axis_result={(index&mask0)&{10{!clamp_negative}},fine[7:0]&{8{!clamp_fraction}}};
+ wire[9:0]clamped_index=clamp_negative?(texture_fb400240?10'd0:scaled_uv[17:8]):index;
+ wire[17:0]axis_result={clamped_index&mask0,fine[7:0]&{8{!clamp_fraction}}};
  assign out_f0_0=result_bank[7:0];assign out_f0_1=result_bank[15:8];
  assign out_t0_0_0=result_bank[25:16];assign out_t0_1_0=result_bank[35:26];
  always @(posedge clk)begin
@@ -51,10 +59,10 @@ module gpu_v2_texture_serial_coord(
   end
  end
 `ifndef SYNTHESIS
- reg[22:0]source_guard;
+ reg[24:0]source_guard;
  always @(posedge clk)if(ce&&!reset)begin
-  if(in_valid&&in_ready)source_guard<={in_wrapped_uv_1,in_size_log2,in_nearest,texture_fb400240,texture_clamp};
-  if(valid[1]&&source_guard!=={in_wrapped_uv_1,in_size_log2,in_nearest,texture_fb400240,texture_clamp})
+  if(in_valid&&in_ready)source_guard<={in_wrapped_uv_1,in_size_log2,in_nearest,texture_fb400240,texture_clamp,texture_min_n};
+  if(valid[1]&&source_guard!=={in_wrapped_uv_1,in_size_log2,in_nearest,texture_fb400240,texture_clamp,texture_min_n})
    $fatal(1,"coordinate V input changed before its source-Q consumption");
  end
 `endif

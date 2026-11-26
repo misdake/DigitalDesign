@@ -142,7 +142,7 @@ fn emit(command: bool) -> String {
   output wire [35:0]  out_meta,
   output wire [1:0]   work_reserved,
 "#,
-        if command { r#"  input wire texture_clamp,
+        if command { r#"  input wire texture_clamp,input wire[1:0]texture_min_n,
   output reg fault,output wire proposal_ready,preflight_bad,
   output wire direct_weight_write,output wire[6:0] direct_weight_address,output wire[35:0] direct_weight_value
 );
@@ -174,18 +174,18 @@ fn emit(command: bool) -> String {
 
 "#,
         if command { r#"
-  wire [1:0] clamp_zero={texture_clamp&&(c02==0),texture_clamp&&(c00==0)};
+  wire [3:0] cell_level=lv0-{2'd0,texture_min_n};
+  wire [9:0] cell_mask={(cell_level>9),(cell_level>8),(cell_level>7),(cell_level>6),(cell_level>5),
+                       (cell_level>4),(cell_level>3),(cell_level>2),(cell_level>1),(cell_level>0)};
+  wire [1:0] clamp_zero={texture_clamp&&((c02[9:0]&cell_mask)==0),
+                        texture_clamp&&((c00[9:0]&cell_mask)==0)};
   reg [1:0] coarse_clamped;
-  function coarse_clamp_axis;
-    input [9:0] base; input [7:0] fraction; input [3:0] level;
-    reg [9:0] mask;
-    begin
-      mask={(level>9),(level>8),(level>7),(level>6),(level>5),
-            (level>4),(level>3),(level>2),(level>1),1'b1};
-      coarse_clamp_axis=(level<=1)||(base==0&&!fraction[7])||
-                        (base==mask)||(base==(mask^10'd1)&&fraction[7]);
-    end
-  endfunction
+  // Reuse one cell mask for the metadata borrow and both coarse axes.
+  wire small_cell=cell_level<=1;
+  wire [1:0] coarse_clip={
+    small_cell||(clamp_zero[1]&&!f0v[7])||(&(c02[9:0]|~cell_mask|10'd1)&&(c02[0]||f0v[7])),
+    small_cell||(clamp_zero[0]&&!f0u[7])||(&(c00[9:0]|~cell_mask|10'd1)&&(c00[0]||f0u[7]))};
+
 "# } else { r#"
   wire [1:0] clamp_zero=0,coarse_clamped=0;
 "# },
@@ -352,7 +352,7 @@ fn emit(command: bool) -> String {
                           nearest?8'd0:f0v,nearest?8'd0:f0u,p1[8:0],p0[8:0]};
 "#,
         if command { r#"            coarse_clamped<={2{texture_clamp&&!nearest}} &
-              {coarse_clamp_axis(c02[9:0],f0v,lv0),coarse_clamp_axis(c00[9:0],f0u,lv0)};
+              {coarse_clip[1],coarse_clip[0]};
 "# } else { "" },
         r#"
             cwr<=cwr+1'b1;

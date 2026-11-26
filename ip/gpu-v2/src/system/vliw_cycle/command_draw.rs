@@ -8,6 +8,7 @@ pub struct Bindings {
     pub far_z: u32,
     pub texture_base: u16,
     pub texture_n: u8,
+    pub texture_min_n: u8,
     pub texture_mip: bool,
     pub texture_rgba4444: bool,
     pub texture_clamp: bool,
@@ -39,6 +40,7 @@ impl Default for Bindings {
             far_z: 0,
             texture_base: 0,
             texture_n: 0,
+            texture_min_n: 0,
             texture_mip: false,
             texture_rgba4444: false,
             texture_clamp: false,
@@ -309,6 +311,7 @@ impl Draw {
             (6, 0) => {
                 c.texture_base = q as u16;
                 c.texture_n = (q >> 16) as u8 & 15;
+                c.texture_min_n = (q >> 26) as u8 & 3;
                 c.texture_mip = q & (1 << 20) != 0;
                 c.texture_rgba4444 = q & (1 << 24) != 0;
                 c.texture_clamp = q & (1 << 25) != 0;

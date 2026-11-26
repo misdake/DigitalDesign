@@ -91,6 +91,7 @@ pub(super) struct Texture {
     base: usize,
     pub size_log2: u8,
     pub full_mip: bool,
+    pub min_size_log2: u8,
     rgba4444: bool,
     clamp: bool,
     filter: u8,
@@ -101,13 +102,20 @@ impl Texture {
         let value = Self {
             base: (word as usize & 65535) * 64,
             size_log2: ((word >> 16) & 15) as u8,
+            min_size_log2: ((word >> 26) & 3) as u8,
             full_mip: word & (1 << 20) != 0,
             rgba4444: word & (1 << 24) != 0,
             clamp: word & (1 << 25) != 0,
             filter: ((word >> 21) & 3) as u8,
             framebuffer: word & (1 << 23) != 0,
         };
-        if word >> 26 != 0 || value.base & 127 != 0 || value.size_log2 > 10 || value.filter > 2 {
+        if word >> 28 != 0
+            || value.base & 127 != 0
+            || value.size_log2 > 10
+            || value.filter > 2
+            || value.min_size_log2 > value.size_log2
+            || (value.min_size_log2 != 0 && (!value.full_mip || value.framebuffer))
+        {
             return Err("native texture descriptor".into());
         }
         if value.framebuffer
@@ -186,7 +194,7 @@ impl Texture {
         maximum: usize,
     ) -> Result<[u8; 4], String> {
         let lod = if self.full_mip {
-            lod.min(self.size_log2 * 8)
+            lod.min((self.size_log2 - self.min_size_log2) * 8)
         } else {
             0
         };
@@ -224,7 +232,11 @@ impl Texture {
                 if self.framebuffer {
                     coordinate.clamp(0, [399, 239][axis] * 256)
                 } else if self.clamp {
-                    coordinate.clamp(0, ((1 << level) - 1) * 256)
+                    {
+                        let cell = level - self.min_size_log2;
+                        let first = (uv[axis].clamp(0, 65535) >> (16 - self.min_size_log2)) << cell;
+                        coordinate.clamp(first * 256, (first + (1 << cell) - 1) * 256)
+                    }
                 } else {
                     coordinate
                 }

@@ -445,6 +445,12 @@ impl Triangle {
     }
 
     fn lod(&self, anchor: &Fragment, state: shading::RenderState) -> u8 {
+        (self.lod_raw(anchor, state).clamp(
+            0,
+            i32::from(state.texture.size_log2 - state.texture.min_size_log2) * 256,
+        ) >> 5) as u8
+    }
+    fn lod_raw(&self, anchor: &Fragment, state: shading::RenderState) -> i32 {
         if !state.texture.full_mip {
             return 0;
         }
@@ -466,10 +472,9 @@ impl Triangle {
                 }
             }
         }
-        let raw = maximum.map_or(0, |log| {
+        maximum.map_or(0, |log| {
             log - log_q8(anchor.denominator.max(1)) - 3712 + 16 * i32::from(state.lod_bias)
-        });
-        (raw.clamp(0, i32::from(state.texture.size_log2) * 256) >> 5) as u8
+        })
     }
 }
 

@@ -61,6 +61,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
         ("dma_data", 64, f.dma_data),
         ("cfg_far_z", 32, f.params.far_z.into()),
         ("texture_n", 4, f.params.tex_u.into()),
+        ("texture_min_n", 2, 0),
         ("cfg_lod_bias", 8, u64::from(f.params.bias as u8)),
         ("specular", 24, b.specular.into()),
         ("depth_func", 3, b.depth_func.into()),

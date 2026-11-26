@@ -5,6 +5,7 @@ use super::{cache, coefficient, color, direct, member, packet_backend, word::Wor
 pub struct Config {
     pub base: u16,
     pub n: u8,
+    pub min_n: u8,
     pub mip: bool,
     pub rgba4444: bool,
     pub clamp: bool,
@@ -117,6 +118,7 @@ impl Sampler {
             mask,
             lod: (i.source_descriptor >> 11) as u8,
             max_n: i.config.n,
+            min_n: i.config.min_n,
             mip: i.config.mip,
             filter: i.config.filter,
             framebuffer: i.config.framebuffer,
@@ -132,6 +134,7 @@ impl Sampler {
             owner: d.owner,
             result: d.result,
             clamp: i.config.clamp,
+            min_n: i.config.min_n,
             available: 16u8.wrapping_sub(self.reserved),
             out_ready: false,
         };

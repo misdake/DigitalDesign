@@ -20,8 +20,13 @@ struct Edge {
 }
 fn request(n: usize) -> Input {
     let level = [0, 1, 2, 6, 10][n % 5];
+    let min_n = if n % 3 == 1 {
+        ((n / 11) % 4).min(level as usize) as u8
+    } else {
+        0
+    };
     let nearest = n.is_multiple_of(7);
-    let coarse = if nearest || level == 0 {
+    let coarse = if nearest || level == u64::from(min_n) {
         0
     } else {
         [0, 64, 256, 319, 511][n % 5]
@@ -38,17 +43,19 @@ fn request(n: usize) -> Input {
     } else {
         (n as u64 * 29) % side
     };
-    let fu = if clamp && (level == 0 || x == side - 1) {
+    let cell_mask = (1u64 << (level - u64::from(min_n))) - 1;
+    let fu = if clamp && (x & cell_mask == cell_mask) {
         0
     } else {
         [0, 1, 127, 128, 255][n / 3 % 5]
     };
-    let fv = if clamp && (level == 0 || y == side - 1) {
+    let fv = if clamp && (y & cell_mask == cell_mask) {
         0
     } else {
         [255, 128, 127, 1, 0][n / 7 % 5]
     };
     Input {
+        min_n,
         clamp,
         owner: Bits::new(
             (511 - coarse)
@@ -75,8 +82,16 @@ fn golden(i: Input) -> (u64, [u64; 2], [(u8, u64); 2]) {
     let nearest = owner >> 18 & 1 != 0;
     let meta = (key << 30)
         | (n << 22)
-        | (u64::from(y.is_multiple_of(2) && fv < 128 && !(i.clamp && y == 0)) << 21)
-        | (u64::from(x.is_multiple_of(2) && fu < 128 && !(i.clamp && x == 0)) << 20)
+        | (u64::from(
+            y.is_multiple_of(2)
+                && fv < 128
+                && !(i.clamp && y & ((1u64 << (n - u64::from(i.min_n))) - 1) == 0),
+        ) << 21)
+        | (u64::from(
+            x.is_multiple_of(2)
+                && fu < 128
+                && !(i.clamp && x & ((1u64 << (n - u64::from(i.min_n))) - 1) == 0),
+        ) << 20)
         | (y << 10)
         | x;
     let mut masks = [0u64; 2];
@@ -93,7 +108,16 @@ fn golden(i: Input) -> (u64, [u64; 2], [(u8, u64); 2]) {
             } else if plane == 1 && i.clamp {
                 let coarse_side = 1i64 << n.saturating_sub(1);
                 let q = ((coordinate * 256 + fraction + 128) / 2) as i64 - 128;
-                q.clamp(0, (coarse_side - 1) * 256).rem_euclid(256) as u64
+                {
+                    let width = coarse_side >> i.min_n;
+                    if width == 0 {
+                        0
+                    } else {
+                        let first = (coordinate >> (n - u64::from(i.min_n))) as i64 * width;
+                        q.clamp(first * 256, (first + width - 1) * 256)
+                            .rem_euclid(256) as u64
+                    }
+                }
             } else if plane == 1 && n > 1 {
                 (((coordinate * 256 + fraction + 128) / 2) as i64 - 128).rem_euclid(256) as u64
             } else {

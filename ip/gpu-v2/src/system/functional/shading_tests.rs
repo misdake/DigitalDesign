@@ -1,5 +1,55 @@
 use super::*;
 
+#[test]
+fn atlas_grid_clamps_each_mip_and_never_samples_a_neighboring_cell() {
+    for grid in 1..=3 {
+        for filter in 0..=2 {
+            let word = (5 << 16) | (1 << 20) | (filter << 21) | (1 << 25) | (grid << 26);
+            let texture = Texture::decode(word).unwrap();
+            let mut words = vec![0; texture.word_count()];
+            for level in grid..=5 {
+                let side = 1usize << level;
+                let cell = side >> grid;
+                for y in 0..side {
+                    for x in 0..side {
+                        let offset = (((x >> 4) << level.saturating_sub(4)) + (y >> 4)) * 256
+                            + (y & 15) * 16
+                            + (x & 15);
+                        // Uniform cell colours at every permitted mip make any
+                        // neighbor tap or forbidden coarse mip observable.
+                        words[texture.prefix(level as u8) + offset] =
+                            if (x / cell + y / cell) % 2 == 0 {
+                                0xf800
+                            } else {
+                                0x07e0
+                            };
+                    }
+                }
+            }
+            let memory = super::super::Memory {
+                words: &mut words,
+                access: None,
+                effects: Default::default(),
+            };
+            for cell in 0..(1 << grid) {
+                let first = cell * (65536 >> grid);
+                let last = first + (65536 >> grid) - 1;
+                for uv in [[first, first], [last, last], [first, last], [last, first]] {
+                    for lod in [0, 1, 7, 8, 15, 16, 23, 24, 39, 255] {
+                        let mut report = Report::default();
+                        let sampled = texture.sample(&memory, uv, lod, &mut report, 16).unwrap();
+                        assert!(sampled[0] >= 250);
+                        assert_eq!(&sampled[1..3], &[0, 0]);
+                    }
+                }
+            }
+        }
+    }
+    assert!(Texture::decode((2 << 16) | (1 << 20) | (3 << 26)).is_err());
+    assert!(Texture::decode((5 << 16) | (1 << 26)).is_err());
+    assert!(Texture::decode((5 << 16) | (1 << 28)).is_err());
+}
+
 fn sample_alpha(alphas: [u16; 3], filter: u8, lod: u8, uv: [i128; 2]) -> u8 {
     let mut words: Vec<u16> = alphas
         .into_iter()

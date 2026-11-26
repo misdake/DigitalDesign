@@ -19,7 +19,7 @@ struct Edge {
 }
 fn request(n: usize) -> Input {
     let view = n % 7 == 6;
-    Input {
+    let mut i = Input {
         uv: [
             0,
             1,
@@ -41,7 +41,13 @@ fn request(n: usize) -> Input {
         framebuffer: view,
         clamp: !view && n % 3 == 1,
         ..Default::default()
+    };
+    if i.mip && i.clamp {
+        i.min_n = ((n / 7) % 4) as u8;
+        i.min_n = i.min_n.min(i.max_n);
+        i.lod = i.lod.min((i.max_n - i.min_n) * 8);
     }
+    i
 }
 fn golden(i: Input) -> (u64, u64) {
     let n = if i.mip {
@@ -72,7 +78,9 @@ fn golden(i: Input) -> (u64, u64) {
         };
         let q = (uv * side / 256) as i64 - if i.filter == 0 { 0 } else { 128 };
         let (coordinate, fraction) = if i.framebuffer || i.clamp {
-            let c = q.clamp(0, ((side - 1) * 256) as i64) as u64;
+            let width = side >> i.min_n;
+            let first = (uv >> (16 - i.min_n)) * width;
+            let c = q.clamp((first * 256) as i64, ((first + width - 1) * 256) as i64) as u64;
             (c / 256, c % 256)
         } else {
             (
