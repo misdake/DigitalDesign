@@ -4,7 +4,9 @@ import json
 import math
 from pathlib import Path
 import random
+import re
 import struct
+import view_pvs
 
 
 def signed(x):
@@ -25,6 +27,16 @@ def visible(rows, record):
         return True
     far = d+dot([abs(x) for x in rows[2][:3]], e)
     return far > 0 and d-radius <= 25*65536 and x <= (far*51456 >> 16)+dot([abs(x) for x in rows[0][:3]], e) and y <= (far*30976 >> 16)+dot([abs(x) for x in rows[1][:3]], e)
+
+
+def visible_sphere(rows, record):
+    center = [signed(x)*512 for x in record[:3]]
+    radius = record[6]*512+512
+    depth = -dot(rows[2][:3],center)-rows[2][3]
+    if depth+radius <= 0 or depth-record[6]*512 > 25*65536:
+        return False
+    x,y = [abs(dot(row[:3],center)+row[3]) for row in rows[:2]]
+    return x <= (depth*51456 >> 16)+(radius*round(1.273*65536) >> 16) and y <= (depth*30976 >> 16)+(radius*round(1.107*65536) >> 16)
 
 
 def camera(eye, yaw, pitch, roll):
@@ -58,6 +70,24 @@ def check(snapshot, probes):
     grid = json.loads((folder/'route-ring.json').read_text())['location_grid']
     packed = (folder/'map_ring_group_data.bin').read_bytes()
     records = [struct.unpack_from('<16H', packed, i) for i in range(0, len(packed), 32)]
+    coarse = info.get('encoding') == 'direct-chunk-masks'
+    domains = None
+    if coarse:
+        source = (folder/'tankracer_static.rs').read_text()
+        def array(name):
+            body = re.search(r'pub static '+name+r':.*?Buf::new\(\[(.*?)\]\);',source,re.S)[1]
+            return [int(value) for value in body.split(',') if value.strip()]
+        cells,lists,directory = [array(name) for name in
+            ('MAP_ROUTE_LOCATION_CELLS','MAP_ROUTE_LOCATION_LISTS','MAP_RING_SEGMENTS')]
+        domains = []
+        for at in cells:
+            segments = set(lists[at+1:at+1+lists[at]])
+            segments |= {(i+1)%(len(directory)//12) for i in segments}
+            chunks = set()
+            for segment in segments:
+                start,count = directory[segment*12:segment*12+2]
+                chunks |= {((start+i)%len(records))//32 for i in range(count)}
+            domains.append(chunks)
     data = (folder/'map_view_pvs.bin').read_bytes()
     origin = [v/65536 for v in grid['origin_q16']]
     step = grid['step_q16']/65536
@@ -78,13 +108,14 @@ def check(snapshot, probes):
         if not 0 <= cell[0] < grid['columns'] or not 0 <= cell[1] < grid['rows']:
             continue  # Runtime falls back outside the grid.
         key = (cell[1]*grid['columns']+cell[0])*info['yaw_sectors']+heading(rows[2], info['yaw_sectors'])
-        index = struct.unpack_from('<H', data, key*2)[0]
-        offset = (info['first_mask_sector']+index*info['stride_sectors'])*128
-        mask = struct.unpack_from(f"<{info['mask_words']}H", data, offset)
+        mask = view_pvs.decode(data, info, key)
         for i, record in enumerate(records):
-            if visible(rows, record):
+            if coarse and i//32 not in domains[key//info['yaw_sectors']]:
+                continue
+            if visible_sphere(rows,record) if coarse else visible(rows, record):
                 selected += 1
-                assert mask[i >> 4] & (1 << (i & 15)), (probe, i, eye, yaw)
+                bit = mask[i >> 9] & (1 << ((i >> 5)&15)) if coarse else mask[i >> 4] & (1 << (i&15))
+                assert bit, (probe, i, eye, yaw)
     return dict(probes=probes, potential_group_checks=probes*len(records), selected_group_checks=selected,
                 false_rejections=0, seed=91527, domain='native-Q16 rigid cameras, arbitrary roll, grid/heading boundaries, absolute pitch <=19 degrees')
 

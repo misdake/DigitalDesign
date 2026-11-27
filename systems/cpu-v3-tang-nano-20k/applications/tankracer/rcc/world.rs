@@ -3,6 +3,7 @@ use crate::dsl_rt::*;
 mod boot_resources;
 mod gpu_api;
 mod gpu_window;
+mod pvs;
 use boot_resources::*;
 use gpu_api::*;
 use gpu_window::gpu_window_asset_read;
@@ -128,7 +129,7 @@ impl World {
             alpha_ordinals,
             alpha_mask,
             alpha_rank_key: 65535,
-            pvs_mask: malloc(MAP_PVS_MASK_WORDS),
+            pvs_mask: pvs::new(),
             pvs_key: 65535,
         };
         // The derivative estimator has a conservative half-level footprint.
@@ -502,17 +503,7 @@ impl World {
             }
             let key = position[2u16] * MAP_PVS_YAW_SECTORS + yaw;
             if key != self.pvs_key {
-                let entry: Buf<u16, 1> = Buf::new([0]);
-                if !gpu_window_asset_read(entry.as_array(), MAP_VIEW_PVS.first_sector, key, 1)
-                    || !gpu_window_asset_read(
-                        pvs,
-                        MAP_VIEW_PVS.first_sector
-                            + MAP_PVS_MASK_FIRST_SECTOR
-                            + entry[0u16] * MAP_PVS_STRIDE_SECTORS,
-                        0,
-                        MAP_PVS_MASK_WORDS,
-                    )
-                {
+                if !pvs::load(self.pvs_mask, key) {
                     halt(0x7b43);
                 }
                 self.pvs_key = key;

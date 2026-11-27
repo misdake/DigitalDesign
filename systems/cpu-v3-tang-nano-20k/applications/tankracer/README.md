@@ -532,10 +532,13 @@ cell and absolute pitch at most 19 degrees; other views retain the original
 candidate path. A cached 156-byte mask rejects empty 32-group chunks before
 their metadata DMA and rejects individual groups before their exact tests.
 Only cells with a nonempty route-location list need distinct baked masks;
-other cells use the universal mask. Dictionary deduplication and a 2-MiB budget
-bound the immutable asset. ENGLAND's table occupies 1,501,056 bytes and adds a
-160-byte heap allocation including its tag. It does not perform occlusion
-culling or change geometry selection inside the guarded domain.
+other cells use the universal mask. Cells share identical 32-heading directories,
+and masks share native 16-byte blocks across headings and neighboring positions.
+The cache retains the current heading directory and block references; a changed
+view copies only changed blocks, with uniform blocks filled locally. Storage is
+bounded by a 2-MiB budget. This exact representation does not perform occlusion
+culling or change any candidate bit. See [PVS storage](../../docs/tankracer-pvs-storage.md)
+for the layout, bounded random entry and cache validation.
 
 `tools/alpha_order.py` bakes stable-ID ranks for 16 headings and nine pitch
 representatives from compact static group centers. Translation contributes the
