@@ -25,6 +25,8 @@ mod contact_effect_check;
 mod explosion_blasts_check;
 #[path = "explosion_check.rs"]
 mod explosion_check;
+#[path = "finish_drive_check.rs"]
+mod finish_drive_check;
 #[path = "mesh_break_check.rs"]
 mod mesh_break_check;
 #[path = "mesh_store_check.rs"]
@@ -124,7 +126,9 @@ const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod sus
 fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<dyn Error>> {
     let folder = output.join(label);
     fs::create_dir_all(&folder)?;
-    let placement = if label == "collision" {
+    let placement = if label == "finish-drive" {
+        "#![link_csegs(default=\"parents\",parents=0)]\n"
+    } else if label == "collision" {
         "#![link_csegs(default=\"app\",app=0,world=1)]\n"
     } else {
         ""
@@ -159,6 +163,7 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         || label == "scene-flock"
         || label == "scene-ambient"
         || label == "player-control"
+        || label == "finish-drive"
         || label == "player-tail"
         || label == "player-route"
         || label == "scene-player"
@@ -179,6 +184,10 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         options.stack_init = 0x8000;
         options.heap_begin = 0x6000;
         options.heap_size = 32;
+    }
+    if label == "finish-drive" {
+        // Compact source IDs and the immutable angle table occupy 0x4100..6500.
+        options.heap_begin = 0x7000;
     }
     if label == "collision" {
         // Resource-aware surface access makes the allocator reachable, even
@@ -237,6 +246,8 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "player_tail" => Ok(include_str!("../rcc/player_tail.rs").to_owned()),
             "player_control" => Ok(include_str!("../rcc/player_control.rs").to_owned()),
             "player_route" => Ok(include_str!("../rcc/player_route.rs").to_owned()),
+            "finish_drive" => Ok(include_str!("../rcc/finish_drive.rs").to_owned()),
+            "finish_routes" => Ok(include_str!("../rcc/finish_routes.rs").to_owned()),
             "scene_player" => Ok(include_str!("../rcc/scene_player.rs").to_owned()),
             "track_effects" => Ok(include_str!("../rcc/track_effects.rs").to_owned()),
             "car_motion" => Ok(include_str!("../rcc/car_motion.rs").to_owned()),
@@ -876,6 +887,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Some("collision") => collision_check::run(&output, Path::new(&fixture))?,
             Some("player-tail") => player_tail_check::run(&output, Path::new(&fixture))?,
             Some("player-control") => player_control_check::run(&output, Path::new(&fixture))?,
+            Some("finish-drive") => finish_drive_check::run(&output, Path::new(&fixture))?,
             Some("track-effects") => track_effects_check::run(&output, Path::new(&fixture))?,
             Some("vehicle-effects") => vehicle_effects_check::run(&output, Path::new(&fixture))?,
             Some("car-effects") => car_effects_check::run(&output, Path::new(&fixture))?,
@@ -926,8 +938,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             Some("temporary") => temporary_check::run(&output, Path::new(&fixture))?,
             Some("explosion") => explosion_check::run(&output, Path::new(&fixture))?,
             Some("explosion-blasts") => explosion_blasts_check::run(&output, Path::new(&fixture))?,
-            Some("tank-hit") => tank_hit_check::run(&output, Path::new(&fixture), false)?,
-            Some("tank-hit-paged") => tank_hit_check::run(&output, Path::new(&fixture), true)?,
+            Some("tank-hit") => tank_hit_check::run(&output, Path::new(&fixture), false, false)?,
+            Some("tank-hit-paged") => {
+                tank_hit_check::run(&output, Path::new(&fixture), true, false)?
+            }
+            Some("tank-hit-cached-header") => {
+                tank_hit_check::run(&output, Path::new(&fixture), true, true)?
+            }
             Some("mine") => mine_check::run(&output, Path::new(&fixture))?,
             Some("projectile-marks") => projectile_marks_check::run(&output, Path::new(&fixture))?,
             Some("projectile") => projectile_check::run(&output, Path::new(&fixture))?,

@@ -52,7 +52,7 @@ pub(super) fn snapshot(m: &motion::State, mesh: &[[i16; 3]; 6]) -> Vec<u16> {
 pub fn export(out: &Path, world: &SinglePlayer) {
     let car = world.vehicles.entries[0].as_ref().unwrap();
     let mut cases = Vec::new();
-    for branch in 0..48 {
+    for branch in 0..56 {
         let mut m = car.physics.motion.clone();
         let mut pose = car.physics.pose.clone();
         let mut ac = attitude::Config::from(&car.model.config.tank.suspension);
@@ -264,6 +264,12 @@ pub fn export(out: &Path, world: &SinglePlayer) {
                 m.rates.travel_sum = -1;
                 f[0] = 2;
                 f[1] = 33;
+            }
+            48..=55 => {
+                f[2] = [65534, 131069, i32::MAX - 1, -2][(branch - 48) % 4];
+                if branch >= 52 {
+                    ac.numerics = attitude::Numerics::OrthogonalV1;
+                }
             }
             _ => unreachable!(),
         }

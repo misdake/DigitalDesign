@@ -105,16 +105,19 @@ pub fn place(
         position: ptr(0),
         basis: ptr(0),
     };
-    let cars: Buf<scene_ufos::Car, 2> = Buf::new([empty; 2]);
+    let cars: Buf<scene_ufos::Car, 3> = Buf::new([empty; 3]);
     let mut rows = cars.as_array();
     let mut i = 0u16;
-    while i < state.car_count && i < 2 {
+    while i < state.car_count {
         let car = &state.cars[i];
         rows[i] = scene_ufos::Car {
             present: true,
             player: car.player,
             slot: car.slot,
-            disabled: g(ptr(0xc000 + 6810 + i * 956 + 950), 0) != n(0),
+            disabled: g(
+                ptr(0xc000 + complete_check::CAR_WORD + i * complete_check::CAR_WORDS + 950),
+                0,
+            ) != n(0),
             position: at(car.motion, 18),
             basis: car.attitude,
         };
@@ -158,7 +161,7 @@ pub fn tick(
     frame: Array<u16>,
     entity: fix32,
 ) -> fix32 {
-    if state.car_count != 2 {
+    if state.car_count == 0 || state.car_count > 3 {
         return n(-4);
     }
     let header: Buf<u16, 56> = Buf::new([0; 56]);
@@ -203,16 +206,17 @@ pub fn tick(
     unsafe {
         write_dseg_page(3, player.weapons.effect_page);
     }
-    let travel: Buf<u16, 16> = Buf::new([0; 16]);
+    let travel: Buf<u16, 24> = Buf::new([0; 24]);
     let t = travel.as_array();
-    let car_info: Buf<u16, 16> = Buf::new([0; 16]);
+    let car_info: Buf<u16, 24> = Buf::new([0; 24]);
     let info = car_info.as_array();
-    let cars: Buf<scene_vehicle_transfer::Car, 2> = Buf::new([
+    let cars: Buf<scene_vehicle_transfer::Car, 3> = Buf::new([
         transfer_car(&state.cars[0u16], player, at(t, 0), 0),
         transfer_car(&state.cars[1u16], player, at(t, 8), 1),
+        transfer_car(&state.cars[2u16], player, at(t, 16), 2),
     ]);
     let mut i = 0u16;
-    while i < 2 {
+    while i < state.car_count {
         let car = &state.cars[i];
         let mut point = 0u16;
         while point < 4 {
@@ -230,7 +234,7 @@ pub fn tick(
         p(
             info,
             i * 4 + 3,
-            integer::sar(g(bounds.as_array(), i * 7 + 6), 4),
+            integer::sar(g(bounds.as_array(), car.profile * 7 + 6), 4),
         );
         i += 1;
     }
@@ -252,7 +256,7 @@ pub fn tick(
     let result: Buf<u16, 2> = Buf::new([0; 2]);
     let mut vehicles = scene_vehicle_transfer::View {
         cars: cars.as_array(),
-        count: 2,
+        count: state.car_count,
         present: true,
         routes: routes.as_array(),
         sine: player.sine,
@@ -379,7 +383,7 @@ fn transfer_car(
     travel: Array<u16>,
     own: u16,
 ) -> scene_vehicle_transfer::Car {
-    let b = ptr(0xc000 + 6810 + own * 956);
+    let b = ptr(0xc000 + complete_check::CAR_WORD + own * complete_check::CAR_WORDS);
     let core = at(player.prefixes, (own * 50) as i16);
     let route = at(player.fields, (own * 30) as i16);
     scene_vehicle_transfer::Car {
@@ -401,7 +405,7 @@ fn transfer_car(
             checkpoint: route,
             passed: at(route, 4),
             laps: at(route, 24),
-            controls: ptr(0xc000 + 10360 + own * 28),
+            controls: ptr(0xc000 + complete_check::METADATA_WORD + 2 + own * 28),
             velocity: car.motion,
             acceleration: at(car.drive, 26),
             angular: at(car.attitude, 42),
@@ -472,16 +476,19 @@ pub fn attach(
         position: ptr(0),
         basis: ptr(0),
     };
-    let cars: Buf<scene_ufos::Car, 2> = Buf::new([empty; 2]);
+    let cars: Buf<scene_ufos::Car, 3> = Buf::new([empty; 3]);
     let mut rows = cars.as_array();
     let mut i = 0u16;
-    while i < state.car_count && i < 2 {
+    while i < state.car_count {
         let car = &state.cars[i];
         rows[i] = scene_ufos::Car {
             present: true,
             player: car.player,
             slot: car.slot,
-            disabled: g(ptr(0xc000 + 6810 + i * 956 + 950), 0) != n(0),
+            disabled: g(
+                ptr(0xc000 + complete_check::CAR_WORD + i * complete_check::CAR_WORDS + 950),
+                0,
+            ) != n(0),
             position: at(car.motion, 18),
             basis: car.attitude,
         };

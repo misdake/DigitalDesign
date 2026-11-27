@@ -3,6 +3,10 @@ use crate::dsl_rt::*;
 use crate::{attitude, body, deformation, ground, integer, sampling, suspension, vehicle};
 pub struct Car {
     pub entity: fix32,
+    // Dense vehicle storage index; a finish clone retains its original racer slot.
+    pub owner: u16,
+    // Immutable resource profile; a finish clone shares its source profile.
+    pub profile: u16,
     pub slot: u16,
     pub player: bool,
     pub visible: bool,

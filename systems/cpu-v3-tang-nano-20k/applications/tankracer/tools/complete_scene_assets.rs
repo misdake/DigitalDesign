@@ -16,145 +16,7 @@ pub fn capture(world: &SinglePlayer) -> Vec<u16> {
     ints(&mut out, [world.shared.pool.quad_count as i32]);
     out.resize(6810, 0);
     for i in 0..2 {
-        let start = out.len();
-        let car = world.vehicles.entries[i].as_ref().unwrap();
-        let v = &car.physics;
-        let m = &v.motion;
-        for pose in [
-            m.poses.turret,
-            m.poses.gun,
-            m.poses.attachments[0],
-            m.poses.attachments[1],
-        ] {
-            ints(&mut out, pose.matrix.0);
-            ints(&mut out, pose.position);
-        }
-        ints(&mut out, m.poses.bottom_position);
-        ints(
-            &mut out,
-            [
-                i32::from(m.poses.recoil_factor),
-                i32::from(m.poses.recoil_shift),
-            ],
-        );
-        assert_eq!(out.len() - start, 106);
-        let s = &car.spray;
-        ints(&mut out, [s.timer, s.side as i32, s.count as i32]);
-        for p in s.particles {
-            ints(&mut out, p.position);
-            ints(&mut out, p.velocity);
-            ints(
-                &mut out,
-                [
-                    i32::from(p.life),
-                    i32::from(p.size),
-                    i32::from(p.floor),
-                    i32::from(p.rotation),
-                    i32::from(p.kind),
-                    i32::from(p.side),
-                ],
-            );
-        }
-        assert_eq!(out.len() - start, 304);
-        let s = &car.marks;
-        ints(&mut out, s.active.map(i32::from));
-        ints(&mut out, s.movement);
-        ints(&mut out, [s.count as i32, s.head as i32, s.tail as i32]);
-        ints(&mut out, s.endpoints.into_iter().flatten().flatten());
-        ints(&mut out, s.handles.map(|h| h.0 as i32));
-        assert_eq!(out.len() - start, 480);
-        let s = &car.smoke;
-        ints(&mut out, [s.timer, s.side as i32, s.force, s.count as i32]);
-        ints(&mut out, s.damage.map(i32::from));
-        ints(&mut out, s.sockets.map(i32::from));
-        ints(&mut out, s.damage_timers);
-        for p in s.particles {
-            ints(&mut out, p.position);
-            ints(&mut out, p.velocity);
-            ints(
-                &mut out,
-                [
-                    i32::from(p.life),
-                    i32::from(p.size),
-                    i32::from(p.rotation),
-                    i32::from(p.direction),
-                    i32::from(p.expanding),
-                ],
-            );
-        }
-        assert_eq!(out.len() - start, 830);
-        let s = &car.lights;
-        ints(
-            &mut out,
-            [
-                i32::from(s.brake_mode),
-                i32::from(s.active[0]),
-                i32::from(s.active[1]),
-                s.handles[0].0 as i32,
-                s.handles[1].0 as i32,
-            ],
-        );
-        ints(
-            &mut out,
-            [
-                v.entity.0 as i32,
-                car.debris.active as i32,
-                car.debris.timer,
-                i32::from(car.debris.previous_plane),
-            ],
-        );
-        assert_eq!(out.len() - start, 848);
-        let c = &v.pose;
-        ints(
-            &mut out,
-            [
-                i32::from(c.travel_gain.multiplier),
-                i32::from(c.travel_gain.shift),
-                c.track_length,
-            ],
-        );
-        ints(&mut out, c.track_offsets.into_iter().flatten());
-        ints(&mut out, c.turret_offset);
-        ints(&mut out, c.gun_offset);
-        ints(&mut out, c.attachment_offsets.into_iter().flatten());
-        ints(&mut out, c.bottom_offset);
-        ints(&mut out, c.gun_pivot);
-        let e = v.pose_input;
-        let (kind, basis) = match e.external {
-            pose::ExternalBasis::None => (0, [0; 9]),
-            pose::ExternalBasis::Body => (1, [0; 9]),
-            pose::ExternalBasis::Custom(m) => (2, m.0),
-        };
-        ints(
-            &mut out,
-            [
-                i32::from(e.timer),
-                i32::from(e.ambient_wobble),
-                i32::from(e.session_active),
-                e.ambient_phase as i32,
-                e.recoil_mode,
-                i32::from(e.turret_yaw),
-                0,
-                0,
-                kind,
-            ],
-        );
-        ints(&mut out, basis);
-        let (_, _, _, offset, material, special) =
-            rcc_car_probe::effect_config(world, tankracer_game::object_query::TankId(i));
-        ints(&mut out, offset);
-        ints(
-            &mut out,
-            [
-                material as i32,
-                i32::from(special),
-                i32::from(car.brake.reverse_braking),
-                i32::from(v.collision.disabled),
-                i32::from(car.prefix.temporary_timer),
-                i32::from(car.prefix.temporary_slot),
-            ],
-        );
-        assert_eq!(out.len() - start, 956);
+        out.extend(car(world, i));
     }
     assert_eq!(out.len(), 8722);
     for b in &world.shared.debris.banks {
@@ -295,5 +157,149 @@ pub fn capture(world: &SinglePlayer) -> Vec<u16> {
         [i32::from(world.shared.input.steering_analog_latch)],
     );
     assert_eq!(out.len(), WORDS);
+    out
+}
+
+pub fn car(world: &SinglePlayer, i: usize) -> Vec<u16> {
+    let mut out = Vec::new();
+    let start = out.len();
+    let car = world.vehicles.entries[i].as_ref().unwrap();
+    let v = &car.physics;
+    let m = &v.motion;
+    for pose in [
+        m.poses.turret,
+        m.poses.gun,
+        m.poses.attachments[0],
+        m.poses.attachments[1],
+    ] {
+        ints(&mut out, pose.matrix.0);
+        ints(&mut out, pose.position);
+    }
+    ints(&mut out, m.poses.bottom_position);
+    ints(
+        &mut out,
+        [
+            i32::from(m.poses.recoil_factor),
+            i32::from(m.poses.recoil_shift),
+        ],
+    );
+    assert_eq!(out.len() - start, 106);
+    let s = &car.spray;
+    ints(&mut out, [s.timer, s.side as i32, s.count as i32]);
+    for p in s.particles {
+        ints(&mut out, p.position);
+        ints(&mut out, p.velocity);
+        ints(
+            &mut out,
+            [
+                i32::from(p.life),
+                i32::from(p.size),
+                i32::from(p.floor),
+                i32::from(p.rotation),
+                i32::from(p.kind),
+                i32::from(p.side),
+            ],
+        );
+    }
+    assert_eq!(out.len() - start, 304);
+    let s = &car.marks;
+    ints(&mut out, s.active.map(i32::from));
+    ints(&mut out, s.movement);
+    ints(&mut out, [s.count as i32, s.head as i32, s.tail as i32]);
+    ints(&mut out, s.endpoints.into_iter().flatten().flatten());
+    ints(&mut out, s.handles.map(|h| h.0 as i32));
+    assert_eq!(out.len() - start, 480);
+    let s = &car.smoke;
+    ints(&mut out, [s.timer, s.side as i32, s.force, s.count as i32]);
+    ints(&mut out, s.damage.map(i32::from));
+    ints(&mut out, s.sockets.map(i32::from));
+    ints(&mut out, s.damage_timers);
+    for p in s.particles {
+        ints(&mut out, p.position);
+        ints(&mut out, p.velocity);
+        ints(
+            &mut out,
+            [
+                i32::from(p.life),
+                i32::from(p.size),
+                i32::from(p.rotation),
+                i32::from(p.direction),
+                i32::from(p.expanding),
+            ],
+        );
+    }
+    assert_eq!(out.len() - start, 830);
+    let s = &car.lights;
+    ints(
+        &mut out,
+        [
+            i32::from(s.brake_mode),
+            i32::from(s.active[0]),
+            i32::from(s.active[1]),
+            s.handles[0].0 as i32,
+            s.handles[1].0 as i32,
+        ],
+    );
+    ints(
+        &mut out,
+        [
+            v.entity.0 as i32,
+            car.debris.active as i32,
+            car.debris.timer,
+            i32::from(car.debris.previous_plane),
+        ],
+    );
+    assert_eq!(out.len() - start, 848);
+    let c = &v.pose;
+    ints(
+        &mut out,
+        [
+            i32::from(c.travel_gain.multiplier),
+            i32::from(c.travel_gain.shift),
+            c.track_length,
+        ],
+    );
+    ints(&mut out, c.track_offsets.into_iter().flatten());
+    ints(&mut out, c.turret_offset);
+    ints(&mut out, c.gun_offset);
+    ints(&mut out, c.attachment_offsets.into_iter().flatten());
+    ints(&mut out, c.bottom_offset);
+    ints(&mut out, c.gun_pivot);
+    let e = v.pose_input;
+    let (kind, basis) = match e.external {
+        pose::ExternalBasis::None => (0, [0; 9]),
+        pose::ExternalBasis::Body => (1, [0; 9]),
+        pose::ExternalBasis::Custom(m) => (2, m.0),
+    };
+    ints(
+        &mut out,
+        [
+            i32::from(e.timer),
+            i32::from(e.ambient_wobble),
+            i32::from(e.session_active),
+            e.ambient_phase as i32,
+            e.recoil_mode,
+            i32::from(e.turret_yaw),
+            0,
+            0,
+            kind,
+        ],
+    );
+    ints(&mut out, basis);
+    let (_, _, _, offset, material, special) =
+        rcc_car_probe::effect_config(world, tankracer_game::object_query::TankId(i));
+    ints(&mut out, offset);
+    ints(
+        &mut out,
+        [
+            material as i32,
+            i32::from(special),
+            i32::from(car.brake.reverse_braking),
+            i32::from(v.collision.disabled),
+            i32::from(car.prefix.temporary_timer),
+            i32::from(car.prefix.temporary_slot),
+        ],
+    );
+    assert_eq!(out.len() - start, 956);
     out
 }

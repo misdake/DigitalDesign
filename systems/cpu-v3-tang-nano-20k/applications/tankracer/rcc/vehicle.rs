@@ -138,7 +138,8 @@ pub fn attitude_stage(
     let control: Buf<u16, 3> = Buf::new([0; 3]);
     let mut input = control.as_array();
     fix32::store_words(input, 0, g(f, 0));
-    input[2u16] = g(f, 26).lo_bits();
+    let number = g(f, 26);
+    input[2u16] = (number.lo_bits() % 10 + (number.hi_bits() % 10) * 6) % 10;
     let flags: Buf<u16, 1> = Buf::new([0; 1]);
     if !attitude::step(la, c, input, sine, angle, flags.as_array()) {
         return false;

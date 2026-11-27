@@ -2,6 +2,7 @@
 use super::*;
 pub enum Stage {
     BeforeTank,
+    FinishDispatchFault,
     Complete,
     AfterPhysics {
         before: Option<[Option<i16>; 4]>,
@@ -15,6 +16,31 @@ pub fn gun_z(world: &SinglePlayer) -> Option<[Option<i16>; 4]> {
             .unwrap()
             .model,
     )
+}
+pub fn advance(world: &mut SinglePlayer, dt: i32, devices: &mut impl Devices) -> usize {
+    let mut updates = world
+        .identity
+        .ticks
+        .order
+        .iter()
+        .filter(|id| {
+            world
+                .identity
+                .entities
+                .record(**id)
+                .is_some_and(|r| r.object.and_then(Handle::vehicle).is_some())
+        })
+        .count();
+    if world.finish_started {
+        let entity = world.finish_entity.unwrap();
+        if world.identity.ticks.flags[entity.0 as usize] & 16 == 0 {
+            updates += 1;
+        }
+    }
+    world
+        .advance(drive::Input::default(), None, dt, true, devices)
+        .unwrap();
+    updates
 }
 pub fn initialize_routes(world: &mut SinglePlayer) -> Result<(), super::super::Error> {
     world.initialize_player_route(100000)
@@ -158,6 +184,27 @@ pub fn update_car<D: Devices>(
     };
     let check_result;
     let status = match stage {
+        Stage::FinishDispatchFault => {
+            check_result = false;
+            let entity = execution.finish_entity.ok_or(-4)?;
+            let class = call
+                .context
+                .entities
+                .record(entity)
+                .and_then(|r| r.class)
+                .ok_or(-4)?;
+            let mut classes = environment.classes.to_vec();
+            std::sync::Arc::make_mut(&mut classes[class.0]).methods[12] =
+                Some(crate::dispatch::MethodId(65535));
+            execution.finish_takeover(
+                id,
+                &mut call,
+                factory::Environment {
+                    classes: &classes,
+                    ..environment
+                },
+            )
+        }
         Stage::BeforeTank => {
             check_result = false;
             execution.rcc_before_tank(id, &mut call, environment)
@@ -174,6 +221,9 @@ pub fn update_car<D: Devices>(
     if check_result && status.is_ok() {
         assert_eq!(result, entity.0);
     }
+    world.player = execution.player;
+    world.race_active = execution.race_active;
+    world.finish_started = execution.finish_started;
     *launch = execution.frame.drive.launch_eligible;
     status
 }

@@ -92,7 +92,7 @@ pub fn tick(
             player: scene_train::Car {
                 vehicles: true,
                 present: true,
-                position: at(state.cars[0u16].attitude, 36),
+                position: at(state.cars[state.slots[0u16]].attitude, 36),
             },
             records: records.as_array(),
             count: 2,

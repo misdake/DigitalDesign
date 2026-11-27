@@ -16,27 +16,7 @@ fn section(out: &mut Vec<u16>, index: usize, data: &[u16]) {
 pub fn fields(world: &SinglePlayer) -> Vec<u16> {
     let mut out = Vec::new();
     for car in world.vehicles.entries[..2].iter().flatten() {
-        let r = car.route;
-        ints(
-            &mut out,
-            [
-                i32::from(r.checkpoint.is_some()),
-                r.checkpoint.map_or(0, |v| v.0 as i32),
-                r.passed as i32,
-                r.completed,
-                r.records[0],
-                r.records[1],
-                r.records[2],
-                r.score,
-                r.previous_score,
-                i32::from(r.wrong_way),
-                i32::from(r.warning_timer),
-                car.race.elapsed,
-                i32::from(car.race.laps),
-                i32::from(car.race.driving),
-                car.weather as i32,
-            ],
-        );
+        out.extend(car_fields(car));
     }
     assert_eq!(out.len(), 60);
     out
@@ -695,5 +675,31 @@ fn blasts(world: &SinglePlayer) -> Vec<u16> {
         }
     }
     assert_eq!(out.len(), 374);
+    out
+}
+
+pub fn car_fields(car: &tankracer_game::vehicle_startup::Player) -> Vec<u16> {
+    let mut out = Vec::new();
+    let r = car.route;
+    ints(
+        &mut out,
+        [
+            i32::from(r.checkpoint.is_some()),
+            r.checkpoint.map_or(0, |v| v.0 as i32),
+            r.passed as i32,
+            r.completed,
+            r.records[0],
+            r.records[1],
+            r.records[2],
+            r.score,
+            r.previous_score,
+            i32::from(r.wrong_way),
+            i32::from(r.warning_timer),
+            car.race.elapsed,
+            i32::from(car.race.laps),
+            i32::from(car.race.driving),
+            car.weather as i32,
+        ],
+    );
     out
 }

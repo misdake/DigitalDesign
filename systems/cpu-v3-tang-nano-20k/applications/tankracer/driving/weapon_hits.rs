@@ -11,17 +11,17 @@ fn part(
     upper: u16,
 ) -> tank_hit::Part {
     let model = at(player.hit_model.as_array(), (index * 7) as i16);
-    let geometry = ptr(0xc000 + player_world::COMBAT_WORD + index * player_world::COMBAT_ROW);
+    let geometry = player_world::combat(index);
     let body = at(player.body, (index * DRIVING_MESH_WORDS) as i16);
     let revision = at(
         player.hit_fields.as_array(),
         (index * 24 + 12 + upper * 4) as i16,
     );
-    let mut selected = body;
+    let mut selected = player.body_selection.as_array();
     let mut pose = at(car.attitude, 18);
     let mut mesh = damage::Mesh {
         present: model[1u16] != 0,
-        page: 65535,
+        page: player.weapons.effect_page,
         vertices: unsafe { body.as_ptr().add(4).as_i16_array() },
         vertex_count: DRIVING_BODY_VERTICES,
         indices: at(body, (4 + DRIVING_BODY_VERTICES * 3) as i16),
@@ -34,7 +34,7 @@ fn part(
     };
     if upper != 0 {
         selected = geometry;
-        pose = ptr(0xc000 + 6810 + index * 956);
+        pose = ptr(0xc000 + complete_check::CAR_WORD + index * complete_check::CAR_WORDS);
         mesh = damage::Mesh {
             present: model[3u16] != 0,
             page: player.weapons.effect_page,
@@ -71,7 +71,7 @@ fn car(
     parts: Array<tank_hit::Part>,
     index: u16,
 ) -> scene_projectile_impact::HitVehicle {
-    let effects = ptr(0xc000 + 6810 + index * 956);
+    let effects = ptr(0xc000 + complete_check::CAR_WORD + index * complete_check::CAR_WORDS);
     let prefix = at(player.prefixes, (index * 50) as i16);
     let fields = at(player.hit_fields.as_array(), (index * 24) as i16);
     let external = attitude::get(effects, 459);
@@ -119,11 +119,13 @@ pub fn apply(
         fix32::from_words(tuning_offset, 0),
         25,
     );
-    let parts: Buf<tank_hit::Part, 4> = Buf::new([
+    let parts: Buf<tank_hit::Part, 6> = Buf::new([
         part(player, &state.cars[0u16], 0, 0),
         part(player, &state.cars[0u16], 0, 1),
         part(player, &state.cars[1u16], 1, 0),
         part(player, &state.cars[1u16], 1, 1),
+        part(player, &state.cars[2u16], 2, 0),
+        part(player, &state.cars[2u16], 2, 1),
     ]);
     let mut rows = parts.as_array();
     let upper = unsafe {
@@ -131,13 +133,23 @@ pub fn apply(
             .as_ptr()
             .as_array::<tank_hit::Part>()
     };
-    let cars: Buf<scene_projectile_impact::HitVehicle, 2> = Buf::new([
+    let cars: Buf<scene_projectile_impact::HitVehicle, 3> = Buf::new([
         car(player, &state.cars[0u16], parts.as_array(), 0),
         car(player, &state.cars[1u16], upper, 1),
+        car(
+            player,
+            &state.cars[2u16],
+            unsafe {
+                view_of(&mut rows[4u16])
+                    .as_ptr()
+                    .as_array::<tank_hit::Part>()
+            },
+            2,
+        ),
     ]);
     let damage = scene_projectile_impact::Damage {
         cars: cars.as_array(),
-        count: 2,
+        count: state.car_count,
         shell: tuning.as_array(),
         homer: at(tuning.as_array(), 17),
         cup,

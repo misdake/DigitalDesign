@@ -103,7 +103,10 @@ pub fn construct(
             write_dseg_page(3, complete.page);
         }
         out = unsafe { Ptr::from_addr(0x8000 + WORD).as_u16_array() };
-        let live = unsafe { Ptr::from_addr(0xc000 + 6810 + i * 956).as_u16_array() };
+        let live = unsafe {
+            Ptr::from_addr(0xc000 + complete_check::CAR_WORD + i * complete_check::CAR_WORDS)
+                .as_u16_array()
+        };
         copy(live, at(out, 102), 106);
         copy(at(live, 106), at(out, vehicle_startup::EFFECTS), 374);
         copy(at(live, 480), at(out, vehicle_startup::EFFECTS + 374), 350);
@@ -116,10 +119,13 @@ pub fn construct(
         p(at(live, 950), 0, fix32::zero());
         p(at(live, 952), 0, fix32::zero());
         p(at(live, 954), 0, integer::from_i16(-1));
-        let inactive = unsafe { Ptr::from_addr(0xc000 + 10358 + i * 28).as_u16_array() };
+        let inactive = unsafe {
+            Ptr::from_addr(0xc000 + complete_check::METADATA_WORD + i * 28).as_u16_array()
+        };
         copy(inactive, at(out, vehicle_startup::FIELDS + 16), 2);
         copy(at(inactive, 2), at(out, vehicle_startup::FIELDS + 76), 14);
-        let player = unsafe { Ptr::from_addr(0xc000 + 10414 + i * 26).as_u16_array() };
+        let player =
+            unsafe { Ptr::from_addr(0xc000 + complete_check::INPUT_WORD + i * 26).as_u16_array() };
         copy(player, at(out, vehicle_startup::FIELDS + 90), 6);
         copy(at(player, 8), at(out, vehicle_startup::FIELDS + 144), 2);
         copy(at(player, 10), at(out, vehicle_startup::FIELDS + 126), 14);

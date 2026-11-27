@@ -30,7 +30,11 @@ static DRIVING_DYNAMIC_WORLD: StaticBuffer = StaticBuffer::new(32768, 32768);
 #[static_buffer]
 static DRIVING_WEAPONS: StaticBuffer = StaticBuffer::new(196608, 32768);
 #[static_buffer]
-static DRIVING_ACTORS: StaticBuffer = StaticBuffer::new(5874, 32768);
+static DRIVING_ACTORS: StaticBuffer = StaticBuffer::new(14208, 32768);
+const IMPACT_LINES_WORD: u16 = 3000;
+const IMPACT_LINE_WORDS: u16 = 1600;
+const IMPACT_BATCHES_WORD: u16 = 4608;
+const IMPACT_GUARD_WORD: u16 = 5887;
 mod attitude;
 mod body;
 mod bounce;
@@ -43,6 +47,11 @@ mod driving;
 mod effect_pool;
 mod entities;
 mod falling;
+mod finish_check;
+mod finish_drive;
+mod finish_driver;
+mod finish_routes;
+mod finish_world;
 mod frame_check;
 mod ground;
 mod ground_response;
@@ -207,9 +216,11 @@ fn check_value(actual: fix32, expected: Array<u16>, index: u16) {
     }
 }
 
-fn car(state: Array<u16>, gun: Array<i16>, binding: Array<u16>) -> driving::Car {
+fn car(state: Array<u16>, gun: Array<i16>, binding: Array<u16>, owner: u16) -> driving::Car {
     driving::Car {
         entity: fix32::zero(),
+        owner,
+        profile: owner,
         slot: 0,
         player: false,
         visible: true,
@@ -266,11 +277,10 @@ fn query_car(
     car: &mut driving::Car,
     tank: &mut object_query::Tank,
     binding: Array<u16>,
-    meta: Array<u16>,
-    id: u16,
+    present: Array<u16>,
     complete: bool,
 ) {
-    tank.collider.entity = fix32::from_words(meta[1 + id * 2], meta[2 + id * 2]);
+    tank.collider.entity = car.entity;
     tank.collider.radius = attitude::get(binding, 0);
     tank.collider.has_external = integer::from_i16(1);
     copy(tank.collider.position.as_array(), at(car.motion, 18), 6);
@@ -278,9 +288,9 @@ fn query_car(
     copy(tank.collider.external.as_array(), car.attitude, 18);
     copy(tank.collider.bounds.as_array(), at(binding, 2), 12);
     copy(tank.overlap_bounds.as_array(), at(binding, 14), 12);
-    tank.slot = fix32::from_words(id, 0);
+    tank.slot = fix32::from_words(car.slot, 0);
     tank.active = fix32::zero();
-    if meta[5 + id] != 0 && car.visible {
+    if present[car.owner] != 0 && car.visible {
         tank.active = integer::from_i16(1);
     }
     tank.disabled = fix32::zero();
@@ -289,7 +299,12 @@ fn query_car(
         unsafe {
             write_dseg_page(3, DRIVING_PICKUP_EFFECTS.first_sector() >> 8);
         }
-        let effects = unsafe { Ptr::from_addr(0xc000 + 6810 + id * 956).as_u16_array() };
+        let effects = unsafe {
+            Ptr::from_addr(
+                0xc000 + complete_check::CAR_WORD + car.owner * complete_check::CAR_WORDS,
+            )
+            .as_u16_array()
+        };
         tank.disabled = attitude::get(at(effects, 950), 0);
         let external = attitude::get(at(effects, 902), 8);
         tank.collider.has_external = fix32::zero();
@@ -320,7 +335,6 @@ fn query_car(
 }
 fn collision_car(
     car: &mut driving::Car,
-    meta: Array<u16>,
     player: &player_world::Player,
     id: u16,
     aux: Array<u16>,
@@ -338,7 +352,7 @@ fn collision_car(
         corners: at(car.suspension, 4),
         corner_stride: 6,
         impact: impact::Vehicle {
-            entity: fix32::from_words(meta[1 + id * 2], meta[2 + id * 2]),
+            entity: car.entity,
             cooldown: aux,
             contacts: at(points, 6),
             contact_stride: 17,
@@ -353,9 +367,9 @@ fn collision_car(
             player: car.player,
             basis: at(car.attitude, 18),
             position: at(car.attitude, 36),
-            selected: body,
+            selected: player.body_selection.as_array(),
             mesh: damage::Mesh {
-                page: 65535,
+                page: player.weapons.effect_page,
                 present: model[1u16] != 0,
                 vertices: unsafe { body.as_ptr().add(4).as_i16_array() },
                 vertex_count: DRIVING_BODY_VERTICES,
@@ -593,6 +607,7 @@ fn load_motion_layout(bank: &mut scene_fragments::MotionBank) {
 
 #[link_cseg = "checks"]
 fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
+    let finish_routes = finish_world::load(scenery);
     let storage: DrivingStorage = driving_storage();
     let cfg = c.spring;
     let directory: Buf<u16, 64> = Buf::new([65535; 64]);
@@ -608,8 +623,8 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
     let peer_controls: Buf<u16, 60> = Buf::new([0; 60]);
     let record = controls.as_array();
     let gun = storage.gun.as_array();
-    let body = storage.body.as_array();
-    let states: Buf<u16, 532> = Buf::new([0; 532]);
+    let body = unsafe { Ptr::from_addr(0xc000 + complete_check::BODY_WORD).as_u16_array() };
+    let states: Buf<u16, 798> = Buf::new([0; 798]);
     let state = states.as_array();
     let events: Buf<u16, 3> = Buf::new([0; 3]);
     let incoming = read_dseg_page(3);
@@ -658,6 +673,7 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
         }
         let scene = &active_scene;
         read(meta, DRIVING_CASE_META, fix32::from_words(case * 24, 0), 24);
+        let present: Buf<u16, 3> = Buf::new([meta[5u16], meta[6u16], 0]);
         let mut attitude_config = c.attitude;
         attitude_config[4u16] = driving_orthogonal(case) as u16;
         if meta[21u16] != 0 {
@@ -718,22 +734,27 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
             catalog_scratch.as_array(),
         );
 
-        read(body, DRIVING_MESH, fix32::zero(), DRIVING_MESH_WORDS);
-        copy(
-            at(body, DRIVING_MESH_WORDS as i16),
-            body,
-            DRIVING_MESH_WORDS,
-        );
-        let cars: Buf<driving::Car, 2> = Buf::new([
-            car(state, gun, at(cfg, 685)),
+        let cars: Buf<driving::Car, 3> = Buf::new([
+            car(state, gun, at(cfg, 685), 0),
             car(
                 at(state, 266),
                 unsafe { gun.as_ptr().add(DRIVING_GUN_WORDS as i16).as_i16_array() },
                 at(cfg, 685),
+                1,
+            ),
+            car(
+                at(state, 532),
+                unsafe {
+                    gun.as_ptr()
+                        .add((DRIVING_GUN_WORDS * 2) as i16)
+                        .as_i16_array()
+                },
+                at(cfg, 685),
+                2,
             ),
         ]);
         let mut actors = cars.as_array();
-        let auxiliary: Buf<u16, 72> = Buf::new([0; 72]);
+        let auxiliary: Buf<u16, 108> = Buf::new([0; 108]);
         let aux = auxiliary.as_array();
         let current_slot: Buf<u16, 2> = Buf::new([0; 2]);
         copy(current_slot.as_array(), at(meta, 16), 2);
@@ -806,7 +827,7 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
             DRIVING_SYMBOL_WORDS,
         );
         state.symbols = symbols;
-        let car_bindings: Buf<u16, 38> = Buf::new([0; 38]);
+        let car_bindings: Buf<u16, 57> = Buf::new([0; 57]);
         read(
             car_bindings.as_array(),
             DRIVING_CAR_BINDINGS,
@@ -814,13 +835,17 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
             38,
         );
         let mut car_index = 0u16;
-        while car_index < 2 {
+        while car_index < 3 {
             let row = at(car_bindings.as_array(), (car_index * 19) as i16);
             let car = &mut actors[car_index];
             car.entity = attitude::get(row, 0);
             car.slot = row[2u16];
             car.player = row[3u16] != 0;
             car.visible = row[4u16] != 0;
+            if car_index == 2 {
+                car.entity = integer::from_i16(-1);
+                car.profile = 0;
+            }
             car.blast = at(row, 5);
             car.marker = at(aux, (car_index * 36 + 32) as i16);
             car_index += 1;
@@ -972,21 +997,30 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
             surface_index += 1;
         }
 
-        let geometry: Buf<object_query::Tank, 2> =
-            Buf::new([object_query::tank_zero(), object_query::tank_zero()]);
+        let geometry: Buf<object_query::Tank, 3> = Buf::new([
+            object_query::tank_zero(),
+            object_query::tank_zero(),
+            object_query::tank_zero(),
+        ]);
         let mut geo = geometry.as_array();
-        let lines = unsafe { Ptr::from_addr(0x8000 + 12400).as_u16_array() };
+        let lines = unsafe { Ptr::from_addr(0x8000 + IMPACT_LINES_WORD).as_u16_array() };
         let tail: Buf<u16, 16> = Buf::new([0; 16]);
-        let batches = unsafe { Ptr::from_addr(0x8000 + 14000).as_array::<impact::Batch>() };
+        let batches =
+            unsafe { Ptr::from_addr(0x8000 + IMPACT_BATCHES_WORD).as_array::<impact::Batch>() };
         let mut impacts = impact::State {
-            page: DRIVING_PICKUP_EFFECTS.first_sector() >> 8,
+            page: DRIVING_ACTORS.first_sector() >> 8,
             batches: batches,
             next: fix32::zero(),
         };
         let batch_page = impact::select(&impacts);
         let mut batch_rows = batches;
         let stride = view_of(&mut batch_rows[1u16]).as_ptr().addr() - batches.as_ptr().addr();
-        if stride == 0 || stride > (player_world::TAIL_WORD - 1 - 14000) / 4 {
+        if IMPACT_LINES_WORD <= 2937
+            || IMPACT_LINES_WORD + IMPACT_LINE_WORDS >= IMPACT_BATCHES_WORD - 1
+            || IMPACT_GUARD_WORD >= DRIVING_ACTORS.sector_count() * 64
+            || stride == 0
+            || stride > (IMPACT_GUARD_WORD - IMPACT_BATCHES_WORD) / 4
+        {
             halt(0x7f5a);
         }
         let mut batch = 0u16;
@@ -994,13 +1028,18 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
             batch_rows[batch] = impact::batch_zero();
             batch += 1;
         }
+        let mut guards = unsafe { Ptr::from_addr(0x8000).as_u16_array() };
+        guards[IMPACT_LINES_WORD - 1] = 0x1a4b;
+        guards[IMPACT_LINES_WORD + IMPACT_LINE_WORDS] = 0x4b1a;
+        guards[IMPACT_BATCHES_WORD - 1] = 0x5b6c;
+        guards[IMPACT_GUARD_WORD] = 0x6c5b;
         effect_pool::restore(batch_page);
         let offsets: Buf<u16, 12> = Buf::new([0, 0, 0, 0, 2000, 0, 0, 0, 0, 0, 63536, 65535]);
         let mut effects = impact::Context {
             frame: fix32::zero(),
             seed: state.runtime.seed,
             pool: effect_pool::Pool {
-                page: DRIVING_PICKUP_EFFECTS.first_sector() >> 8,
+                page: DRIVING_ACTORS.first_sector() >> 8,
                 lines: lines,
                 count: fix32::zero(),
                 overflow: effect_pool::line_zero(),
@@ -1014,7 +1053,7 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
         let line_page = effect_pool::select(&effects.pool);
         let mut line_data = lines;
         let mut line_word = 0u16;
-        while line_word < 1600 {
+        while line_word < IMPACT_LINE_WORDS {
             line_data[line_word] = 0;
             line_word += 1;
         }
@@ -1023,9 +1062,11 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
         // Prefix hot rows occupy the fixed collision page's remaining tail.
         // Boost scalars and auxiliary contacts stay in the existing car owner.
         let prefix_data = at(scenery.colliders, (14934 + DRIVING_SYMBOL_WORDS) as i16);
-        if 14934 + DRIVING_SYMBOL_WORDS + 238 + 780 + 59 > 16383 {
+        if 14934 + DRIVING_SYMBOL_WORDS + 238 + 780 + 63 > 16383 {
             halt(0x7f4f);
         }
+        let prefix_cores: Buf<u16, 150> = Buf::new([0; 150]);
+        let cores = prefix_cores.as_array();
         let prefix_config: Buf<u16, 12> = Buf::new([0; 12]);
         if driving_has_prefix(case) {
             if driving_has_startup(case) {
@@ -1036,11 +1077,12 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                     138,
                 );
             } else {
+                read(cores, driving_prefix_initial(case), fix32::zero(), 100);
                 read(
-                    prefix_data,
+                    at(prefix_data, 100),
                     driving_prefix_initial(case),
-                    fix32::zero(),
-                    238,
+                    fix32::from_words(100, 0),
+                    138,
                 );
             }
             read(
@@ -1050,20 +1092,27 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                 12,
             );
         }
-        let prefixes: Buf<prefix::State, 2> = Buf::new([
+        let prefixes: Buf<prefix::State, 3> = Buf::new([
             prefix::State {
-                core: prefix_data,
-                spin: at(prefix_data, 20),
+                core: cores,
+                spin: at(cores, 20),
                 boost: actors[0u16].boost,
-                boost_control: at(prefix_data, 38),
+                boost_control: at(cores, 38),
                 auxiliary: actors[0u16].ground.auxiliary.as_array(),
             },
             prefix::State {
-                core: at(prefix_data, 50),
-                spin: at(prefix_data, 70),
+                core: at(cores, 50),
+                spin: at(cores, 70),
                 boost: actors[1u16].boost,
-                boost_control: at(prefix_data, 88),
+                boost_control: at(cores, 88),
                 auxiliary: actors[1u16].ground.auxiliary.as_array(),
+            },
+            prefix::State {
+                core: at(cores, 100),
+                spin: at(cores, 120),
+                boost: actors[2u16].boost,
+                boost_control: at(cores, 138),
+                auxiliary: actors[2u16].ground.auxiliary.as_array(),
             },
         ]);
         let mut prefix_shared = prefix::Shared {
@@ -1104,7 +1153,34 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
             aux,
             view_of(&mut prefix_shared),
         );
-        complete.prefixes = prefix_data;
+        if complete_check::BODY_WORD + complete_check::CAR_CAPACITY * DRIVING_MESH_WORDS
+            >= complete_check::BODY_END_WORD
+        {
+            halt(0x7f5a);
+        }
+        let saved = read_dseg_page(3);
+        unsafe {
+            write_dseg_page(3, complete.page);
+        }
+        pickup_check::read_pickup_stage(body, DRIVING_MESH, 0, DRIVING_MESH_WORDS);
+        copy(
+            at(body, DRIVING_MESH_WORDS as i16),
+            body,
+            DRIVING_MESH_WORDS,
+        );
+        let mut reserved = at(body, (DRIVING_MESH_WORDS * 2) as i16);
+        let mut word = 0u16;
+        while word < DRIVING_MESH_WORDS {
+            reserved[word] = 0;
+            word += 1;
+        }
+        let mut guard =
+            unsafe { Ptr::from_addr(0xc000 + complete_check::BODY_END_WORD - 1).as_u16_array() };
+        guard[0u16] = 0x38b1;
+        unsafe {
+            write_dseg_page(3, saved);
+        }
+        complete.prefixes = cores;
         if complete.enabled {
             state.map.shield_page = complete.page;
             state.map.shield = complete.shared.shield;
@@ -1121,7 +1197,7 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                 driving_startup_models(case),
             );
         }
-        let route_fields: Buf<u16, 60> = Buf::new([0; 60]);
+        let route_fields: Buf<u16, 90> = Buf::new([0; 90]);
         let mine_fields: Buf<u16, 66> = Buf::new([0; 66]);
         let explosion_fields: Buf<u16, 100> = Buf::new([0; 100]);
         let mut player = player_world::load(
@@ -1131,12 +1207,13 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
             mine_fields.as_array(),
             explosion_fields.as_array(),
         );
+        player.present = present.as_array();
         player.sine = c.sine;
         player.angle = c.angle;
         player.drive = c.drive;
         player.body = body;
         player.auxiliary = aux;
-        player.prefixes = prefix_data;
+        player.prefixes = cores;
         complete.hit_fields = player.hit_fields.as_array();
         player.surfaces = deform;
         player.pickup_bindings = pickups.bindings;
@@ -1171,6 +1248,7 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                 &expected,
             );
             check_debris(&state, driving_scene_boot_debris(), fix32::zero());
+            finish_world::check(&finish_routes, &state, scenery);
             let offset = player.expected_offset;
             let clock = player.clock_enabled;
             player.expected_offset = fix32::zero();
@@ -1187,70 +1265,117 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
         let mut frame = 0u16;
         let frame_asset = driving_frames(case);
         let surface_asset = driving_surfaces(case);
-        while frame < meta[20u16] {
+        while frame < meta[20u16] + driving_finish_frames() {
+            let finish_tick = frame >= meta[20u16];
+            let first_finish = frame == meta[20u16];
+            let direct_finish = first_finish && !driving_finish_world();
             unsafe {
                 addr_of(&DRIVING_FRAME).write(0, serial);
             }
-            read(
-                record,
-                frame_asset,
-                fmul_lo32(
-                    fix32::from_words(frame, 0),
-                    fix32::from_words(DRIVING_FRAME_WORDS, 0),
-                ),
-                60,
-            );
-            let data = record;
-            if driving_has_camera_input(case) {
-                let saved = read_dseg_page(3);
-                unsafe {
-                    write_dseg_page(3, player.weapons.effect_page);
-                }
-                pickup_check::read_pickup_stage(
-                    ptr_camera(),
-                    driving_camera_input(case),
-                    frame * 6,
-                    6,
+            if !finish_tick {
+                read(
+                    record,
+                    frame_asset,
+                    fmul_lo32(
+                        fix32::from_words(frame, 0),
+                        fix32::from_words(DRIVING_FRAME_WORDS, 0),
+                    ),
+                    60,
                 );
-                unsafe {
-                    write_dseg_page(3, saved);
+            }
+            let data = record;
+            if !finish_tick {
+                if driving_has_camera_input(case) {
+                    let saved = read_dseg_page(3);
+                    unsafe {
+                        write_dseg_page(3, player.weapons.effect_page);
+                    }
+                    pickup_check::read_pickup_stage(
+                        ptr_camera(),
+                        driving_camera_input(case),
+                        frame * 6,
+                        6,
+                    );
+                    unsafe {
+                        write_dseg_page(3, saved);
+                    }
                 }
-            }
-            if player_world::clock(&state, &mut player, data) != fix32::zero() {
-                halt(0x7f76);
-            }
-            if complete.enabled {
+                if player_world::clock(&state, &mut player, data) != fix32::zero() {
+                    halt(0x7f76);
+                }
+                if complete.enabled {
+                    let saved = read_dseg_page(3);
+                    unsafe {
+                        write_dseg_page(3, complete.page);
+                    }
+                    if driving_world_pass(case) {
+                        read(
+                            prefix_camera.as_array(),
+                            driving_world_view(case),
+                            fmul_lo32(fix32::from_words(frame, 0), fix32::from_words(24, 0)),
+                            24,
+                        );
+                        copy(ptr_camera(), prefix_camera.as_array(), 6);
+                    } else {
+                        copy(prefix_camera.as_array(), ptr_camera(), 6);
+                    }
+                    unsafe {
+                        write_dseg_page(3, saved);
+                    }
+                }
+                if driving_has_world_events(case) {
+                    apply_world_event(
+                        scene,
+                        &mut state,
+                        scenery,
+                        &mut player,
+                        data,
+                        driving_world_events(case),
+                    );
+                }
+            } else if first_finish {
+                finish_check::setup(&state, &player, &complete, &pickups, case);
+                if driving_finish_world() {
+                    attitude::put(record, 26, attitude::get(record, 26) + integer::from_i16(1));
+                    attitude::put(record, 29, fix32::zero());
+                }
+            } else {
+                let input: Buf<u16, 14> = Buf::new([0; 14]);
+                read(
+                    input.as_array(),
+                    driving_finish_input(),
+                    fix32::from_words((frame - meta[20u16] - 1) * 14, 0),
+                    14,
+                );
+                copy(at(actors[0u16].motion, 18), at(input.as_array(), 8), 6);
+                if driving_finish_ufo() && frame == meta[20u16] + 1 {
+                    let event: Buf<u16, 4> = Buf::new([5, 1, 2, 0]);
+                    if weapon_ufos::place(scene, &mut state, scenery, &mut player, event.as_array())
+                        != fix32::zero()
+                    {
+                        halt(0x7f9c);
+                    }
+                }
+                attitude::put(record, 26, attitude::get(input.as_array(), 3));
+                attitude::put(record, 29, fix32::zero());
+                if driving_finish_ufo() {
+                    attitude::put(record, 0, integer::from_i16(112));
+                }
                 let saved = read_dseg_page(3);
                 unsafe {
                     write_dseg_page(3, complete.page);
                 }
-                if driving_world_pass(case) {
-                    read(
-                        prefix_camera.as_array(),
-                        driving_world_view(case),
-                        fmul_lo32(fix32::from_words(frame, 0), fix32::from_words(24, 0)),
-                        24,
-                    );
-                    copy(ptr_camera(), prefix_camera.as_array(), 6);
-                } else {
-                    copy(prefix_camera.as_array(), ptr_camera(), 6);
-                }
+                copy(ptr_camera(), input.as_array(), 6);
+                copy(prefix_camera.as_array(), input.as_array(), 6);
                 unsafe {
                     write_dseg_page(3, saved);
                 }
             }
-            if driving_has_world_events(case) {
-                apply_world_event(
-                    scene,
-                    &mut state,
-                    scenery,
-                    &mut player,
-                    data,
-                    driving_world_events(case),
-                );
+            if !direct_finish && finish_world::activate(&mut state, &mut player) != fix32::zero() {
+                halt(0x7f9b);
             }
-            let own = attitude::get(data, 28).lo_bits();
-            if own >= meta[0u16] || own >= 2 {
+            let own = attitude::get(data, 27).hi_bits();
+            if own >= state.car_count {
                 halt(0x7f0b);
             }
             if meta[21u16] & 1 != 0 {
@@ -1277,24 +1402,25 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                 }
             }
             let saved_slot = attitude::get(state.runtime.slot, 0);
-            let vehicles: Buf<tank_response::Vehicle, 2> = Buf::new([
-                collision_car(&mut actors[0u16], meta, &player, 0, aux),
-                collision_car(&mut actors[1u16], meta, &player, 1, at(aux, 36)),
+            let vehicles: Buf<tank_response::Vehicle, 3> = Buf::new([
+                collision_car(&mut actors[0u16], &player, 0, aux),
+                collision_car(&mut actors[1u16], &player, 1, at(aux, 36)),
+                collision_car(&mut actors[2u16], &player, 2, at(aux, 72)),
             ]);
             let mut peers = tank_response::World {
                 geometry: geo,
                 vehicles: vehicles.as_array(),
                 slots: at(meta, 7),
-                present: at(meta, 5),
-                geometry_count: 2,
-                vehicle_count: 2,
+                present: present.as_array(),
+                geometry_count: state.car_count,
+                vehicle_count: state.car_count,
                 hit: integer::from_i16(-1),
             };
             let mut pass = lifecycle::begin(&state.runtime.ticks, components.work_limit);
             loop {
                 let mut data = record;
-                let mut own = attitude::get(data, 28).lo_bits();
-                if meta[21u16] & 1 != 0 {
+                let mut own = attitude::get(data, 27).hi_bits();
+                if meta[21u16] & 1 != 0 && !direct_finish {
                     let progress = lifecycle::prepare(
                         &mut state.runtime.ticks,
                         &mut pass,
@@ -1339,6 +1465,7 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                                 actors,
                                 &state.lifetime.identities,
                                 scenery,
+                                state.slots[0u16],
                             ),
                             peer_valid: true,
                         };
@@ -1422,7 +1549,7 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                                 },
                                 result: result.as_array(),
                                 group: frame.number,
-                                player: at(actors[0u16].motion, 18),
+                                player: at(actors[state.slots[0u16]].motion, 18),
                                 has_player: true,
                                 peer: frame.peer_basis,
                                 has_peer: frame.peer_valid,
@@ -1455,7 +1582,7 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                         halt(0x7f13);
                     }
                     own = id.lo_bits();
-                    if own != attitude::get(data, 28).lo_bits() {
+                    if own != attitude::get(data, 27).hi_bits() || player.finish_stage >= 2 {
                         if !driving_world_pass(case) {
                             halt(0x7f74);
                         }
@@ -1468,6 +1595,60 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                         data = peer_controls.as_array();
                     }
                     attitude::put(state.runtime.slot, 0, integer::from_i16(12));
+                }
+                if own == state.slots[0u16]
+                    && player.finish_stage == 0
+                    && attitude::get(at(player.fields, (own * 30) as i16), 12)
+                        == integer::from_i16(3)
+                {
+                    let entity = finish_world::entity(&state);
+                    if entity >= fix32::zero() {
+                        if finish_world::transfer(
+                            &mut state,
+                            &mut player,
+                            &mut complete,
+                            &mut pickups,
+                            own,
+                            entity,
+                        ) != fix32::zero()
+                        {
+                            halt(0x7f98);
+                        }
+                        own = 2;
+                        attitude::put(state.runtime.slot, 0, integer::from_i16(12));
+                        player_world::tank_input(
+                            &actors[own],
+                            &player,
+                            record,
+                            peer_controls.as_array(),
+                        );
+                        data = peer_controls.as_array();
+                        peers.geometry_count = state.car_count;
+                        peers.vehicle_count = state.car_count;
+                    }
+                }
+                let mut far_finish = false;
+                if own == 2 && player.finish_stage != 0 {
+                    let status = finish_driver::before(
+                        scene,
+                        &mut state,
+                        scenery,
+                        &mut player,
+                        &complete,
+                        data,
+                    );
+                    if status < fix32::zero() {
+                        unsafe {
+                            addr_of(&DRIVING_FIELD).write(0, (-status).lo_bits());
+                        }
+                        halt(0x7f99);
+                    }
+                    far_finish = status == integer::from_i16(1);
+                    attitude::put(
+                        data,
+                        27,
+                        fix32::from_words(256 | actors[own].visible as u16, own),
+                    );
                 }
                 let keys = attitude::get(data, 29).lo_bits() & 511;
                 let visibility = attitude::get(data, 27).lo_bits();
@@ -1502,432 +1683,463 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
                     }
                 }
                 let mut peer_rows = vehicles.as_array();
-                peer_rows[0u16] = collision_car(&mut actors[0u16], meta, &player, 0, aux);
-                peer_rows[1u16] = collision_car(&mut actors[1u16], meta, &player, 1, at(aux, 36));
-                if complete.enabled && !actors[own].visible {
-                    let status = complete_check::inactive(
-                        &mut complete,
-                        &mut actors[own],
-                        c,
-                        data,
-                        &mut state.map,
-                        &mut effects,
+                let mut peer = 0u16;
+                while peer < state.car_count {
+                    peer_rows[peer] = collision_car(
+                        &mut actors[peer],
+                        &player,
+                        peer,
+                        at(aux, (peer * 36) as i16),
                     );
-                    if status != fix32::zero() {
-                        unsafe {
-                            addr_of(&DRIVING_FIELD).write(0, status.lo_bits());
-                        }
-                        halt(0x7f55);
-                    }
-                } else {
-                    if driving_has_prefix(case) {
-                        let prefix_page = read_dseg_page(3);
-                        if complete.enabled {
-                            unsafe {
-                                write_dseg_page(3, complete.page);
-                            }
-                            copy(
-                                prefix_camera.as_array(),
-                                unsafe { Ptr::from_addr(0xc000 + 10174).as_u16_array() },
-                                6,
-                            );
-                        }
-                        if complete.enabled {
-                            let fields =
-                                unsafe { Ptr::from_addr(0xc000 + 10414 + own * 26).as_u16_array() };
-                            attitude::put(c.drive, 2, attitude::get(fields, 3));
-                        }
-                        let step = prefix::Frame {
-                            dt: attitude::get(data, 0),
-                            number: attitude::get(data, 26),
-                            active: attitude::get(data, 3) != fix32::zero(),
-                            player: actors[own].player,
-                            entity: actors[own].entity,
-                            camera: prefix_camera.as_array(),
-                            sine: c.sine,
-                        };
-                        let status = prefix::prepare(
-                            &prefixes.as_array()[own],
-                            &prefix_shared,
-                            &step,
-                            prefix_config.as_array(),
-                            scene,
-                            &state.lifetime.identities,
+                    peer += 1;
+                }
+                if !far_finish {
+                    if complete.enabled && !actors[own].visible {
+                        let status = complete_check::inactive(
+                            &mut complete,
+                            &mut actors[own],
+                            c,
+                            data,
+                            &mut state.map,
+                            &mut effects,
                         );
-                        if complete.enabled {
-                            complete_check::publish_prefix(
-                                &actors[own],
-                                c,
-                                &prefixes.as_array()[own],
-                                at(player.hit_fields.as_array(), (own * 24 + 20) as i16),
-                            );
-                        }
-                        unsafe {
-                            write_dseg_page(3, prefix_page);
-                        }
                         if status != fix32::zero() {
-                            halt(0x7f50);
+                            unsafe {
+                                addr_of(&DRIVING_FIELD).write(0, status.lo_bits());
+                            }
+                            halt(0x7f55);
                         }
-                        attitude::put(data, 16, attitude::get(actors[own].boost, 3));
-                        attitude::put(data, 17, attitude::get(actors[own].boost, 0));
-                        attitude::put(data, 18, attitude::get(actors[own].boost, 1));
                     } else {
-                        vehicle::boost(actors[own].boost, c.drive, data);
-                    }
-                    let gun_before: Buf<u16, 5> = Buf::new([0; 5]);
-                    if driving_has_player(case) {
-                        let car = &actors[own];
-                        let tail = player_tail::State {
-                            gun: car.gun,
-                            binding: car.gun_binding,
-                            fields: unsafe { Ptr::from_addr(0).as_u16_array() },
-                        };
-                        player_tail::capture(&tail, gun_before.as_array());
-                    }
-                    mark(2);
-                    let actor_aux = at(aux, (own * 36) as i16);
-                    let selected = deform_contact::attached(
-                        deform,
-                        DRIVING_DEFORM_COUNT,
-                        scenery,
-                        attitude::get(actor_aux, 14),
-                    );
-                    let mut status = 0u16;
-                    if selected == 65535 {
-                        if attitude::get(actor_aux, 14) != integer::from_i16(-1) {
-                            halt(0x7f0d);
-                        }
-                        status = driving::contact_and_power(
-                            &mut actors[own],
-                            c,
-                            &mut state.map,
-                            data,
-                            events.as_array(),
-                            &mut surface,
-                        );
-                    } else {
-                        if !deform_contact::refresh(&mut deform[selected], false) {
-                            halt(0x7f43);
-                        }
-                        status = driving::contact_and_power(
-                            &mut actors[own],
-                            c,
-                            &mut state.map,
-                            data,
-                            events.as_array(),
-                            &mut deform[selected].sampling,
-                        );
-                    }
-                    if status != 0 {
-                        unsafe {
-                            addr_of(&DRIVING_FIELD).write(0, status);
-                        }
-                        halt(0x7f04);
-                    }
-                    if meta[21u16] != 0 {
-                        let car = &mut actors[own];
-                        let before: Buf<u16, 6> = Buf::new([0; 6]);
-                        copy(before.as_array(), car.motion, 6);
-                        let v = scenery_contact::Vehicle {
-                            entity: fix32::from_words(meta[1 + own * 2], meta[2 + own * 2]),
-                            position: at(car.motion, 6),
-                            previous: at(car.motion, 12),
-                            base_position: at(car.motion, 18),
-                            velocity: car.motion,
-                            forward: attitude::get(car.drive, 2),
-                            reference: car.attitude,
-                            external: car.attitude,
-                            has_external: true,
-                            counters: at(actor_aux, 30),
-                            dt: attitude::get(data, 0),
-                            mode: attitude::get(data, 1),
-                        };
-                        let mut hit = object_query::hit_zero();
-                        let mut status = scenery_contact::query(&v, scenery, &components, &mut hit);
-                        if status == integer::from_i16(1) {
-                            let selected =
-                                scene_auxiliaries::find(parent_data, hit.object.lo_bits());
-                            if scene_creation::component_kind(&player.weapons, hit.object.lo_bits())
-                                == 2
-                            {
-                                status = weapon_mines::contact(
-                                    scene,
-                                    &mut state,
-                                    scenery,
-                                    &mut player,
-                                    data,
-                                    hit.object.lo_bits(),
+                        if driving_has_prefix(case) {
+                            let prefix_page = read_dseg_page(3);
+                            if complete.enabled {
+                                unsafe {
+                                    write_dseg_page(3, complete.page);
+                                }
+                                copy(
+                                    prefix_camera.as_array(),
+                                    unsafe { Ptr::from_addr(0xc000 + 10174).as_u16_array() },
+                                    6,
                                 );
-                            } else if pickup_index(&pickups, hit.object.lo_bits()) != 65535 {
-                                let call = PickupContact {
-                                    vehicle: v,
-                                    target: hit.object.lo_bits(),
-                                    own: own,
-                                    mode: attitude::get(data, 1),
-                                    number: if driving_has_player(case) {
-                                        attitude::get(data, 26)
-                                    } else {
-                                        fix32::zero()
-                                    },
-                                    camera: prefix_camera.as_array(),
+                            }
+                            if complete.enabled {
+                                let fields = unsafe {
+                                    Ptr::from_addr(0xc000 + complete_check::INPUT_WORD + own * 26)
+                                        .as_u16_array()
                                 };
-                                status = pickup_contact(
-                                    scene,
-                                    &mut state,
-                                    scenery,
-                                    &components,
-                                    &mut pickups,
-                                    &call,
+                                attitude::put(c.drive, 2, attitude::get(fields, 3));
+                            }
+                            let step = prefix::Frame {
+                                dt: attitude::get(data, 0),
+                                number: attitude::get(data, 26),
+                                active: attitude::get(data, 3) != fix32::zero(),
+                                player: actors[own].player,
+                                entity: actors[own].entity,
+                                camera: prefix_camera.as_array(),
+                                sine: c.sine,
+                            };
+                            let status = prefix::prepare(
+                                &prefixes.as_array()[own],
+                                &prefix_shared,
+                                &step,
+                                prefix_config.as_array(),
+                                scene,
+                                &state.lifetime.identities,
+                            );
+                            if complete.enabled {
+                                complete_check::publish_prefix(
+                                    &actors[own],
+                                    c,
+                                    &prefixes.as_array()[own],
+                                    at(player.hit_fields.as_array(), (own * 24 + 20) as i16),
                                 );
-                            } else if selected == 65535 {
-                                status = scenery_contact::method(
-                                    &v,
-                                    scene,
-                                    scenery,
-                                    &components,
-                                    &mut state.runtime,
-                                    &hit,
-                                );
-                            } else {
-                                let actor = &mut parent_actors[selected];
-                                let class = attitude::get(actor.properties, 0);
-                                status = integer::from_i16(-1);
-                                if class >= fix32::zero()
-                                    && class < fix32::from_words(scene.header[4u16], 0)
+                            }
+                            unsafe {
+                                write_dseg_page(3, prefix_page);
+                            }
+                            if status != fix32::zero() {
+                                halt(0x7f50);
+                            }
+                            attitude::put(data, 16, attitude::get(actors[own].boost, 3));
+                            attitude::put(data, 17, attitude::get(actors[own].boost, 0));
+                            attitude::put(data, 18, attitude::get(actors[own].boost, 1));
+                        } else {
+                            // The raw physics fixture uses the low command word;
+                            // its transport owner is outside the boost input.
+                            let command = attitude::get(data, 27);
+                            attitude::put(data, 27, fix32::from_words(command.lo_bits(), 0));
+                            vehicle::boost(actors[own].boost, c.drive, data);
+                            attitude::put(data, 27, command);
+                        }
+                        let gun_before: Buf<u16, 5> = Buf::new([0; 5]);
+                        if driving_has_player(case) {
+                            let car = &actors[own];
+                            let tail = player_tail::State {
+                                gun: car.gun,
+                                binding: car.gun_binding,
+                                fields: unsafe { Ptr::from_addr(0).as_u16_array() },
+                            };
+                            player_tail::capture(&tail, gun_before.as_array());
+                        }
+                        mark(2);
+                        let actor_aux = at(aux, (own * 36) as i16);
+                        let selected = deform_contact::attached(
+                            deform,
+                            DRIVING_DEFORM_COUNT,
+                            scenery,
+                            attitude::get(actor_aux, 14),
+                        );
+                        let mut status = 0u16;
+                        if selected == 65535 {
+                            if attitude::get(actor_aux, 14) != integer::from_i16(-1) {
+                                halt(0x7f0d);
+                            }
+                            status = driving::contact_and_power(
+                                &mut actors[own],
+                                c,
+                                &mut state.map,
+                                data,
+                                events.as_array(),
+                                &mut surface,
+                            );
+                        } else {
+                            if !deform_contact::refresh(&mut deform[selected], false) {
+                                halt(0x7f43);
+                            }
+                            status = driving::contact_and_power(
+                                &mut actors[own],
+                                c,
+                                &mut state.map,
+                                data,
+                                events.as_array(),
+                                &mut deform[selected].sampling,
+                            );
+                        }
+                        if status != 0 {
+                            unsafe {
+                                addr_of(&DRIVING_FIELD).write(0, status);
+                            }
+                            halt(0x7f04);
+                        }
+                        if meta[21u16] != 0 {
+                            let car = &mut actors[own];
+                            let before: Buf<u16, 6> = Buf::new([0; 6]);
+                            copy(before.as_array(), car.motion, 6);
+                            let v = scenery_contact::Vehicle {
+                                entity: car.entity,
+                                position: at(car.motion, 6),
+                                previous: at(car.motion, 12),
+                                base_position: at(car.motion, 18),
+                                velocity: car.motion,
+                                forward: attitude::get(car.drive, 2),
+                                reference: car.attitude,
+                                external: car.attitude,
+                                has_external: true,
+                                counters: at(actor_aux, 30),
+                                dt: attitude::get(data, 0),
+                                mode: attitude::get(data, 1),
+                            };
+                            let mut hit = object_query::hit_zero();
+                            let mut status =
+                                scenery_contact::query(&v, scenery, &components, &mut hit);
+                            if status == integer::from_i16(1) {
+                                let selected =
+                                    scene_auxiliaries::find(parent_data, hit.object.lo_bits());
+                                if scene_creation::component_kind(
+                                    &player.weapons,
+                                    hit.object.lo_bits(),
+                                ) == 2
                                 {
-                                    let saved = attitude::get(state.runtime.slot, 0);
-                                    attitude::put(state.runtime.slot, 0, integer::from_i16(24));
-                                    let method = scene.method(class.lo_bits(), 24);
-                                    if method.status == 0 {
-                                        status = fix32::zero();
-                                        attitude::put(state.runtime.slot, 0, saved);
-                                    } else if method.status == 2 {
-                                        status = fix32::zero();
-                                    } else if method.status == 1 {
-                                        let row = at(parent_data, (8 + selected * 26) as i16);
-                                        let mut model = scene_meshes::empty_model();
-                                        if row[2u16] != 65535 {
-                                            model = mesh_catalog::model(
-                                                &state.models,
-                                                row[2u16],
-                                                catalog_scratch.as_array(),
-                                            );
-                                        }
-                                        let result: Buf<u16, 2> = Buf::new([0; 2]);
-                                        let nested: Buf<u16, 2> = Buf::new([0; 2]);
-                                        let call = scene_parent::Hit {
-                                            method: method.id,
-                                            auxiliary: scene_fragments::Hit {
-                                                row: at(
-                                                    components.records,
-                                                    (actor.fragments.id * 8) as i16,
-                                                ),
-                                                limit: components.work_limit,
-                                                powerup: false,
-                                                name: row[3u16],
-                                                model_status: fix32::zero(),
-                                                model: model,
-                                                has_terrain: true,
-                                                vehicle: v.entity,
-                                                velocity: v.velocity,
-                                                paired_tail: 0,
-                                                has_paired_tail: false,
-                                                result: nested.as_array(),
-                                            },
-                                            result: result.as_array(),
-                                            forward: v.forward,
-                                            minimum_turn: components.minimum_turn,
-                                            maximum_turn: components.maximum_turn,
-                                            current: own,
-                                            mode: attitude::get(data, 1),
-                                            dt: attitude::get(data, 0),
-                                            sine: c.sine,
-                                        };
-                                        status = scene_parent::hit(
-                                            scene,
-                                            &mut state,
-                                            &mut scenery.grid,
-                                            actor,
-                                            &call,
-                                        );
-                                        if status == fix32::zero() {
+                                    status = weapon_mines::contact(
+                                        scene,
+                                        &mut state,
+                                        scenery,
+                                        &mut player,
+                                        data,
+                                        hit.object.lo_bits(),
+                                    );
+                                } else if pickup_index(&pickups, hit.object.lo_bits()) != 65535 {
+                                    let call = PickupContact {
+                                        vehicle: v,
+                                        target: hit.object.lo_bits(),
+                                        own: own,
+                                        mode: attitude::get(data, 1),
+                                        number: if driving_has_player(case) {
+                                            attitude::get(data, 26)
+                                        } else {
+                                            fix32::zero()
+                                        },
+                                        camera: prefix_camera.as_array(),
+                                    };
+                                    status = pickup_contact(
+                                        scene,
+                                        &mut state,
+                                        scenery,
+                                        &components,
+                                        &mut pickups,
+                                        &call,
+                                    );
+                                } else if selected == 65535 {
+                                    status = scenery_contact::method(
+                                        &v,
+                                        scene,
+                                        scenery,
+                                        &components,
+                                        &mut state.runtime,
+                                        &hit,
+                                    );
+                                } else {
+                                    let actor = &mut parent_actors[selected];
+                                    let class = attitude::get(actor.properties, 0);
+                                    status = integer::from_i16(-1);
+                                    if class >= fix32::zero()
+                                        && class < fix32::from_words(scene.header[4u16], 0)
+                                    {
+                                        let saved = attitude::get(state.runtime.slot, 0);
+                                        attitude::put(state.runtime.slot, 0, integer::from_i16(24));
+                                        let method = scene.method(class.lo_bits(), 24);
+                                        if method.status == 0 {
+                                            status = fix32::zero();
                                             attitude::put(state.runtime.slot, 0, saved);
+                                        } else if method.status == 2 {
+                                            status = fix32::zero();
+                                        } else if method.status == 1 {
+                                            let row = at(parent_data, (8 + selected * 26) as i16);
+                                            let mut model = scene_meshes::empty_model();
+                                            if row[2u16] != 65535 {
+                                                model = mesh_catalog::model(
+                                                    &state.models,
+                                                    row[2u16],
+                                                    catalog_scratch.as_array(),
+                                                );
+                                            }
+                                            let result: Buf<u16, 2> = Buf::new([0; 2]);
+                                            let nested: Buf<u16, 2> = Buf::new([0; 2]);
+                                            let call = scene_parent::Hit {
+                                                method: method.id,
+                                                auxiliary: scene_fragments::Hit {
+                                                    row: at(
+                                                        components.records,
+                                                        (actor.fragments.id * 8) as i16,
+                                                    ),
+                                                    limit: components.work_limit,
+                                                    powerup: false,
+                                                    name: row[3u16],
+                                                    model_status: fix32::zero(),
+                                                    model: model,
+                                                    has_terrain: true,
+                                                    vehicle: v.entity,
+                                                    velocity: v.velocity,
+                                                    paired_tail: 0,
+                                                    has_paired_tail: false,
+                                                    result: nested.as_array(),
+                                                },
+                                                result: result.as_array(),
+                                                forward: v.forward,
+                                                minimum_turn: components.minimum_turn,
+                                                maximum_turn: components.maximum_turn,
+                                                current: own,
+                                                mode: attitude::get(data, 1),
+                                                dt: attitude::get(data, 0),
+                                                sine: c.sine,
+                                            };
+                                            status = scene_parent::hit(
+                                                scene,
+                                                &mut state,
+                                                &mut scenery.grid,
+                                                actor,
+                                                &call,
+                                            );
+                                            if status == fix32::zero() {
+                                                attitude::put(state.runtime.slot, 0, saved);
+                                            }
                                         }
                                     }
                                 }
                             }
+                            if status != fix32::zero() {
+                                halt(0x7f14);
+                            }
+                            let mut i = 0u16;
+                            while i < 3 {
+                                attitude::put(
+                                    before.as_array(),
+                                    i,
+                                    attitude::get(car.motion, i)
+                                        - attitude::get(before.as_array(), i),
+                                );
+                                i += 1;
+                            }
+                            attitude::put(actor_aux, 17, collision::distance(before.as_array()));
                         }
-                        if status != fix32::zero() {
-                            halt(0x7f14);
-                        }
-                        let mut i = 0u16;
-                        while i < 3 {
-                            attitude::put(
-                                before.as_array(),
-                                i,
-                                attitude::get(car.motion, i) - attitude::get(before.as_array(), i),
+                        effects.frame = attitude::get(data, 26);
+                        let mut peer = 0u16;
+                        let mut views = vehicles.as_array();
+                        while peer < state.car_count {
+                            query_car(
+                                &mut actors[peer],
+                                &mut geo[peer],
+                                binding.as_array(),
+                                present.as_array(),
+                                complete.enabled,
                             );
-                            i += 1;
+                            views[peer].impact.forward = attitude::get(actors[peer].drive, 2);
+                            peer += 1;
                         }
-                        attitude::put(actor_aux, 17, collision::distance(before.as_array()));
-                    }
-                    effects.frame = attitude::get(data, 26);
-                    query_car(
-                        &mut actors[0u16],
-                        &mut geo[0u16],
-                        binding.as_array(),
-                        meta,
-                        0,
-                        complete.enabled,
-                    );
-                    query_car(
-                        &mut actors[1u16],
-                        &mut geo[1u16],
-                        binding.as_array(),
-                        meta,
-                        1,
-                        complete.enabled,
-                    );
-                    let mut views = vehicles.as_array();
-                    views[0u16].impact.forward = attitude::get(actors[0u16].drive, 2);
-                    views[1u16].impact.forward = attitude::get(actors[1u16].drive, 2);
-                    let env = tank_response::Environment {
-                        mode: attitude::get(data, 1),
-                        dt: attitude::get(data, 0),
-                        separation_limit: fix32::zero(),
-                    };
-                    let status =
-                        tank_response::cars(own, &mut peers, &env, &mut impacts, &mut effects);
-                    if status != fix32::zero() {
-                        unsafe {
-                            addr_of(&DRIVING_FIELD).write(0, status.lo_bits());
-                        }
-                        halt(0x7f0a);
-                    }
-                    let current = collision_car(&mut actors[own], meta, &player, own, actor_aux);
-                    let car = &mut actors[own];
-                    let mut contact = deform_contact::Vehicle {
-                        component_count: DRIVING_DEFORM_COUNT,
-                        position: at(car.motion, 6),
-                        base_position: at(car.motion, 18),
-                        previous: at(car.motion, 12),
-                        velocity: car.motion,
-                        material: at(actor_aux, 26),
-                        attached: at(actor_aux, 28),
-                        accumulator: at(actor_aux, 30),
-                        corners: at(car.suspension, 4),
-                        corner_stride: 6,
-                        player: own == 0,
-                        mode: attitude::get(data, 1),
-                        dt: attitude::get(data, 0),
-                        current_slot: current_slot.as_array(),
-                        impact: current.impact,
-                    };
-                    if meta[18u16] != 0 {
-                        let status = deform_contact::respond(
-                            &mut contact,
-                            scene,
-                            scenery,
-                            deform,
-                            &mut impacts,
-                            &mut effects,
-                        );
+                        let env = tank_response::Environment {
+                            mode: attitude::get(data, 1),
+                            dt: attitude::get(data, 0),
+                            separation_limit: fix32::zero(),
+                        };
+                        let status =
+                            tank_response::cars(own, &mut peers, &env, &mut impacts, &mut effects);
                         if status != fix32::zero() {
                             unsafe {
                                 addr_of(&DRIVING_FIELD).write(0, status.lo_bits());
                             }
-                            halt(0x7f0e);
+                            halt(0x7f0a);
                         }
-                    }
-                    let mut response = ground_response::State {
-                        velocity: car.motion,
-                        angular: at(car.attitude, 42),
-                        points: unsafe { car.ground.points.as_array().as_ptr().as_u16_array() },
-                        springs: car.suspension,
-                        position: at(car.motion, 18),
-                        delta: at(actor_aux, 10),
-                        impact: contact.impact,
-                        damage: current.damage,
-                        mode: attitude::get(data, 1),
-                    };
-                    let status = ground_response::step(&mut response, &mut impacts, &mut effects);
-                    if status != 0 {
-                        unsafe {
-                            addr_of(&DRIVING_FIELD).write(0, status);
-                        }
-                        halt(0x7f07);
-                    }
-                    if complete.enabled {
-                        let status = complete_check::advance(
-                            &mut complete,
-                            car,
-                            c,
-                            data,
-                            &mut response.impact,
-                            &mut effects,
-                        );
-                        if driving_has_player(case) {
-                            let post = player_world::finish(
-                                &state,
-                                &player,
-                                data,
-                                gun_before.as_array(),
-                                keys,
-                                status == fix32::zero(),
+                        let current = collision_car(&mut actors[own], &player, own, actor_aux);
+                        let car = &mut actors[own];
+                        let mut contact = deform_contact::Vehicle {
+                            component_count: DRIVING_DEFORM_COUNT,
+                            position: at(car.motion, 6),
+                            base_position: at(car.motion, 18),
+                            previous: at(car.motion, 12),
+                            velocity: car.motion,
+                            material: at(actor_aux, 26),
+                            attached: at(actor_aux, 28),
+                            accumulator: at(actor_aux, 30),
+                            corners: at(car.suspension, 4),
+                            corner_stride: 6,
+                            player: car.player,
+                            mode: attitude::get(data, 1),
+                            dt: attitude::get(data, 0),
+                            current_slot: current_slot.as_array(),
+                            impact: current.impact,
+                        };
+                        if meta[18u16] != 0 {
+                            let status = deform_contact::respond(
+                                &mut contact,
+                                scene,
+                                scenery,
+                                deform,
+                                &mut impacts,
+                                &mut effects,
                             );
-                            if post != fix32::zero() {
+                            if status != fix32::zero() {
                                 unsafe {
-                                    addr_of(&DRIVING_FIELD).write(0, post.lo_bits());
+                                    addr_of(&DRIVING_FIELD).write(0, status.lo_bits());
                                 }
-                                halt(0x7f68);
+                                halt(0x7f0e);
                             }
                         }
-                        if status != fix32::zero() {
-                            unsafe {
-                                addr_of(&DRIVING_FIELD).write(0, status.lo_bits());
-                            }
-                            halt(0x7f52);
-                        }
-                    } else {
-                        let status = driving::integrate_and_pose(car, c, data);
+                        let mut response = ground_response::State {
+                            velocity: car.motion,
+                            angular: at(car.attitude, 42),
+                            points: unsafe { car.ground.points.as_array().as_ptr().as_u16_array() },
+                            springs: car.suspension,
+                            position: at(car.motion, 18),
+                            delta: at(actor_aux, 10),
+                            impact: contact.impact,
+                            damage: current.damage,
+                            mode: attitude::get(data, 1),
+                        };
+                        let status =
+                            ground_response::step(&mut response, &mut impacts, &mut effects);
                         if status != 0 {
                             unsafe {
                                 addr_of(&DRIVING_FIELD).write(0, status);
                             }
-                            halt(0x7f08);
+                            halt(0x7f07);
                         }
-                        if fade_pickups(
-                            &mut pickups,
-                            car,
-                            attitude::get(data, 26),
-                            attitude::get(data, 0),
-                        ) != fix32::zero()
-                        {
-                            halt(0x7f50);
-                        }
-                        let status = impact::tick(
-                            &mut impacts,
-                            &mut response.impact,
-                            attitude::get(data, 0),
-                            &mut effects,
-                        );
-                        if status != 0 {
-                            unsafe {
-                                addr_of(&DRIVING_FIELD).write(0, status);
+                        if complete.enabled {
+                            let status = complete_check::advance(
+                                &mut complete,
+                                car,
+                                c,
+                                data,
+                                &mut response.impact,
+                                &mut effects,
+                            );
+                            if driving_has_player(case) {
+                                let post = player_world::finish(
+                                    &state,
+                                    &player,
+                                    data,
+                                    gun_before.as_array(),
+                                    keys,
+                                    status == fix32::zero(),
+                                );
+                                if post != fix32::zero() {
+                                    unsafe {
+                                        addr_of(&DRIVING_FIELD).write(0, post.lo_bits());
+                                    }
+                                    halt(0x7f68);
+                                }
                             }
-                            halt(0x7f09);
+                            if status != fix32::zero() {
+                                unsafe {
+                                    addr_of(&DRIVING_FIELD).write(0, status.lo_bits());
+                                }
+                                halt(0x7f52);
+                            }
+                        } else {
+                            let status = driving::integrate_and_pose(car, c, data);
+                            if status != 0 {
+                                unsafe {
+                                    addr_of(&DRIVING_FIELD).write(0, status);
+                                }
+                                halt(0x7f08);
+                            }
+                            if fade_pickups(
+                                &mut pickups,
+                                car,
+                                attitude::get(data, 26),
+                                attitude::get(data, 0),
+                            ) != fix32::zero()
+                            {
+                                halt(0x7f50);
+                            }
+                            let status = impact::tick(
+                                &mut impacts,
+                                &mut response.impact,
+                                attitude::get(data, 0),
+                                &mut effects,
+                            );
+                            if status != 0 {
+                                unsafe {
+                                    addr_of(&DRIVING_FIELD).write(0, status);
+                                }
+                                halt(0x7f09);
+                            }
+                            driving::finish(car, data);
                         }
-                        driving::finish(car, data);
                     }
                 }
-                if meta[21u16] & 1 != 0 {
+                if own == 2 && player.finish_stage != 0 {
+                    let status = finish_driver::after(&state, scenery, &player, data);
+                    if status != fix32::zero() {
+                        unsafe {
+                            addr_of(&DRIVING_FIELD).write(0, (-status).lo_bits());
+                        }
+                        halt(0x7f9a);
+                    }
+                    if player.finish_stage == 1 {
+                        finish_world::started(&state, &mut player);
+                    }
+                }
+                if meta[21u16] & 1 != 0 && !direct_finish {
                     attitude::put(state.runtime.slot, 0, saved_slot);
                     lifecycle::resume(&mut pass, &state.runtime.ticks);
                 } else {
+                    if finish_tick {
+                        attitude::put(state.runtime.slot, 0, saved_slot);
+                    }
                     break;
                 }
             }
-            if meta[21u16] & 1 != 0 {
+            if meta[21u16] & 1 != 0 && !direct_finish {
                 if scene_auxiliaries::drain(
                     scene,
                     &mut state,
@@ -1941,101 +2153,126 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
             }
 
             mark(3);
-            let mut expected = reference(
-                frame_asset,
-                fmul_lo32(
-                    fix32::from_words(frame, 0),
-                    fix32::from_words(DRIVING_FRAME_WORDS, 0),
-                ) + fix32::from_words(60, 0),
-                (DRIVING_STATE_VALUES + 1) * 2,
-            );
-            check_snapshot(
-                actors,
-                aux,
-                &peers,
-                &mut impacts,
-                &mut effects,
-                &mut expected,
-            );
-            expect_value(
-                attitude::get(current_slot.as_array(), 0),
-                &mut expected,
-                2285,
-            );
-            if meta[19u16] != 0 {
+            if finish_tick {
+                if driving_finish_compare(frame - meta[20u16]) {
+                    finish_check::result(
+                        &mut state,
+                        scenery,
+                        &mut player,
+                        &complete,
+                        case,
+                        frame - meta[20u16],
+                    );
+                }
+            } else {
                 let mut expected = reference(
-                    surface_asset,
+                    frame_asset,
                     fmul_lo32(
                         fix32::from_words(frame, 0),
-                        fix32::from_words(DRIVING_SURFACE_VALUES * 2, 0),
-                    ),
-                    DRIVING_SURFACE_VALUES * 2,
+                        fix32::from_words(DRIVING_FRAME_WORDS, 0),
+                    ) + fix32::from_words(60, 0),
+                    (DRIVING_STATE_VALUES + 1) * 2,
                 );
-                check_surfaces(deform, &mut expected);
-                check_resource_versions(deform, driving_mesh_versions(case), frame);
-            }
-            if driving_has_prefix(case) {
-                let mut expected = reference(driving_prefix_frames(case), prefix_offset, 238);
-                if complete.enabled {
-                    expect_block(prefix_data, &mut expected, 0, 156);
-                    let saved = read_dseg_page(3);
-                    unsafe {
-                        write_dseg_page(3, complete.page);
-                    }
-                    expect_block(complete.shared.temporary.core, &mut expected, 156, 82);
-                    unsafe {
-                        write_dseg_page(3, saved);
-                    }
-                } else {
-                    expect_block(prefix_data, &mut expected, 0, 238);
+                check_snapshot(
+                    actors,
+                    aux,
+                    &peers,
+                    &mut impacts,
+                    &mut effects,
+                    &mut expected,
+                );
+                expect_value(
+                    attitude::get(current_slot.as_array(), 0),
+                    &mut expected,
+                    2285,
+                );
+                if meta[19u16] != 0 {
+                    let mut expected = reference(
+                        surface_asset,
+                        fmul_lo32(
+                            fix32::from_words(frame, 0),
+                            fix32::from_words(DRIVING_SURFACE_VALUES * 2, 0),
+                        ),
+                        DRIVING_SURFACE_VALUES * 2,
+                    );
+                    check_surfaces(deform, &mut expected);
+                    check_resource_versions(deform, driving_mesh_versions(case), frame);
                 }
-                prefix_offset = prefix_offset + fix32::from_words(238, 0);
-            }
-            complete_offset = complete_check::check(&complete, case, complete_offset);
-            if driving_has_pickup(case) {
-                check_pickups(&pickups, &state, driving_pickup_frames(case), pickup_offset);
-                pickup_offset = pickup_offset + fix32::from_words(10040, 0);
-            }
-            if driving_world_pass(case) {
-                check_pickup_flights(&pickups, driving_world_flights(case), frame);
-            }
-            if driving_has_debris(case) {
-                let count = check_debris(&state, driving_debris_frames(case), debris_offset);
-                debris_offset = debris_offset + fix32::from_words(count, 0);
-            }
-            if driving_has_parents(case) {
-                let count = check_parents(
-                    parent_actors,
-                    parent_data,
-                    &state,
-                    driving_parent_frames(case),
-                    parent_offset,
-                );
-                parent_offset = parent_offset + fix32::from_words(count, 0);
-            }
-            if meta[21u16] != 0 {
-                let expected = ExpectedScene {
-                    asset: live_asset,
-                    offset: live_offset,
-                };
-                let words = check_live(
-                    live,
-                    &state.lifetime,
-                    &state.runtime,
-                    scenery,
-                    scene,
-                    &expected,
-                );
-                live_offset = live_offset + fix32::from_words(words, 0);
-            }
-            if driving_has_player(case) {
-                player_world::check(&mut player, case, scenery, &state.resources);
+                if driving_has_prefix(case) {
+                    let mut expected = reference(driving_prefix_frames(case), prefix_offset, 238);
+                    if complete.enabled {
+                        expect_block(cores, &mut expected, 0, 100);
+                        expect_block(at(prefix_data, 100), &mut expected, 100, 56);
+                        let saved = read_dseg_page(3);
+                        unsafe {
+                            write_dseg_page(3, complete.page);
+                        }
+                        expect_block(complete.shared.temporary.core, &mut expected, 156, 82);
+                        unsafe {
+                            write_dseg_page(3, saved);
+                        }
+                    } else {
+                        expect_block(cores, &mut expected, 0, 100);
+                        expect_block(at(prefix_data, 100), &mut expected, 100, 138);
+                    }
+                    prefix_offset = prefix_offset + fix32::from_words(238, 0);
+                }
+                complete_offset = complete_check::check(&complete, case, complete_offset);
+                if driving_has_pickup(case) {
+                    check_pickups(&pickups, &state, driving_pickup_frames(case), pickup_offset);
+                    pickup_offset = pickup_offset + fix32::from_words(10040, 0);
+                }
+                if driving_world_pass(case) {
+                    check_pickup_flights(&pickups, driving_world_flights(case), frame);
+                }
+                if driving_has_debris(case) {
+                    let count = check_debris(&state, driving_debris_frames(case), debris_offset);
+                    debris_offset = debris_offset + fix32::from_words(count, 0);
+                }
+                if driving_has_parents(case) {
+                    let count = check_parents(
+                        parent_actors,
+                        parent_data,
+                        &state,
+                        driving_parent_frames(case),
+                        parent_offset,
+                    );
+                    parent_offset = parent_offset + fix32::from_words(count, 0);
+                }
+                if meta[21u16] != 0 {
+                    let expected = ExpectedScene {
+                        asset: live_asset,
+                        offset: live_offset,
+                    };
+                    let words = check_live(
+                        live,
+                        &state.lifetime,
+                        &state.runtime,
+                        scenery,
+                        scene,
+                        &expected,
+                    );
+                    live_offset = live_offset + fix32::from_words(words, 0);
+                }
+                if driving_has_player(case) {
+                    player_world::check(&mut player, case, scenery, &state.resources);
+                }
             }
             unsafe {
                 addr_of(&DRIVING_CHECKS).write(0, DRIVING_CHECKS + 1);
             }
             frame += 1;
             serial += 1;
+        }
+        if driving_finish_transfer(case) {
+            finish_check::qualify(
+                &mut state,
+                scenery,
+                &mut player,
+                &mut complete,
+                &mut pickups,
+                case,
+            );
         }
         scene_meshes::finish(&mut state.resources);
         state.map.terrain.finish();

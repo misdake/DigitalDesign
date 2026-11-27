@@ -6,6 +6,8 @@ mod deform_assets;
 mod driving_capture;
 mod driving_devices;
 mod driving_step;
+mod finish_scene_assets;
+mod finish_transfer_assets;
 mod identity_assets;
 mod impact_snapshot;
 #[allow(dead_code)]
@@ -962,6 +964,16 @@ fn main() {
             false,
         ),
         (
+            "complete-slot-pair",
+            [300000, -300000],
+            1000,
+            None,
+            false,
+            false,
+            false,
+        ),
+        ("complete-slot-gap", [0, 0], 8000, None, false, false, false),
+        (
             "complete-wall",
             [300000, 0],
             1600,
@@ -1268,6 +1280,16 @@ fn main() {
         let peer_class = world.vehicles.entries[1].as_ref().unwrap().physics.class;
         let entity = world.vehicles.entries[0].as_ref().unwrap().physics.entity;
         let world_pass = name.starts_with("complete-player-world");
+        if world_pass && name.ends_with("-cold") {
+            fs::write(
+                out.join("finish-scene.bin"),
+                finish_scene_assets::encode(world)
+                    .iter()
+                    .flat_map(|w| w.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        }
         let world_pickup = name == "complete-player-world-pickup";
         let cold_scene = name == "complete-player-world-cold";
         let constructed =
@@ -1927,6 +1949,12 @@ fn main() {
                 cfg.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
             )
             .unwrap();
+        }
+        if name.starts_with("complete-slot-") {
+            // Vehicle ownership and racer ordering differ after finish takeover.
+            let peer = world.vehicles.racers[1].take().unwrap();
+            world.vehicles.racers[4] = Some(peer);
+            world.vehicles.entries[1].as_mut().unwrap().slot = 4;
         }
         let noise = world.shared.noise;
         let mut stages = std::array::from_fn(|i| {
@@ -2834,24 +2862,28 @@ fn main() {
                 cursor += 3;
             }
         }
-        assert!(
-            hits > 0
-                || (deform_hits > 0 && changed_vertices > 0)
-                || ordinary_hits > 0
-                || name.starts_with("pickup-")
-                || name.starts_with("complete-player-hit")
-                || mine_sequence
-                || ufo_sequence
-                || emitter_sequence
-                || train_sequence
-                || ambient_sequence
-                || flock_sequence
-                || late_surface
-                || world_pass
-                || name == "complete-controls"
-                || name == "complete-fast-controls",
-            "paired trajectories must exercise real car collisions: {name}, ordinary {ordinary_hits}"
-        );
+        if name == "complete-slot-gap" {
+            assert_eq!(hits, 0, "scan must reach its own racer slot");
+        } else {
+            assert!(
+                hits > 0
+                    || (deform_hits > 0 && changed_vertices > 0)
+                    || ordinary_hits > 0
+                    || name.starts_with("pickup-")
+                    || name.starts_with("complete-player-hit")
+                    || mine_sequence
+                    || ufo_sequence
+                    || emitter_sequence
+                    || train_sequence
+                    || ambient_sequence
+                    || flock_sequence
+                    || late_surface
+                    || world_pass
+                    || name == "complete-controls"
+                    || name == "complete-fast-controls",
+                "paired trajectories must exercise real car collisions: {name}, ordinary {ordinary_hits}"
+            );
+        }
         if name == "complete-controls" {
             assert_eq!(
                 frames[2]["complete"][10416].as_u64(),
@@ -3177,6 +3209,9 @@ fn main() {
             "retire_frame":if retire {1} else if name=="complete-player-warp" {2} else if name=="complete-player-ground-concussion" {6} else {65535},"scenery_initial":format!("scenery-initial-{name}.bin")});
         exported_case["cold_scene"] = json!(cold_scene);
         exported.push(exported_case);
+        if cold_scene {
+            finish_transfer_assets::write(world, &stages, &baseline, out);
+        }
     }
     fs::write(
         out.join("paired.json"),

@@ -150,9 +150,14 @@ def main():
     environment=data['cases'][0]['environment']
     data['cases'] += paired['cases']
     qualification_scope=os.environ.get('TANKRACER_DRIVING_SCOPE','full')
+    finish_steps = 48 if qualification_scope=='finish-ufo' else 4
+    finish_checks = json.loads((out/'finish-run-checks.json').read_text()) if qualification_scope in ('finish-run','finish-world','finish-ufo') else []
     if qualification_scope=='full':
         # Keep the baseline and impact suites independently within asset banks.
-        data['cases']=[c for c in data['cases'] if not c['name'].startswith(('complete-player-ground','complete-player-hit','complete-player-mines','complete-player-ufo','complete-player-emitter','complete-player-train','complete-player-ambient','complete-player-flock','complete-player-lap-crush','complete-player-world'))]
+        # The long slot scan is qualified separately through --scope complete.
+        data['cases']=[c for c in data['cases'] if c['name']!='complete-slot-gap' and not c['name'].startswith(('complete-player-ground','complete-player-hit','complete-player-mines','complete-player-ufo','complete-player-emitter','complete-player-train','complete-player-ambient','complete-player-flock','complete-player-lap-crush','complete-player-world'))]
+    elif qualification_scope in ('finish-transfer','finish-tick','finish-run','finish-world','finish-ufo'):
+        data['cases']=[c for c in data['cases'] if c['name']=='complete-player-world-cold']
     elif qualification_scope=='world':
         data['cases']=[c for c in data['cases'] if c.get('world_pass')]
     elif qualification_scope=='startup':
@@ -219,6 +224,20 @@ def main():
                      'fragment hit/tick/resource retirement on the same owner, complete vehicle prepare, '
                      'pickup flight/collection, inventory and shared quad/light state; '
                      'unrelated actors frozen in qualifier initial state')
+    if qualification_scope in ('finish-transfer','finish-tick','finish-run','finish-world','finish-ufo'):
+        data['scope'] = ('Cold ENGLAND world followed by actual finish ownership publication, deep vehicle clone, '
+                         'pickup/debris retargeting and brake-light release; original first-Tick dispatch failure. '
+                         'Successful first Tick remains a separate integration boundary.')
+    if qualification_scope in ('finish-tick','finish-run','finish-world','finish-ufo'):
+        data['scope'] = ('Cold ENGLAND world followed by actual finish takeover and its immediate successful AITank Tick, '
+                         'then old Player stop controls; complete third-car, shared effects and world snapshots.')
+    if qualification_scope in ('finish-run','finish-world','finish-ufo'):
+        data['scope'] = ('Cold ENGLAND world, successful finish takeover and four complete original world frames: '
+                         'activation/Stop, far driving, middle rejoin, near wake after frame 499 and continued physical driving.')
+    if qualification_scope == 'finish-ufo':
+        data['scope'] = ('Ordered ENGLAND finish takeover followed by an original UFO targeting the new owner, '
+                         'with retired-car separation and 48 complete world frames at dt=112; '
+                         'snapshots at phase transitions, every eighth frame and the final frame.')
     if qualification_scope == 'world':
         data['scope'] = ('Loaded ENGLAND world with the complete authored Tick order, both non-AI vehicle '
                          'updates, raw race clock, shared RNG, live pickup flight and all scene owners; '
@@ -382,6 +401,7 @@ def main():
                                 ('AUXILIARY_SPANS','auxiliary-spans.bin',128), ('DEBRIS', 'debris.bin', 128), ('SYMBOLS', 'symbols.bin', 128), ('CAR_BINDINGS','car-bindings.bin',128), ('PARENTS', 'parent-bindings.bin', 128), ('MOTION_LAYOUT', 'motion-layout.bin', 128),
                                 ('INVERSE_COSINE', 'cosine-angle.bin', 128),
                                 ('SCENERY', 'scenery.bin', 128), ('IDENTITY', 'identity.bin', 128), ('LIFETIME', 'lifetime.bin', 128)]
+    resource_specs.append(('FINISH_SCENE', 'finish-scene.bin', 128))
     resource_specs += [(f'FRAME_{i}', f'frames-{i}.bin', 128) for i in range(len(data['cases']))]
     surface_cases = [i for i,c in enumerate(data['cases']) if c.get('scene')]
     resource_specs += [(f'SURFACE_{i}', f'surfaces-{i}.bin', 128) for i in surface_cases]
@@ -443,6 +463,26 @@ def main():
         initial_symbols[i] = initial_images[image]
     if cold_cases:
         resource_specs += [('SCENE_BOOT','scene-boot.bin',128),('SCENE_BOOT_TILTS','scene-boot-tilts.bin',128),('SCENE_BOOT_EXPECTED','scene-boot-expected.bin',128),('SCENE_BOOT_CAMERA','scene-boot-camera.bin',128),('SCENE_BOOT_DEBRIS','scene-boot-debris.bin',128)]
+    if qualification_scope in ('finish-transfer','finish-tick','finish-run','finish-world','finish-ufo'):
+        resource_specs += [('FINISH_TRANSFER','finish-transfer.bin',128),
+                           ('FINISH_TRANSFER_WORLD','finish-transfer-world.bin',128)]
+    if qualification_scope in ('finish-run','finish-world','finish-ufo'):
+        resource_specs += [('FINISH_RUN_INPUT','finish-run-input.bin',128)]
+        for index in finish_checks:
+            resource_specs += [(f'FINISH_RUN_{index}',f'finish-run-{index}.bin',128),
+                               (f'FINISH_RUN_WORLD_{index}',f'finish-run-world-{index}.bin',128)]
+    declarations.append('pub fn driving_finish_compare(index:u16)->bool {\n'+('index==0'+''.join(f' || index=={i}' for i in finish_checks) if finish_checks else 'true')+'\n}\n')
+    declarations.append('pub fn driving_finish_ufo()->bool {\n'+('true' if qualification_scope=='finish-ufo' else 'false')+'\n}\n')
+    declarations.append('pub fn driving_finish_world()->bool {\n'+('true' if qualification_scope in ('finish-world','finish-ufo') else 'false')+'\n}\n')
+    declarations.append('pub fn driving_finish_input()->AssetBytes {\n'+('DRIVING_FINISH_RUN_INPUT' if qualification_scope in ('finish-run','finish-world','finish-ufo') else 'DRIVING_CONFIG')+'\n}\n')
+    declarations.append('pub fn driving_finish_frames()->u16 {\n'+(str(finish_steps+1) if qualification_scope in ('finish-run','finish-world','finish-ufo') else '1' if qualification_scope=='finish-tick' else '0')+'\n}\n')
+    declarations.append('pub fn driving_finish_tick(case:u16)->bool {\n'+('case==0' if qualification_scope in ('finish-tick','finish-run','finish-world','finish-ufo') else 'false')+'\n}\n')
+    declarations.append('pub fn driving_finish_transfer(case:u16)->bool {\n'
+                        + ('case==0' if qualification_scope=='finish-transfer' else 'false')+'\n}\n')
+    declarations.append('pub fn driving_finish_transfer_data(index:u16)->AssetBytes {\n'
+                        + (''.join(f'if index=={i} {{ return DRIVING_FINISH_RUN_{i}; }}\n' for i in finish_checks) if qualification_scope in ('finish-run','finish-world','finish-ufo') else '') + ('DRIVING_FINISH_TRANSFER' if qualification_scope in ('finish-transfer','finish-tick','finish-run','finish-world','finish-ufo') else 'DRIVING_CONFIG')+'\n}\n')
+    declarations.append('pub fn driving_finish_transfer_world(index:u16)->AssetBytes {\n'
+                        + (''.join(f'if index=={i} {{ return DRIVING_FINISH_RUN_WORLD_{i}; }}\n' for i in finish_checks) if qualification_scope in ('finish-run','finish-world','finish-ufo') else '') + ('DRIVING_FINISH_TRANSFER_WORLD' if qualification_scope in ('finish-transfer','finish-tick','finish-run','finish-world','finish-ufo') else 'DRIVING_CONFIG')+'\n}\n')
     resource_images = {}
     resource_aliases = {}
     for symbol, name, align in resource_specs:
@@ -616,8 +656,7 @@ def main():
     declarations.append(f'pub static DRIVING_LIVE:Buf<u16,{live_words}>=Buf::new([0;{live_words}]);\n')
     assert initial_words <= frame_words
     assert (out / 'lifetime.bin').stat().st_size // 2 <= frame_words
-    storage = [('gun', 'i16', data['gun_words'] * 2),
-               ('body', 'u16', len(data['body_data']) * 2),
+    storage = [('gun', 'i16', data['gun_words'] * 3),
                ('surface_views', 'u16', deform_count*40),
                ('identity', 'u16', 12 + entity_capacity * 4),
                ('records', 'u16', object_capacity * 8),
@@ -635,7 +674,7 @@ def main():
         source = re.sub(r'\b(' + '|'.join(resource_aliases) + r')\b',
                         lambda match: resource_aliases[match[0]], source)
     (out / 'driving_assets.rs').write_text(source)
-    sources = [owner / n for n in ['driving_oracle.rs', 'driving_ground.rs', 'driving_capture.rs', 'sampling_snapshot.rs', 'reference_contact.rs', 'paired_driving_oracle.rs', 'reference_world.rs', 'reference_bridge.py', 'reference_tanks.rs', 'reference_car.rs', 'impact_snapshot.rs', 'vehicle_oracle.rs', 'drive_oracle.rs', 'terrain_assets.rs', 'terrain_map_pack.py', 'driving_assets.py','player_scene_assets.rs','projectile_snapshot.rs','reference_player.py','reference_player.rs','reference_scenery_player.rs','scene_boot_assets.py','scene_initial_assets.py','scene_initial_oracle.rs','scene_actor_initial_oracle.rs']]
+    sources = [owner / n for n in ['driving_oracle.rs', 'driving_ground.rs', 'driving_capture.rs', 'sampling_snapshot.rs', 'reference_contact.rs', 'paired_driving_oracle.rs', 'finish_scene_assets.rs', 'finish_transfer_assets.rs', 'reference_world.rs', 'reference_bridge.py', 'reference_tanks.rs', 'reference_car.rs', 'impact_snapshot.rs', 'vehicle_oracle.rs', 'drive_oracle.rs', 'terrain_assets.rs', 'terrain_map_pack.py', 'driving_assets.py','player_scene_assets.rs','projectile_snapshot.rs','reference_player.py','reference_player.rs','reference_scenery_player.rs','scene_boot_assets.py','scene_initial_assets.py','scene_initial_oracle.rs','scene_actor_initial_oracle.rs']]
     sources += [owner / n for n in ['scene_export.rs', 'deform_assets.rs', 'driving_step.rs', 'scenery_assets.rs',
         'scenery_frame.rs', 'identity_assets.rs', 'identity_capture.rs', 'reference_scene.rs',
         'parent_scene_assets.rs', 'prefix_scene_assets.rs', 'pickup_scene_assets.rs', 'pickup_snapshot.rs', 'driving_devices.rs', 'debris_scene_assets.rs', 'reference_symbols.rs', 'complete_scene_assets.rs', 'complete_driving_step.rs', 'vehicle_startup_assets.rs']]
@@ -649,17 +688,19 @@ def main():
         initial_packing=dict(source_words=len(initial), stored_words=len(start_data),
                              row_words=start_words, unique_rows=len(start_images),
                              offsets='initial-offsets.bin'),
-        cases=[dict(name=c['name'], cars=c['cars'], constructed=c.get('constructed',False), cold_scene=c.get('cold_scene',False), world_pass=c.get('world_pass', False), scheduled_tanks=2 if c.get('world_pass') else c['cars'], updates=len(c['frames']), cells=c['cells'], fallback_contacts=c['fallback_contacts'], tank_contacts=c['tank_contacts'], deform_contacts=c.get('deform_contacts', 0),
+        cases=[dict(name=c['name'], cars=c['cars'], constructed=c.get('constructed',False), cold_scene=c.get('cold_scene',False), world_pass=c.get('world_pass', False), scheduled_tanks=2 if c.get('world_pass') else 1, updates=len(c['frames']), cells=c['cells'], fallback_contacts=c['fallback_contacts'], tank_contacts=c['tank_contacts'], deform_contacts=c.get('deform_contacts', 0),
                     deformed_vertices=c.get('deformed_vertices', 0), surface_sample_points=c.get('surface_sample_points', 0), deform_spark_events=c.get('deform_spark_events', 0), ordinary_contacts=c.get('ordinary_contacts', 0), scenery_ticks=c.get('scenery_ticks', 0), retirement=c.get('retirement', False), transient=c.get('transient', False), emitter_coverage=c.get('emitter_coverage'), train_coverage=c.get('train_coverage'), ambient_coverage=c.get('ambient_coverage'), flock_coverage=c.get('flock_coverage'), initial_rng_seed=c.get('seed_before_noise',0x1234abcd)) for c in data['cases']], updates=updates, scope=data['scope'], checked_i32_per_frame=state_values+1,
         checked_surface_i32=sum(len(c['frames']) * surface_values for c in data['cases'] if c.get('scene')),
         resource_version_words=sum(len(c['frames']) * deform_count*4 for c in data['cases'] if c.get('scene')),
         checked_pickup_words=sum(len(f.get('pickup',[])) for c in data['cases'] for f in c['frames']),
         checked_prefix_words=sum(len(f.get('prefix',[])) for c in data['cases'] for f in c['frames']),
         checked_debris_words=sum(len(f.get('debris',[])) for c in data['cases'] for f in c['frames']),
-        checked_complete_words=sum(len(f.get('complete',[])) for c in data['cases'] for f in c['frames']), qualification_scope=qualification_scope, checked_parent_words=sum(len(f.get('parents', [])) for c in data['cases'] for f in c['frames']),
+        checked_complete_words=sum(len(f.get('complete',[])) for c in data['cases'] for f in c['frames']), qualification_scope=qualification_scope, world_frames=sum(len(c['frames']) for c in data['cases'] if c.get('world_pass'))+(finish_steps+1 if qualification_scope in ('finish-run','finish-world','finish-ufo') else 0), finish_check_frames=finish_checks, checked_parent_words=sum(len(f.get('parents', [])) for c in data['cases'] for f in c['frames']),
         checked_player_words=sum(len(f.get('player',[])) for c in data['cases'] for f in c['frames']),
         checked_world_flight_words=sum(len(f.get('pickup_flights', []))*2 for c in data['cases'] for f in c['frames']),
-        vehicle_updates=sum(len(c['frames'])*(2 if c.get('world_pass') else c['cars']) for c in data['cases']),
+        finish_transfers=int(qualification_scope in ('finish-transfer','finish-tick','finish-run','finish-world','finish-ufo')),
+        checked_finish_transfer_words=(sum((out/f).stat().st_size//2 for f in ['finish-transfer.bin','finish-transfer-world.bin'] + ([f'finish-run{kind}-{i}.bin' for i in finish_checks for kind in ['', '-world']] if qualification_scope in ('finish-run','finish-world','finish-ufo') else [])) if qualification_scope in ('finish-transfer','finish-tick','finish-run','finish-world','finish-ufo') else 0),
+        vehicle_updates=None if qualification_scope=='finish-ufo' else sum(len(c['frames'])*(2 if c.get('world_pass') else 1) for c in data['cases'])+(json.loads((out/'finish-run-updates.json').read_text()) if qualification_scope in ('finish-run','finish-world','finish-ufo') else int(qualification_scope=='finish-tick')),
         catalog_initial_slots=catalog['initial_slots'],catalog_payload_bytes=catalog['initial_payload_bytes'],
         scenery_frames=sum(len(c['frames']) for c in data['cases'] if c.get('scenery')),
         checked_scenery_words=checked_scenery_words,

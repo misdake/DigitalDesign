@@ -144,7 +144,7 @@ pub fn tick(
             simulation: true,
             vehicles: true,
             player_present: true,
-            player: at(state.cars[0u16].attitude, 36),
+            player: at(state.cars[state.slots[0u16]].attitude, 36),
             records: records.as_array(),
             count: 1,
             tables: projectile::Tables {

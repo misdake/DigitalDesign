@@ -1,18 +1,26 @@
 //! Projectile/car response and private geometry checked after every contact.
 use super::*;
-pub fn run(output: &Path, fixture: &Path, paged: bool) -> Result<Value, Box<dyn Error>> {
+pub fn run(
+    output: &Path,
+    fixture: &Path,
+    paged: bool,
+    cached_header: bool,
+) -> Result<Value, Box<dyn Error>> {
     let data: Value = serde_json::from_slice(&fs::read(fixture.join("tank-hit.json"))?)?;
     let label = if paged { "tank-hit-paged" } else { "tank-hit" };
     let source = r#"
 const PAGED:bool=$PAGED;
+const CACHED_HEADER:bool=$CACHED_HEADER;
 fn at(v:Array<u16>,w:u16)->Array<u16>{unsafe{v.as_ptr().add(w as i16).as_u16_array()}}
 fn g(v:Array<u16>,i:u16)->fix32{attitude::get(v,i)}
 fn copy(mut to:Array<u16>,from:Array<u16>,count:u16){let mut i=0u16;while i<count{to[i]=from[i];i+=1;}}
 fn part(input:Array<u16>,data:Array<u16>,r:Array<u16>,upper:u16)->tank_hit::Part{
  let b=21+upper*6;let pose=33+upper*24;let mut geometry=input;let mut page=65535u16;
  if PAGED{geometry=unsafe{Ptr::from_addr(0xc000).as_u16_array()};page=129;}
+ let mut selected=at(r,b+2);
+ if CACHED_HEADER {selected=at(input,input[5u16]+b+2);}
  tank_hit::Part{present:r[b]!=0,revision:at(data,55+upper*4),
- target:damage::Target{has_revision:false,revision:unsafe{Ptr::from_addr(0).as_u16_array()},state:at(data,45),player:true,basis:at(r,pose),position:at(r,pose+18),selected:at(r,b+2),
+ target:damage::Target{has_revision:false,revision:unsafe{Ptr::from_addr(0).as_u16_array()},state:at(data,45),player:true,basis:at(r,pose),position:at(r,pose+18),selected,
  mesh:damage::Mesh{page,present:r[b+1]!=0,vertices:unsafe{at(geometry,input[1+upper*2]).as_ptr().as_i16_array()},vertex_count:input[6+upper*2],
  indices:at(geometry,input[10+upper]),normals:unsafe{at(geometry,input[2+upper*2]).as_ptr().as_i16_array()},face_count:input[7+upper*2]}}}
 }
@@ -59,7 +67,7 @@ fn main(){
  }
  halt(0x600d);
 }
-"#.replace("$PAGED", if paged { "true" } else { "false" });
+"#.replace("$PAGED", if paged { "true" } else { "false" }).replace("$CACHED_HEADER", if cached_header { "true" } else { "false" });
     let code = compile(label, &source, output)?;
     let sine = fs::read(fixture.join("sine.i16.bin"))?;
     let cases = data["cases"].as_array().ok_or("tank hit cases")?;
@@ -168,7 +176,7 @@ fn main(){
         }
     }
     let report = json!({"cases":cases.len(),"calls":calls,"checked_u16_values":checked,"maximum_integer_error":0,
-        "paged_geometry":paged,"instruction_steps":steps,"code_bytes":code.total_code_words()*2,"minimum_stack_word":minimum_stack,"scope":data["scope"],
+        "paged_geometry":paged,"cached_selection":cached_header,"instruction_steps":steps,"code_bytes":code.total_code_words()*2,"minimum_stack_word":minimum_stack,"scope":data["scope"],
         "backend":"instruction; direct state and private model geometry, without GPU competition"});
     fs::write(
         output.join(format!("{label}-report.json")),

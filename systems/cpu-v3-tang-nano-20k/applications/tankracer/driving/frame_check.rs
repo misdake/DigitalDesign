@@ -69,7 +69,7 @@ pub fn expect_block(actual: Array<u16>, expected: &mut Reference, base: u16, cou
         i += 1;
     }
 }
-fn check_car(car: &mut driving::Car, expected: &mut Reference, base: u16) {
+pub fn check_car(car: &mut driving::Car, expected: &mut Reference, base: u16) {
     if car.visible {
         expect_block(car.attitude, expected, base, 58);
         expect_block(car.suspension, expected, base + 58, 88);
@@ -140,6 +140,12 @@ fn check_mesh(target: &damage::Target, expected: &mut Reference, flags: u16, ver
         expect_value(fix32::from_words(target.state[i], 0), expected, flags + i);
         i += 1;
     }
+    let saved = read_dseg_page(3);
+    if target.mesh.page != 65535 && target.mesh.page != saved {
+        unsafe {
+            write_dseg_page(3, target.mesh.page);
+        }
+    }
     i = 0;
     while i < DRIVING_BODY_VERTICES * 3 {
         expect_value(
@@ -157,6 +163,14 @@ fn check_mesh(target: &damage::Target, expected: &mut Reference, flags: u16, ver
             vertices + DRIVING_BODY_VERTICES * 3 + i,
         );
         i += 1;
+    }
+    if unsafe { Ptr::from_addr(0xc000 + complete_check::BODY_END_WORD - 1).read(0) } != 0x38b1 {
+        halt(0x7f5a);
+    }
+    if read_dseg_page(3) != saved {
+        unsafe {
+            write_dseg_page(3, saved);
+        }
     }
 }
 pub fn check_surfaces(components: Array<deform_contact::Component>, expected: &mut Reference) {
@@ -203,6 +217,14 @@ fn check_impacts(
     expect_value(attitude::get(vehicle.cooldown, 0), expected, 301);
     expect_value(context.pool.count, expected, 302);
     let saved = effect_pool::select(&context.pool);
+    let guards = unsafe { Ptr::from_addr(0x8000).as_u16_array() };
+    if guards[IMPACT_LINES_WORD - 1] != 0x1a4b
+        || guards[IMPACT_LINES_WORD + IMPACT_LINE_WORDS] != 0x4b1a
+        || guards[IMPACT_BATCHES_WORD - 1] != 0x5b6c
+        || guards[IMPACT_GUARD_WORD] != 0x6c5b
+    {
+        halt(0x7f5a);
+    }
     expect_block(context.pool.lines, expected, 606, 1600);
     effect_pool::restore(saved);
     expect_block(

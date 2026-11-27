@@ -19,7 +19,7 @@ fn terrain_queries_preserve_order_errors_and_mapping() {
                 return Ok("use crate::dsl_rt::*;pub fn index(table:Array<i16>,at:u16)->fix32{halt(0x7cfe);}".to_owned());
             }
             let path =
-                if ["terrain","body","integer","sampling","ground","random","deformation","object_query","collision","driving","attitude","suspension","drive","vehicle"].contains(&name)
+                if ["damage","terrain","body","integer","sampling","ground","random","deformation","object_query","collision","driving","attitude","suspension","drive","vehicle"].contains(&name)
                 {
                     root.join("applications/tankracer/rcc")
                         .join(format!("{name}.rs"))
@@ -109,7 +109,7 @@ use crate::dsl_rt::*;
 mod terrain; use terrain::*;
 mod integer;
 mod sampling;
-mod ground;mod random;mod deformation;mod object_query;mod collision;
+mod ground;mod random;mod deformation;mod object_query;mod collision;mod damage;
 mod body;mod driving;mod attitude;mod suspension;mod drive;mod vehicle;mod trig_lookup;
 mod static_assets; use static_assets::AssetBytes;
 fn n(value:i16)->fix32 {integer::from_i16(value)}
@@ -175,7 +175,7 @@ fn rollback_branches(asset:AssetBytes){
  sampling::put(aux.as_array(),0,fix32::from_words(0,4));sampling::put(f.as_array(),0,n(33));sampling::put(f.as_array(),26,n(4));sampling::put(f.as_array(),27,n(1));
  sampling::put(dc.as_array(),47,n(1000));sampling::put(dc.as_array(),258,n(9000));sampling::put(dc.as_array(),259,n(1));
  sampling::put(a.as_array(),21,n(456));sampling::put(m.as_array(),4,n(777));sampling::put(s.as_array(),0,n(99));
- let mut car=driving::Car{entity:n(0),slot:0,player:true,visible:true,blast:unsafe{Ptr::from_addr(0).as_u16_array()},marker:unsafe{Ptr::from_addr(0).as_u16_array()},attitude:a.as_array(),suspension:s.as_array(),drive:d.as_array(),motion:m.as_array(),boost:b.as_array(),tracks:tracks.as_array(),ground:ground::zero(),articulation:Buf::new([0;8]),lean:Buf::new([0;8]),hull:Buf::new([0;37]),ready:false,turret_z:n(0),gun:unsafe{tracks.as_ptr().as_i16_array()},gun_binding:tracks.as_array()};
+ let mut car=driving::Car{entity:n(0),owner:0,profile:0,slot:0,player:true,visible:true,blast:unsafe{Ptr::from_addr(0).as_u16_array()},marker:unsafe{Ptr::from_addr(0).as_u16_array()},attitude:a.as_array(),suspension:s.as_array(),drive:d.as_array(),motion:m.as_array(),boost:b.as_array(),tracks:tracks.as_array(),ground:ground::zero(),articulation:Buf::new([0;8]),lean:Buf::new([0;8]),hull:Buf::new([0;37]),ready:false,turret_z:n(0),gun:unsafe{tracks.as_ptr().as_i16_array()},gun_binding:tracks.as_array()};
  let mut i=0u16;while i<4 {car.ground.points[i].local_x=n(8);car.ground.points[i].local_y=n(4792);car.ground.points[i].local_z=n(8);car.ground.points[i].kind=n(55);i+=1;}
  sampling::put(car.ground.effect.as_array(),0,n(1));
  let config=driving::Config{spring:sc.as_array(),drive:dc.as_array(),attitude:cfg.as_array(),pose:cfg.as_array(),sampling:cfg.as_array(),auxiliary:aux.as_array(),environment:cfg.as_array(),body:cfg.as_array(),sine:unsafe{cfg.as_array().as_ptr().as_i16_array()},angle:unsafe{cfg.as_array().as_ptr().as_i16_array()}};
@@ -190,7 +190,41 @@ fn rollback_branches(asset:AssetBytes){
  assert!(sampling::raw(car.boost,0)==n(1000) && sampling::raw(car.boost,1)==n(8967) && sampling::raw(car.boost,3)==n(4967));
  data[39u16]=77;world.terrain.finish();
 }
+fn damage_pages(){
+ let saved=read_dseg_page(3);
+ let basis:Buf<u16,18>=Buf::new([0;18]);
+ let zero:Buf<u16,6>=Buf::new([0;6]);
+ let flags:Buf<u16,10>=Buf::new([0;10]);
+ attitude::put(basis.as_array(),0,n(4096));
+ attitude::put(basis.as_array(),4,n(4096));
+ attitude::put(basis.as_array(),8,n(4096));
+ let header:Buf<u16,4>=Buf::new([1;4]);
+ let mut selection=header.as_array();
+ let mut h=unsafe{Ptr::from_addr(0xc000).as_u16_array()};
+ unsafe{write_dseg_page(3,129);}
+ h[4u16]=123;h[5u16]=456;h[6u16]=789;
+ unsafe{write_dseg_page(3,137);}
+ let mut target=damage::Target{state:flags.as_array(),player:true,basis:basis.as_array(),position:zero.as_array(),
+  selected:header.as_array(),has_revision:false,revision:zero.as_array(),mesh:damage::Mesh{page:129,present:true,
+   vertices:unsafe{Ptr::from_addr(0xc004).as_i16_array()},vertex_count:1,indices:header.as_array(),
+   normals:unsafe{Ptr::from_addr(0xc008).as_i16_array()},face_count:0}};
+ assert!(damage::hit(&mut target,zero.as_array(),false)==2);
+ assert!(flags[2u16]==1 && read_dseg_page(3)==137);
+ assert!(damage::hit(&mut target,zero.as_array(),false)==0 && read_dseg_page(3)==137);
+ let mut f=flags.as_array();f[2u16]=0;target.mesh.present=false;
+ assert!(damage::hit(&mut target,zero.as_array(),false)==3 && read_dseg_page(3)==137);
+ unsafe{write_dseg_page(3,129);}
+ assert!(h[4u16]==123 && h[5u16]==456 && h[6u16]==789);
+ let mut i=0u16;while i<4{selection[i]=0;i+=1;}
+ unsafe{write_dseg_page(3,137);}
+ f[2u16]=0;target.mesh.present=true;
+ assert!(damage::hit(&mut target,zero.as_array(),false)==1 && read_dseg_page(3)==137);
+ unsafe{write_dseg_page(3,129);}
+ assert!(h[4u16]==105 && h[5u16]==456 && h[6u16]==481);
+ unsafe{write_dseg_page(3,saved);}
+}
 fn main(){
+ damage_pages();
  let saved=read_dseg_page(3);
  let asset=AssetBytes{first_sector:0x4000,sector_count:256,byte_len_lo:32768,byte_len_hi:0};
  let mut scope=Terrain::begin(asset);

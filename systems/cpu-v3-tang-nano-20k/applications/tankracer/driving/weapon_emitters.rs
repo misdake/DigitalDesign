@@ -95,7 +95,7 @@ pub fn tick(
             dt: attitude::get(frame, 0),
             simulation: true,
             camera: camera.as_array(),
-            player: at(state.cars[0u16].motion, 18),
+            player: at(state.cars[state.slots[0u16]].motion, 18),
             player_present: true,
             records: records.as_array(),
             count: 5,

@@ -39,7 +39,7 @@ pub fn place(
         &scene_mines::Placement {
             owner: car.entity,
             position: at(car.motion, 6),
-            repeat: false,
+            repeat: event[0u16] == 7,
             kind: fix32::from_words(kind, 0),
             frame: g(frame, 26),
             class: fix32::from_words(header[6u16], 0),
@@ -72,7 +72,7 @@ pub fn tick(
         fix32::from_words(header[26u16], 0),
         18,
     );
-    let vehicles: Buf<scene_mines::Vehicle, 2> = Buf::new([
+    let vehicles: Buf<scene_mines::Vehicle, 3> = Buf::new([
         scene_mines::Vehicle {
             present: true,
             position: at(state.cars[0u16].motion, 6),
@@ -80,6 +80,10 @@ pub fn tick(
         scene_mines::Vehicle {
             present: true,
             position: at(state.cars[1u16].motion, 6),
+        },
+        scene_mines::Vehicle {
+            present: state.car_count > 2,
+            position: at(state.cars[2u16].motion, 6),
         },
     ]);
     let mut placement = scene_mines::Placement {
@@ -109,7 +113,7 @@ pub fn tick(
             dt: g(frame, 0),
             placement: view_of(&mut placement),
             vehicles: vehicles.as_array(),
-            vehicle_count: 2,
+            vehicle_count: state.car_count,
             has_vehicles: true,
         },
     )
@@ -122,7 +126,7 @@ pub fn contact(
     frame: Array<u16>,
     object: u16,
 ) -> fix32 {
-    let own = g(frame, 28).lo_bits();
+    let own = g(frame, 27).hi_bits();
     let zero = fix32::zero();
     let page = read_dseg_page(3);
     if object >= world.count || own >= state.car_count {
@@ -162,7 +166,7 @@ pub fn contact(
             write_dseg_page(3, player.weapons.effect_page);
         }
         let car = &state.cars[own];
-        let effects = ptr(0xc000 + 6810 + own * 956);
+        let effects = ptr(0xc000 + complete_check::CAR_WORD + own * complete_check::CAR_WORDS);
         let external = g(effects, 459);
         let mut basis = car.attitude;
         if external == integer::from_i16(2) {

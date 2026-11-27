@@ -33,10 +33,10 @@ pub fn sample(
     unsafe {
         write_dseg_page(3, state.page);
     }
-    let fields = ptr(0xc000 + 10414 + car.slot * 26);
-    let stored = ptr(0xc000 + 10360 + car.slot * 28);
-    let core = at(state.prefixes, car.slot * 50);
-    let effects = ptr(0xc000 + 6810 + car.slot * 956);
+    let fields = ptr(0xc000 + complete_check::INPUT_WORD + car.owner * 26);
+    let stored = ptr(0xc000 + complete_check::METADATA_WORD + 2 + car.owner * 28);
+    let core = at(state.prefixes, car.owner * 50);
+    let effects = ptr(0xc000 + complete_check::CAR_WORD + car.owner * complete_check::CAR_WORDS);
     p(fields, 12, g(frame, 3));
     let tuning: Buf<u16, 12> = Buf::new([800, 0, 70, 0, 800, 0, 720, 0, 720, 0, 700, 0]);
     let values: Buf<u16, 20> = Buf::new([0; 20]);
@@ -60,7 +60,7 @@ pub fn sample(
         axes.as_array(),
     );
     if outcome & 1 != 0 {
-        let aux = at(state.auxiliary, car.slot * 36);
+        let aux = at(state.auxiliary, car.owner * 36);
         player_control::collision_decay(
             &player_control::Collision {
                 counters: at(aux, 30),
@@ -117,6 +117,7 @@ pub fn sample(
         );
     }
     p(frame, 4, g(fields, 1));
+    p(frame, 28, g(fields, 4));
     copy(at(frame, 38), stored, 14);
     // The physical sampler owns column 29 after input protocol decoding.
     p(frame, 29, fix32::from_words((command >> 13) & 1, 0));

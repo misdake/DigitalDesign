@@ -153,9 +153,14 @@ pub fn step(
         ..Default::default()
     };
     let mut control = reference::drive_fixture::frame(&input, &env);
-    control.extend([number as i32, 0, own as i32, 0]);
+    let yaw_lock = world.vehicles.entries[own]
+        .as_ref()
+        .unwrap()
+        .physics
+        .yaw_lock;
+    control.extend([number as i32, (own as i32) << 16, yaw_lock, 0]);
     let visible = world.vehicles.entries[own].as_ref().unwrap().visible;
-    control[27] = 256 | i32::from(visible);
+    control[27] |= 256 | i32::from(visible);
     control[29] = sampled;
     let result = if full {
         Ok(())

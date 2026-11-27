@@ -455,6 +455,7 @@ pub fn live_peer(
     actors: Array<driving::Car>,
     ids: &entities::State,
     world: &scene_world::World,
+    primary: u16,
 ) -> Array<u16> {
     let row = at(components.records, (object * 8) as i16);
     let properties = at(world.properties, (object * 16) as i16);
@@ -466,7 +467,7 @@ pub fn live_peer(
         let kind = entities::handle_kind(ids, peer);
         let index = entities::handle(ids, peer);
         if index.hi_bits() == 0 {
-            if kind == 2 && index.lo_bits() < 2 {
+            if kind == 2 && index.lo_bits() < 3 {
                 return actors[index.lo_bits()].attitude;
             }
             if kind == 1 && index.lo_bits() < world.count {
@@ -475,7 +476,7 @@ pub fn live_peer(
         }
         halt(0x7f19);
     }
-    actors[0u16].attitude
+    actors[primary].attitude
 }
 fn compare_block(
     actual: Array<u16>,

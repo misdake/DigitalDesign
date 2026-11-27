@@ -88,7 +88,7 @@ pub fn integrate_and_pose(state: &State, config: &Config, frame: &Frame) -> fix3
     let controls: Buf<u16, 3> = Buf::new([0; 3]);
     let mut c = controls.as_array();
     fix32::store_words(c, 0, frame.dt);
-    c[2u16] = frame.number.lo_bits();
+    c[2u16] = (frame.number.lo_bits() % 10 + (frame.number.hi_bits() % 10) * 6) % 10;
     let flags: Buf<u16, 1> = Buf::new([0; 1]);
     if !attitude::step(
         a,

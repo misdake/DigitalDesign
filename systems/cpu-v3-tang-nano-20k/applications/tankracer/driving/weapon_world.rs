@@ -45,7 +45,8 @@ pub fn tick(
         || (kind == 3 && method.id != 93)
         || (kind == 4 && method.id != 125)
         || (kind != 1 && kind != 2 && kind != 3 && kind != 4)
-        || state.car_count != 2
+        || state.car_count == 0
+        || state.car_count > 3
     {
         return integer::from_i16(-5);
     }
@@ -72,7 +73,7 @@ pub fn tick(
     if kind == 3 {
         let a = &state.cars[0u16];
         let b = &state.cars[1u16];
-        let cars: Buf<scene_explosions::Vehicle, 2> = Buf::new([
+        let cars: Buf<scene_explosions::Vehicle, 3> = Buf::new([
             scene_explosions::Vehicle {
                 present: true,
                 entity: a.entity,
@@ -84,6 +85,12 @@ pub fn tick(
                 entity: b.entity,
                 position: at(b.motion, 18),
                 basis: b.attitude,
+            },
+            scene_explosions::Vehicle {
+                present: state.car_count > 2,
+                entity: state.cars[2u16].entity,
+                position: at(state.cars[2u16].motion, 18),
+                basis: state.cars[2u16].attitude,
             },
         ]);
         let status = scene_explosions::dispatch(
@@ -99,7 +106,7 @@ pub fn tick(
                 sine: player.sine,
                 simulation: true,
                 vehicles: cars.as_array(),
-                vehicle_count: 2,
+                vehicle_count: state.car_count,
             },
         );
         if status == zero {
@@ -138,12 +145,12 @@ pub fn tick(
         bounds: ptr(0),
         radius: zero,
     };
-    let cars: Buf<projectile_sweep::Car, 2> = Buf::new([empty; 2]);
+    let cars: Buf<projectile_sweep::Car, 3> = Buf::new([empty; 3]);
     let mut rows = cars.as_array();
     let mut i = 0u16;
-    while i < 2 {
+    while i < state.car_count {
         let car = &state.cars[i];
-        let effects = ptr(0xc000 + 6810 + i * 956);
+        let effects = ptr(0xc000 + complete_check::CAR_WORD + i * complete_check::CAR_WORDS);
         rows[i] = projectile_sweep::Car {
             entity: car.entity,
             present: true,
@@ -154,8 +161,8 @@ pub fn tick(
             basis: car.attitude,
             turret: effects,
             velocity: car.motion,
-            bounds: at(bounds.as_array(), (i * 14) as i16),
-            radius: attitude::get(at(bounds.as_array(), (i * 14) as i16), 6),
+            bounds: at(bounds.as_array(), (car.profile * 14) as i16),
+            radius: attitude::get(at(bounds.as_array(), (car.profile * 14) as i16), 6),
         };
         i += 1;
     }
@@ -172,7 +179,7 @@ pub fn tick(
             carrier_released: false,
             cars: projectile_sweep::Cars {
                 records: cars.as_array(),
-                count: 2,
+                count: state.car_count,
                 slots: state.slots,
                 present: true,
             },
@@ -205,10 +212,10 @@ pub fn tick(
         position: ptr(0),
         basis: ptr(0),
     };
-    let ufo_cars: Buf<scene_ufos::Car, 2> = Buf::new([empty_ufo; 2]);
+    let ufo_cars: Buf<scene_ufos::Car, 3> = Buf::new([empty_ufo; 3]);
     let mut ufo_rows = ufo_cars.as_array();
     i = 0;
-    while i < 2 {
+    while i < state.car_count {
         let car = &state.cars[i];
         ufo_rows[i] = scene_ufos::Car {
             present: true,
@@ -222,7 +229,7 @@ pub fn tick(
     }
     let carriers = scene_ufos::Cars {
         records: ufo_cars.as_array(),
-        count: 2,
+        count: state.car_count,
         present: true,
     };
     let mut action = projectile_flight::zero();
@@ -240,7 +247,7 @@ pub fn tick(
         if action.kind == 4 {
             let a = &state.cars[0u16];
             let b = &state.cars[1u16];
-            let cars: Buf<scene_projectile_impact::Car, 2> = Buf::new([
+            let cars: Buf<scene_projectile_impact::Car, 3> = Buf::new([
                 scene_projectile_impact::Car {
                     present: true,
                     entity: a.entity,
@@ -265,9 +272,21 @@ pub fn tick(
                     blast: b.blast,
                     marker: b.marker,
                 },
+                scene_projectile_impact::Car {
+                    present: state.car_count > 2,
+                    entity: state.cars[2u16].entity,
+                    player: state.cars[2u16].player,
+                    visible: state.cars[2u16].visible,
+                    base_position: at(state.cars[2u16].motion, 18),
+                    physical_position: at(state.cars[2u16].motion, 6),
+                    velocity: state.cars[2u16].motion,
+                    angular: at(state.cars[2u16].attitude, 42),
+                    blast: state.cars[2u16].blast,
+                    marker: state.cars[2u16].marker,
+                },
             ]);
             let model = player.hit_model.as_array();
-            let hits: Buf<scene_explosions::HitVehicle, 2> = Buf::new([
+            let hits: Buf<scene_explosions::HitVehicle, 3> = Buf::new([
                 scene_explosions::HitVehicle {
                     present: true,
                     entity: a.entity,
@@ -283,6 +302,14 @@ pub fn tick(
                     spin: at(player.prefixes, 84),
                     has_body: model[7u16] != 0,
                     radius: model[13u16] as i16,
+                },
+                scene_explosions::HitVehicle {
+                    present: state.car_count > 2,
+                    entity: state.cars[2u16].entity,
+                    velocity: state.cars[2u16].motion,
+                    spin: at(player.prefixes, 134),
+                    has_body: model[14u16] != 0,
+                    radius: model[20u16] as i16,
                 },
             ]);
             let impact = scene_projectile_impact::Impact {
@@ -305,7 +332,7 @@ pub fn tick(
                 sine: player.sine,
                 hits: hits.as_array(),
                 cars: cars.as_array(),
-                vehicle_count: 2,
+                vehicle_count: state.car_count,
                 has_vehicles: true,
                 slots: state.slots,
                 camera_impulse: ptr(0xc000 + CAMERA_WORD),
@@ -330,7 +357,7 @@ pub fn tick(
             let mut handled = false;
             if action.has_contact {
                 let target = action.contact.vehicle;
-                if target.hi_bits() != 0 || target.lo_bits() >= 2 {
+                if target.hi_bits() != 0 || target.lo_bits() >= state.car_count {
                     status = integer::from_i16(-4);
                 } else {
                     if weapon == integer::from_i16(3) {

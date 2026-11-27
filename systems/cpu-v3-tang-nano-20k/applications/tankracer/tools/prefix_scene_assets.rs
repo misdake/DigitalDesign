@@ -3,7 +3,7 @@ use tankracer_game::{vehicle_runtime::SinglePlayer, vehicle_startup::Player};
 fn wide(out: &mut Vec<u16>, value: i32) {
     out.extend([value as u16, (value >> 16) as u16]);
 }
-fn car(out: &mut Vec<u16>, player: &Player) {
+pub fn car(out: &mut Vec<u16>, player: &Player) {
     let s = &player.prefix;
     for value in [
         s.alternating_sign,

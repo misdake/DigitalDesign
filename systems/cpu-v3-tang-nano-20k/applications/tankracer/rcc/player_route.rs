@@ -228,6 +228,25 @@ pub fn search(r: &Routes, world: &scene_world::World, ids: &entities::State, q: 
     p(q.result, 1, value);
     n(0)
 }
+// Shared checkpoint plane test. The caller resolves the link and collider;
+// geometry is readonly and this query consumes no RNG.
+pub fn inside_gate(raw: Array<u16>, position: Array<u16>, width: fix32) -> bool {
+    let delta: Buf<u16, 6> = Buf::new([0; 6]);
+    let d = delta.as_array();
+    let mut axis = 0u16;
+    while axis < 3 {
+        let value = g(position, axis) - g(raw, 1 + axis);
+        if abs(value) >= fix32::from_words(51200, 0) {
+            return false;
+        }
+        p(d, axis, value);
+        axis += 1;
+    }
+    if g(raw, 29) != n(0) {
+        collision::transform(d, at(raw, 26), d, true);
+    }
+    g(d, 2) > n(0) && abs(g(d, 0)) < integer::sar(width, 1)
+}
 pub fn cross(
     r: &Routes,
     world: &scene_world::World,
@@ -262,22 +281,7 @@ pub fn cross(
     if !scene_world::load_collider(world, next_id.lo_bits(), raw) {
         return n(-4);
     }
-    let delta: Buf<u16, 6> = Buf::new([0; 6]);
-    let d = delta.as_array();
-    let mut axis = 0u16;
-    while axis < 3 {
-        let value = g(position, axis) - g(raw, 1 + axis);
-        if abs(value) >= fix32::from_words(51200, 0) {
-            p(result, 0, n(0));
-            return n(0);
-        }
-        p(d, axis, value);
-        axis += 1;
-    }
-    if g(raw, 29) != n(0) {
-        collision::transform(d, at(raw, 26), d, true);
-    }
-    if g(d, 2) <= n(0) || abs(g(d, 0)) >= integer::sar(g(row, 6), 1) {
+    if !inside_gate(raw, position, g(row, 6)) {
         p(result, 0, n(0));
         return n(0);
     }

@@ -191,7 +191,7 @@ pub fn step(
         extra_drive: if setup.prepare { boost.power } else { 0 },
     };
     let mut control = reference::drive_fixture::frame(&input, &de);
-    control.extend([number as i32, 0, own as i32, 0]);
+    control.extend([number as i32, (own as i32) << 16, 0, 0]);
     v.powertrain
         .step(
             &mut v.motion,

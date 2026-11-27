@@ -1,6 +1,15 @@
 //! Complete physics tail over the driving owner's live data and effects page.
 #![link_cseg = "pickups"]
 use super::*;
+pub const CAR_WORD: u16 = 12212;
+pub const CAR_WORDS: u16 = 956;
+pub const CAR_CAPACITY: u16 = 3;
+pub const BODY_WORD: u16 = 6810;
+pub const BODY_END_WORD: u16 = 7670;
+pub const FINISH_MESH_WORD: u16 = 7670;
+pub const METADATA_WORD: u16 = 8010;
+pub const INPUT_WORD: u16 = 8094;
+pub const FINISH_AI_WORD: u16 = 8172;
 pub struct State {
     pub enabled: bool,
     pub page: u16,
@@ -27,7 +36,7 @@ fn n(v: i16) -> fix32 {
     integer::from_i16(v)
 }
 fn row(slot: u16) -> Array<u16> {
-    ptr(0xc000 + 6810 + slot * 956)
+    ptr(0xc000 + CAR_WORD + slot * CAR_WORDS)
 }
 pub fn load(
     case: u16,
@@ -43,12 +52,57 @@ pub fn load(
         unsafe {
             write_dseg_page(3, page);
         }
+        if CAR_WORD <= scene_trains::GUARD_WORD + 1
+            || CAR_WORD + CAR_CAPACITY * CAR_WORDS >= weapon_world::OVERLAY_WORD - 1
+        {
+            halt(0x7f5a);
+        }
+        let initial = driving_complete_initial(case);
+        // Source diagnostics keep their original layout. Decode each segment
+        // directly into its authoritative owner; the old car region is free.
+        pickup_check::read_pickup_stage(ptr(0xc000), initial, 0, 6810);
+        pickup_check::read_pickup_stage(row(0), initial, 6810, CAR_WORDS * 2);
         pickup_check::read_pickup_stage(
-            ptr(0xc000),
-            driving_complete_initial(case),
-            0,
-            DRIVING_COMPLETE_WORDS,
+            ptr(0xc000 + 8722),
+            initial,
+            8722,
+            DRIVING_COMPLETE_WORDS - 8722,
         );
+        let mut old = ptr(0xc000 + 6810);
+        let mut i = 0u16;
+        while i < CAR_WORDS * 2 {
+            old[i] = 0xa6db;
+            i += 1;
+        }
+        pickup_check::read_pickup_stage(ptr(0xc000 + METADATA_WORD), initial, 10358, 56);
+        pickup_check::read_pickup_stage(ptr(0xc000 + INPUT_WORD), initial, 10414, 52);
+        let mut metadata = ptr(0xc000 + METADATA_WORD + 56);
+        i = 0;
+        while i < 28 {
+            metadata[i] = 0;
+            i += 1;
+        }
+        let mut input = ptr(0xc000 + INPUT_WORD + 52);
+        i = 0;
+        while i < 26 {
+            input[i] = 0;
+            i += 1;
+        }
+        let mut old_metadata = ptr(0xc000 + 10358);
+        i = 0;
+        while i < 108 {
+            old_metadata[i] = 0xa6db;
+            i += 1;
+        }
+        let mut reserved = row(2);
+        i = 0;
+        while i < CAR_WORDS {
+            reserved[i] = 0;
+            i += 1;
+        }
+        let mut guards = ptr(0xc000);
+        guards[CAR_WORD - 1] = 0x71c3;
+        guards[CAR_WORD + CAR_CAPACITY * CAR_WORDS] = 0x3c17;
         pickups.quads.count = g(ptr(0xc000 + 6800), 0);
         let mut end = ptr(0xffff);
         end[0u16] = 0x53a9;
@@ -100,9 +154,9 @@ pub fn inactive(
     unsafe {
         write_dseg_page(3, state.page);
     }
-    let b = row(car.slot);
-    let metadata = ptr(0xc000 + 10358 + car.slot * 28);
-    let core = sub(state.prefixes, car.slot * 50);
+    let b = row(car.owner);
+    let metadata = ptr(0xc000 + METADATA_WORD + car.owner * 28);
+    let core = sub(state.prefixes, car.owner * 50);
     let contacts = unsafe { car.ground.points.as_array().as_ptr().as_u16_array() };
     let live = vehicle_inactive::State {
         poses: vehicle_pose::State {
@@ -144,19 +198,23 @@ pub fn inactive(
         smoke: sub(b, 480),
         lights: sub(b, 830),
         debris: sub(b, 842),
-        cooldown: sub(state.auxiliary, car.slot * 36),
+        cooldown: sub(state.auxiliary, car.owner * 36),
         contacts: sub(contacts, 6),
         contact_stride: 17,
         reverse_braking: sub(b, 948),
         disabled: sub(b, 950),
     };
-    state.shared.own = car.slot;
-    state.shared.impact_accumulator = sub(state.auxiliary, car.slot * 36 + 30);
-    p(config.drive, 2, g(ptr(0xc000 + 10414 + car.slot * 26), 3));
+    state.shared.own = car.owner;
+    state.shared.impact_accumulator = sub(state.auxiliary, car.owner * 36 + 30);
+    p(
+        config.drive,
+        2,
+        g(ptr(0xc000 + INPUT_WORD + car.owner * 26), 3),
+    );
     p(config.drive, 18, g(core, 8));
     p(config.drive, 19, g(core, 9));
-    p(sub(state.hit_fields, car.slot * 24 + 20), 0, g(core, 8));
-    p(sub(state.hit_fields, car.slot * 24 + 20), 1, g(core, 9));
+    p(sub(state.hit_fields, car.owner * 24 + 20), 0, g(core, 8));
+    p(sub(state.hit_fields, car.owner * 24 + 20), 1, g(core, 9));
     let status = vehicle_inactive::step(
         &live,
         &vehicle_inactive::Input {
@@ -197,7 +255,7 @@ pub fn publish_prefix(
     prefix: &prefix::State,
     drive_grip: Array<u16>,
 ) {
-    let b = row(car.slot);
+    let b = row(car.owner);
     p(sub(b, 902), 0, g(prefix.core, 4));
     p(sub(b, 952), 0, g(prefix.core, 4));
     p(sub(b, 954), 0, g(prefix.core, 5));
@@ -219,7 +277,7 @@ pub fn advance(
     unsafe {
         write_dseg_page(3, state.page);
     }
-    let b = row(car.slot);
+    let b = row(car.owner);
     let dt = g(frame, 0);
     let number = g(frame, 26);
     let contacts = unsafe { car.ground.points.as_array().as_ptr().as_u16_array() };
@@ -305,8 +363,8 @@ pub fn advance(
     if car.visible {
         visible = n(1);
     }
-    state.shared.own = car.slot;
-    state.shared.impact_accumulator = sub(state.auxiliary, car.slot * 36 + 30);
+    state.shared.own = car.owner;
+    state.shared.impact_accumulator = sub(state.auxiliary, car.owner * 36 + 30);
     let mut shield_bank = n(0);
     if car.player {
         shield_bank = n(1);
@@ -327,7 +385,7 @@ pub fn advance(
         },
         marks: track_effects::MarksInput {
             player: car.player,
-            deformable: g(sub(state.auxiliary, car.slot * 36), 14) != n(-1),
+            deformable: g(sub(state.auxiliary, car.owner * 36), 14) != n(-1),
             mode: g(frame, 1),
             dt: dt,
             lateral: g(car.motion, 14),
@@ -442,13 +500,26 @@ pub fn advance(
     status
 }
 fn check_vehicle_fields(state: &State, expected: &mut Reference, end: u16) {
-    expect_block(ptr(0xc000 + 6802), expected, 6802, 960);
+    expect_block(ptr(0xc000 + 6802), expected, 6802, 8);
+    expect_block(row(0), expected, 6810, 952);
     expect_block(sub(state.prefixes, 8), expected, 7762, 4);
-    expect_block(ptr(0xc000 + 7766), expected, 7766, 952);
+    expect_block(row(1), expected, 7766, 952);
     expect_block(sub(state.prefixes, 58), expected, 8718, 4);
-    expect_block(ptr(0xc000 + 8722), expected, 8722, end - 8722);
+    expect_block(ptr(0xc000 + 8722), expected, 8722, 10358 - 8722);
+    expect_block(ptr(0xc000 + METADATA_WORD), expected, 10358, 56);
+    let mut words = end - 10414;
+    if words > 52 {
+        words = 52;
+    }
+    expect_block(ptr(0xc000 + INPUT_WORD), expected, 10414, words);
+    if end > 10466 {
+        expect_block(ptr(0xc000 + 10466), expected, 10466, 2);
+    }
 }
 pub fn check(state: &State, case: u16, offset: fix32) -> fix32 {
+    check_asset(state, case, offset, driving_complete_frames(case))
+}
+pub fn check_asset(state: &State, case: u16, offset: fix32, asset: AssetBytes) -> fix32 {
     if !state.enabled {
         return offset;
     }
@@ -456,11 +527,7 @@ pub fn check(state: &State, case: u16, offset: fix32) -> fix32 {
     unsafe {
         write_dseg_page(3, state.page);
     }
-    let mut expected = reference(
-        driving_complete_frames(case),
-        offset,
-        DRIVING_COMPLETE_WORDS,
-    );
+    let mut expected = reference(asset, offset, DRIVING_COMPLETE_WORDS);
     // Count is owned by the shared pool descriptor. The source snapshot places
     // its diagnostic column between quad records and vehicle state.
     expect_block(ptr(0xc000), &mut expected, 0, 6800);
@@ -470,13 +537,16 @@ pub fn check(state: &State, case: u16, offset: fix32) -> fix32 {
         // These two diagnostic columns alias the authoritative route/racer rows.
         check_vehicle_fields(state, &mut expected, 10438);
         expect_value(g(state.racers, 13), &mut expected, 5219);
-        expect_block(ptr(0xc000 + 10440), &mut expected, 10440, 24);
+        expect_block(ptr(0xc000 + INPUT_WORD + 26), &mut expected, 10440, 24);
         expect_value(g(sub(state.racers, 30), 13), &mut expected, 5232);
         expect_block(ptr(0xc000 + 10466), &mut expected, 10466, 2);
     } else {
         check_vehicle_fields(state, &mut expected, DRIVING_COMPLETE_WORDS);
     }
-    if ptr(0xffff)[0u16] != 0x53a9 {
+    if ptr(0xffff)[0u16] != 0x53a9
+        || ptr(0xc000 + CAR_WORD - 1)[0u16] != 0x71c3
+        || ptr(0xc000 + CAR_WORD + CAR_CAPACITY * CAR_WORDS)[0u16] != 0x3c17
+    {
         halt(0x7f51);
     }
     unsafe {

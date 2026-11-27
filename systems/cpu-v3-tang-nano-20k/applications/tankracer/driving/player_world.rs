@@ -2,7 +2,7 @@
 #![link_cseg = "world"]
 use super::*;
 pub const BLAST_WORD: u16 = 16000;
-pub const TAIL_WORD: u16 = 15232;
+pub const TAIL_WORD: u16 = 8234;
 pub const COMBAT_WORD: u16 = 15320;
 pub const COMBAT_ROW: u16 = 334;
 pub struct Player {
@@ -15,9 +15,10 @@ pub struct Player {
     pub ambient_word: u16,
     pub ambient_sounds: u16,
     pub context_end: u16,
-    pub hit_fields: Buf<u16, 48>,
-    pub hit_model: Buf<u16, 14>,
+    pub hit_fields: Buf<u16, 72>,
+    pub hit_model: Buf<u16, 21>,
     pub body: Array<u16>,
+    pub body_selection: Buf<u16, 4>,
     pub auxiliary: Array<u16>,
     pub prefixes: Array<u16>,
     pub clock: Buf<u16, 6>,
@@ -28,6 +29,17 @@ pub struct Player {
     pub drive: Array<u16>,
     pub surfaces: Array<deform_contact::Component>,
     pub pickup_bindings: Array<u16>,
+    pub present: Array<u16>,
+    pub finish_entity: fix32,
+    pub finish_old: u16,
+    pub finish_stage: u16,
+    pub finish_rank: u16,
+}
+pub fn combat(owner: u16) -> Array<u16> {
+    if owner == 2 {
+        return ptr(0xc000 + complete_check::FINISH_MESH_WORD);
+    }
+    ptr(0xc000 + COMBAT_WORD + owner * COMBAT_ROW)
 }
 fn ptr(word: u16) -> Array<u16> {
     unsafe { Ptr::from_addr(word).as_u16_array() }
@@ -63,9 +75,12 @@ pub fn load(
         ambient_word: 0,
         ambient_sounds: 0,
         context_end: 0,
-        hit_fields: Buf::new([0; 48]),
-        hit_model: Buf::new([1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]),
+        hit_fields: Buf::new([0; 72]),
+        hit_model: Buf::new([
+            1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]),
         body: ptr(0),
+        body_selection: Buf::new([0; 4]),
         auxiliary: ptr(0),
         prefixes: ptr(0),
         clock: Buf::new([0; 6]),
@@ -76,6 +91,11 @@ pub fn load(
         drive: ptr(0),
         surfaces: unsafe { Ptr::from_addr(0).as_array::<deform_contact::Component>() },
         pickup_bindings: ptr(0),
+        present: ptr(0),
+        finish_entity: n(-1),
+        finish_old: 65535,
+        finish_stage: 0,
+        finish_rank: 0,
         weapons: scene_creation::Weapons {
             directory: ptr(0),
             directory_stride: 8,
@@ -103,6 +123,13 @@ pub fn load(
             mine_count: at(mines, 64),
         },
     };
+    // The lower meshes share this immutable source header, including after cloning.
+    read(
+        result.body_selection.as_array(),
+        DRIVING_MESH,
+        fix32::zero(),
+        4,
+    );
     if !driving_has_player(case) {
         return result;
     }
@@ -177,7 +204,13 @@ pub fn load(
     pickup_check::read_pickup_stage(ptr(0xc000 + TAIL_WORD), driving_player(case), 124, 14);
     let mut raw = ptr(0xc000);
     raw[TAIL_WORD - 1] = 0x19c7;
-    raw[TAIL_WORD + 14] = 0x7c91;
+    let mut reserved_tail = ptr(0xc000 + TAIL_WORD + 14);
+    let mut tail_word = 0u16;
+    while tail_word < 7 {
+        reserved_tail[tail_word] = 0;
+        tail_word += 1;
+    }
+    raw[TAIL_WORD + 21] = 0x7c91;
     pickup_check::read_pickup_stage(
         ptr(0xc000 + weapon_world::OVERLAY_WORD),
         driving_player(case),
@@ -403,15 +436,32 @@ pub fn tank_input(car: &driving::Car, player: &Player, frame: Array<u16>, mut ou
     p(out, 0, g(frame, 0));
     p(out, 1, g(frame, 1));
     p(out, 2, fix32::from_words(car.player as u16, 0));
-    p(out, 3, g(at(player.fields, (car.slot * 30 + 22) as i16), 2));
+    p(
+        out,
+        3,
+        g(at(player.fields, (car.owner * 30 + 22) as i16), 2),
+    );
     p(out, 26, g(frame, 26));
-    p(out, 27, fix32::from_words(256 | car.visible as u16, 0));
-    p(out, 28, fix32::from_words(car.slot, 0));
+    // Visibility and owner are transport metadata; column 28 is physical yaw lock.
+    p(
+        out,
+        27,
+        fix32::from_words(256 | car.visible as u16, car.owner),
+    );
     let saved = read_dseg_page(3);
     unsafe {
         write_dseg_page(3, player.weapons.effect_page);
     }
-    copy(at(out, 38), ptr(0xc000 + 10360 + car.slot * 28), 14);
+    p(
+        out,
+        28,
+        g(ptr(0xc000 + complete_check::INPUT_WORD + car.owner * 26), 4),
+    );
+    copy(
+        at(out, 38),
+        ptr(0xc000 + complete_check::METADATA_WORD + 2 + car.owner * 28),
+        14,
+    );
     unsafe {
         write_dseg_page(3, saved);
     }
@@ -425,8 +475,8 @@ pub fn prepare(
     frame: Array<u16>,
 ) -> fix32 {
     let command = g(frame, 29).lo_bits();
-    let own = g(frame, 28).lo_bits();
-    if own >= 2 || !state.cars[own].player {
+    let own = g(frame, 27).hi_bits();
+    if own >= state.car_count || !state.cars[own].player {
         return n(-1);
     }
     let header: Buf<u16, 56> = Buf::new([0; 56]);
@@ -472,10 +522,10 @@ pub fn prepare(
     let mut actors = state.cars;
     let car = &mut actors[own];
     copy(camera.as_array(), ptr(0xc000 + 10174), 6);
-    let fields = ptr(0xc000 + 10414 + own * 26);
-    let stored = ptr(0xc000 + 10360 + own * 28);
+    let fields = ptr(0xc000 + complete_check::INPUT_WORD + own * 26);
+    let stored = ptr(0xc000 + complete_check::METADATA_WORD + 2 + own * 28);
     let core = at(complete.prefixes, (own * 50) as i16);
-    let effects = ptr(0xc000 + 6810 + own * 956);
+    let effects = ptr(0xc000 + complete_check::CAR_WORD + own * complete_check::CAR_WORDS);
     let aux = at(complete.auxiliary, (own * 36) as i16);
     let tables = projectile::Tables {
         sine: player.sine,
@@ -532,12 +582,12 @@ pub fn prepare(
         bounds: ptr(0),
         radius: fix32::zero(),
     };
-    let targets: Buf<projectile_sweep::Car, 2> = Buf::new([empty; 2]);
+    let targets: Buf<projectile_sweep::Car, 3> = Buf::new([empty; 3]);
     let mut rows = targets.as_array();
     let mut i = 0u16;
-    while i < 2 {
+    while i < state.car_count {
         let c = &state.cars[i];
-        let e = ptr(0xc000 + 6810 + i * 956);
+        let e = ptr(0xc000 + complete_check::CAR_WORD + i * complete_check::CAR_WORDS);
         rows[i] = projectile_sweep::Car {
             entity: c.entity,
             present: true,
@@ -548,8 +598,8 @@ pub fn prepare(
             basis: c.attitude,
             turret: e,
             velocity: c.motion,
-            bounds: at(bounds.as_array(), (i * 14) as i16),
-            radius: g(at(bounds.as_array(), (i * 14) as i16), 6),
+            bounds: at(bounds.as_array(), (c.profile * 14) as i16),
+            radius: g(at(bounds.as_array(), (c.profile * 14) as i16), 6),
         };
         i += 1;
     }
@@ -574,7 +624,7 @@ pub fn prepare(
         spin_shared: complete.prepared[0u16].spin,
         cars: projectile_sweep::Cars {
             records: targets.as_array(),
-            count: 2,
+            count: state.car_count,
             slots: state.slots,
             present: true,
         },
@@ -686,6 +736,7 @@ pub fn prepare(
     if status == fix32::zero() {
         p(frame, 3, g(at(routes, 22), 2));
         p(frame, 4, g(eligible.as_array(), 0));
+        p(frame, 28, g(fields, 4));
         copy(at(frame, 38), stored, 14);
         p(frame, 29, fix32::from_words((command >> 13) & 1, 0));
     }
@@ -702,7 +753,7 @@ pub fn finish(
     keys: u16,
     success: bool,
 ) -> fix32 {
-    let own = g(frame, 28).lo_bits();
+    let own = g(frame, 27).hi_bits();
     if own >= state.car_count {
         return n(-1);
     }
@@ -721,7 +772,7 @@ pub fn finish(
     if car.visible {
         flags |= 1;
     }
-    if own == 0 {
+    if own == state.slots[0u16] {
         flags |= 2;
     }
     if keys & 256 != 0 {
@@ -815,7 +866,7 @@ pub fn check(
     {
         halt(0x7f6a);
     }
-    if ptr(0xc000)[TAIL_WORD - 1] != 0x19c7 || ptr(0xc000)[TAIL_WORD + 14] != 0x7c91 {
+    if ptr(0xc000)[TAIL_WORD - 1] != 0x19c7 || ptr(0xc000)[TAIL_WORD + 21] != 0x7c91 {
         halt(0x7f69);
     }
     if ptr(0xc000)[BLAST_WORD - 1] != 0x71b3 || ptr(0xc000)[BLAST_WORD + 374] != 0x3b17 {
