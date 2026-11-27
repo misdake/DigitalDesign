@@ -30,7 +30,7 @@ static DRIVING_DYNAMIC_WORLD: StaticBuffer = StaticBuffer::new(32768, 32768);
 #[static_buffer]
 static DRIVING_WEAPONS: StaticBuffer = StaticBuffer::new(196608, 32768);
 #[static_buffer]
-static DRIVING_ACTORS: StaticBuffer = StaticBuffer::new(2122, 32768);
+static DRIVING_ACTORS: StaticBuffer = StaticBuffer::new(5874, 32768);
 mod attitude;
 mod body;
 mod bounce;
@@ -88,14 +88,17 @@ mod projectile_ricochet;
 mod projectile_sweep;
 mod projectile_trail;
 mod quad_pool;
+mod scene_actor_initial;
 mod scene_ambient;
 mod scene_ambient_world;
+mod scene_boot;
 mod scene_creation;
 mod scene_emitter;
 mod scene_explosions;
 mod scene_fire;
 mod scene_flock;
 mod scene_flock_world;
+mod scene_initial;
 mod scene_laps;
 mod scene_mines;
 mod scene_obstacle_transfer;
@@ -1110,7 +1113,13 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
             prefix_shared.temporary = complete.shared.temporary.core;
         }
         if driving_has_startup(case) {
-            startup_check::construct(actors, prefixes.as_array(), c, &complete);
+            startup_check::construct(
+                actors,
+                prefixes.as_array(),
+                c,
+                &complete,
+                driving_startup_models(case),
+            );
         }
         let route_fields: Buf<u16, 60> = Buf::new([0; 60]);
         let mine_fields: Buf<u16, 66> = Buf::new([0; 66]);
@@ -1146,6 +1155,30 @@ fn run_cases(c: &driving::Config, scenery: &mut scene_world::World) {
         player.weapons.lines = view_of(&mut effects.pool);
         let mut complete_offset = fix32::zero();
         let mut pickup_offset = fix32::zero();
+
+        if driving_has_cold_scene(case) {
+            scene_boot::construct(scene, &mut state, scenery, &mut player, &complete);
+            let expected = ExpectedScene {
+                asset: driving_scene_boot_expected(),
+                offset: fix32::zero(),
+            };
+            check_live(
+                live,
+                &state.lifetime,
+                &state.runtime,
+                scenery,
+                scene,
+                &expected,
+            );
+            check_debris(&state, driving_scene_boot_debris(), fix32::zero());
+            let offset = player.expected_offset;
+            let clock = player.clock_enabled;
+            player.expected_offset = fix32::zero();
+            player.clock_enabled = false;
+            player_world::check(&mut player, case, scenery, &state.resources);
+            player.expected_offset = offset;
+            player.clock_enabled = clock;
+        }
 
         let live_asset = driving_scenery(case);
         let mut live_offset = fix32::zero();

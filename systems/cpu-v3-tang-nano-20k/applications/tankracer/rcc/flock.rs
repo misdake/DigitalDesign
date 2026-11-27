@@ -47,6 +47,38 @@ pub fn select(model: &Model) -> u16 {
     }
     previous
 }
+// Model preparation and terrain grounding precede this boundary. Every draw
+// initializes one authored bird field; models and range retain their metadata.
+pub fn initialize(
+    state: &State,
+    origin: Array<u16>,
+    maneuver: i16,
+    seed: Array<u16>,
+    sine: Array<i16>,
+) {
+    let mut flight = state.flight;
+    let mut i = 0u16;
+    while i < 64 {
+        flight[i] = 0;
+        i += 1;
+    }
+    p(flight, 31, n(1));
+    i = 0;
+    while i < 8 {
+        let bird = at(state.birds, i * 28);
+        let x = fix32::from_words(projectile::random_word(seed) & 8191, 0) - n(4096);
+        let z = fix32::from_words(projectile::random_word(seed) & 8191, 0) - n(4096);
+        let yaw = fix32::from_words(projectile::random_word(seed), 0);
+        let speed = fix32::from_words(projectile::random_word(seed) & 63, 0) + n(maneuver);
+        p(bird, 0, g(origin, 0) + x);
+        p(bird, 1, g(origin, 1) + n(250));
+        p(bird, 2, g(origin, 2) + z);
+        projectile::basis(at(bird, 6), n(0), yaw, sine);
+        p(bird, 12, speed);
+        p(bird, 13, n(1));
+        i += 1;
+    }
+}
 // Zero continues, one requests Stop after publication, negative is a source error.
 pub fn tick(state: &State, frame: &Frame) -> fix32 {
     let f = state.flight;

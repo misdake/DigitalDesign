@@ -1,4 +1,4 @@
-//! Ordered terrain queries over one resident 32-KiB collision cell at a time.
+//! Ordered terrain queries over immutable cell records in mapped 32-KiB pages.
 use crate::dsl_rt::*;
 use crate::integer;
 use crate::static_assets::AssetBytes;
@@ -36,7 +36,8 @@ pub struct Plane {
 }
 pub struct Terrain {
     saved: u16,
-    page: u16,
+    sector: u16,
+    data: Array<u16>,
     cell: u16,
     origin_x: fix32,
     origin_z: fix32,
@@ -45,9 +46,6 @@ pub struct Terrain {
     pub switches: u16,
 }
 
-fn words() -> Array<u16> {
-    unsafe { Ptr::from_addr(0xc000).as_u16_array() }
-}
 fn i32_at(data: Array<u16>, at: u16) -> fix32 {
     fix32::from_words(data[at], data[at + 1])
 }
@@ -71,7 +69,8 @@ impl Terrain {
     pub fn begin(first: AssetBytes) -> Self {
         let mut terrain = Self {
             saved: read_dseg_page(3),
-            page: 65535,
+            sector: 65535,
+            data: unsafe { Ptr::from_addr(0).as_u16_array() },
             cell: 65535,
             origin_x: fix32::zero(),
             origin_z: fix32::zero(),
@@ -80,7 +79,7 @@ impl Terrain {
             switches: 0,
         };
         terrain.bind(first);
-        let data = words();
+        let data = terrain.data;
         terrain.origin_x = i32_at(data, 4);
         terrain.origin_z = i32_at(data, 6);
         terrain.shift_x = data[8u16] & 255;
@@ -89,40 +88,50 @@ impl Terrain {
     }
 
     pub fn bind(&mut self, asset: AssetBytes) {
-        if asset.first_sector & 255 != 0
-            || asset.sector_count != 256
-            || asset.byte_len_lo != 32768
+        let remaining = 256 - (asset.first_sector & 255);
+        if asset.sector_count == 0
+            || asset.sector_count > remaining
+            || asset.byte_len_lo != asset.sector_count << 7
             || asset.byte_len_hi != 0
         {
             halt(0x7c01);
         }
         let page = asset.first_sector >> 8;
-        if self.page == page && read_dseg_page(3) == page {
+        if self.sector == asset.first_sector && read_dseg_page(3) == page {
             return;
         }
-        unsafe {
-            write_dseg_page(3, page);
+        if read_dseg_page(3) != page {
+            unsafe {
+                write_dseg_page(3, page);
+            }
+            self.switches += 1;
         }
         if read_dseg_page(3) != page {
             halt(0x7c02);
         }
-        let data = words();
-        if data[0u16] != 0x5443 || data[1u16] != 1 || data[3u16] > 16384 {
+        let data =
+            unsafe { Ptr::from_addr(0xc000 + ((asset.first_sector & 255) << 6)).as_u16_array() };
+        if data[0u16] != 0x5443
+            || data[1u16] != 1
+            || data[3u16] < 16
+            || data[3u16] > asset.sector_count << 6
+        {
             halt(0x7c03);
         }
-        self.page = page;
+        self.sector = asset.first_sector;
+        self.data = data;
         self.cell = data[2u16];
-        self.switches += 1;
     }
 
     // Re-select a previously validated cell after another stage borrowed DSEG3.
     pub fn rebind(&mut self) {
-        if self.page == 65535 {
+        if self.sector == 65535 {
             halt(0x7c04);
         }
-        if read_dseg_page(3) != self.page {
+        let page = self.sector >> 8;
+        if read_dseg_page(3) != page {
             unsafe {
-                write_dseg_page(3, self.page);
+                write_dseg_page(3, page);
             }
             self.switches += 1;
         }
@@ -131,7 +140,7 @@ impl Terrain {
         unsafe {
             write_dseg_page(3, self.saved);
         }
-        self.page = 65535;
+        self.sector = 65535;
         self.cell = 65535;
     }
 
@@ -160,11 +169,11 @@ impl Terrain {
         if cell == 65535 {
             return selected;
         }
-        if cell != self.cell || self.page == 65535 {
+        if cell != self.cell || self.sector == 65535 {
             selected.status = 4;
             return selected;
         }
-        let data = words();
+        let data = self.data;
         let sx = integer::sar(x, 3);
         let sz = integer::sar(z, 3);
         let mut index: u16 = 0;
@@ -223,11 +232,11 @@ impl Terrain {
         if selected.status != 1 {
             return selected.status;
         }
-        let result = plane(&selected, x, z, false);
+        let result = plane(&selected, self.data, x, z, false);
         if result.status != 1 {
             return result.status;
         }
-        let data = words();
+        let data = self.data;
         let node = selected.node;
         let mesh = selected.mesh;
         let face = selected.face;
@@ -261,7 +270,7 @@ impl Terrain {
                 height: miss_height(),
             };
         }
-        plane(&selected, x, z, true)
+        plane(&selected, self.data, x, z, true)
     }
 
     pub fn normal_height(&self, x: fix32, z: fix32, normal: &mut Normal) -> Plane {
@@ -272,11 +281,11 @@ impl Terrain {
                 height: miss_height(),
             };
         }
-        let data = words();
+        let data = self.data;
         normal.x = signed(data[selected.face]);
         normal.y = signed(data[selected.face + 1]);
         normal.z = signed(data[selected.face + 2]);
-        plane(&selected, x, z, true)
+        plane(&selected, data, x, z, true)
     }
 
     pub fn fallback(&self, x: fix32, y: fix32, z: fix32, mode: u16, normal: &mut Normal) -> u16 {
@@ -284,10 +293,10 @@ impl Terrain {
         if cell == 65535 {
             return 0;
         }
-        if cell != self.cell || self.page == 65535 {
+        if cell != self.cell || self.sector == 65535 {
             return 4;
         }
-        let data = words();
+        let data = self.data;
         let sx = integer::sar(x, 3);
         let sy = integer::sar(y, 3);
         let sz = integer::sar(z, 3);
@@ -352,8 +361,7 @@ impl Terrain {
     }
 }
 
-fn plane(selection: &Selection, x: fix32, z: fix32, vertical: bool) -> Plane {
-    let data = words();
+fn plane(selection: &Selection, data: Array<u16>, x: fix32, z: fix32, vertical: bool) -> Plane {
     let mesh = selection.mesh;
     let face = selection.face;
     let vertex = data[mesh + 9] + (data[face + 3] & 255) * 3;

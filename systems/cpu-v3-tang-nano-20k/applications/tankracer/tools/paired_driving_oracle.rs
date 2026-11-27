@@ -565,6 +565,24 @@ fn main() {
             false,
         ),
         (
+            "complete-player-world-startup",
+            [0, 0],
+            16000,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
+            "complete-player-world-cold",
+            [0, 0],
+            16000,
+            Some(69),
+            true,
+            false,
+            false,
+        ),
+        (
             "complete-player-horn",
             [300000, 0],
             1600,
@@ -1206,17 +1224,37 @@ fn main() {
             false,
         ),
     ] {
-        let mut session = if name.starts_with("complete-player") {
-            player_scene_assets::prepare(
-                root,
-                reference_world::constructed_pair(root, originals[1].model.clone()),
+        let constructed_world = reference_world::constructed_pair(root, originals[1].model.clone());
+        if name == "complete-player-world-cold" {
+            let camera = &constructed_world.camera;
+            let mut values = Vec::new();
+            values.extend(camera.pose.matrix.0);
+            values.extend(camera.pose.position);
+            values.extend(camera.angles.map(|v| v as i32));
+            values.extend(camera.displacement);
+            values.extend(camera.target_angles);
+            values.push(camera.variant as i32);
+            for row in &camera.resize {
+                values.extend([
+                    i32::from(row.rate),
+                    i32::from(row.multiplier),
+                    i32::from(row.shift),
+                ]);
+            }
+            assert_eq!(values.len(), 28);
+            fs::write(
+                out.join("scene-boot-camera.bin"),
+                values
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
             )
-            .0
+            .unwrap();
+        }
+        let mut session = if name.starts_with("complete-player") {
+            player_scene_assets::prepare(root, constructed_world).0
         } else {
-            reference_world::constructed_pair(root, originals[1].model.clone())
-                .into_session()
-                .unwrap()
-                .0
+            constructed_world.into_session().unwrap().0
         };
         let mut empty = reference_world::two_cars(root, 1);
         let world = if object.is_some() {
@@ -1231,6 +1269,9 @@ fn main() {
         let entity = world.vehicles.entries[0].as_ref().unwrap().physics.entity;
         let world_pass = name.starts_with("complete-player-world");
         let world_pickup = name == "complete-player-world-pickup";
+        let cold_scene = name == "complete-player-world-cold";
+        let constructed =
+            name == "complete-startup" || name == "complete-player-world-startup" || cold_scene;
         if world_pickup {
             world.camera_position = [250, 600, -800];
         }
@@ -1440,6 +1481,37 @@ fn main() {
         }
         let mut startup_models = Vec::new();
         for (i, original) in originals.iter().enumerate() {
+            if cold_scene {
+                let p = world.vehicles.entries[i].as_ref().unwrap();
+                let v = &p.physics;
+                let spawn = v.motion.poses.body;
+                let environment = tankracer_game::vehicle_startup::Environment {
+                    ambient_wobble: false,
+                    session_active: false,
+                    ambient_phase: 0,
+                    gun_pivot: [0; 3],
+                };
+                startup_models.extend(vehicle_startup_assets::encode(
+                    &p.model,
+                    spawn,
+                    environment,
+                    v.entity,
+                    v.class,
+                    v.player,
+                ));
+                let mut p = Player::construct(
+                    v.entity,
+                    v.class,
+                    p.model.clone(),
+                    spawn,
+                    environment,
+                    v.player,
+                )
+                .unwrap();
+                p.slot = i as u8;
+                world.vehicles.entries[i] = Some(p);
+                continue;
+            }
             let mut p = original.clone();
             let v = &mut p.physics;
             v.motion = motion::State::default();
@@ -1538,7 +1610,7 @@ fn main() {
                 v.contact.sampling.primary.points[j].local = p.model.primary_local[j];
                 v.contact.response.points[j].corner = j as u32;
             }
-            if name == "complete-startup" {
+            if constructed {
                 let spawn = pose::Pose {
                     matrix: Matrix::IDENTITY,
                     position: v.motion.poses.physical_position,
@@ -1565,14 +1637,14 @@ fn main() {
         }
         if !startup_models.is_empty() {
             assert_eq!(startup_models.len(), vehicle_startup_assets::WORDS * 2);
-            fs::write(
-                out.join("startup-models.bin"),
-                startup_models
-                    .iter()
-                    .flat_map(|v| v.to_le_bytes())
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap();
+            let bytes = startup_models
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>();
+            fs::write(out.join(format!("startup-models-{name}.bin")), &bytes).unwrap();
+            if name == "complete-startup" {
+                fs::write(out.join("startup-models.bin"), &bytes).unwrap();
+            }
         }
         world.vehicles.racers = [None; 9];
         world.vehicles.racers[0] = Some(tankracer_game::object_query::TankId(0));
@@ -1593,13 +1665,15 @@ fn main() {
             }
         }
         // An independent initial RNG state selects the other real endpoint branch.
-        let seed_before_noise = if name.ends_with("-reversal") {
+        let seed_before_noise = if name.ends_with("-reversal") || cold_scene {
             0
         } else {
             0x1234abcd
         };
-        world.shared.random = seed_before_noise;
-        world.shared.noise = ground::initialize_noise(&mut world.shared.random);
+        if !cold_scene {
+            world.shared.random = seed_before_noise;
+            world.shared.noise = ground::initialize_noise(&mut world.shared.random);
+        }
         world.shared.pool = effect_pool::Pool::default();
         world.shared.impacts = impact_particles::State::default();
         if transient {
@@ -1932,6 +2006,24 @@ fn main() {
         let baseline = (0..world.objects.world.objects.len())
             .map(|i| scene_export::record(&world.objects.world, i))
             .collect::<Vec<_>>();
+        if cold_scene {
+            fs::write(
+                out.join("scene-boot-expected.bin"),
+                scenery_frame::capture(world, &baseline)
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+            fs::write(
+                out.join("scene-boot-debris.bin"),
+                debris_scene_assets::capture(world)
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        }
         let actors = if object.is_some() { 1 } else { 2 };
         let mut visited = std::collections::BTreeSet::new();
         if name.starts_with("auxiliary-")
@@ -2102,7 +2194,7 @@ fn main() {
             },
         };
         let case_steps = if world_pass {
-            steps.clamp(8, 32)
+            steps.clamp(if constructed { 4 } else { 8 }, 32)
         } else if object_ufo {
             steps.clamp(3, 80)
         } else if flock_sequence {
@@ -3071,12 +3163,20 @@ fn main() {
         cells.extend(visited.iter().copied());
         let attitude_orthogonal =
             setup.complete && world.numerics() == attitude::Numerics::OrthogonalV1;
-        exported.push(json!({"name":name,"world_pass":world_pass,"attitude_orthogonal":attitude_orthogonal,"clock_initial":clock_initial,"player_initial":player_initial,"ordered":ordinary && (!player_sequence || flight_sequence),"complete_initial":complete_initial,"cars":actors,"car_bindings":car_bindings,"prefix_initial":prefix_initial,"pickup_initial":pickup_initial,"racer_slots":racer_slots,"entities":entities,"initial":initial,"seed_before_noise":seed_before_noise,"seed_after_noise":initial_seed,"noise":noise,
+        let mut noise_stage_seed = seed_before_noise;
+        if cold_scene {
+            ground::initialize_noise(&mut noise_stage_seed);
+        } else {
+            noise_stage_seed = initial_seed;
+        }
+        let mut exported_case = json!({"name":name,"constructed":constructed,"world_pass":world_pass,"attitude_orthogonal":attitude_orthogonal,"clock_initial":clock_initial,"player_initial":player_initial,"ordered":ordinary && (!player_sequence || flight_sequence),"complete_initial":complete_initial,"cars":actors,"car_bindings":car_bindings,"prefix_initial":prefix_initial,"pickup_initial":pickup_initial,"racer_slots":racer_slots,"entities":entities,"initial":initial,"seed_before_noise":seed_before_noise,"seed_after_noise":noise_stage_seed,"noise":noise,
             "frames":frames,"cells":visited,"fallback_contacts":0,"tank_contacts":hits,"deform_contacts":deform_hits,
             "deformed_vertices":changed_vertices,"surface_sample_points":sampled_points,"deform_spark_events":spark_events,"scene":object.is_some(),"scenery":ordinary,"ordinary_contacts":ordinary_hits,"scenery_ticks":scenery_ticks,
             "player_scene":if player_sequence {format!("player-scene-{name}.bin")} else {String::new()},"player_context":if player_sequence {format!("player-context-{name}.bin")} else {String::new()},"flock_coverage":flock_coverage,"ambient_coverage":{"selected":ambient_selected,"particle":saw_ambient_particle,"reused":saw_ambient_reuse,"frozen_updates":ambient_frozen,"visibility":ambient_visible},"train_coverage":{"running":saw_train_running,"motion":saw_train_motion,"arrival":saw_train_arrival,"reversal":saw_train_reversal,"reset":saw_train_reset,"wait_end":saw_train_wait_end},"emitter_coverage":{"shot":saw_emitter_shot,"explosion":saw_emitter_explosion,"retirement":saw_emitter_retirement},"retirement":retire || name=="complete-player-warp" || name=="complete-player-ground-concussion" || mine_sequence,"transient":transient,
             "retire_object":if retire {object.unwrap()+1} else if name=="complete-player-warp" {baseline.len()+1} else if name=="complete-player-ground-concussion" {baseline.len()+2} else {0},
-            "retire_frame":if retire {1} else if name=="complete-player-warp" {2} else if name=="complete-player-ground-concussion" {6} else {65535},"scenery_initial":format!("scenery-initial-{name}.bin")}));
+            "retire_frame":if retire {1} else if name=="complete-player-warp" {2} else if name=="complete-player-ground-concussion" {6} else {65535},"scenery_initial":format!("scenery-initial-{name}.bin")});
+        exported_case["cold_scene"] = json!(cold_scene);
+        exported.push(exported_case);
     }
     fs::write(
         out.join("paired.json"),
@@ -3088,4 +3188,9 @@ fn main() {
         collision.extend(pages::cell_bytes(&terrain, *cell));
     }
     fs::write(out.join("paired-cells.bin"), collision).unwrap();
+    let mut whole_map = Vec::new();
+    for cell in 0..64 {
+        whole_map.extend(pages::cell_bytes(&terrain, cell));
+    }
+    fs::write(out.join("map-cells.bin"), whole_map).unwrap();
 }

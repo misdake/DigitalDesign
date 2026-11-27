@@ -51,10 +51,14 @@ mod prefix_check;
 mod projectile_check;
 #[path = "projectile_marks_check.rs"]
 mod projectile_marks_check;
+#[path = "scene_actor_initial_check.rs"]
+mod scene_actor_initial_check;
 #[path = "scene_allocation_check.rs"]
 mod scene_allocation_check;
 #[path = "scene_fragment_check.rs"]
 mod scene_fragment_check;
+#[path = "scene_initial_check.rs"]
+mod scene_initial_check;
 #[path = "shatter_check.rs"]
 mod shatter_check;
 #[path = "spin_check.rs"]
@@ -115,7 +119,7 @@ const STATIC_ASSETS: &str = include_str!("../../../rcc/static_assets.rs");
 const GPU_LAYOUT: &str = include_str!("../../../rcc/gpu_layout.rs");
 const OBJECT_QUERY: &str = include_str!("../rcc/object_query.rs");
 const TRIG_ASSET_LOOKUP: &str = include_str!("../rcc/trig_asset_lookup.rs");
-const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod vehicle_pose; mod vehicle_transfer; mod scene_vehicle_transfer; mod scene_obstacle_transfer; mod scene_ufo_transfer; mod scene_fire; mod scene_laps; mod train; mod scene_train; mod emitter; mod scene_emitter; mod flock; mod scene_flock; mod smoker; mod scene_ambient; mod player_control; mod player_tail; mod player_route; mod scene_player; mod track_effects; mod vehicle_smoke; mod vehicle_debris; mod vehicle_shield; mod car_effects; mod car_motion; mod vehicle_startup; mod vehicle_inactive; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_ufos; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
+const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod vehicle_pose; mod vehicle_transfer; mod scene_vehicle_transfer; mod scene_obstacle_transfer; mod scene_ufo_transfer; mod scene_fire; mod scene_laps; mod train; mod scene_train; mod emitter; mod scene_emitter; mod flock; mod scene_flock; mod scene_initial; mod scene_actor_initial; mod smoker; mod scene_ambient; mod player_control; mod player_tail; mod player_route; mod scene_player; mod track_effects; mod vehicle_smoke; mod vehicle_debris; mod vehicle_shield; mod car_effects; mod car_motion; mod vehicle_startup; mod vehicle_inactive; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_ufos; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
 
 fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<dyn Error>> {
     let folder = output.join(label);
@@ -163,6 +167,9 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         || label == "car-effects"
         || label == "car-motion"
         || label == "vehicle-startup"
+        || label == "scene-initial"
+        || label == "scene-initial-world"
+        || label == "scene-actor-initial"
         || label == "vehicle-inactive"
         || label == "contact-effect"
         || label == "projectile-marks"
@@ -224,6 +231,8 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "train" => Ok(include_str!("../rcc/train.rs").to_owned()),
             "emitter" => Ok(include_str!("../rcc/emitter.rs").to_owned()),
             "flock" => Ok(include_str!("../rcc/flock.rs").to_owned()),
+            "scene_initial" => Ok(include_str!("../rcc/scene_initial.rs").to_owned()),
+            "scene_actor_initial" => Ok(include_str!("../rcc/scene_actor_initial.rs").to_owned()),
             "smoker" => Ok(include_str!("../rcc/smoker.rs").to_owned()),
             "player_tail" => Ok(include_str!("../rcc/player_tail.rs").to_owned()),
             "player_control" => Ok(include_str!("../rcc/player_control.rs").to_owned()),
@@ -276,6 +285,9 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
                 || label == "car-effects"
                 || label == "car-motion"
                 || label == "vehicle-startup"
+                || label == "scene-initial"
+                || label == "scene-initial-world"
+                || label == "scene-actor-initial"
                 || label == "vehicle-inactive"
                 || label == "contact-effect"
                 || label == "vehicle-transfer"
@@ -871,6 +883,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             Some("contact-effect") => contact_effect_check::run(&output, Path::new(&fixture))?,
             Some("vehicle-inactive") => vehicle_inactive_check::run(&output, Path::new(&fixture))?,
             Some("vehicle-startup") => vehicle_startup_check::run(&output, Path::new(&fixture))?,
+            Some("scene-initial") => scene_initial_check::run(&output, Path::new(&fixture))?,
+            Some("scene-actor-initial") => {
+                scene_actor_initial_check::run(&output, Path::new(&fixture))?
+            }
             Some("player-route") => player_route_check::run(&output, Path::new(&fixture))?,
             Some("scene-player") => {
                 scene_allocation_check::run(&output, Path::new(&fixture), "scene-player")?

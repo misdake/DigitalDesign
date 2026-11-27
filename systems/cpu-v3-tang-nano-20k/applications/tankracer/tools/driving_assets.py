@@ -8,8 +8,10 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+from terrain_map_pack import pack_map
 from reference_bridge import prepare
 from reference_player import append_player_probe
+from scene_boot_assets import build as build_scene_boot
 
 
 def words(values):
@@ -140,11 +142,11 @@ def main():
         if cell in cells and cells[cell] != block:
             raise ValueError(f'paired collision cell differs: {cell}')
         cells[cell] = block
-    directory = [65535] * 64
-    for page, cell in enumerate(sorted(cells)):
-        directory[cell] = page
-    (out / 'cells.bin').write_bytes(b''.join(cells[cell] for cell in sorted(cells)))
-    binary(out / 'directory.bin', directory)
+    whole_map = (out / 'map-cells.bin').read_bytes()
+    for cell, block in cells.items():
+        if whole_map[cell * 32768:(cell + 1) * 32768] != block:
+            raise ValueError(f'whole-map collision cell differs: {cell}')
+    terrain_map = pack_map(whole_map, out)
     environment=data['cases'][0]['environment']
     data['cases'] += paired['cases']
     qualification_scope=os.environ.get('TANKRACER_DRIVING_SCOPE','full')
@@ -220,10 +222,15 @@ def main():
     if qualification_scope == 'world':
         data['scope'] = ('Loaded ENGLAND world with the complete authored Tick order, both non-AI vehicle '
                          'updates, raw race clock, shared RNG, live pickup flight and all scene owners; '
-                         'controlled initial vehicle poses, velocity, RNG and independent input/time sequence.')
+                         'independent input/time sequences. Cold-scene cases construct actor state and '
+                         'memberships from authored inputs on the startup RNG; other cases use '
+                         'controlled initial vehicle poses, velocity and RNG.')
     deform_data = (out/'deform-bound.bin').read_bytes()
     deform_count = struct.unpack_from('<H',deform_data,8)[0]//40
     assert deform_count == 10
+    cold_cases = [i for i,c in enumerate(data['cases']) if c.get('cold_scene')]
+    if cold_cases:
+        build_scene_boot(root, out)
     surface_values = sum(5+struct.unpack_from('<H',deform_data,(i*40+1)*2)[0]*3 for i in range(deform_count))
     state_values = len(data['cases'][0]['initial'])
     initial_words = state_values * 2 + 18
@@ -344,7 +351,7 @@ def main():
     subprocess.run([sys.executable, str(owner / 'export_trig_assets.py'), '--reference', str(root), '--output', str(out)], check=True)
     (out / 'trig_lookup.rs').write_bytes((owner.parent / 'rcc/trig_asset_lookup.rs').read_bytes())
     for module in ['scene_parent', 'scene_fragments', 'scene_meshes', 'mesh_storage',
-                   'mesh_catalog', 'mesh_break', 'scene_auxiliaries', 'closer', 'inverse_basis', 'shatter', 'debris_catalog', 'scene_debris','scene_ufo_transfer','scene_vehicle_transfer','scene_obstacle_transfer','vehicle_transfer','emitter','scene_emitter','train','scene_train','smoker','scene_ambient','scene_flock','flock']:
+                   'mesh_catalog', 'mesh_break', 'scene_auxiliaries', 'closer', 'inverse_basis', 'shatter', 'debris_catalog', 'scene_debris','scene_ufo_transfer','scene_vehicle_transfer','scene_obstacle_transfer','vehicle_transfer','emitter','scene_emitter','train','scene_train','smoker','scene_ambient','scene_flock','flock','scene_initial','scene_actor_initial']:
         source = (owner.parent / 'rcc' / f'{module}.rs').read_text()
         (out / f'{module}.rs').write_text('#![link_cseg = "parents"]\n' + source)
     for module in ['prefix','spin','vehicle_inactive','player_control']:
@@ -416,8 +423,12 @@ def main():
     resource_specs += [(f'PICKUP_{i}',f'pickup-{i}.bin',128) for i in pickup_cases]
     resource_specs += [(f'PICKUP_INITIAL_{i}',f'pickup-initial-{i}.bin',128) for i in pickup_cases]
     complete_cases=[i for i,c in enumerate(data['cases']) if c['name'].startswith('complete-')]
-    startup_cases=[i for i,c in enumerate(data['cases']) if c['name']=='complete-startup']
+    startup_cases=[i for i,c in enumerate(data['cases']) if c.get('constructed')]
     resource_specs.append(('STARTUP_MODELS','startup-models.bin',128))
+    for i in startup_cases:
+        filename=f'startup-models-{i}.bin'
+        (out/filename).write_bytes((out/f"startup-models-{data['cases'][i]['name']}.bin").read_bytes())
+        resource_specs.append((f'STARTUP_MODELS_{i}',filename,128))
     resource_specs += [(f'COMPLETE_INITIAL_{i}',f'complete-initial-{i}.bin',128) for i in complete_cases]
     resource_specs += [(f'COMPLETE_{i}',f'complete-{i}.bin',128) for i in complete_cases]
     initial_symbols = {}
@@ -430,6 +441,8 @@ def main():
             resource_specs.append((symbol, name, 128))
             initial_images[image] = 'DRIVING_' + symbol
         initial_symbols[i] = initial_images[image]
+    if cold_cases:
+        resource_specs += [('SCENE_BOOT','scene-boot.bin',128),('SCENE_BOOT_TILTS','scene-boot-tilts.bin',128),('SCENE_BOOT_EXPECTED','scene-boot-expected.bin',128),('SCENE_BOOT_CAMERA','scene-boot-camera.bin',128),('SCENE_BOOT_DEBRIS','scene-boot-debris.bin',128)]
     resource_images = {}
     resource_aliases = {}
     for symbol, name, align in resource_specs:
@@ -445,7 +458,17 @@ def main():
         resources.append(dict(file=name, placement='source', symbol='DRIVING_' + symbol,
                               bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
     declarations.append('pub const DRIVING_COMPLETE_WORDS:u16=10468;\n')
+    declarations.append('pub fn driving_has_cold_scene(case:u16)->bool {\n'+(' || '.join(f'case=={i}' for i in cold_cases) or 'false')+'\n}\n')
+    declarations.append('pub fn driving_scene_boot()->AssetBytes {\n'+('DRIVING_SCENE_BOOT' if cold_cases else 'DRIVING_CONFIG')+'\n}\n')
+    declarations.append('pub fn driving_scene_boot_tilts()->AssetBytes {\n'+('DRIVING_SCENE_BOOT_TILTS' if cold_cases else 'DRIVING_CONFIG')+'\n}\n')
+    declarations.append('pub fn driving_scene_boot_expected()->AssetBytes {\n'+('DRIVING_SCENE_BOOT_EXPECTED' if cold_cases else 'DRIVING_CONFIG')+'\n}\n')
+    declarations.append('pub fn driving_scene_boot_camera()->AssetBytes {\n'+('DRIVING_SCENE_BOOT_CAMERA' if cold_cases else 'DRIVING_CONFIG')+'\n}\n')
+    declarations.append('pub fn driving_scene_boot_debris()->AssetBytes {\n'+('DRIVING_SCENE_BOOT_DEBRIS' if cold_cases else 'DRIVING_CONFIG')+'\n}\n')
     declarations.append('pub fn driving_has_startup(case:u16)->bool {\n'+(' || '.join(f'case=={i}' for i in startup_cases) or 'false')+'\n}\n')
+    declarations.append('pub fn driving_startup_models(case:u16)->AssetBytes {\n')
+    for i in startup_cases:
+        declarations.append(f'if case=={i} {{return DRIVING_STARTUP_MODELS_{i};}}\n')
+    declarations.append('DRIVING_STARTUP_MODELS\n}\n')
     declarations.append('pub fn driving_has_complete(case:u16)->bool {\n'+(' || '.join(f'case=={i}' for i in complete_cases) or 'false')+'\n}\n')
     for fn,symbol in [('driving_complete_initial','COMPLETE_INITIAL'),('driving_complete_frames','COMPLETE')]:
         declarations.append(f'pub fn {fn}(case:u16)->AssetBytes {{\n')
@@ -612,7 +635,7 @@ def main():
         source = re.sub(r'\b(' + '|'.join(resource_aliases) + r')\b',
                         lambda match: resource_aliases[match[0]], source)
     (out / 'driving_assets.rs').write_text(source)
-    sources = [owner / n for n in ['driving_oracle.rs', 'driving_ground.rs', 'driving_capture.rs', 'sampling_snapshot.rs', 'reference_contact.rs', 'paired_driving_oracle.rs', 'reference_world.rs', 'reference_bridge.py', 'reference_tanks.rs', 'reference_car.rs', 'impact_snapshot.rs', 'vehicle_oracle.rs', 'drive_oracle.rs', 'terrain_assets.rs', 'driving_assets.py','player_scene_assets.rs','projectile_snapshot.rs','reference_player.py','reference_player.rs','reference_scenery_player.rs']]
+    sources = [owner / n for n in ['driving_oracle.rs', 'driving_ground.rs', 'driving_capture.rs', 'sampling_snapshot.rs', 'reference_contact.rs', 'paired_driving_oracle.rs', 'reference_world.rs', 'reference_bridge.py', 'reference_tanks.rs', 'reference_car.rs', 'impact_snapshot.rs', 'vehicle_oracle.rs', 'drive_oracle.rs', 'terrain_assets.rs', 'terrain_map_pack.py', 'driving_assets.py','player_scene_assets.rs','projectile_snapshot.rs','reference_player.py','reference_player.rs','reference_scenery_player.rs','scene_boot_assets.py','scene_initial_assets.py','scene_initial_oracle.rs','scene_actor_initial_oracle.rs']]
     sources += [owner / n for n in ['scene_export.rs', 'deform_assets.rs', 'driving_step.rs', 'scenery_assets.rs',
         'scenery_frame.rs', 'identity_assets.rs', 'identity_capture.rs', 'reference_scene.rs',
         'parent_scene_assets.rs', 'prefix_scene_assets.rs', 'pickup_scene_assets.rs', 'pickup_snapshot.rs', 'driving_devices.rs', 'debris_scene_assets.rs', 'reference_symbols.rs', 'complete_scene_assets.rs', 'complete_driving_step.rs', 'vehicle_startup_assets.rs']]
@@ -622,10 +645,11 @@ def main():
     sources += [root / 'crates/game/src' / n for n in ['vehicle_runtime/car_objects.rs', 'scene_collision.rs', 'deformable_hit.rs', 'deformation.rs', 'obstacle_collision.rs']]
     sources += [root / 'crates/game/src' / n for n in ['contact_pipeline.rs', 'sampling.rs', 'suspension.rs', 'pose.rs', 'body.rs', 'motion.rs', 'vehicle_model.rs', 'random.rs', 'ground_collision.rs', 'impact_particles.rs', 'effect_pool.rs', 'damage.rs']]
     (out / 'assets.json').write_text(json.dumps(dict(resources=resources, resource_aliases=resource_aliases, sector_relocations=[], steps=steps,
+        terrain_map=terrain_map,
         initial_packing=dict(source_words=len(initial), stored_words=len(start_data),
                              row_words=start_words, unique_rows=len(start_images),
                              offsets='initial-offsets.bin'),
-        cases=[dict(name=c['name'], cars=c['cars'], world_pass=c.get('world_pass', False), scheduled_tanks=2 if c.get('world_pass') else c['cars'], updates=len(c['frames']), cells=c['cells'], fallback_contacts=c['fallback_contacts'], tank_contacts=c['tank_contacts'], deform_contacts=c.get('deform_contacts', 0),
+        cases=[dict(name=c['name'], cars=c['cars'], constructed=c.get('constructed',False), cold_scene=c.get('cold_scene',False), world_pass=c.get('world_pass', False), scheduled_tanks=2 if c.get('world_pass') else c['cars'], updates=len(c['frames']), cells=c['cells'], fallback_contacts=c['fallback_contacts'], tank_contacts=c['tank_contacts'], deform_contacts=c.get('deform_contacts', 0),
                     deformed_vertices=c.get('deformed_vertices', 0), surface_sample_points=c.get('surface_sample_points', 0), deform_spark_events=c.get('deform_spark_events', 0), ordinary_contacts=c.get('ordinary_contacts', 0), scenery_ticks=c.get('scenery_ticks', 0), retirement=c.get('retirement', False), transient=c.get('transient', False), emitter_coverage=c.get('emitter_coverage'), train_coverage=c.get('train_coverage'), ambient_coverage=c.get('ambient_coverage'), flock_coverage=c.get('flock_coverage'), initial_rng_seed=c.get('seed_before_noise',0x1234abcd)) for c in data['cases']], updates=updates, scope=data['scope'], checked_i32_per_frame=state_values+1,
         checked_surface_i32=sum(len(c['frames']) * surface_values for c in data['cases'] if c.get('scene')),
         resource_version_words=sum(len(c['frames']) * deform_count*4 for c in data['cases'] if c.get('scene')),

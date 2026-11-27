@@ -9,6 +9,7 @@ use gpu_window::gpu_window_asset_read;
 mod integer;
 mod sampling;
 mod static_assets;
+use static_assets::AssetBytes;
 mod terrain;
 use terrain::{Hit, Normal, Terrain};
 
@@ -47,7 +48,25 @@ fn main() {
         0, 0, 0, 0, 61440, 65535, 0, 0, 4096, 0, 0, 0, 4096, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ]);
     let incoming = read_dseg_page(3);
-    let mut scope = Terrain::begin(TERRAIN_PAGE_A);
+    let directory: Buf<u16, 64> = Buf::new([0; 64]);
+    let mut first = TERRAIN_PAGE_A;
+    if TERRAIN_FULL_MAP {
+        first = AssetBytes {
+            first_sector: TERRAIN_MAP_CELLS.first_sector,
+            sector_count: 256,
+            byte_len_lo: 32768,
+            byte_len_hi: 0,
+        };
+        if !gpu_window_asset_read(
+            directory.as_array(),
+            TERRAIN_MAP_DIRECTORY.first_sector,
+            0,
+            64,
+        ) {
+            halt(0x7c12);
+        }
+    }
+    let mut scope = Terrain::begin(first);
     let mut record: u16 = 0;
     let mut count = TERRAIN_QUERY_COUNT;
     if TERRAIN_QUERY_LIMIT != 0 && TERRAIN_QUERY_LIMIT < count {
@@ -72,7 +91,23 @@ fn main() {
         let z = raw(data, 4);
         mark(2);
         let cell = scope.cell_at(x, z);
-        if cell == TERRAIN_CELL_A {
+        if TERRAIN_FULL_MAP {
+            if cell != 65535 {
+                let entry = directory[cell];
+                let offset = entry & 32767;
+                if entry & 32768 == 0 || offset >= TERRAIN_MAP_CELLS.sector_count {
+                    halt(0x7c12);
+                }
+                let sector = TERRAIN_MAP_CELLS.first_sector + offset;
+                let count = 256 - (sector & 255);
+                scope.bind(AssetBytes {
+                    first_sector: sector,
+                    sector_count: count,
+                    byte_len_lo: count << 7,
+                    byte_len_hi: 0,
+                });
+            }
+        } else if cell == TERRAIN_CELL_A {
             scope.bind(TERRAIN_PAGE_A);
         } else if cell == TERRAIN_CELL_B {
             scope.bind(TERRAIN_PAGE_B);

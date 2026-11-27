@@ -33,6 +33,38 @@ fn p(values: Array<u16>, index: u16, value: fix32) {
 fn at(values: Array<u16>, word: u16) -> Array<u16> {
     unsafe { values.as_ptr().add(word as i16).as_u16_array() }
 }
+// Decoded endpoints preserve authored presence: without :start_pos the object
+// retains its world-file position. Only X/Z velocity receives the speed gain.
+pub fn initialize(state: &State, start: Array<u16>, end: Array<u16>, has_start: bool) {
+    let mut travel = state.travel;
+    let mut word = 0u16;
+    while word < 38 {
+        travel[word] = 0;
+        word += 1;
+    }
+    let mut axis = 0u16;
+    while axis < 3 {
+        let first = g(start, axis);
+        let last = g(end, axis);
+        p(state.path, axis, first);
+        p(state.path, 3 + axis, last);
+        p(state.path, 6 + axis, last - first);
+        if has_start {
+            p(state.position, axis, first);
+        }
+        axis += 1;
+    }
+    collision::normalize(at(state.path, 12));
+    axis = 0;
+    while axis < 3 {
+        p(
+            state.path,
+            6 + axis,
+            integer::mul(g(state.path, 6 + axis), state.speed),
+        );
+        axis += 2;
+    }
+}
 pub fn tick(state: &State, frame: &Frame) -> fix32 {
     if g(state.travel, 2) != n(0) {
         if g(state.travel, 3) <= frame.dt {

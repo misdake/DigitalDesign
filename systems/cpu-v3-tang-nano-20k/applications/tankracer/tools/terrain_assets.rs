@@ -307,6 +307,109 @@ fn centroids(data: &TerrainData, cell: usize) -> Vec<[i32; 3]> {
     }
     points
 }
+fn whole_map(data: &TerrainData, out: &Path) -> Result<(), Box<dyn Error>> {
+    let mut cells = Vec::new();
+    let mut queries = Vec::new();
+    let mut representatives = Vec::new();
+    let mut remainder = Vec::new();
+    let mut sizes = String::new();
+    for cell in 0..64 {
+        let first_query = queries.len();
+        let page = cell_bytes(data, cell);
+        sizes += &format!("{cell},{}\n", u16::from_le_bytes([page[6], page[7]]) * 2);
+        cells.extend(page);
+        let start = [
+            data.origin[0] + (((cell % 8) as i32) << data.shifts[0]),
+            data.origin[1] + (((cell / 8) as i32) << data.shifts[1]),
+        ];
+        let span = [1i32 << data.shifts[0], 1i32 << data.shifts[1]];
+        for fraction in [0, 1, 2] {
+            let point = [
+                (start[0] + 1 + (span[0] - 3) * fraction / 2) * 8,
+                4000,
+                (start[1] + 1 + (span[1] - 3) * fraction / 2) * 8,
+            ];
+            for mode in 0..3 {
+                sample(data, point, mode, &mut queries);
+            }
+        }
+        let centers = centroids(data, cell);
+        for i in 0..centers.len().min(4) {
+            sample(
+                data,
+                centers[i * centers.len() / centers.len().min(4)],
+                i as i32 % 3,
+                &mut queries,
+            );
+        }
+        // Fallback-only cells also need an authored face point, not just misses.
+        let list = data.fallback.cells[cell];
+        let mut point = None;
+        for &node in
+            &data.fallback.node_refs[list.start as usize..(list.start + list.length) as usize]
+        {
+            let mesh = &data.meshes[data.fallback.nodes[node as usize].mesh as usize];
+            for center in &mesh.face_centers {
+                let candidate =
+                    std::array::from_fn(|axis| (mesh.position[axis] + i32::from(center[axis])) * 8);
+                let gx = ((candidate[0] >> 3) - data.origin[0]) >> data.shifts[0];
+                let gz = ((candidate[2] >> 3) - data.origin[1]) >> data.shifts[1];
+                if (0..8).contains(&gx) && (0..8).contains(&gz) && gx + gz * 8 == cell as i32 {
+                    point = Some(candidate);
+                    break;
+                }
+            }
+            if point.is_some() {
+                break;
+            }
+        }
+        if let Some(point) = point {
+            for mode in 0..3 {
+                sample(data, point, mode, &mut queries);
+            }
+        }
+        // A bounded native run visits every cell before the detailed sweep.
+        // Prefer a real primary hit, then fallback, then the cell-center miss.
+        let mut selected = first_query + 3 * 66;
+        for at in (first_query..queries.len()).step_by(66) {
+            if queries[at + 7] == 1 {
+                selected = at;
+                break;
+            }
+        }
+        if queries[selected + 7] != 1 {
+            for at in (first_query..queries.len()).step_by(66) {
+                if queries[at + 46] == 1 {
+                    selected = at;
+                    break;
+                }
+            }
+        }
+        representatives.extend_from_slice(&queries[selected..selected + 66]);
+        remainder.extend_from_slice(&queries[first_query..selected]);
+        remainder.extend_from_slice(&queries[selected + 66..]);
+    }
+    queries = representatives;
+    queries.extend(remainder);
+    for mode in 0..3 {
+        sample(data, [i32::MIN, 0, i32::MAX], mode, &mut queries);
+    }
+    fs::write(out.join("map-cells.bin"), cells)?;
+    fs::write(out.join("cell-sizes.csv"), sizes)?;
+    fs::write(out.join("queries.bin"), bytes(&queries))?;
+    fs::write(
+        out.join("map.txt"),
+        format!(
+            "{} {} {} {} {}\n",
+            data.origin[0],
+            data.origin[1],
+            data.shifts[0],
+            data.shifts[1],
+            queries.len() / 66
+        ),
+    )?;
+    Ok(())
+}
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 3 {
@@ -316,6 +419,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let archive = Archive::parse(&source)?;
     let bsm = archive.get("ENGLAND.BSM").ok_or("missing ENGLAND.BSM")?;
     let data = TerrainData::decode_bsm(bsm)?;
+    if args[1] == "all" {
+        let out = Path::new(&args[2]);
+        fs::create_dir_all(out)?;
+        return whole_map(&data, out);
+    }
     let cells: Vec<usize> = args[1]
         .split(',')
         .map(str::parse)

@@ -1,6 +1,7 @@
 //! Cold publication of a constructed vehicle into the continuous driving owner.
 #![link_cseg = "prefix"]
 use super::*;
+const WORD: u16 = 1088;
 fn at(v: Array<u16>, w: u16) -> Array<u16> {
     unsafe { v.as_ptr().add(w as i16).as_u16_array() }
 }
@@ -15,24 +16,25 @@ pub fn construct(
     prefixes: Array<prefix::State>,
     config: &driving::Config,
     complete: &complete_check::State,
+    models: AssetBytes,
 ) {
     let saved = read_dseg_page(3);
-    unsafe {
-        write_dseg_page(3, complete.page);
+    let fixed = read_dseg_page(2);
+    let page = DRIVING_ACTORS.first_sector() >> 8;
+    if WORD + vehicle_startup::WORDS + 1 > DRIVING_ACTORS.sector_count() * 64 {
+        halt(0x7f86);
     }
-    // The constructor's scratch row occupies the unused effects-page suffix.
-    let out = unsafe { Ptr::from_addr(0xc000 + 10624).as_u16_array() };
     let metadata: Buf<u16, 200> = Buf::new([0; 200]);
     let m = metadata.as_array();
     let mut actors = actors;
     let mut i = 0u16;
     while i < 2 {
-        read(
-            m,
-            DRIVING_STARTUP_MODELS,
-            fix32::from_words(i * 200, 0),
-            200,
-        );
+        unsafe {
+            write_dseg_page(3, page);
+        }
+        let mut out = unsafe { Ptr::from_addr(0xc000 + WORD).as_u16_array() };
+        out[vehicle_startup::WORDS] = 0x6b17;
+        read(m, models, fix32::from_words(i * 200, 0), 200);
         let status = vehicle_startup::construct(
             out,
             &vehicle_startup::Model {
@@ -94,6 +96,13 @@ pub fn construct(
             j += 1;
         }
         copy(prefixes[i].core, at(out, vehicle_startup::PREFIX + 8), 50);
+        // The hot state above uses the fixed world page. Publish effects with
+        // the constructor row in DSEG2 and their destination in DSEG3.
+        unsafe {
+            write_dseg_page(2, page);
+            write_dseg_page(3, complete.page);
+        }
+        out = unsafe { Ptr::from_addr(0x8000 + WORD).as_u16_array() };
         let live = unsafe { Ptr::from_addr(0xc000 + 6810 + i * 956).as_u16_array() };
         copy(live, at(out, 102), 106);
         copy(at(live, 106), at(out, vehicle_startup::EFFECTS), 374);
@@ -115,6 +124,12 @@ pub fn construct(
         copy(at(player, 8), at(out, vehicle_startup::FIELDS + 144), 2);
         copy(at(player, 10), at(out, vehicle_startup::FIELDS + 126), 14);
         copy(at(player, 24), at(out, vehicle_startup::FIELDS + 124), 2);
+        if out[vehicle_startup::WORDS] != 0x6b17 {
+            halt(0x7f87);
+        }
+        unsafe {
+            write_dseg_page(2, fixed);
+        }
         i += 1;
     }
     unsafe {

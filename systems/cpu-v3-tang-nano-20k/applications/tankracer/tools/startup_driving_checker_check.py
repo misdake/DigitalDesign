@@ -18,8 +18,8 @@ def main():
     artifact = Artifact(args.artifact)
     assets = args.artifact / 'tankracer-driving-assets'
     manifest = json.loads((assets / 'assets.json').read_text())
-    if manifest['qualification_scope'] != 'startup':
-        raise ValueError('startup-only artifact required')
+    if manifest['qualification_scope'] not in ['startup', 'world'] or not all(c.get('constructed') for c in manifest['cases']):
+        raise ValueError('constructed-vehicle-only artifact required')
     package = artifact.files[artifact.manifest['package']]
     args.output.mkdir(parents=True, exist_ok=False)
     results = []
@@ -27,7 +27,13 @@ def main():
              ('unused-gun-vertices', 'initial.bin', 542, 1, True),
              ('unused-prefix', 'prefix-initial-0.bin', 0, 1, True),
              ('unused-initial-pose', 'complete-initial-0.bin', 6810, 1, True),
-             ('authored-spawn', 'startup-models.bin', 120, 4096, False)]
+             ('authored-spawn', 'startup-models-0.bin', 120, 4096, False)]
+    if manifest['qualification_scope'] == 'world':
+        car_words = (manifest['initial_packing']['row_words'] - 42) // 2
+        tests += [('unused-peer-position', 'initial.bin', car_words + 184, 1, True),
+                  ('unused-peer-gun', 'initial.bin', car_words + 542, 1, True),
+                  ('unused-peer-prefix', 'prefix-initial-0.bin', 50, 1, True),
+                  ('unused-peer-pose', 'complete-initial-0.bin', 7766, 1, True)]
     for label, file, word, mask, passed in tests:
         data = (assets / file).read_bytes()
         offset = package.find(data)
@@ -54,7 +60,7 @@ def main():
         results.append(dict(label=label, file=file, word=word, expected_pass=passed, halt=signal))
     (args.output / 'report.json').write_text(json.dumps(dict(
         passed=True, artifact_id=artifact.manifest['artifact_id'], tests=results,
-        scope='Four initial-answer mutations leave driving unchanged; changing the independent authored spawn changes the computed result.'), indent=2) + '\n')
+        scope='Initial car, gun, prefix and pose answer mutations leave constructed driving unchanged; changing the independent authored spawn changes the computed result.'), indent=2) + '\n')
 
 
 if __name__ == '__main__':

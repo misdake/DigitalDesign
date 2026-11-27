@@ -1,5 +1,5 @@
 //! Query ordering, output transactions and page ownership through the actual RCC kernel.
-use cpu_v3::{rcc_backend, CpuV3Sim, StepOutcome};
+use cpu_v3::{CpuV3Sim, StepOutcome, rcc_backend};
 use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
 use std::path::Path;
 
@@ -84,6 +84,11 @@ fn terrain_queries_preserve_order_errors_and_mapping() {
         0,
     ]);
     p[280..282].copy_from_slice(&[0x0100, 255]);
+    let original = p[..300].to_vec();
+    p[512..812].copy_from_slice(&original);
+    p[1024..1324].copy_from_slice(&original);
+    p[1026] = 1;
+    p[1024 + 192] = 32768;
     for _ in 0..2_000_000 {
         if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
             assert_eq!(
@@ -170,7 +175,7 @@ fn rollback_branches(asset:AssetBytes){
  sampling::put(aux.as_array(),0,fix32::from_words(0,4));sampling::put(f.as_array(),0,n(33));sampling::put(f.as_array(),26,n(4));sampling::put(f.as_array(),27,n(1));
  sampling::put(dc.as_array(),47,n(1000));sampling::put(dc.as_array(),258,n(9000));sampling::put(dc.as_array(),259,n(1));
  sampling::put(a.as_array(),21,n(456));sampling::put(m.as_array(),4,n(777));sampling::put(s.as_array(),0,n(99));
- let mut car=driving::Car{attitude:a.as_array(),suspension:s.as_array(),drive:d.as_array(),motion:m.as_array(),boost:b.as_array(),tracks:tracks.as_array(),ground:ground::zero(),articulation:Buf::new([0;8]),lean:Buf::new([0;8]),hull:Buf::new([0;37]),ready:false,turret_z:n(0),gun:unsafe{tracks.as_ptr().as_i16_array()},gun_binding:tracks.as_array()};
+ let mut car=driving::Car{entity:n(0),slot:0,player:true,visible:true,blast:unsafe{Ptr::from_addr(0).as_u16_array()},marker:unsafe{Ptr::from_addr(0).as_u16_array()},attitude:a.as_array(),suspension:s.as_array(),drive:d.as_array(),motion:m.as_array(),boost:b.as_array(),tracks:tracks.as_array(),ground:ground::zero(),articulation:Buf::new([0;8]),lean:Buf::new([0;8]),hull:Buf::new([0;37]),ready:false,turret_z:n(0),gun:unsafe{tracks.as_ptr().as_i16_array()},gun_binding:tracks.as_array()};
  let mut i=0u16;while i<4 {car.ground.points[i].local_x=n(8);car.ground.points[i].local_y=n(4792);car.ground.points[i].local_z=n(8);car.ground.points[i].kind=n(55);i+=1;}
  sampling::put(car.ground.effect.as_array(),0,n(1));
  let config=driving::Config{spring:sc.as_array(),drive:dc.as_array(),attitude:cfg.as_array(),pose:cfg.as_array(),sampling:cfg.as_array(),auxiliary:aux.as_array(),environment:cfg.as_array(),body:cfg.as_array(),sine:unsafe{cfg.as_array().as_ptr().as_i16_array()},angle:unsafe{cfg.as_array().as_ptr().as_i16_array()}};
@@ -265,7 +270,29 @@ fn main(){
  assert!(sample_auxiliary(&mut auxiliary,&mut scope,matrix,n(2),false)==1);
  assert!(auxiliary.x==n(8) && auxiliary.y==n(4867) && auxiliary.z==n(8));
  scope.bind(asset); assert!(scope.switches==1);
+ checkpoint[0u16]=11;
+ let switches=scope.switches;
+ let packed0=AssetBytes{first_sector:16392,sector_count:248,byte_len_lo:31744,byte_len_hi:0};
+ let packed1=AssetBytes{first_sector:16400,sector_count:240,byte_len_lo:30720,byte_len_hi:0};
+ scope.bind(packed0);
+ assert!(scope.query(n(8),n(8),&mut hit)==1 && hit.height==n(4792));
+ let height=scope.normal_height(n(8),n(8),&mut normal);
+ assert!(height.status==1 && height.height==n(4792) && normal.y==n(4096));
+ assert!(scope.fallback(n(8),n(4024),n(8),0,&mut normal)==1 && normal.y==n(4096));
+ scope.bind(packed1);
+ let x=fix32::from_words(8,4);
+ assert!(scope.query(x,n(8),&mut hit)==1 && hit.height==n(4792));
+ let height=scope.height(x,n(8));assert!(height.height==n(4792) && scope.switches==switches);
+ unsafe{write_dseg_page(3,137);}scope.rebind();
+ let height=scope.height(x,n(8));assert!(height.height==n(4792) && read_dseg_page(3)==64);
  scope.finish(); assert!(read_dseg_page(3)==saved);
+ checkpoint[0u16]=12;
+ let directory:Buf<u16,64>=Buf::new([65535;64]);let mut dir=directory.as_array();
+ dir[0u16]=32776;dir[1u16]=32784;
+ let mut world=ground::World::begin(asset,n(0),dir);let seed=world.seed;
+ unsafe{write_dseg_page(3,137);}
+ assert!(world.query(n(8),n(8),&mut hit)==1 && hit.height==n(4792));
+ let height=world.height(x,n(8));assert!(height.height==n(4792) && read_dseg_page(3)==137 && world.seed==seed);
  halt(0x600d);
 }
 "#;

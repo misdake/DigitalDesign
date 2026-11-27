@@ -25,6 +25,15 @@ fn at(values: Array<u16>, word: u16) -> Array<u16> {
     unsafe { values.as_ptr().add(word as i16).as_u16_array() }
 }
 
+// The constructor draws this timer before preparing its authored parameters.
+pub fn initialize_timer(data: Array<u16>, seed: Array<u16>) {
+    p(
+        data,
+        0,
+        fix32::from_words(projectile::random_word(seed) & 1023, 0),
+    );
+}
+
 // 25 i32: timer, gun, size, offset3, pitch, trigger, bounds4, period,
 // RGB3, alpha, glow3, asteroid, optional mesh flag/ID, optional material flag/ID.
 // Output: position3, basis9, velocity3, flags. It is private unless true returns.

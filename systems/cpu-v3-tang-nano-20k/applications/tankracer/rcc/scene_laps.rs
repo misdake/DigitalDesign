@@ -140,7 +140,7 @@ pub struct Action {
     pub entity: fix32,
     pub leave: bool,
 }
-fn action(
+pub fn action(
     scene: &scene_query::Scene,
     store: &mut scene_lifecycle::Store,
     runtime: &mut scene_world::Runtime,

@@ -146,10 +146,24 @@ impl World {
     pub fn bind(&mut self, x: fix32, z: fix32) {
         let cell = self.terrain.cell_at(x, z);
         if cell != 65535 && self.directory[cell] != 65535 {
+            // Bit 15 selects a 128-byte sector offset; otherwise the entry
+            // names a whole 32-KiB page, as used by isolated kernel fixtures.
+            let entry = self.directory[cell];
+            let mut offset = entry * 256;
+            if entry & 32768 != 0 {
+                offset = entry & 32767;
+            } else if entry >= 256 {
+                halt(0x7c05);
+            }
+            let sector = self.cells.first_sector + offset;
+            if offset >= self.cells.sector_count || sector < self.cells.first_sector {
+                halt(0x7c05);
+            }
+            let count = 256 - (sector & 255);
             self.terrain.bind(AssetBytes {
-                first_sector: self.cells.first_sector + self.directory[cell] * 256,
-                sector_count: 256,
-                byte_len_lo: 32768,
+                first_sector: sector,
+                sector_count: count,
+                byte_len_lo: count << 7,
                 byte_len_hi: 0,
             });
         } else {

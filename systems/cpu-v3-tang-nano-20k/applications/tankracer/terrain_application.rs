@@ -1,5 +1,5 @@
 //! Adjacent collision cells through the standard source-asset build path.
-use crate::applications::{Assets, BuildOption, Definition, OptionValues, ResourceNames, DEFAULT};
+use crate::applications::{Assets, BuildOption, DEFAULT, Definition, OptionValues, ResourceNames};
 
 pub const APPLICATION: Definition = Definition {
     name: "bench-tankracer-terrain",
@@ -10,6 +10,11 @@ pub const APPLICATION: Definition = Definition {
     ordinary_sources: &["applications/tankracer/rcc"],
     options: &[
         BuildOption::integer_constant("samples", "TERRAIN_QUERY_LIMIT", 0, 0, 1200),
+        BuildOption::environment(
+            "coverage",
+            "TANKRACER_TERRAIN_COVERAGE",
+            OptionValues::Choices(&["adjacent", "map"]),
+        ),
         BuildOption::environment("reference", "TANKRACER_REFERENCE", OptionValues::InputFile),
         BuildOption::environment(
             "archive",
@@ -18,7 +23,10 @@ pub const APPLICATION: Definition = Definition {
         ),
     ],
     inputs: |context| {
-        context.inputs(&["applications/tankracer/tools/terrain_assets.rs"]);
+        context.inputs(&[
+            "applications/tankracer/tools/terrain_assets.rs",
+            "applications/tankracer/tools/terrain_map_pack.py",
+        ]);
         for key in ["TANKRACER_REFERENCE", "TANKRACER_TERRAIN_ARCHIVE"] {
             let path =
                 std::path::PathBuf::from(std::env::var(key).expect("terrain source options"));
