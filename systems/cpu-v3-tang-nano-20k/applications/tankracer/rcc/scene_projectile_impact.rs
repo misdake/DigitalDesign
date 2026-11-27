@@ -50,7 +50,6 @@ pub struct Tick {
 pub struct HitVehicle {
     pub present: bool,
     pub car: tank_hit::Vehicle,
-    pub geometry_page: u16,
 }
 pub struct Damage {
     pub cars: Array<HitVehicle>,
@@ -59,6 +58,8 @@ pub struct Damage {
     pub homer: Array<u16>,
     pub cup: u16,
     pub temporary: temporary::State,
+    // 65535 keeps DSEG2 for a caller whose effect rows already use DSEG3.
+    pub effect_page: u16,
     pub present: bool,
 }
 fn n(v: i16) -> fix32 {
@@ -103,8 +104,10 @@ pub fn begin(
             return n(-5);
         }
         let saved = read_dseg_page(2);
+        let saved3 = read_dseg_page(3);
         unsafe {
             write_dseg_page(2, weapons.effect_page);
+            write_dseg_page(3, weapons.effect_page);
         }
         let mut quads = weapons.quads;
         let lines = weapons.lines;
@@ -122,6 +125,7 @@ pub fn begin(
         );
         unsafe {
             write_dseg_page(2, saved);
+            write_dseg_page(3, saved3);
         }
         if status != n(0) {
             return status;
@@ -409,13 +413,14 @@ pub fn area(
 pub fn direct(
     runtime: &scene_world::Runtime,
     weapons: &scene_creation::Weapons,
-    tick: &Tick,
+    frame: &Impact,
+    damage: &Damage,
 ) -> fix32 {
-    let action = &tick.impact.action[0u16];
+    let action = &frame.action[0u16];
     if !action.has_contact {
         return n(0);
     }
-    let id = tick.impact.object;
+    let id = frame.object;
     if !component(weapons, id) {
         return n(-4);
     }
@@ -447,56 +452,57 @@ pub fn direct(
         return n(0);
     }
     let index = action.contact.vehicle;
-    if !tick.impact.has_vehicles
+    if !frame.has_vehicles
         || index.hi_bits() != 0
-        || index.lo_bits() >= tick.damage.count
-        || !tick.damage.cars[index.lo_bits()].present
+        || index.lo_bits() >= damage.count
+        || !damage.cars[index.lo_bits()].present
     {
         return n(-4);
     }
     let slot = index.lo_bits();
-    if g(tick.impact.hits[slot].spin, 0) > n(0) {
+    if g(frame.hits[slot].spin, 0) > n(0) {
         return n(0);
     }
-    let vehicle = &tick.damage.cars[slot];
+    let vehicle = &damage.cars[slot];
     let coefficients: Buf<u16, 9> = Buf::new([0; 9]);
     tank_hit::coefficients(
         coefficients.as_array(),
         kind,
         vehicle.car.player,
-        tick.damage.cup,
-        tick.damage.shell,
-        tick.damage.homer,
+        damage.cup,
+        damage.shell,
+        damage.homer,
     );
-    if !tick.damage.present {
+    if !damage.present {
         return n(-5);
     }
     if !weapons.has_effect_pool {
         return n(-5);
     }
     let saved2 = read_dseg_page(2);
-    unsafe {
-        write_dseg_page(2, weapons.effect_page);
-        write_dseg_page(3, vehicle.geometry_page);
+    if damage.effect_page != 65535 && damage.effect_page != saved2 {
+        unsafe {
+            write_dseg_page(2, damage.effect_page);
+        }
     }
-    let mut actions = tick.impact.action;
+    let mut actions = frame.action;
     let shot = tank_hit::Shot {
         hit: view_of(&mut actions[0u16].contact),
         velocity: velocity.as_array(),
         kind,
         age,
-        time: tick.impact.stamp,
+        time: frame.stamp,
     };
     let context = temporary::Context {
         pool: weapons.lines,
         seed: runtime.seed,
-        sine: tick.impact.sine,
+        sine: frame.sine,
     };
     let status = tank_hit::apply(
         &vehicle.car,
         &shot,
         coefficients.as_array(),
-        &tick.damage.temporary,
+        &damage.temporary,
         &context,
     );
     unsafe {
@@ -515,9 +521,9 @@ pub fn direct(
             duration = n(50);
             magnitude = n(300);
         }
-        p(tick.impact.camera_impulse, 0, n(1));
-        p(tick.impact.camera_impulse, 1, duration);
-        p(tick.impact.camera_impulse, 2, magnitude);
+        p(frame.camera_impulse, 0, n(1));
+        p(frame.camera_impulse, 1, duration);
+        p(frame.camera_impulse, 2, magnitude);
     }
     n(0)
 }
@@ -696,7 +702,7 @@ pub fn dispatch(
                     if kind == n(1) || kind == n(4) {
                         status = area(runtime, weapons, &tick.impact);
                     } else {
-                        status = direct(runtime, weapons, tick);
+                        status = direct(runtime, weapons, &tick.impact, &tick.damage);
                     }
                 }
             }

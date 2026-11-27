@@ -1,5 +1,5 @@
 //! Original explosion kernel and private contact fragments on the authored car.
-use super::{ints, sprite};
+use super::ints;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 use tankracer_game::{
@@ -13,52 +13,7 @@ use tankracer_game::{
 };
 pub(super) fn snapshot(s: &State, seed: u32) -> Vec<u16> {
     let mut out = Vec::new();
-    ints(
-        &mut out,
-        [
-            i32::from(s.slot),
-            s.timer,
-            s.angular_velocity,
-            i32::from(s.visible),
-            s.smoke_timer,
-            i32::from(s.smoke_count),
-            s.band as i32,
-            s.ring as i32,
-            i32::from(s.owner.is_some()),
-            s.owner.map_or(0, |v| v.0 as i32),
-        ],
-    );
-    ints(&mut out, s.velocity);
-    ints(&mut out, s.attachment);
-    ints(
-        &mut out,
-        [
-            i32::from(s.fragments_enabled),
-            i32::from(s.fragment_count),
-            s.fragment_time,
-            i32::from(s.fragment_vehicle.is_some()),
-            s.fragment_vehicle.map_or(0, |v| v.0 as i32),
-        ],
-    );
-    out.extend([
-        u16::from(s.fragment_uv[0]) | (u16::from(s.fragment_uv[1]) << 8),
-        u16::from(s.fragment_uv[2]) | (u16::from(s.fragment_uv[3]) << 8),
-    ]);
-    sprite(&mut out, s.sprite);
-    for puff in s.smoke {
-        sprite(&mut out, puff.sprite);
-        ints(&mut out, puff.velocity);
-        ints(&mut out, [puff.lift, puff.angular_velocity]);
-        out.extend([puff.active, 0]);
-    }
-    for f in s.fragments {
-        ints(&mut out, f.position);
-        ints(&mut out, f.velocity);
-        out.extend(f.size.map(|v| v as u16));
-        ints(&mut out, [f.angular]);
-        out.extend([f.rotation, 0]);
-    }
-    assert_eq!(out.len(), 676);
+    super::projectile_snapshot::explosion(&mut out, s);
     ints(&mut out, [seed as i32]);
     out
 }

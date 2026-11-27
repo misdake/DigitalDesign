@@ -395,7 +395,18 @@ pub fn step(
                 if index >= count {
                     break;
                 }
+                let saved = read_dseg_page(3);
+                if store.queue_page != 65535 && store.queue_page != saved {
+                    unsafe {
+                        write_dseg_page(3, store.queue_page);
+                    }
+                }
                 let entity = g(items, index);
+                if read_dseg_page(3) != saved {
+                    unsafe {
+                        write_dseg_page(3, saved);
+                    }
+                }
                 work = work + n(1);
                 if work.hi_bits() > store.limit.hi_bits()
                     || (work.hi_bits() == store.limit.hi_bits()
@@ -426,12 +437,23 @@ pub fn step(
                         return code;
                     }
                     let mut count = 0u16;
+                    let saved = read_dseg_page(3);
+                    if store.queue_page != 65535 && store.queue_page != saved {
+                        unsafe {
+                            write_dseg_page(3, store.queue_page);
+                        }
+                    }
                     if pass == 0 {
                         ordered::remove_at(&mut store.enter, index);
                         count = store.enter.count;
                     } else {
                         ordered::remove_at(&mut store.leave, index);
                         count = store.leave.count;
+                    }
+                    if read_dseg_page(3) != saved {
+                        unsafe {
+                            write_dseg_page(3, saved);
+                        }
                     }
                     if index < count {
                         index += 1;
@@ -484,10 +506,21 @@ pub fn step(
                     }
                     if nearby == n(1) {
                         let mut status = 0u16;
+                        let saved = read_dseg_page(3);
+                        if store.queue_page != 65535 && store.queue_page != saved {
+                            unsafe {
+                                write_dseg_page(3, store.queue_page);
+                            }
+                        }
                         if leave {
                             status = ordered::append(&mut store.leave, entity);
                         } else {
                             status = ordered::append(&mut store.enter, entity);
+                        }
+                        if read_dseg_page(3) != saved {
+                            unsafe {
+                                write_dseg_page(3, saved);
+                            }
                         }
                         if status != 0 {
                             return error(status);

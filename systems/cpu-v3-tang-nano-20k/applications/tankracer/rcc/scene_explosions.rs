@@ -209,8 +209,10 @@ fn update(
                 if !weapons.has_effect_pool {
                     status = n(-5);
                 } else {
+                    let component = read_dseg_page(3);
                     unsafe {
                         write_dseg_page(2, weapons.effect_page);
+                        write_dseg_page(3, weapons.effect_page);
                     }
                     let step = explosion_blasts::Step { slot, dt: tick.dt };
                     let mut quads = weapons.quads;
@@ -237,6 +239,9 @@ fn update(
                             &mut quads[0u16],
                             &lines[0u16],
                         );
+                    }
+                    unsafe {
+                        write_dseg_page(3, component);
                     }
                     status = out.status;
                     if status == n(0) && out.has_released {
@@ -553,8 +558,10 @@ pub fn spawn_weapon(
             kind: 2,
         };
         let saved = read_dseg_page(2);
+        let saved3 = read_dseg_page(3);
         unsafe {
             write_dseg_page(2, weapons.effect_page);
+            write_dseg_page(3, weapons.effect_page);
         }
         let mut quads = weapons.quads;
         let lines = weapons.lines;
@@ -584,6 +591,7 @@ pub fn spawn_weapon(
         }
         unsafe {
             write_dseg_page(2, saved);
+            write_dseg_page(3, saved3);
         }
         if out.status != n(0) {
             return out.status;
@@ -726,8 +734,10 @@ pub fn spawn_mine(
         seed: request.start.context.seed,
     };
     let saved2 = read_dseg_page(2);
+    let saved3 = read_dseg_page(3);
     unsafe {
         write_dseg_page(2, weapons.effect_page);
+        write_dseg_page(3, weapons.effect_page);
     }
     let mut quads = weapons.quads;
     let lines = weapons.lines;
@@ -740,6 +750,7 @@ pub fn spawn_mine(
     );
     unsafe {
         write_dseg_page(2, saved2);
+        write_dseg_page(3, saved3);
     }
     if out.status != n(0) {
         return out.status;

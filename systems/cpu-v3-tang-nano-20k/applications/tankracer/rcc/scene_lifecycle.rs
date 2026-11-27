@@ -19,6 +19,8 @@ pub struct Store {
     pub free_objects: ordered::List,
     pub lap_objects: ordered::List,
     pub signs: ordered::List,
+    // Deferred lap queues share this DSEG3 bank; 65535 keeps resident arrays.
+    pub queue_page: u16,
     pub enter: ordered::List,
     pub leave: ordered::List,
 }
@@ -255,8 +257,19 @@ fn base(
             retain(&mut runtime.special, id);
             retain(&mut store.lap_objects, id);
             retain(&mut store.signs, id);
+            let saved = read_dseg_page(3);
+            if store.queue_page != 65535 && store.queue_page != saved {
+                unsafe {
+                    write_dseg_page(3, store.queue_page);
+                }
+            }
             retain(&mut store.enter, collider_entity);
             retain(&mut store.leave, collider_entity);
+            if read_dseg_page(3) != saved {
+                unsafe {
+                    write_dseg_page(3, saved);
+                }
+            }
             let s = ordered::append(&mut store.free_objects, id);
             if s != 0 {
                 return error(s);

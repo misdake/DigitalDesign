@@ -1,9 +1,8 @@
 //! Persistent authored pickups in the property page and one shared effects page.
 #![link_cseg = "pickups"]
 use super::*;
-static PICKUP_CAMERA: Buf<u16, 24> = Buf::new([
-    0, 0, 0, 0, 0, 0, 4096, 0, 0, 0, 0, 0, 0, 0, 4096, 0, 0, 0, 0, 0, 0, 0, 4096, 0,
-]);
+pub const FLIGHT_WORD: u16 = 8200;
+pub const FLIGHT_WORDS: u16 = 1620;
 static PICKUP_MATERIALS: Buf<u16, 4> = Buf::new([5, 0, 6, 0]);
 pub struct Pickups {
     pub enabled: bool,
@@ -22,6 +21,8 @@ pub struct PickupContact {
     pub target: u16,
     pub own: u16,
     pub mode: fix32,
+    pub number: fix32,
+    pub camera: Array<u16>,
 }
 pub(super) fn read_pickup_stage(out: Array<u16>, asset: AssetBytes, offset: u16, count: u16) {
     let scratch: Buf<u16, 64> = Buf::new([0; 64]);
@@ -50,9 +51,9 @@ pub fn load_pickups(
 ) -> Pickups {
     let effects_page = DRIVING_PICKUP_EFFECTS.first_sector() >> 8;
     let mut result = Pickups {
-        enabled: driving_has_pickup(case),
+        enabled: driving_has_pickup(case) || driving_has_player(case),
         bindings: meta,
-        flights: at(world.properties, 8200),
+        flights: at(world.properties, FLIGHT_WORD as i16),
         meta: at(meta, 780),
         page: world.grid.page,
         motion_page: motion_page,
@@ -69,10 +70,35 @@ pub fn load_pickups(
         return result;
     }
     let saved = spatial::select(&world.grid);
-    let asset = driving_pickup_initial(case);
-    read(result.bindings, DRIVING_PICKUP_BINDINGS, fix32::zero(), 780);
-    read_pickup_stage(result.flights, asset, 0, 1620);
+    let bindings = if driving_has_player(case) {
+        DRIVING_PLAYER_PICKUP_BINDINGS
+    } else {
+        DRIVING_PICKUP_BINDINGS
+    };
+    read(result.bindings, bindings, fix32::zero(), 780);
     read(result.meta, DRIVING_PICKUP_CONFIG, fix32::zero(), 51);
+    if driving_has_player(case) {
+        if DRIVING_PLAYER_PICKUP_FLIGHTS.byte_len_hi != 0
+            || DRIVING_PLAYER_PICKUP_FLIGHTS.byte_len_lo != FLIGHT_WORDS * 2
+            || FLIGHT_WORD + FLIGHT_WORDS >= 10000
+        {
+            halt(0x7f84);
+        }
+        read_pickup_stage(
+            result.flights,
+            DRIVING_PLAYER_PICKUP_FLIGHTS,
+            0,
+            FLIGHT_WORDS,
+        );
+        let mut guard = world.properties;
+        guard[FLIGHT_WORD + FLIGHT_WORDS] = 0x6c25;
+        unsafe {
+            write_dseg_page(3, saved);
+        }
+        return result;
+    }
+    let asset = driving_pickup_initial(case);
+    read_pickup_stage(result.flights, asset, 0, 1620);
     let mut i = 0u16;
     while i < 2 {
         let row = at(result.meta, (51 + i * 4) as i16);
@@ -129,6 +155,28 @@ pub fn pickup_index(store: &Pickups, object: u16) -> u16 {
         i += 1;
     }
     selected
+}
+#[link_cseg = "checks"]
+pub fn check_pickup_flights(store: &Pickups, asset: AssetBytes, frame: u16) {
+    let saved = read_dseg_page(3);
+    unsafe {
+        write_dseg_page(3, store.page);
+    }
+    let mut expected = reference(
+        asset,
+        fmul_lo32(
+            fix32::from_words(frame, 0),
+            fix32::from_words(FLIGHT_WORDS, 0),
+        ),
+        FLIGHT_WORDS,
+    );
+    expect_block(store.flights, &mut expected, 0, FLIGHT_WORDS);
+    if unsafe { Ptr::from_addr(0xc000 + FLIGHT_WORD + FLIGHT_WORDS).read(0) } != 0x6c25 {
+        halt(0x7f85);
+    }
+    unsafe {
+        write_dseg_page(3, saved);
+    }
 }
 fn pickup_actor(
     store: &Pickups,
@@ -221,7 +269,7 @@ pub fn pickup_contact(
                 banks: unsafe { Ptr::from_addr(0xc000).as_u16_array() },
             },
             context: pickup_light::Context {
-                camera: PICKUP_CAMERA.as_array(),
+                camera: frame.camera,
                 materials: PICKUP_MATERIALS.as_array(),
                 tuning: at(store.meta, 4),
                 sine: store.sine,
@@ -229,7 +277,7 @@ pub fn pickup_contact(
             quads: view_of(&mut store.quads),
             lines: store.lines,
             effects_page: store.effects_page,
-            frame: fix32::zero(),
+            frame: frame.number,
             follow: state.cars[frame.own].player,
         };
         status = scene_pickups::collect(
@@ -285,10 +333,10 @@ pub fn pickup_tick(
         let step = scene_pickups::Frame {
             motion: powerup::Frame {
                 dt: frame.dt,
-                number: fix32::zero(),
+                number: frame.number,
                 entity: entity,
                 player: at(state.cars[0u16].motion, 18),
-                camera: PICKUP_CAMERA.as_array(),
+                camera: frame.camera,
                 visibility: actor.definition[24u16],
                 auxiliary_active: actor.fragments.active[0u16] != 0,
                 separation: attitude::get(store.meta, 0),
@@ -308,7 +356,7 @@ pub fn pickup_tick(
                     result: result.as_array(),
                 },
                 result: result.as_array(),
-                group: fix32::zero(),
+                group: frame.number,
                 player: at(state.cars[0u16].motion, 18),
                 has_player: true,
                 peer: frame.peer_basis,

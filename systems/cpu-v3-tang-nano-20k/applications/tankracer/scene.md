@@ -46,6 +46,18 @@ in source order. Each candidate loads one collider and reuses the original
 broad/narrow phase. Query statuses are miss 0, hit 1, arithmetic 3, bad ID 4 and
 asset/mapping error 7. Misses retain the incoming hit geometry and metadata.
 
+## Deferred lap storage
+
+`scene_lifecycle::Store.queue_page` selects the optional DSEG3 backing for its
+`enter` and `leave` lists. A value of 65535 retains resident arrays. Lap append,
+flush/removal and component retirement select this bank for queue access and
+restore the incoming mapping before returning, including later error paths.
+The lists retain their u32 IDs, ordering, duplicate entries and capacities.
+
+The `scene-laps-packed-paged`, `scene-player-packed-paged` and
+`scene-allocation-packed-paged` qualifiers use separate backing with guarded
+resident aliases; their complete snapshots retain the original list encoding.
+
 ## Live geometry
 
 `scene_world::Runtime` holds the shared tick owner, deferred queues, current-slot
@@ -737,7 +749,27 @@ collider and consumes no additional random values for audio.
 Cases include alternating calls sharing one RNG, endpoint overshoot, signed
 wrap, wait boundaries, external bases, failed-pose recovery and class/context
 errors. `scene_allocation_checker_check.py --trains` checks selected answer
-mutations. Continuous mixed-world scheduling is a separate integration boundary.
+mutations.
+
+`driving/scene_trains.rs` connects both ENGLAND paths to the authored Tick order
+beside emitters and Player. Range checks read the current vehicle body position.
+Travel, speed/range and mutable endpoints/velocity occupy 240 bytes in the existing
+effects page, starting at word 12086; object IDs use words 12206/12207, sound flags
+12208/12209 and guards 12085/12210. The caller restores the incoming DSEG3 mapping.
+Both original Train collider bounds are empty; their poses and external bases
+are published with that authored collision representation.
+
+Player context version 4 uses header word 7 for the Train offset within section
+15. Two rows contain object ID, sound presence and 60 state words. The canonical
+Player packet appends those 120 state words after the emitter states. The driving
+qualifier retains both Train and emitter ticks in their original relative order;
+other actors retain their separate integration boundaries. `--scope trains`
+covers staggered activation, both paths, endpoint reset/reversal, the wait and
+resumed movement. The reversal branch uses an independent initial RNG state and
+the same original noise initialization and endpoint call sites. `seeds.bin` stores
+four header words (0x5253, version 1, case count, zero) and one little-endian u32
+initial seed per case. The loader computes and compares the original sixteen-word
+noise table and resulting seed before starting the trajectory.
 
 ## Emitter updates
 
@@ -769,6 +801,25 @@ class calls. It covers all five authored emitters, alternating calls, thirty-fiv
 consecutive emissions, strict trigger boundaries, signed style values and
 resource/creation/activation failures followed by cooldown updates.
 `scene_allocation_checker_check.py --emitters` exercises selected answer mutations.
+
+`driving/weapon_emitters.rs` connects these same methods to the persistent world
+pass. The authored emitter order precedes the Player, and newly activated
+projectiles run through the existing scheduler, flight, impact and Stop/drain
+paths. Independent frame camera input is published to the existing effects-page
+camera before any actor runs. Player preparation and camera triggers read that
+same live owner. Timer, projectile and explosion updates consume the shared RNG
+at their original call sites.
+
+The Player context appends five object IDs and their initial 50-word
+states to section 15. Header words 54/55 describe the relative offset/count.
+The existing effects page holds the contiguous 500-byte state at word 11828 and
+five object IDs at word 12078, followed by a guard at word 12084. Frame comparisons
+append those 250 state words after the UFO summary; they never load later state
+from an answer. `bench-tankracer-driving --scope emitters` covers camera exit and
+reentry, player BOX activation, real terrain impacts and shared retirement. The
+terrain exporter includes projectile positions as well as suspension-query cells.
+`scenery_loading_check.py --emitters` checks input/answer independence and malformed
+authored metadata.
 
 ## Flock updates
 

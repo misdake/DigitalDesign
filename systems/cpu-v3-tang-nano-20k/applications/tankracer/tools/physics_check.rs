@@ -203,6 +203,7 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         || label == "mine"
         || label == "temporary"
         || label == "tank-hit"
+        || label == "tank-hit-paged"
     {
         options.heap_begin = 0x7000;
         options.heap_size = 0x2000;
@@ -289,6 +290,7 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
                 || label == "scene-flock"
                 || label == "scene-ambient"
                 || label == "tank-hit"
+                || label == "tank-hit-paged"
                 || label == "explosion"
                 || label == "explosion-blasts"
                 || label == "scene-creation"
@@ -807,7 +809,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or(600);
         let mode = std::env::args().nth(4);
         let report = match mode.as_deref() {
-            Some(mode) if mode.starts_with("scene-") && mode.ends_with("-packed") => {
+            Some(mode)
+                if mode.starts_with("scene-")
+                    && (mode.ends_with("-packed") || mode.ends_with("-paged")) =>
+            {
                 scene_allocation_check::run(&output, Path::new(&fixture), mode)?
             }
             Some("scene-allocation") => {
@@ -905,7 +910,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             Some("temporary") => temporary_check::run(&output, Path::new(&fixture))?,
             Some("explosion") => explosion_check::run(&output, Path::new(&fixture))?,
             Some("explosion-blasts") => explosion_blasts_check::run(&output, Path::new(&fixture))?,
-            Some("tank-hit") => tank_hit_check::run(&output, Path::new(&fixture))?,
+            Some("tank-hit") => tank_hit_check::run(&output, Path::new(&fixture), false)?,
+            Some("tank-hit-paged") => tank_hit_check::run(&output, Path::new(&fixture), true)?,
             Some("mine") => mine_check::run(&output, Path::new(&fixture))?,
             Some("projectile-marks") => projectile_marks_check::run(&output, Path::new(&fixture))?,
             Some("projectile") => projectile_check::run(&output, Path::new(&fixture))?,

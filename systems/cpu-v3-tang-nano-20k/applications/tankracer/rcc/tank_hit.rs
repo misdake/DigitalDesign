@@ -22,11 +22,13 @@ pub struct Vehicle {
     pub hit_counts: Array<u16>,
     // Damage severity[2], then authored socket indices[2].
     pub smoke: Array<u16>,
+    pub smoke_stride: u16,
     // Body then turret; each damage target borrows the same one-shot flags.
     pub parts: Array<Part>,
     pub base_position: Array<u16>,
-    // Sidegrip multiplier/shift, then the matching live drive-config columns.
+    // Prefix multiplier/shift and the separately owned live drive-config pair.
     pub grip: Array<u16>,
+    pub drive_grip: Array<u16>,
     // Extended signed-word timer and slot, from the existing vehicle prefix.
     pub temporary: Array<u16>,
 }
@@ -238,11 +240,11 @@ pub fn contact(
         if counts[index] < 10 {
             let count = counts[index] + 1;
             counts[index] = count;
-            let smoke = 1 - upper;
+            let smoke = (1 - upper) * car.smoke_stride;
             let mut s = car.smoke;
             if count > 6 && count > s[smoke] {
                 s[smoke] = count;
-                s[smoke + 2] = kind - 1;
+                s[smoke + 2 * car.smoke_stride] = kind - 1;
             }
             if count > 1 && car.player {
                 let mut part = car.parts[upper];
@@ -298,8 +300,8 @@ pub fn apply(
             let shift = g(car.grip, 1).lo_bits() + 1;
             p(car.grip, 1, fix32::from_words(shift, 0));
         }
-        p(car.grip, 2, g(car.grip, 0));
-        p(car.grip, 3, g(car.grip, 1));
+        p(car.drive_grip, 0, g(car.grip, 0));
+        p(car.drive_grip, 1, g(car.grip, 1));
         let timer = g(car.temporary, 0).lo_bits() as i16;
         let slot = unsafe { car.temporary.as_ptr().add(2).as_u16_array() };
         let status = temporary::start(shared, timer, slot, car.base_position, shot.time, ctx);

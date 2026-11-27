@@ -82,12 +82,15 @@ fn run_ground_response(input: Array<u16>, out: Array<u16>, sine: Array<i16>, ang
             has_basis: true,
         },
         damage: damage::Target {
+            has_revision: false,
+            revision: unsafe { Ptr::from_addr(0).as_u16_array() },
             state: flags.as_array(),
             player: attitude::get(input, 61) != fix32::zero(),
             basis: unsafe { input.as_ptr().add(42).as_u16_array() },
             position: position,
             selected: selected.as_array(),
             mesh: damage::Mesh {
+                page: 65535,
                 present: attitude::get(input, 62) != fix32::zero(),
                 vertices: vertices.as_array(),
                 vertex_count: 3,

@@ -7,8 +7,10 @@ use crate::{
 pub struct Car {
     pub present: bool,
     pub transfer: vehicle_transfer::Car,
-    // Spin disabled byte, collision disabled bool, race driving bool; extended i32.
-    pub flags: Array<u16>,
+    // Authoritative extended byte/bool fields may belong to different owners.
+    pub spin_disabled: Array<u16>,
+    pub collision_disabled: Array<u16>,
+    pub driving: Array<u16>,
 }
 pub struct View {
     pub cars: Array<Car>,
@@ -159,19 +161,19 @@ pub fn dispatch(
                     if value == n(1) {
                         disabled = n(1);
                     }
-                    p(car.flags, 0, disabled);
+                    p(car.spin_disabled, 0, disabled);
                 } else if method.id == 48 {
                     let mut disabled = n(1);
                     if value == n(1) {
                         disabled = n(0);
                     }
-                    p(car.flags, 1, disabled);
+                    p(car.collision_disabled, 0, disabled);
                 } else if method.id == 129 {
                     let mut driving = n(0);
-                    if g(car.flags, 2) == n(0) {
+                    if g(car.driving, 0) == n(0) {
                         driving = n(1);
                     }
-                    p(car.flags, 2, driving);
+                    p(car.driving, 0, driving);
                 } else if method.id == 47 {
                     let routes = &view.routes[0u16];
                     let request = vehicle_transfer::Request {

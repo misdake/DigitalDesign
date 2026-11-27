@@ -1,8 +1,9 @@
 //! Constructed parent views into stable level state and the shared motion bank.
 use crate::dsl_rt::*;
 use crate::{
-    attitude, entities, integer, lifecycle, mesh_break, scene_fragments, scene_lifecycle,
-    scene_meshes, scene_parent, scene_query, scene_world, scenery_contact, shatter, spatial,
+    attitude, entities, integer, lifecycle, mesh_break, scene_creation, scene_fragments,
+    scene_lifecycle, scene_meshes, scene_parent, scene_query, scene_world, scenery_contact,
+    shatter,
 };
 
 fn at(data: Array<u16>, offset: u16) -> Array<u16> {
@@ -11,9 +12,9 @@ fn at(data: Array<u16>, offset: u16) -> Array<u16> {
 pub fn drain(
     scene: &scene_query::Scene,
     state: &mut scene_parent::State,
-    grid: &mut spatial::Grid,
-    parents: Array<scene_parent::Actor>,
+    world: &mut scene_world::World,
     bindings: Array<u16>,
+    weapons: &mut scene_creation::Weapons,
 ) -> fix32 {
     let mut pass = lifecycle::begin_drain(state.lifetime.limit);
     loop {
@@ -24,11 +25,56 @@ pub fn drain(
         if event.status != 1 {
             return integer::from_i16(-1);
         }
+        let mut weapon = false;
+        if entities::handle_kind(&state.lifetime.identities, event.id) == 1 {
+            let id = entities::handle(&state.lifetime.identities, event.id);
+            weapon = id.hi_bits() == 0
+                && id.lo_bits() < weapons.object_capacity
+                && scene_creation::component_kind(weapons, id.lo_bits()) != 0;
+        }
+        if weapon {
+            let status = scene_creation::dispatch(
+                scene,
+                &mut state.lifetime,
+                &mut state.runtime,
+                world,
+                weapons,
+                &scene_creation::Call {
+                    entity: event.id,
+                    slot: 5,
+                },
+            );
+            if status != fix32::zero() {
+                return status;
+            }
+            if event.destroy && entities::present(&state.lifetime.identities, event.id) {
+                let mut slot = 2u16;
+                while slot < 4 {
+                    let status = scene_creation::dispatch(
+                        scene,
+                        &mut state.lifetime,
+                        &mut state.runtime,
+                        world,
+                        weapons,
+                        &scene_creation::Call {
+                            entity: event.id,
+                            slot,
+                        },
+                    );
+                    if status != fix32::zero() {
+                        return status;
+                    }
+                    slot += 1;
+                }
+                entities::finish_destroy(&state.lifetime.identities);
+            }
+            continue;
+        }
         let status = scene_lifecycle::stop(
             scene,
             &mut state.lifetime,
             &mut state.runtime,
-            grid,
+            &mut world.grid,
             event.id,
         );
         if status != fix32::zero() {
@@ -48,12 +94,18 @@ pub fn drain(
                     scene,
                     &mut state.lifetime,
                     &mut state.runtime,
-                    grid,
+                    &mut world.grid,
                     event.id,
                 );
             } else {
-                status =
-                    scene_parent::destroy(scene, state, grid, &mut parents[selected], event.id);
+                let mut parents = state.actors;
+                status = scene_parent::destroy(
+                    scene,
+                    state,
+                    &mut world.grid,
+                    &mut parents[selected],
+                    event.id,
+                );
             }
             if status != fix32::zero() {
                 return status;

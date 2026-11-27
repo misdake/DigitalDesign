@@ -3,6 +3,9 @@ use crate::dsl_rt::*;
 use crate::{attitude, collision, integer};
 pub struct Mesh {
     pub present: bool,
+    // 65535 keeps the current mapping. A banked mesh borrows DSEG3 only while
+    // changing its geometry; poses, one-shot flags and revisions stay mapped.
+    pub page: u16,
     pub vertices: Array<i16>,
     pub vertex_count: u16,
     pub indices: Array<u16>,
@@ -17,6 +20,8 @@ pub struct Target {
     pub position: Array<u16>,
     pub selected: Array<u16>,
     pub mesh: Mesh,
+    pub revision: Array<u16>,
+    pub has_revision: bool,
 }
 fn n(v: i16) -> fix32 {
     integer::from_i16(v)
@@ -44,7 +49,7 @@ pub fn quadrant(basis: Array<u16>, position: Array<u16>, world: Array<u16>) -> u
     q
 }
 // Status: 0 success/unchanged, 1 success/dent, 2 invalid vertex, 3 missing mesh.
-pub fn repair(mesh: &Mesh, vertex: u16) -> u16 {
+fn repair(mesh: &Mesh, vertex: u16) -> u16 {
     let points: Buf<u16, 18> = Buf::new([0; 18]);
     let v = points.as_array();
     let a = unsafe { v.as_ptr().add(6).as_u16_array() };
@@ -125,6 +130,12 @@ pub fn hit(target: &mut Target, world: Array<u16>, turret: bool) -> u16 {
     if vertex >= target.mesh.vertex_count {
         return 2;
     }
+    let saved = read_dseg_page(3);
+    if target.mesh.page != 65535 && target.mesh.page != saved {
+        unsafe {
+            write_dseg_page(3, target.mesh.page);
+        }
+    }
     let mut axis = 0u16;
     let mut vertices = target.mesh.vertices;
     while axis < 3 {
@@ -151,6 +162,11 @@ pub fn hit(target: &mut Target, world: Array<u16>, turret: bool) -> u16 {
         axis += 1;
     }
     let status = repair(&target.mesh, vertex);
+    if read_dseg_page(3) != saved {
+        unsafe {
+            write_dseg_page(3, saved);
+        }
+    }
     if status != 0 {
         return status;
     }
@@ -166,7 +182,22 @@ pub fn track(target: &mut Target, kind: fix32, world: Array<u16>) -> u16 {
     }
     target.state[slot] += 1;
     if target.player {
-        return hit(target, world, false);
+        let status = hit(target, world, false);
+        // The track callback dirties an existing body when its one-shot flag
+        // changes, including a later mesh error. Direct projectile hits publish
+        // their part revision only after successful geometry repair.
+        if status != 0 && target.has_revision {
+            let mut words = target.revision;
+            let mut i = 0u16;
+            while i < 4 {
+                words[i] += 1;
+                if words[i] != 0 {
+                    break;
+                }
+                i += 1;
+            }
+        }
+        return status;
     }
     0
 }

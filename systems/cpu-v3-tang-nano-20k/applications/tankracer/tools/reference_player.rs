@@ -63,6 +63,7 @@ pub fn before_tank(
         launch,
         &mut Device,
         Stage::BeforeTank,
+        None,
     )
 }
 pub fn update<D: Devices>(
@@ -74,6 +75,24 @@ pub fn update<D: Devices>(
     launch: &mut bool,
     devices: &mut D,
     stage: Stage,
+    context: Option<&mut factory::Context<'_, Handle>>,
+) -> Result<(), i32> {
+    let id = world.player;
+    update_car(
+        world, id, keys, dt, number, limit, launch, devices, stage, context,
+    )
+}
+pub fn update_car<D: Devices>(
+    world: &mut SinglePlayer,
+    id: TankId,
+    keys: Option<(player_input::Keys, i32)>,
+    dt: i32,
+    number: u32,
+    limit: u32,
+    launch: &mut bool,
+    devices: &mut D,
+    stage: Stage,
+    context: Option<&mut factory::Context<'_, Handle>>,
 ) -> Result<(), i32> {
     world.frame = number;
     world.objects.components.dt = dt;
@@ -81,7 +100,6 @@ pub fn update<D: Devices>(
     world.objects.components.mode = world.settings.mode;
     world.objects.components.camera_position = world.camera_position;
     world.objects.components.camera_basis = world.camera_basis;
-    let id = world.player;
     let input = world.vehicles.entries[id.0].as_ref().ok_or(-1)?.input.drive;
     let hit = world
         .registry
@@ -121,11 +139,22 @@ pub fn update<D: Devices>(
         .physics
         .entity;
     let mut result = 0;
+    let context = if let Some(context) = context {
+        factory::Context {
+            entities: context.entities,
+            symbols: context.symbols,
+            ticks: context.ticks,
+            queues: context.queues,
+            current_slot: context.current_slot,
+        }
+    } else {
+        world.identity.context()
+    };
     let mut call = factory::Invocation {
         entity,
         payload: None,
         result: &mut result,
-        context: world.identity.context(),
+        context,
     };
     let check_result;
     let status = match stage {

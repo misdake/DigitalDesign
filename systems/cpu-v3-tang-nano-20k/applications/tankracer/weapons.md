@@ -624,11 +624,16 @@ python -B "$tools/scene_allocation_checker_check.py" target/release/tankracer-ph
 ## UFO transfer update
 
 `scene_ufo_transfer::dispatch` runs the actual UFO Tick interface over the
-existing 172-byte record. It holds the component bank in DSEG3 for the call;
-nested grid, collider, class and trigonometric operations restore their incoming
-mapping. Caller views remain valid while that bank is selected. The target's
-initial XYZ and a MOVE payload each use twelve CPU scratch bytes. Component
-state, vehicle poses, motion and lifecycle memberships remain in their owners.
+existing 172-byte record. `Tick.component_window` selects DSEG2 or DSEG3.
+DSEG2 keeps the component resident alongside banked vehicle poses and route
+metadata in DSEG3. Fixed collider reads and nested target methods borrow
+`Tick.collision_page` in DSEG2, then restore the component mapping on success
+and failure. The outer dispatch restores its incoming component-window mapping.
+Grid, dynamic collider, class and trigonometric operations preserve DSEG3.
+The target's initial XYZ and a MOVE payload each use twelve CPU scratch bytes.
+Component state, vehicle poses, motion and lifecycle memberships remain in
+place in their respective owners. Vehicle MODE, COLLIDABLE and RESET bind
+separate `spin_disabled`, `collision_disabled` and `driving` views.
 
 `Tick.vehicles` points to one live `scene_vehicle_transfer::View`; its route
 owner contains the shared occupied-checkpoint list. `Tick.visible` points to
@@ -673,7 +678,12 @@ RNG snapshots. It includes continuous player, non-player and obstacle transfers,
 branch thresholds, large unsigned radii, overlap failures, packed arithmetic
 wrap, partial restores, nested errors and departure. The actor qualifier ends at
 its queued lifecycle effects; mixed scheduler/drain execution is a separate frame
-boundary. Answer mutations check each affected state boundary.
+boundary. Its packed layout puts vehicle poses and route metadata in a separate
+DSEG3 bank, with spin and race flags in independent CPU fields. Guards check
+the former packed flag columns and the bank tail. The ordinary layout retains
+the DSEG3 component path. Answer mutations check each affected state boundary;
+`scene_allocation_checker_check.py --ufo-transfer --packed` exercises the banked
+layout.
 
 ```powershell
 cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/ufo-transfer-check target/weapon-reference 0 scene-ufo-transfer
@@ -781,8 +791,11 @@ The `scene-mine-explosion` and `scene-mine-hit` instruction qualifiers use real
 race resources and complete scene/pool snapshots. They cover pool exhaustion,
 slot replacement, ordinary/electric rings, protection, ordered peers, signed
 restoration, arming, late failures and contact followed by explosion ticks.
-The latter calls the selected method body; outer collision selection and mixed
-whole-world/native scheduling remain separate integration boundaries.
+The latter calls the selected method body. `bench-tankracer-driving --scope mines`
+also connects the actual ordinary query, current car/effect/shield owners,
+ordered mine ticks, repeat children and the shared Stop/drain path. Its focused
+trajectories compare the complete world after each pass. Remaining actor
+integration, complete startup and finish retain their separate boundaries.
 
 ```powershell
 cargo run --release -p cpu-v3-tang-nano-20k --bin tankracer-physics-check -- target/mine-explosion-check target/weapon-reference 0 scene-mine-explosion

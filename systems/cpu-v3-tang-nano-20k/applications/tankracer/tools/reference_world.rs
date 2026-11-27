@@ -148,6 +148,18 @@ pub fn full_race(root: &Path) -> SinglePlayer {
     .world
 }
 pub fn constructed(root: &Path) -> tankracer_game::world_startup::Constructed {
+    construct(root, None)
+}
+pub fn constructed_pair(
+    root: &Path,
+    peer: tankracer_game::vehicle_model::VehicleModel,
+) -> tankracer_game::world_startup::Constructed {
+    construct(root, Some(peer))
+}
+fn construct(
+    root: &Path,
+    peer: Option<tankracer_game::vehicle_model::VehicleModel>,
+) -> tankracer_game::world_startup::Constructed {
     let read = |name: &str| {
         let path = root.join("assets/game").join(name).join("FASTFILE.DAT");
         assert!(
@@ -165,14 +177,21 @@ pub fn constructed(root: &Path) -> tankracer_game::world_startup::Constructed {
     ];
     let shared = read("INGAME");
     let level = read("LEVELS/ENGLAND");
-    tankracer_game::world_startup::Constructed::load(
-        Files {
-            data: &data,
-            vehicles: &vehicles.each_ref().map(Vec::as_slice),
-            shared: &shared,
-            level: &level,
-        },
-        Selection::default_cup(0, 1).unwrap(),
-    )
-    .unwrap()
+    let files = Files {
+        data: &data,
+        vehicles: &vehicles.each_ref().map(Vec::as_slice),
+        shared: &shared,
+        level: &level,
+    };
+    let selection = Selection::default_cup(0, 1).unwrap();
+    if let Some(peer) = peer {
+        let archive = Archive::parse(&level).unwrap();
+        let terrain =
+            Arc::new(TerrainData::decode_bsm(archive.get("ENGLAND.BSM").unwrap()).unwrap());
+        let mut prepared = Prepared::load_complete(terrain, files, selection).unwrap();
+        prepared.rcc_add_peer(peer).unwrap();
+        tankracer_game::world_startup::Constructed::from_prepared(prepared, selection).unwrap()
+    } else {
+        tankracer_game::world_startup::Constructed::load(files, selection).unwrap()
+    }
 }

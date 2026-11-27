@@ -9,6 +9,7 @@ pub struct State {
     pub prefixes: Array<u16>,
     pub prepared: Array<prefix::Shared>,
     pub racers: Array<u16>,
+    pub hit_fields: Array<u16>,
 }
 fn ptr(w: u16) -> Array<u16> {
     unsafe { Ptr::from_addr(w).as_u16_array() }
@@ -62,6 +63,7 @@ pub fn load(
         prefixes: ptr(0),
         prepared: prepared,
         racers: ptr(0),
+        hit_fields: ptr(0),
         shared: car_effects::Shared {
             pickup: pickup_light::State { banks: ptr(0xc000) },
             impacts: impacts,
@@ -153,6 +155,8 @@ pub fn inactive(
     p(config.drive, 2, g(ptr(0xc000 + 10414 + car.slot * 26), 3));
     p(config.drive, 18, g(core, 8));
     p(config.drive, 19, g(core, 9));
+    p(sub(state.hit_fields, car.slot * 24 + 20), 0, g(core, 8));
+    p(sub(state.hit_fields, car.slot * 24 + 20), 1, g(core, 9));
     let status = vehicle_inactive::step(
         &live,
         &vehicle_inactive::Input {
@@ -187,7 +191,12 @@ pub fn inactive(
     status
 }
 // Called while the complete phase is mapped, including after a prepare failure.
-pub fn publish_prefix(car: &driving::Car, config: &driving::Config, prefix: &prefix::State) {
+pub fn publish_prefix(
+    car: &driving::Car,
+    config: &driving::Config,
+    prefix: &prefix::State,
+    drive_grip: Array<u16>,
+) {
     let b = row(car.slot);
     p(sub(b, 902), 0, g(prefix.core, 4));
     p(sub(b, 952), 0, g(prefix.core, 4));
@@ -195,6 +204,8 @@ pub fn publish_prefix(car: &driving::Car, config: &driving::Config, prefix: &pre
     p(car.blast, 3, g(prefix.spin, 7));
     p(config.drive, 18, g(prefix.core, 8));
     p(config.drive, 19, g(prefix.core, 9));
+    p(drive_grip, 0, g(prefix.core, 8));
+    p(drive_grip, 1, g(prefix.core, 9));
 }
 pub fn advance(
     state: &mut State,
@@ -425,12 +436,17 @@ pub fn advance(
         p(car.drive, 9, g(car.motion, 15));
         p(car.drive, 12, g(car.motion, 14));
     }
-    let mut q = state.shared.quads;
-    p(ptr(0xc000 + 6800), 0, q[0u16].count);
     unsafe {
         write_dseg_page(3, saved);
     }
     status
+}
+fn check_vehicle_fields(state: &State, expected: &mut Reference, end: u16) {
+    expect_block(ptr(0xc000 + 6802), expected, 6802, 960);
+    expect_block(sub(state.prefixes, 8), expected, 7762, 4);
+    expect_block(ptr(0xc000 + 7766), expected, 7766, 952);
+    expect_block(sub(state.prefixes, 58), expected, 8718, 4);
+    expect_block(ptr(0xc000 + 8722), expected, 8722, end - 8722);
 }
 pub fn check(state: &State, case: u16, offset: fix32) -> fix32 {
     if !state.enabled {
@@ -445,15 +461,20 @@ pub fn check(state: &State, case: u16, offset: fix32) -> fix32 {
         offset,
         DRIVING_COMPLETE_WORDS,
     );
+    // Count is owned by the shared pool descriptor. The source snapshot places
+    // its diagnostic column between quad records and vehicle state.
+    expect_block(ptr(0xc000), &mut expected, 0, 6800);
+    let quads = state.shared.quads;
+    expect_value(quads[0u16].count, &mut expected, 3400);
     if driving_has_player(case) {
         // These two diagnostic columns alias the authoritative route/racer rows.
-        expect_block(ptr(0xc000), &mut expected, 0, 10438);
+        check_vehicle_fields(state, &mut expected, 10438);
         expect_value(g(state.racers, 13), &mut expected, 5219);
         expect_block(ptr(0xc000 + 10440), &mut expected, 10440, 24);
         expect_value(g(sub(state.racers, 30), 13), &mut expected, 5232);
         expect_block(ptr(0xc000 + 10466), &mut expected, 10466, 2);
     } else {
-        expect_block(ptr(0xc000), &mut expected, 0, DRIVING_COMPLETE_WORDS);
+        check_vehicle_fields(state, &mut expected, DRIVING_COMPLETE_WORDS);
     }
     if ptr(0xffff)[0u16] != 0x53a9 {
         halt(0x7f51);

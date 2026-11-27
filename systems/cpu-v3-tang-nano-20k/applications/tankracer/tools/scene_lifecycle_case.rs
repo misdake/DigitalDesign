@@ -166,6 +166,7 @@ pub fn load_scene_lifecycle(input: Array<u16>, storage: Array<u16>) -> SceneCase
             count: ls[7u16].count,
             capacity: ls[7u16].capacity,
         },
+        queue_page: 65535,
         enter: ordered::List {
             items: ls[8u16].items,
             count: ls[8u16].count,

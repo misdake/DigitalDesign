@@ -299,8 +299,10 @@ pub fn release_explosion(weapons: &mut Weapons, world: &scene_world::World, id: 
             if !weapons.has_effect_pool {
                 status = n(-5);
             } else {
+                let component = read_dseg_page(3);
                 unsafe {
                     write_dseg_page(2, weapons.effect_page);
+                    write_dseg_page(3, weapons.effect_page);
                 }
                 let mut quads = weapons.quads;
                 let lines = weapons.lines;
@@ -311,6 +313,9 @@ pub fn release_explosion(weapons: &mut Weapons, world: &scene_world::World, id: 
                     &mut quads[0u16],
                     &lines[0u16],
                 );
+                unsafe {
+                    write_dseg_page(3, component);
+                }
                 status = released.status;
                 if status == n(0) {
                     attitude::put(state, 6 + kind, n(-1));

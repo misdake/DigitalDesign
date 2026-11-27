@@ -42,12 +42,15 @@ fn tank_vehicle(
             has_basis: geometry.collider.has_external != fix32::zero(),
         },
         damage: damage::Target {
+            has_revision: false,
+            revision: unsafe { Ptr::from_addr(0).as_u16_array() },
             state: data.flags.as_array(),
             player: attitude::get(input, 10) != fix32::zero(),
             basis: geometry.collider.basis.as_array(),
             position: geometry.collider.position.as_array(),
             selected: DAMAGE_SELECTED.as_array(),
             mesh: damage::Mesh {
+                page: 65535,
                 present: present,
                 vertices: data.vertices.as_array(),
                 vertex_count: 3,

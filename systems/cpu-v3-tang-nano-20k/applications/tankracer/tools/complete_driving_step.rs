@@ -6,7 +6,7 @@ pub fn step(
     own: usize,
     input: drive::Input,
     number: u32,
-    context: Option<
+    mut context: Option<
         &mut tankracer_game::entity_factory::Context<'_, tankracer_game::scene_entity::Handle>,
     >,
 ) -> driving_step::Step {
@@ -35,7 +35,10 @@ pub fn step(
         models: setup.models,
     };
     if setup.sample_controls != 0 && own == 0 {
-        let stage = if setup.sample_controls == 4 {
+        let stage = if setup.sample_controls == 4
+            || setup.sample_controls == 7
+            || setup.sample_controls == 9
+        {
             setup.start_stage
         } else if setup.sample_controls >= 2 {
             4
@@ -44,7 +47,15 @@ pub fn step(
         } else {
             4
         };
-        let sequence = if setup.sample_controls == 5 {
+        let sequence = if setup.sample_controls == 9 {
+            [4u16, 4, 4, 132, 36, 4]
+        } else if setup.sample_controls == 8 {
+            [4u16, 4, 4, 4, 4, 0]
+        } else if setup.sample_controls == 7 {
+            [0u16; 6]
+        } else if setup.sample_controls == 6 {
+            [4u16, 4, 4, 0, 0, 0]
+        } else if setup.sample_controls == 5 {
             [260u16, 4, 260, 0, 0, 0]
         } else if setup.sample_controls == 4 {
             [4u16, 4, 132, 68, 4, 0]
@@ -57,7 +68,7 @@ pub fn step(
         };
         let keys = sequence[((number - 1) as usize).min(5)];
         active = stage == 4;
-        if setup.sample_controls == 4 {
+        if setup.sample_controls == 4 || setup.sample_controls == 7 || setup.sample_controls == 9 {
             active = world.vehicles.entries[own].as_ref().unwrap().race.driving;
         } else {
             world.vehicles.entries[own].as_mut().unwrap().race.driving = active;
@@ -84,6 +95,7 @@ pub fn step(
                 &mut launch,
                 &mut devices,
                 tankracer_game::vehicle_runtime::rcc_player_probe::Stage::Complete,
+                context.as_deref_mut(),
             )
             .unwrap_or_else(|code| {
                 panic!(
@@ -115,6 +127,23 @@ pub fn step(
             65536
         } | i32::from(packed_keys)
             | (stage << 9);
+    }
+    if own != 0 && setup.sample_controls == 9 {
+        active = world.vehicles.entries[own].as_ref().unwrap().race.driving;
+        tankracer_game::vehicle_runtime::rcc_player_probe::update_car(
+            world,
+            tankracer_game::object_query::TankId(own),
+            None,
+            dt,
+            number,
+            100000,
+            &mut launch,
+            &mut devices,
+            tankracer_game::vehicle_runtime::rcc_player_probe::Stage::Complete,
+            context.as_deref_mut(),
+        )
+        .unwrap();
+        full = true;
     }
     let env = drive::Environment {
         dt,
@@ -193,6 +222,7 @@ pub fn step(
     driving_step::Step {
         control,
         stage: reference::drive_fixture::flatten(&v.powertrain.drive_state(&v.motion)),
+        peer_stage: None,
         cells,
         tank_hits: usize::from(v.collision.timer != before),
         deform_hits: usize::from(v.collision.deformable.is_some()),

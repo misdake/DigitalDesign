@@ -23,6 +23,7 @@ pub struct Setup<'a> {
 pub struct Step {
     pub control: Vec<i32>,
     pub stage: Vec<i32>,
+    pub peer_stage: Option<Vec<i32>>,
     pub cells: BTreeSet<usize>,
     pub tank_hits: usize,
     pub deform_hits: usize,
@@ -353,6 +354,7 @@ pub fn step(
     Step {
         control,
         stage,
+        peer_stage: None,
         cells: visited,
         tank_hits: hits,
         deform_hits,

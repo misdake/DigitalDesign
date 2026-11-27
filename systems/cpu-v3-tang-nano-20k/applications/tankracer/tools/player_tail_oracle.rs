@@ -153,6 +153,7 @@ pub fn export(root: &Path, out: &Path) {
                     before: prior,
                     result: if success { Ok(()) } else { Err(-77) },
                 },
+                None,
             );
             assert_eq!(
                 status,

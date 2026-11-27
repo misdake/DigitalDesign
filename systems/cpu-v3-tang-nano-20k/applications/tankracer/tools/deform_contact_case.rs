@@ -135,6 +135,7 @@ fn run_car_deform(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: A
     let seed: Buf<u16, 2> = Buf::new([0; 2]);
     attitude::put(seed.as_array(), 0, attitude::get(input, 5));
     let mut vehicle = deform_contact::Vehicle {
+        component_count: scene.header[9u16],
         position: unsafe { input.as_ptr().add(108).as_u16_array() },
         previous: unsafe { input.as_ptr().add(114).as_u16_array() },
         base_position: unsafe { input.as_ptr().add(120).as_u16_array() },

@@ -14,39 +14,8 @@ use tankracer_game::{
     vehicle_runtime::SinglePlayer,
 };
 fn state(train: &Train) -> Vec<u16> {
-    let t = &train.travel;
     let mut out = Vec::new();
-    ints(
-        &mut out,
-        [
-            i32::from(t.active),
-            i32::from(t.running),
-            i32::from(t.waiting),
-            t.wait,
-            t.angle,
-        ],
-    );
-    ints(&mut out, t.tilt);
-    ints(&mut out, t.angular_velocity);
-    ints(
-        &mut out,
-        [i32::from(t.sound_active), i32::from(t.lander_flying)],
-    );
-    ints(&mut out, t.lander_direction);
-    ints(&mut out, t.lander_velocity);
-    ints(&mut out, [train.speed, train.range]);
-    let Motion::Path {
-        start,
-        end,
-        velocity,
-        ..
-    } = train.motion
-    else {
-        panic!("first-map Train path")
-    };
-    ints(&mut out, start);
-    ints(&mut out, end);
-    ints(&mut out, velocity);
+    super::projectile_snapshot::train(&mut out, train);
     assert_eq!(out.len(), 60);
     out
 }

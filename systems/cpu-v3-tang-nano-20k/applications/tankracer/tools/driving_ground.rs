@@ -65,6 +65,7 @@ impl State {
         Self {
             vehicle: vehicle::State {
                 entity: EntityId(1),
+                player: true,
                 pose_input: motion::PoseInput {
                     external: tankracer_game::pose::ExternalBasis::Body,
                     ..Default::default()

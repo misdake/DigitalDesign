@@ -3,11 +3,23 @@
 use super::*;
 pub const BLAST_WORD: u16 = 16000;
 pub const TAIL_WORD: u16 = 15232;
+pub const COMBAT_WORD: u16 = 15320;
+pub const COMBAT_ROW: u16 = 334;
 pub struct Player {
+    pub context: AssetBytes,
     pub weapons: scene_creation::Weapons,
     pub fields: Array<u16>,
     pub inventory: Array<u16>,
     pub expected_offset: fix32,
+    pub base_words: u16,
+    pub ambient_word: u16,
+    pub ambient_sounds: u16,
+    pub context_end: u16,
+    pub hit_fields: Buf<u16, 48>,
+    pub hit_model: Buf<u16, 14>,
+    pub body: Array<u16>,
+    pub auxiliary: Array<u16>,
+    pub prefixes: Array<u16>,
     pub clock: Buf<u16, 6>,
     pub clock_enabled: bool,
     pub clock_frame: u16,
@@ -15,6 +27,7 @@ pub struct Player {
     pub angle: Array<i16>,
     pub drive: Array<u16>,
     pub surfaces: Array<deform_contact::Component>,
+    pub pickup_bindings: Array<u16>,
 }
 fn ptr(word: u16) -> Array<u16> {
     unsafe { Ptr::from_addr(word).as_u16_array() }
@@ -38,13 +51,23 @@ pub fn load(
     mines: Array<u16>,
     explosion: Array<u16>,
 ) -> Player {
-    let header: Buf<u16, 56> = Buf::new([0; 56]);
+    let header: Buf<u16, 60> = Buf::new([0; 60]);
     let h = header.as_array();
     let page = DRIVING_WEAPONS.first_sector() >> 8;
     let mut result = Player {
+        context: driving_player_context(case),
         fields,
         inventory: ptr(0),
-        expected_offset: fix32::from_words(138, 0),
+        expected_offset: fix32::from_words(677, 0),
+        base_words: 677,
+        ambient_word: 0,
+        ambient_sounds: 0,
+        context_end: 0,
+        hit_fields: Buf::new([0; 48]),
+        hit_model: Buf::new([1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]),
+        body: ptr(0),
+        auxiliary: ptr(0),
+        prefixes: ptr(0),
         clock: Buf::new([0; 6]),
         clock_enabled: driving_has_clock(case),
         clock_frame: 0,
@@ -52,6 +75,7 @@ pub fn load(
         angle: unsafe { Ptr::from_addr(0).as_i16_array() },
         drive: ptr(0),
         surfaces: unsafe { Ptr::from_addr(0).as_array::<deform_contact::Component>() },
+        pickup_bindings: ptr(0),
         weapons: scene_creation::Weapons {
             directory: ptr(0),
             directory_stride: 8,
@@ -90,18 +114,18 @@ pub fn load(
             6,
         );
     }
-    read(h, DRIVING_PLAYER_CONTEXT, fix32::zero(), 56);
+    read(h, result.context, fix32::zero(), 60);
     if h[0u16] != 0x5053
-        || h[1u16] != 1
+        || h[1u16] != 5
         || h[2u16] != world.fixed_count
-        || h[42u16] < 56
-        || h[42u16] > 5000
+        || h[42u16] < 60
+        || h[42u16] >= DRIVING_LIFE_ENTER_OFFSET - 10000
     {
         halt(0x7f61);
     }
-    let mut cursor = 56u16;
+    let mut cursor = 60u16;
     let mut i = 0u16;
-    while i < 15 {
+    while i < 16 {
         if cursor > h[42u16] || h[8 + i * 2] != cursor || h[9 + i * 2] > h[42u16] - cursor {
             halt(0x7f61);
         }
@@ -117,29 +141,32 @@ pub fn load(
         || h[29u16] != 54
         || h[35u16] != 100
         || h[37u16] != 374
+        || h[39u16] < 91
+        || h[43u16] != 69
+        || h[45u16] < 725
     {
         halt(0x7f61);
     }
+    result.base_words = h[45u16];
+    result.expected_offset = fix32::from_words(result.base_words, 0);
     let saved = spatial::select(&world.grid);
-    pickup_check::read_pickup_stage(ptr(0xc000 + 10000), DRIVING_PLAYER_CONTEXT, 0, h[42u16]);
+    pickup_check::read_pickup_stage(ptr(0xc000 + 10000), result.context, 0, h[42u16]);
+    scene_ambient_world::load(&mut result, h);
+    scene_flock_world::load();
     unsafe {
         write_dseg_page(3, result.weapons.effect_page);
     }
-    pickup_check::read_pickup_stage(ptr(0xc000 + 10468), DRIVING_PLAYER_CONTEXT, h[28u16], 54);
-    pickup_check::read_pickup_stage(
-        ptr(0xc000 + BLAST_WORD),
-        DRIVING_PLAYER_CONTEXT,
-        h[36u16],
-        374,
-    );
+    pickup_check::read_pickup_stage(ptr(0xc000 + 10468), result.context, h[28u16], 54);
+    pickup_check::read_pickup_stage(ptr(0xc000 + BLAST_WORD), result.context, h[36u16], 374);
     let mut effect_words = ptr(0xc000);
     effect_words[BLAST_WORD - 1] = 0x71b3;
     effect_words[BLAST_WORD + 374] = 0x3b17;
     unsafe {
         write_dseg_page(3, saved);
     }
-    read(h, driving_player(case), fix32::zero(), 2);
-    if h[0u16] != 138 || h[1u16] != 0 {
+    let packet: Buf<u16, 2> = Buf::new([0; 2]);
+    read(packet.as_array(), driving_player(case), fix32::zero(), 2);
+    if packet[0u16] != result.base_words || packet[1u16] != 0 {
         halt(0x7f64);
     }
     read(fields, driving_player(case), fix32::from_words(2, 0), 60);
@@ -151,12 +178,155 @@ pub fn load(
     let mut raw = ptr(0xc000);
     raw[TAIL_WORD - 1] = 0x19c7;
     raw[TAIL_WORD + 14] = 0x7c91;
+    pickup_check::read_pickup_stage(
+        ptr(0xc000 + weapon_world::OVERLAY_WORD),
+        driving_player(case),
+        138,
+        5,
+    );
+    raw[weapon_world::OVERLAY_WORD - 1] = 0x395d;
+    raw[weapon_world::OVERLAY_WORD + 5] = 0x5d93;
+    pickup_check::read_pickup_stage(
+        ptr(0xc000 + weapon_world::MARK_WORD),
+        driving_player(case),
+        143,
+        54,
+    );
+    pickup_check::read_pickup_stage(
+        ptr(0xc000 + weapon_world::CAMERA_WORD),
+        driving_player(case),
+        671,
+        6,
+    );
+    raw[weapon_world::MARK_WORD - 1] = 0x483b;
+    raw[weapon_world::MARK_WORD + 54] = 0x3b48;
+    raw[weapon_world::CAMERA_WORD - 1] = 0x967d;
+    raw[weapon_world::CAMERA_WORD + 6] = 0x7d96;
+    read(
+        result.hit_fields.as_array(),
+        driving_player(case),
+        fix32::from_words(677, 0),
+        48,
+    );
+    let mut cursor = 725u16;
+    let mut model = result.hit_model.as_array();
+    let metadata: Buf<u16, 11> = Buf::new([0; 11]);
+    i = 0;
+    while i < 2 {
+        let start = h[43 + i];
+        let m = metadata.as_array();
+        if start > h[39u16] || h[39u16] - start < 11 {
+            halt(0x7f6c);
+        }
+        read(
+            m,
+            result.context,
+            fix32::from_words(h[38u16] + start, 0),
+            11,
+        );
+        let vertices = m[8u16];
+        let faces = m[9u16];
+        if vertices > 110
+            || faces > 55
+            || 4 + vertices * 3 + faces * 6 > COMBAT_ROW
+            || start > h[39u16]
+            || h[39u16] - start < 11 + faces * 3
+        {
+            halt(0x7f6c);
+        }
+        let mut j = 0u16;
+        while j < 4 {
+            model[i * 7 + j] = m[j];
+            j += 1;
+        }
+        model[i * 7 + 4] = vertices;
+        model[i * 7 + 5] = faces;
+        model[i * 7 + 6] = m[10u16];
+        let geometry = ptr(0xc000 + COMBAT_WORD + i * COMBAT_ROW);
+        pickup_check::read_pickup_stage(geometry, result.context, h[38u16] + start + 4, 4);
+        pickup_check::read_pickup_stage(
+            at(geometry, 4),
+            driving_player(case),
+            cursor,
+            vertices * 3,
+        );
+        pickup_check::read_pickup_stage(
+            at(geometry, (4 + vertices * 3) as i16),
+            result.context,
+            h[38u16] + start + 11,
+            faces * 3,
+        );
+        pickup_check::read_pickup_stage(
+            at(geometry, (4 + vertices * 3 + faces * 3) as i16),
+            driving_player(case),
+            cursor + vertices * 3,
+            faces * 3,
+        );
+        cursor += (vertices + faces) * 3;
+        if (i == 0 && start + 11 + faces * 3 != h[44u16])
+            || (i == 1 && start + 11 + faces * 3 != h[53u16])
+        {
+            halt(0x7f6c);
+        }
+        i += 1;
+    }
+    if cursor + 68 + 86 + 250 + 120 + 430 + 1188 != result.base_words {
+        halt(0x7f6c);
+    }
+    let mine_header: Buf<u16, 4> = Buf::new([0; 4]);
+    read(
+        mine_header.as_array(),
+        driving_player(case),
+        fix32::from_words(cursor, 0),
+        4,
+    );
+    if mine_header[0u16] != 0
+        || mine_header[1u16] != 0
+        || mine_header[2u16] != 0
+        || mine_header[3u16] != 0
+    {
+        halt(0x7f64);
+    }
+    raw[COMBAT_WORD - 1] = 0x4a67;
+    raw[COMBAT_WORD + 2 * COMBAT_ROW] = 0x764a;
     unsafe {
         write_dseg_page(3, saved);
     }
+    weapon_ufos::load(&result, h);
+    weapon_emitters::load(&result, h);
+    scene_trains::load(&result, h);
+    let saved_ufo = read_dseg_page(3);
+    unsafe {
+        write_dseg_page(3, result.weapons.effect_page);
+    }
+    pickup_check::read_pickup_stage(
+        ptr(0xc000 + weapon_ufos::COUNT_WORD),
+        driving_player(case),
+        cursor + 68,
+        4,
+    );
+    let counts = ptr(0xc000 + weapon_ufos::COUNT_WORD);
+    if counts[0u16] > 32 || counts[1u16] > 9 || counts[2u16] != 0 || counts[3u16] != 0 {
+        halt(0x7f72);
+    }
+    pickup_check::read_pickup_stage(
+        ptr(0xc000 + weapon_ufos::OCCUPIED_WORD),
+        driving_player(case),
+        cursor + 72,
+        64,
+    );
+    pickup_check::read_pickup_stage(
+        ptr(0xc000 + weapon_ufos::VISIBLE_WORD),
+        driving_player(case),
+        cursor + 136,
+        18,
+    );
+    unsafe {
+        write_dseg_page(3, saved_ufo);
+    }
     read(
         explosion,
-        DRIVING_PLAYER_CONTEXT,
+        result.context,
         fix32::from_words(h[34u16], 0),
         100,
     );
@@ -194,19 +364,9 @@ pub fn load(
     }
     result
 }
-pub fn prepare(
-    scene: &scene_query::Scene,
-    state: &mut scene_parent::State,
-    world: &mut scene_world::World,
-    complete: &complete_check::State,
-    player: &mut Player,
-    frame: Array<u16>,
-) -> fix32 {
-    let mut command = g(frame, 29).lo_bits();
-    let own = g(frame, 28).lo_bits();
-    if own >= 2 || !state.cars[own].player {
-        return n(-1);
-    }
+// Raw race time advances once before any entity, including hidden-player frames.
+pub fn clock(state: &scene_parent::State, player: &mut Player, frame: Array<u16>) -> fix32 {
+    let packed = g(frame, 29);
     if player.clock_enabled {
         let clock = player.clock.as_array();
         let raw = g(frame, 0);
@@ -229,22 +389,60 @@ pub fn prepare(
             slot += 1;
         }
         p(frame, 0, player_route::physics_dt(raw));
-        command = (command & 57855) | ((g(clock, 2).lo_bits() & 15) << 9);
+        let command = (packed.lo_bits() & 57855) | ((g(clock, 2).lo_bits() & 15) << 9);
+        p(frame, 29, fix32::from_words(command, packed.hi_bits()));
+    }
+    n(0)
+}
+pub fn tank_input(car: &driving::Car, player: &Player, frame: Array<u16>, mut out: Array<u16>) {
+    let mut i = 0u16;
+    while i < 60 {
+        out[i] = 0;
+        i += 1;
+    }
+    p(out, 0, g(frame, 0));
+    p(out, 1, g(frame, 1));
+    p(out, 2, fix32::from_words(car.player as u16, 0));
+    p(out, 3, g(at(player.fields, (car.slot * 30 + 22) as i16), 2));
+    p(out, 26, g(frame, 26));
+    p(out, 27, fix32::from_words(256 | car.visible as u16, 0));
+    p(out, 28, fix32::from_words(car.slot, 0));
+    let saved = read_dseg_page(3);
+    unsafe {
+        write_dseg_page(3, player.weapons.effect_page);
+    }
+    copy(at(out, 38), ptr(0xc000 + 10360 + car.slot * 28), 14);
+    unsafe {
+        write_dseg_page(3, saved);
+    }
+}
+pub fn prepare(
+    scene: &scene_query::Scene,
+    state: &mut scene_parent::State,
+    world: &mut scene_world::World,
+    complete: &complete_check::State,
+    player: &mut Player,
+    frame: Array<u16>,
+) -> fix32 {
+    let command = g(frame, 29).lo_bits();
+    let own = g(frame, 28).lo_bits();
+    if own >= 2 || !state.cars[own].player {
+        return n(-1);
     }
     let header: Buf<u16, 56> = Buf::new([0; 56]);
     let h = header.as_array();
-    read(h, DRIVING_PLAYER_CONTEXT, fix32::zero(), 56);
+    read(h, player.context, fix32::zero(), 56);
     let params: Buf<u16, 61> = Buf::new([0; 61]);
     read(
         params.as_array(),
-        DRIVING_PLAYER_CONTEXT,
+        player.context,
         fix32::from_words(h[24u16], 0),
         61,
     );
     let mine_resources: Buf<u16, 18> = Buf::new([0; 18]);
     read(
         mine_resources.as_array(),
-        DRIVING_PLAYER_CONTEXT,
+        player.context,
         fix32::from_words(h[26u16], 0),
         18,
     );
@@ -254,21 +452,16 @@ pub fn prepare(
     }
     read(
         slides.as_array(),
-        DRIVING_PLAYER_CONTEXT,
+        player.context,
         fix32::from_words(h[18u16], 0),
         h[19u16],
     );
     let camera: Buf<u16, 6> = Buf::new([0; 6]);
-    read(
-        camera.as_array(),
-        DRIVING_PLAYER_CONTEXT,
-        fix32::from_words(h[30u16], 0),
-        6,
-    );
+
     let bounds: Buf<u16, 28> = Buf::new([0; 28]);
     read(
         bounds.as_array(),
-        DRIVING_PLAYER_CONTEXT,
+        player.context,
         fix32::from_words(h[32u16], 0),
         28,
     );
@@ -278,6 +471,7 @@ pub fn prepare(
     }
     let mut actors = state.cars;
     let car = &mut actors[own];
+    copy(camera.as_array(), ptr(0xc000 + 10174), 6);
     let fields = ptr(0xc000 + 10414 + own * 26);
     let stored = ptr(0xc000 + 10360 + own * 28);
     let core = at(complete.prefixes, (own * 50) as i16);
@@ -386,17 +580,17 @@ pub fn prepare(
         },
         shot: shot.as_array(),
     };
-    let attachments: Buf<scene_laps::Attachment, 7> = Buf::new(
+    let attachments: Buf<scene_laps::Attachment, 10> = Buf::new(
         [scene_laps::Attachment {
             object: 0,
             present: ptr(0),
             attached: ptr(0),
-        }; 7],
+        }; 10],
     );
     let mut a = attachments.as_array();
     let mut surfaces = player.surfaces;
     i = 0;
-    while i < 7 {
+    while i < DRIVING_DEFORM_COUNT {
         let s = &mut surfaces[i];
         a[i] = scene_laps::Attachment {
             object: s.object,
@@ -411,7 +605,7 @@ pub fn prepare(
         backups: section(h, 7),
         backup_count: h[23u16] / 19,
         attachments: attachments.as_array(),
-        attachment_count: 7,
+        attachment_count: DRIVING_DEFORM_COUNT,
         camera: camera.as_array(),
         lap: 0,
         flush: false,
@@ -461,7 +655,7 @@ pub fn prepare(
             keys: command & 511,
             has_keys: true,
             start_stage: fix32::from_words((command >> 9) & 15, 0),
-            race_active: !player.clock_enabled || g(at(routes, 22), 2) != n(0),
+            race_active: !player.clock_enabled || g(player.clock.as_array(), 0) == n(0),
             mode: g(frame, 1),
         },
         routes: player_route::Routes {
@@ -554,7 +748,12 @@ pub fn finish(
     n(0)
 }
 #[link_cseg = "checks"]
-pub fn check(player: &mut Player, case: u16, world: &scene_world::World) {
+pub fn check(
+    player: &mut Player,
+    case: u16,
+    world: &scene_world::World,
+    store: &scene_meshes::Store,
+) {
     if player.clock_enabled {
         let mut expected = reference(
             driving_clock(case),
@@ -571,39 +770,174 @@ pub fn check(player: &mut Player, case: u16, world: &scene_world::World) {
         player.expected_offset,
         2,
     );
-    if header[1u16] > 50 || header[0u16] != 138 + header[1u16] * 641 {
+    if header[1u16] > 96 || header[0u16] < player.base_words {
         halt(0x7f64);
     }
     let mut expected = reference(driving_player(case), player.expected_offset, header[0u16]);
     expect_block(player.fields, &mut expected, 2, 60);
     expect_block(player.inventory, &mut expected, 62, 8);
+    expect_block(player.hit_fields.as_array(), &mut expected, 677, 48);
     let saved = read_dseg_page(3);
     unsafe {
         write_dseg_page(3, player.weapons.effect_page);
     }
     expect_block(ptr(0xc000 + 10468), &mut expected, 70, 54);
     expect_block(ptr(0xc000 + TAIL_WORD), &mut expected, 124, 14);
+    expect_block(
+        ptr(0xc000 + weapon_world::MARK_WORD),
+        &mut expected,
+        143,
+        54,
+    );
+    expect_block(player.weapons.explosion_world, &mut expected, 197, 100);
+    expect_block(ptr(0xc000 + BLAST_WORD), &mut expected, 297, 374);
+    expect_block(
+        ptr(0xc000 + weapon_world::CAMERA_WORD),
+        &mut expected,
+        671,
+        6,
+    );
+    if ptr(0xc000)[weapon_world::MARK_WORD - 1] != 0x483b
+        || ptr(0xc000)[weapon_world::MARK_WORD + 54] != 0x3b48
+        || ptr(0xc000)[weapon_world::CAMERA_WORD - 1] != 0x967d
+        || ptr(0xc000)[weapon_world::CAMERA_WORD + 6] != 0x7d96
+    {
+        halt(0x7f6b);
+    }
+    let overlay = ptr(0xc000 + weapon_world::OVERLAY_WORD);
+    expect_word(overlay[0u16], &mut expected, 138);
+    // Option::None owns no color payload; the kernel keeps the reusable lanes.
+    if overlay[0u16] != 0 {
+        expect_block(at(overlay, 1), &mut expected, 139, 4);
+    }
+    if ptr(0xc000)[weapon_world::OVERLAY_WORD - 1] != 0x395d
+        || ptr(0xc000)[weapon_world::OVERLAY_WORD + 5] != 0x5d93
+    {
+        halt(0x7f6a);
+    }
     if ptr(0xc000)[TAIL_WORD - 1] != 0x19c7 || ptr(0xc000)[TAIL_WORD + 14] != 0x7c91 {
         halt(0x7f69);
     }
     if ptr(0xc000)[BLAST_WORD - 1] != 0x71b3 || ptr(0xc000)[BLAST_WORD + 374] != 0x3b17 {
         halt(0x7f66);
     }
+    let mut cursor = 725u16;
+    let mut part = 0u16;
+    let model = player.hit_model.as_array();
+    while part < 2 {
+        let geometry = ptr(0xc000 + COMBAT_WORD + part * COMBAT_ROW);
+        let vertices = model[part * 7 + 4];
+        let faces = model[part * 7 + 5];
+        expect_block(at(geometry, 4), &mut expected, cursor, vertices * 3);
+        expect_block(
+            at(geometry, (4 + vertices * 3 + faces * 3) as i16),
+            &mut expected,
+            cursor + vertices * 3,
+            faces * 3,
+        );
+        cursor += (vertices + faces) * 3;
+        part += 1;
+    }
+    if cursor + 68 + 86 + 250 + 120 + 430 + 1188 != player.base_words
+        || ptr(0xc000)[COMBAT_WORD - 1] != 0x4a67
+        || ptr(0xc000)[COMBAT_WORD + 2 * COMBAT_ROW] != 0x764a
+    {
+        halt(0x7f6d);
+    }
+    expect_block(player.weapons.mine_count, &mut expected, cursor, 2);
+    expect_word(player.weapons.mine_order.count, &mut expected, cursor + 2);
+    expect_word(0, &mut expected, cursor + 3);
+    if player.weapons.mine_order.count > 32 {
+        halt(0x7f6e);
+    }
+    expect_block(
+        player.weapons.mine_order.items,
+        &mut expected,
+        cursor + 4,
+        player.weapons.mine_order.count * 2,
+    );
+    cursor += 68;
+    let counts = ptr(0xc000 + weapon_ufos::COUNT_WORD);
+    if counts[0u16] > 32 || counts[1u16] > 9 {
+        halt(0x7f72);
+    }
+    expect_word(counts[0u16], &mut expected, cursor);
+    expect_word(counts[1u16], &mut expected, cursor + 1);
+    expect_word(0, &mut expected, cursor + 2);
+    expect_word(0, &mut expected, cursor + 3);
+    expect_block(
+        ptr(0xc000 + weapon_ufos::OCCUPIED_WORD),
+        &mut expected,
+        cursor + 4,
+        counts[0u16] * 2,
+    );
+    expect_block(
+        ptr(0xc000 + weapon_ufos::VISIBLE_WORD),
+        &mut expected,
+        cursor + 68,
+        counts[1u16] * 2,
+    );
+    if ptr(0xc000)[weapon_ufos::POINT_WORD - 1] != 0x1f7a
+        || ptr(0xc000)[weapon_ufos::COUNT_WORD + 4] != 0xa7f1
+    {
+        halt(0x7f73);
+    }
+    cursor += 86;
+    expect_block(
+        ptr(0xc000 + weapon_emitters::STATE_WORD),
+        &mut expected,
+        cursor,
+        250,
+    );
+    if ptr(0xc000)[weapon_emitters::GUARD_WORD] != 0x5e19 {
+        halt(0x7f79);
+    }
+    cursor += 250;
+    expect_block(
+        ptr(0xc000 + scene_trains::STATE_WORD),
+        &mut expected,
+        cursor,
+        120,
+    );
+    if ptr(0xc000)[scene_trains::STATE_WORD - 1] != 0x2a31
+        || ptr(0xc000)[scene_trains::GUARD_WORD] != 0x13a2
+    {
+        halt(0x7f7b);
+    }
+    cursor += 120;
+    scene_ambient_world::check(player, world, &mut expected, cursor);
+    cursor += 430;
+    scene_flock_world::check(store, &mut expected, cursor);
+    cursor += 1188;
     let mut index = 0u16;
     let mut id = 0u16;
     while id < world.count {
-        if scene_creation::component_kind(&player.weapons, id) == 1 {
+        let kind = scene_creation::component_kind(&player.weapons, id);
+        if kind != 0 {
             if index >= header[1u16] {
                 halt(0x7f65);
             }
-            let cursor = 138 + index * 641;
+            let mut words = 640u16;
+            if kind == 2 {
+                words = 48;
+            } else if kind == 3 {
+                words = 706;
+            } else if kind == 4 {
+                words = 86;
+            } else if kind != 1 {
+                halt(0x7f65);
+            }
+            if cursor > header[0u16] || header[0u16] - cursor < words + 2 {
+                halt(0x7f64);
+            }
             expect_word(id, &mut expected, cursor);
+            expect_word(kind, &mut expected, cursor + 1);
             unsafe {
                 write_dseg_page(
                     3,
                     scene_creation::page(
                         &player.weapons,
-                        1,
+                        kind,
                         player.weapons.directory[id * player.weapons.directory_stride + 1],
                     ),
                 );
@@ -611,14 +945,15 @@ pub fn check(player: &mut Player, case: u16, world: &scene_world::World) {
             expect_block(
                 scene_creation::record(&player.weapons, id, 3),
                 &mut expected,
-                cursor + 1,
-                640,
+                cursor + 2,
+                words,
             );
             index += 1;
+            cursor += words + 2;
         }
         id += 1;
     }
-    if index != header[1u16] {
+    if index != header[1u16] || cursor != header[0u16] {
         halt(0x7f65);
     }
     let mut bank = 0u16;

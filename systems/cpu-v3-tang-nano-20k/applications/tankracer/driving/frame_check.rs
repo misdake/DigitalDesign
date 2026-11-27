@@ -162,7 +162,7 @@ fn check_mesh(target: &damage::Target, expected: &mut Reference, flags: u16, ver
 pub fn check_surfaces(components: Array<deform_contact::Component>, expected: &mut Reference) {
     let mut i = 0u16;
     let mut offset = 0u16;
-    while i < 7 {
+    while i < DRIVING_DEFORM_COUNT {
         let c = &components[i];
         expect_value(c.state.dirty, expected, offset);
         expect_value(c.state.last_vehicle, expected, offset + 1);

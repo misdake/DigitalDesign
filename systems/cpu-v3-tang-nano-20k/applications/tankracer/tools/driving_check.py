@@ -43,6 +43,8 @@ def main():
     report = dict(passed=True, backend=args.backend, cases=assets['cases'], steps_per_case=steps,
                   checked_i32_values=assets['updates'] * assets['checked_i32_per_frame'] + assets.get('checked_surface_i32', 0), startup_noise_words=16,
                   resource_version_words=assets.get('resource_version_words', 0),
+                  vehicle_updates=assets.get('vehicle_updates', assets['updates']),
+                  checked_world_flight_words=assets.get('checked_world_flight_words', 0),
                   checked_parent_words=assets.get('checked_parent_words', 0),
                   checked_player_words=assets.get('checked_player_words', 0),
                   checked_complete_words=assets.get('checked_complete_words',0), checked_pickup_words=assets.get('checked_pickup_words',0), checked_debris_words=assets.get('checked_debris_words', 0), checked_prefix_words=assets.get('checked_prefix_words',0), qualification_scope=assets.get('qualification_scope','full'),

@@ -13,24 +13,7 @@ use tankracer_game::{
 const IDS: [usize; 5] = [81, 112, 113, 114, 115];
 fn state(e: &Emitter) -> Vec<u16> {
     let mut out = Vec::new();
-    ints(&mut out, [e.timer, i32::from(e.gun), e.size]);
-    ints(&mut out, e.offset);
-    ints(&mut out, [e.pitch, e.trigger as i32]);
-    ints(&mut out, e.bounds);
-    ints(&mut out, [e.period]);
-    ints(&mut out, e.color.map(i32::from));
-    ints(&mut out, [i32::from(e.alpha)]);
-    ints(&mut out, e.glow);
-    ints(
-        &mut out,
-        [
-            i32::from(e.asteroid),
-            i32::from(e.mesh.is_some()),
-            e.mesh.map_or(0, |v| v.index() as i32),
-            i32::from(e.material.is_some()),
-            e.material.unwrap_or(0) as i32,
-        ],
-    );
+    super::projectile_snapshot::emitter(&mut out, e);
     assert_eq!(out.len(), 50);
     out
 }

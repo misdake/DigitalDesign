@@ -12,31 +12,7 @@ fn snapshot(world: &SinglePlayer) -> Value {
         panic!("Smoker")
     };
     let mut state = Vec::new();
-    ints(
-        &mut state,
-        [
-            i32::from(s.white),
-            i32::from(s.billow),
-            s.timer,
-            i32::from(s.visible),
-            s.material as i32,
-        ],
-    );
-    for p in s.particles.iter() {
-        ints(&mut state, [i32::from(p.spin)]);
-        ints(&mut state, p.velocity);
-        ints(&mut state, p.size);
-        ints(&mut state, [i32::from(p.rotation)]);
-        ints(&mut state, p.position);
-        ints(
-            &mut state,
-            [
-                i32::from(p.active),
-                i32::from(p.clockwise),
-                i32::from(p.life),
-            ],
-        );
-    }
+    super::projectile_snapshot::smoker(&mut state, s);
     assert_eq!(state.len(), 426);
     out["smoker_state"] = json!(state);
     let mut sprites = Vec::new();

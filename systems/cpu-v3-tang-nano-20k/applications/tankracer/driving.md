@@ -117,15 +117,53 @@ occupies 16000..16373, with adjacent guards. The typed impact-batch extent is
 checked against the first tail guard before either range is installed. Constructor
 scratch and line storage retain their existing separate ranges.
 
-Each Player snapshot contains its total word count and projectile count, sixty
+Each Player snapshot contains its total word count and component count, sixty
 route/racer/weather words, eight inventory words, 54 shared-flight words,
-fourteen Player tail words, then sorted projectile IDs and complete 640-word component records. Only the initial
+fourteen Player tail words, five overlay words, 54 terrain-mark words,
+100 explosion-world words, 374 blast words and six camera-impulse words.
+Words 677..724 contain two 24-word rows: twelve hit counts, four-word body
+and turret revisions, and two expanded drive-grip integers. Mutable turret
+vertices and face normals follow, with their extents supplied by the immutable
+model metadata. A 68-word mine summary follows: expanded global count, list
+length, padding and 32 expanded object IDs. Only active list entries are owned;
+remaining entries are padding. An 86-word UFO summary follows: occupied and visible counts, two padding words,
+32 checkpoint IDs and nine visible vehicle IDs. The default pair has a 1,059-word base. Sorted
+component entries then contain object ID, kind, and a complete 640-word
+projectile, 48-word mine, 706-word explosion or 86-word UFO record. Only the initial
 route/inventory state is loaded; later snapshots are streamed through the bounded
 answer cache after the update. Identical per-case reference resources share one
 asset descriptor. Their source files and bytes remain independently audited.
 
+`--scope ufos` connects live UFO projectile attachment and carrier lookup to the
+same component directory, then exercises a complete player transfer. The world
+walk follows the actual ordered Tick list: a hidden Player has no update, and
+SHOW can append it again during the current pass. The outer frame drains the
+shared queues after all live actors. Vehicle collision queries read the current
+disabled flag, visibility and external matrix.
+
+The version-2 Player context appends UFO class/resources and compact checkpoint
+presence/progress plus route order to section 15. Header words 46..53 identify
+these ranges. Loading checks their contiguous extents and fixed capacities.
+The effects bank keeps point rows at word 10524 (240 by four words), route
+order at 11484 (128 expanded IDs), occupied checkpoints at 11740 (32 IDs),
+visible vehicles at 11804 (nine IDs), and counts/padding at 11822 (four words).
+Guards bracket the region. These ranges precede the existing line pool at 12400;
+the six weapon banks and external reservation size stay the same.
+
+The UFO component updates in DSEG2 beside live vehicle poses and compact route
+data in DSEG3. Nested target methods borrow and restore the collision mapping;
+vehicle spin, collision and race flags retain separate authoritative addresses.
+A 16-byte travel gather per car supplies the complete route-restoration pose
+kernel. Source snapshots cover approach, fade, route restoration/reservation,
+hidden ticks, visibility restoration, overlap-controlled release, departure and
+queued retirement. This continuous entry currently binds racer targets; object
+target methods retain their independent qualification.
+
 `--scope clock` advances the original raw-time countdown/release clock before
 visiting the live racer slots, then clamps the physics interval to 10..100 ms.
+This frame stage precedes the ordered entity pass and advances even when the
+Player is temporarily absent. Its global race-active state follows countdown
+completion independently of a vehicle's driving flag.
 The release frame sets driving without carrying countdown overshoot into lap
 elapsed or the GO timer. Clock state occupies twelve resident bytes. The five
 updates cover countdown, release, a 250-ms interval and a 5-ms interval; racer
@@ -134,9 +172,10 @@ bits are derived from the clock. Their reference control columns are unused.
 The source clock/racer snapshots are checked after every update. Complete-effect
 snapshots read their driving aliases from the same authoritative racer rows.
 
-This entry qualifies direct Player-to-Tank updates and post-Tank gun revision
-and horn state. Finish takeover, the mixed weapon/actor scheduler and complete
-race startup remain distinct integration boundaries.
+This entry qualifies Player-to-Tank updates, post-Tank gun revision and horn
+state, and ordered projectile flight alongside ordinary scenery. Finish takeover,
+the remaining mixed actor/impact paths and complete race startup remain distinct
+integration boundaries.
 
 ## Vehicle construction
 
@@ -385,6 +424,21 @@ the external reference basis for impact offsets, and the base-position anchor
 for the last-corner damage point. These are distinct live views. The player body
 uses its original instance-owned mesh and selected damage vertices; successful
 dents repair incident normals.
+
+`damage::Mesh.page` tags private geometry with its DSEG3 bank; 65535 keeps
+resident geometry. A hit reads the live pose, flags and selected vertex first,
+then binds the geometry once for the dent and all incident-face repairs. It
+restores the incoming page on both success and invalid-face errors before the
+caller updates revisions or other vehicle fields. Projectile damage selects
+`Damage.effect_page` only for DSEG2 effect rows; 65535 retains the caller's
+mapping when its temporary-effect state already uses DSEG3. Each part owns its
+geometry tag, so the two poses and the shared effect pool stay independent of
+the private vertex/normal bank.
+
+The `tank-hit-paged` qualifier runs the original contact cases with poses and
+temporary effects in one bank and private meshes in another. It checks the
+same canonical fields as `tank-hit`, incoming mappings, bank guards and the
+unchanged resident geometry aliases.
 
 ## Complete post-collision motion
 
@@ -1102,3 +1156,130 @@ Each row contains both cars' consumed initialization slices, seed/noise and the
 `initial-offsets.bin` holds one u16 word offset per case. The full diagnostic
 source remains in the host export. Runtime loads the same consumed words and
 recomputes derived fields as before; later reference streams retain their format.
+
+The driving owner places deferred lap enter/leave lists in property-page words
+15008..16031, with guards at 15007 and 16032. Each list reserves 256 u32 IDs.
+This follows the player context's bounded 10000..14999 range and precedes the
+page-end guard. Both lists share the property's existing 32-KiB allocation;
+free-object, lap-membership and sign lists retain resident storage.
+
+## Ordered projectile flight
+
+`weapon_world` calls the existing projectile flight and trail/retirement kernels
+at each entity's position in the shared lifecycle pass. Its vehicle views borrow
+current poses and velocities; shared flight, overlay and RNG retain one owner.
+Metadata reads use bounded local scratch. The effects bank is selected for the
+flight phase and restored before returning. Overlay presence and RGBA occupy
+words 15248..15252, with guards at 15247 and 15253. Terrain-mark state uses
+15256..15309 and camera impulse uses 15312..15317, each with adjacent guards.
+All three ranges belong to the existing effects bank. The Player packet
+compares these owners together with live explosion components and blast slots.
+
+The source's complete Player call reborrows the scheduler's live factory Context,
+so fire, collision callbacks, later ticks and the Stop drain observe the same
+identities and queues. The scheduler's saved successor controls when an appended
+projectile first runs. The initial one-entity pass defers its first flight until
+the next frame. `--scope flight` selects Shell, Homing and Warp sequences; Warp
+additionally queues destruction before the third pass to exercise Stop, class
+destruction, release and component retirement on the same owners.
+
+The common auxiliary drain resolves weapon components before dispatching Stop
+and destruction slots. Ordinary parents continue through their existing resource
+owner. Successful weapon destruction publishes identity completion only after
+both destructor methods succeed.
+
+Ground impacts call the original shared impact/explosion kernel with the current
+terrain, marks, pool, component factories, lifecycle and RNG. The created
+explosion inherits its emitter before the projectile impact flag is published.
+Concussion and Debris then apply their flash and racer-slot-ordered area force.
+Explosion method 93 runs at its ordinary entity position, including shared
+band/ring updates and delayed retirement. The scheduler's saved successor also
+determines whether a newly appended explosion can run in its creation pass.
+
+Shared mark/blast operations bind the effects bank in both DSEG2 and DSEG3:
+blast records use the former, while the driving Quad view uses the latter.
+Explosion component access resumes only after restoring its DSEG3 bank. This
+selection covers each complete allocation, animation or release operation,
+including failure returns; Quad vertices do not trigger individual page changes.
+
+The context's sixteenth section stores the explosion class, resource materials,
+camera basis, crater and effect timestamp. These immutable inputs are separate
+from per-frame expected state. Complete-effect verification reads the live quad
+count from its shared descriptor, including allocations after the vehicle tick.
+
+`--scope impact` selects three eight-frame downward launches: Shell, Warp and
+Concussion. Each reference sequence requires an actual terrain mark and live
+explosion. Their nonzero effect timestamp exercises band/ring animation; the
+Concussion sequence also queues explosion destruction and checks pool release.
+The baseline `--scope full` and the dedicated impact suite are built separately
+to keep their diagnostic answer streams within the asset banks. Optional
+`--case N` selects one case within any scope for focused native checks.
+
+## Live projectile contacts
+
+Vehicle contacts resolve the same current car, prefix, pose, collision and
+inventory owners as the driving update. Reflection precedes impact creation;
+successful reflection transfers the projectile owner and skips damage. Normal
+Shell, Homing and Warp contacts create the shared explosion before applying the
+original hit coefficients, response timer, impulse, hit counts, damage smoke and
+temporary effects. The response timer addresses suspension word 66; it is
+distinct from the collision cooldown. Warp publishes both the prefix grip and
+that car's live drive-configuration pair.
+
+`weapon_hits` builds short-lived typed views of body and turret damage targets.
+The second pair is addressed through its typed array element, retaining the
+record stride. Damage flags and revisions remain resident. Body geometry keeps
+its existing owner; two turret rows occupy effects words 15320..15987, with
+guards at 15319 and 15988. Each 334-word row contains four selected vertices,
+mutable vertices, immutable face indices and mutable normals. Loading validates
+the source extent and the vertex/face capacity before installing either row.
+Smoke fields retain the complete phase's two-word stride. No vehicle state or
+private geometry is copied back after a hit.
+
+Track damage publishes an existing body's revision when its one-shot flag
+changes, including a subsequent geometry error. Projectile damage publishes the
+selected part revision after successful vertex and incident-normal repair.
+The revision uses the source's four-word wrapping counter.
+
+`--scope contact` runs ten-update Shell, Homing, Warp, reflection and authored
+local body/turret damage trajectories. The target is stationary and unscheduled
+in these focused cases; all its changed fields, geometry, effects and shared RNG
+remain checked after each world pass. Both source vehicle identities are created
+by the original factory before reserving the separate finish slot. The raw ground
+fixture also exports the same player role used by its ground-response branch.
+Full Session cases select their actual attitude numerical policy; standalone
+physical cases retain theirs. The tenth update covers the periodic normalization
+and optional orthogonal restoration. Source method bodies are preserved in the
+audited temporary reference overlay. UFO-carrier delivery joins the same ordered
+world pass through `--scope ufos`. The remaining mixed actor/finish/startup paths
+retain separate integration boundaries.
+
+## Continuous mines
+
+The same lifecycle pass dispatches mine method 120. Its placement descriptor
+borrows the current terrain owner, resource table and both physical-position
+views. A repeating drop resolves the actual owner through the canonical identity
+table and calls the existing factory at that owner's current position. Parent,
+children and ordinary scenery share the saved successor, RNG, grid and ordered
+lists. Child birth follows that successor rather than an extra frame-delay flag.
+
+The ordinary collision query selects mine method 122 after its normal reflection
+and weight response. `weapon_mines` binds the current car's velocity, angular
+rates, external basis, blast protection, surface effect and collision-size field.
+The complete shared explosion is created before the point impulse. Electric
+contact updates the same ground-effect owner and shield tail used by sampling;
+tails use their existing 45-integer bank stride. Peer views follow racer-slot
+order. The camera impulse, Deactivate, Stop/drain and component release retain
+their original order and failure boundaries. No effect or shield state is copied
+back after the call.
+
+`--scope mines` compares ordinary and electric repeated drops for eighteen
+updates, including both children and a final explicit Deactivate. Two ten-update
+driving trajectories place a nonrepeating peer mine before their first world
+pass and reach it through the real ordinary query. Their snapshots include
+arming, explosion, impulse, electric state, shared resources and retirement.
+The independent four-word world-event input extends the existing create/release
+fixture: kind 3 places a peer mine using its current position, and kind 4 invokes
+the selected entity's Deactivate interface. Neither event supplies collision or
+simulation answers. The initial component image and mine order are empty; later
+records are checked against the original factory and class methods.

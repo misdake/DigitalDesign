@@ -7,6 +7,10 @@ use crate::{
 pub struct Tick {
     pub call: scene_creation::Call,
     pub dt: fix32,
+    // DSEG2 keeps the UFO resident beside vehicle effects in DSEG3. Target
+    // methods borrow the fixed collision page, then restore the component.
+    pub component_window: u16,
+    pub collision_page: u16,
     pub resources_present: bool,
     pub height: fix32,
     pub vehicles: Array<scene_vehicle_transfer::View>,
@@ -14,8 +18,8 @@ pub struct Tick {
     pub car_info: Array<u16>,
     pub racers: Array<u16>,
     pub visible: Array<ordered::List>,
-    // Live resource-owner result for the object's current mesh.
-    pub shapes: Array<u16>,
+    // Live resource-owner result for this UFO's current target mesh.
+    pub shape_present: bool,
     // Presence and four byte columns, shared with projectile screen effects.
     pub overlay: Array<u16>,
 }
@@ -56,8 +60,25 @@ fn set_flags(s: Array<u16>, value: u16) {
 fn live(weapons: &scene_creation::Weapons, id: u16) -> bool {
     id < weapons.object_capacity && scene_creation::component_kind(weapons, id) == 4
 }
-fn state(weapons: &scene_creation::Weapons, id: u16) -> Array<u16> {
-    at(scene_creation::record(weapons, id, 3), 30)
+fn state(weapons: &scene_creation::Weapons, id: u16, window: u16) -> Array<u16> {
+    at(scene_creation::record(weapons, id, window), 30)
+}
+fn select_collision(page: u16) -> u16 {
+    let saved = read_dseg_page(2);
+    if saved != page {
+        unsafe {
+            write_dseg_page(2, page);
+        }
+    }
+    saved
+}
+fn load_collider(world: &scene_world::World, tick: &Tick, id: u16, row: Array<u16>) -> bool {
+    let saved = select_collision(tick.collision_page);
+    let ok = scene_world::load_collider(world, id, row);
+    unsafe {
+        write_dseg_page(2, saved);
+    }
+    ok
 }
 fn car_present(tick: &Tick, id: fix32) -> bool {
     tick.vehicles[0u16].present
@@ -75,7 +96,7 @@ fn position(
     if kind == 1 {
         let collider: Buf<u16, 60> = Buf::new([0; 60]);
         let row = collider.as_array();
-        if id.hi_bits() != 0 || !scene_world::load_collider(world, id.lo_bits(), row) {
+        if id.hi_bits() != 0 || !load_collider(world, tick, id.lo_bits(), row) {
             return n(-4);
         }
         let mut i = 0u16;
@@ -160,7 +181,8 @@ pub struct TargetCall {
     pub value: fix32,
     pub position: Array<u16>,
     pub vehicles: Array<scene_vehicle_transfer::View>,
-    pub shapes: Array<u16>,
+    pub shape_present: bool,
+    pub collision_page: u16,
 }
 fn target(
     scene: &scene_query::Scene,
@@ -170,8 +192,10 @@ fn target(
     weapons: &mut scene_creation::Weapons,
     call: &TargetCall,
 ) -> fix32 {
+    let saved = select_collision(call.collision_page);
+    let mut code = n(0);
     if call.kind == 2 {
-        return scene_vehicle_transfer::dispatch(
+        code = scene_vehicle_transfer::dispatch(
             scene,
             store,
             runtime,
@@ -184,28 +208,28 @@ fn target(
                 value: call.value,
             },
         );
+    } else {
+        code = scene_obstacle_transfer::dispatch(
+            scene,
+            store,
+            runtime,
+            world,
+            weapons,
+            &scene_obstacle_transfer::Call {
+                entity: call.entity,
+                slot: call.slot,
+                payload: call.payload,
+                value: call.value,
+                position: call.position,
+                shape_present: call.shape_present,
+                result: call.vehicles[0u16].result,
+            },
+        );
     }
-    let id = entities::handle(&store.identities, call.entity);
-    let mut shape = false;
-    if id.hi_bits() == 0 && id.lo_bits() < store.object_count {
-        shape = call.shapes[id.lo_bits()] != 0;
+    unsafe {
+        write_dseg_page(2, saved);
     }
-    scene_obstacle_transfer::dispatch(
-        scene,
-        store,
-        runtime,
-        world,
-        weapons,
-        &scene_obstacle_transfer::Call {
-            entity: call.entity,
-            slot: call.slot,
-            payload: call.payload,
-            value: call.value,
-            position: call.position,
-            shape_present: shape,
-            result: call.vehicles[0u16].result,
-        },
-    )
+    code
 }
 // Returns 0/1 for clear/overlapping, or a negative source error.
 fn overlaps(world: &scene_world::World, tick: &Tick, kind: u16, id: fix32) -> fix32 {
@@ -220,7 +244,7 @@ fn overlaps(world: &scene_world::World, tick: &Tick, kind: u16, id: fix32) -> fi
     if kind == 1 {
         let collider: Buf<u16, 60> = Buf::new([0; 60]);
         let row = collider.as_array();
-        if !scene_world::load_collider(world, id.lo_bits(), row) {
+        if !load_collider(world, tick, id.lo_bits(), row) {
             return n(-4);
         }
         entity = g(row, 0);
@@ -281,7 +305,7 @@ fn update(
     if !live(weapons, id) {
         return n(-1);
     }
-    let s = state(weapons, id);
+    let s = state(weapons, id, tick.component_window);
     let entity = g(s, 0);
     let incoming = flags(s);
     let kind = entities::handle_kind(&store.identities, entity);
@@ -310,7 +334,8 @@ fn update(
         value: n(1),
         position: dest,
         vehicles: tick.vehicles,
-        shapes: tick.shapes,
+        shape_present: tick.shape_present,
+        collision_page: tick.collision_page,
     };
     if incoming & 1 != 0 {
         p(s, 5, g(point, 0));
@@ -599,7 +624,7 @@ fn update(
     if flags(s) & 4 != 0 {
         let collider: Buf<u16, 60> = Buf::new([0; 60]);
         let row = collider.as_array();
-        if !scene_world::load_collider(world, id, row) {
+        if !load_collider(world, tick, id, row) {
             return n(-1);
         }
         attitude::rotate(
@@ -619,7 +644,12 @@ fn update(
             i += 1;
         }
         p(row, 29, n(1));
-        if !scene_world::store_collider(world, id, row) {
+        let previous = select_collision(tick.collision_page);
+        let stored = scene_world::store_collider(world, id, row);
+        unsafe {
+            write_dseg_page(2, previous);
+        }
+        if !stored {
             return n(-1);
         }
     }
@@ -654,20 +684,32 @@ pub fn dispatch(
     if !live(weapons, id.lo_bits()) {
         return n(-1);
     }
-    let previous = read_dseg_page(3);
+    if tick.component_window != 2 && tick.component_window != 3 {
+        return n(-4);
+    }
+    let mut previous = read_dseg_page(3);
+    if tick.component_window == 2 {
+        previous = read_dseg_page(2);
+    }
+    let page = scene_creation::page(
+        weapons,
+        4,
+        weapons.directory[id.lo_bits() * weapons.directory_stride + 1],
+    );
     unsafe {
-        write_dseg_page(
-            3,
-            scene_creation::page(
-                weapons,
-                4,
-                weapons.directory[id.lo_bits() * weapons.directory_stride + 1],
-            ),
-        );
+        if tick.component_window == 2 {
+            write_dseg_page(2, page);
+        } else {
+            write_dseg_page(3, page);
+        }
     }
     let code = update(scene, store, runtime, world, weapons, tick);
     unsafe {
-        write_dseg_page(3, previous);
+        if tick.component_window == 2 {
+            write_dseg_page(2, previous);
+        } else {
+            write_dseg_page(3, previous);
+        }
     }
     if code == n(0) {
         p(runtime.slot, 0, saved);

@@ -346,6 +346,8 @@ fn run_car_scenery(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: 
                     let frame = scenery_contact::Frame {
                         object: 0,
                         dt: integer::from_i16(33),
+                        number: fix32::zero(),
+                        camera: v.reference,
                         peer_basis: v.reference,
                         peer_valid: true,
                     };
@@ -390,6 +392,8 @@ fn run_car_scenery(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: 
                 let frame = scenery_contact::Frame {
                     object: 0,
                     dt: integer::from_i16(33),
+                    number: fix32::zero(),
+                    camera: v.reference,
                     peer_basis: v.reference,
                     peer_valid: true,
                 };

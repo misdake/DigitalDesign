@@ -38,6 +38,8 @@ pub struct Tables {
 pub struct Frame {
     pub object: u16,
     pub dt: fix32,
+    pub number: fix32,
+    pub camera: Array<u16>,
     pub peer_basis: Array<u16>,
     pub peer_valid: bool,
 }

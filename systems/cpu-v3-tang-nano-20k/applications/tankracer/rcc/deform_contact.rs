@@ -116,6 +116,8 @@ pub fn attached(
     65535
 }
 pub struct Vehicle {
+    // Component storage includes inactive surfaces; World retains active membership.
+    pub component_count: u16,
     pub position: Array<u16>,
     pub base_position: Array<u16>,
     pub previous: Array<u16>,
@@ -279,7 +281,7 @@ pub fn respond(
         if method.id != 0 {
             return n(-5);
         }
-        let component = find(components, scene.header[9u16], index);
+        let component = find(components, vehicle.component_count, index);
         if component == 65535 {
             return n(-1);
         }

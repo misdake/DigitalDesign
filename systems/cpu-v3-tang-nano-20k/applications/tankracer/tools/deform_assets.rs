@@ -3,6 +3,15 @@ use tankracer_game::vehicle_runtime::SinglePlayer;
 fn append(out: &mut Vec<u16>, value: i32) {
     out.extend([value as u16, (value >> 16) as u16]);
 }
+pub fn ids(world: &SinglePlayer) -> Vec<tankracer_game::object_query::ObstacleId> {
+    let mut out = Vec::new();
+    for (i, entry) in world.objects.components.surfaces.entries.iter().enumerate() {
+        if entry.is_some() {
+            out.push(tankracer_game::object_query::ObstacleId(i));
+        }
+    }
+    out
+}
 pub fn encode(world: &SinglePlayer) -> Vec<u16> {
     encode_columns(world, true)
 }
@@ -10,9 +19,10 @@ pub fn encode_bound(world: &SinglePlayer) -> Vec<u16> {
     encode_columns(world, false)
 }
 fn encode_columns(world: &SinglePlayer, include_vertices: bool) -> Vec<u16> {
+    let ids = ids(world);
     let scene = &world.objects;
-    let mut out = vec![0u16; scene.world.deformables.len() * 40];
-    for (slot, id) in scene.world.deformables.iter().enumerate() {
+    let mut out = vec![0u16; ids.len() * 40];
+    for (slot, id) in ids.iter().enumerate() {
         let component = scene.components.surfaces.entries[id.0].as_ref().unwrap();
         let mesh = scene
             .components
@@ -77,9 +87,10 @@ fn encode_columns(world: &SinglePlayer, include_vertices: bool) -> Vec<u16> {
     out
 }
 pub fn capture(world: &SinglePlayer) -> Vec<i32> {
+    let ids = ids(world);
     let scene = &world.objects;
     let mut out = Vec::new();
-    for id in &scene.world.deformables {
+    for id in &ids {
         let component = scene.components.surfaces.entries[id.0].as_ref().unwrap();
         out.extend([
             i32::from(component.state.dirty),

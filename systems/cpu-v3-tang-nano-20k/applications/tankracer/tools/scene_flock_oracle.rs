@@ -14,18 +14,7 @@ use tankracer_game::{
 const IDS: [usize; 3] = [183, 184, 185];
 fn state(f: &Flock) -> Vec<u16> {
     let mut out = Vec::new();
-    let t = &f.flight;
-    ints(&mut out, [i32::from(t.phase), t.stage as i32, t.timer]);
-    ints(&mut out, t.target);
-    for v in t.velocities {
-        ints(&mut out, v);
-    }
-    ints(&mut out, t.wings_up.map(i32::from));
-    for b in f.birds {
-        ints(&mut out, b.pose.position);
-        ints(&mut out, b.pose.matrix.0);
-        ints(&mut out, [b.speed, i32::from(b.active)]);
-    }
+    super::projectile_snapshot::flock(&mut out, f);
     assert_eq!(out.len(), 288);
     out
 }

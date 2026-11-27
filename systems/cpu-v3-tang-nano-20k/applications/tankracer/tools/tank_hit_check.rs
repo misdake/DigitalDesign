@@ -1,23 +1,26 @@
 //! Projectile/car response and private geometry checked after every contact.
 use super::*;
-pub fn run(output: &Path, fixture: &Path) -> Result<Value, Box<dyn Error>> {
+pub fn run(output: &Path, fixture: &Path, paged: bool) -> Result<Value, Box<dyn Error>> {
     let data: Value = serde_json::from_slice(&fs::read(fixture.join("tank-hit.json"))?)?;
-    let code = compile(
-        "tank-hit",
-        r#"
+    let label = if paged { "tank-hit-paged" } else { "tank-hit" };
+    let source = r#"
+const PAGED:bool=$PAGED;
 fn at(v:Array<u16>,w:u16)->Array<u16>{unsafe{v.as_ptr().add(w as i16).as_u16_array()}}
 fn g(v:Array<u16>,i:u16)->fix32{attitude::get(v,i)}
 fn copy(mut to:Array<u16>,from:Array<u16>,count:u16){let mut i=0u16;while i<count{to[i]=from[i];i+=1;}}
 fn part(input:Array<u16>,data:Array<u16>,r:Array<u16>,upper:u16)->tank_hit::Part{
- let b=21+upper*6;let pose=33+upper*24;
+ let b=21+upper*6;let pose=33+upper*24;let mut geometry=input;let mut page=65535u16;
+ if PAGED{geometry=unsafe{Ptr::from_addr(0xc000).as_u16_array()};page=129;}
  tank_hit::Part{present:r[b]!=0,revision:at(data,55+upper*4),
- target:damage::Target{state:at(data,45),player:true,basis:at(r,pose),position:at(r,pose+18),selected:at(r,b+2),
- mesh:damage::Mesh{present:r[b+1]!=0,vertices:unsafe{at(input,input[1+upper*2]).as_ptr().as_i16_array()},vertex_count:input[6+upper*2],
- indices:at(input,input[10+upper]),normals:unsafe{at(input,input[2+upper*2]).as_ptr().as_i16_array()},face_count:input[7+upper*2]}}}
+ target:damage::Target{has_revision:false,revision:unsafe{Ptr::from_addr(0).as_u16_array()},state:at(data,45),player:true,basis:at(r,pose),position:at(r,pose+18),selected:at(r,b+2),
+ mesh:damage::Mesh{page,present:r[b+1]!=0,vertices:unsafe{at(geometry,input[1+upper*2]).as_ptr().as_i16_array()},vertex_count:input[6+upper*2],
+ indices:at(geometry,input[10+upper]),normals:unsafe{at(geometry,input[2+upper*2]).as_ptr().as_i16_array()},face_count:input[7+upper*2]}}}
 }
 fn main(){
- let input=unsafe{Ptr::from_addr(0x0100).as_u16_array()};let out=unsafe{Ptr::from_addr(0x2000).as_u16_array()};let data=at(input,16);let r=at(input,input[5u16]);
- let prefix=at(input,input[12u16]);let temp=at(input,input[13u16]);
+ let input=unsafe{Ptr::from_addr(0x0100).as_u16_array()};let out=unsafe{Ptr::from_addr(0x2000).as_u16_array()};let data=at(input,16);let mut r=at(input,input[5u16]);
+ if PAGED{unsafe{write_dseg_page(2,134);write_dseg_page(3,128);}r=unsafe{Ptr::from_addr(0xc000).as_u16_array()};}
+ let prefix=at(input,input[12u16]);let mut temp=at(input,input[13u16]);
+ if PAGED{temp=unsafe{Ptr::from_addr(0xc200).as_u16_array()};}
  let shared=temporary::State{core:temp,rows:at(temp,82)};
  let pools:Buf<effect_pool::Pool,1>=Buf::new([effect_pool::Pool{page:65535,lines:at(temp,278),count:g(at(temp,276),0),overflow:effect_pool::line_zero(),exhausted:at(temp,1894)}]);
  let mut pool_rows=pools.as_array();let mut pool=&mut pool_rows[0u16];
@@ -25,7 +28,9 @@ fn main(){
  let sine:Buf<u16,4>=Buf::new([45056,320,40960,0]);
  let ctx=temporary::Context{pool:pools.as_array(),seed:at(temp,274),sine:unsafe{sine.as_array().as_ptr().as_i16_array()}};
  let parts:Buf<tank_hit::Part,2>=Buf::new([part(input,data,r,0),part(input,data,r,1)]);
- let car=tank_hit::Vehicle{player:r[0u16]!=0,visible:r[1u16]!=0,inventory:at(data,25),timer:at(data,21),velocity:at(data,9),angular:at(data,15),external:at(r,3),has_external:r[2u16]!=0,collision_size:at(data,23),hit_counts:at(data,29),smoke:at(data,41),parts:parts.as_array(),base_position:at(r,106),grip:prefix,temporary:at(prefix,8)};
+ let mut smoke=at(data,41);let mut smoke_stride=1u16;let mut drive_grip=at(prefix,4);
+ if PAGED{smoke=unsafe{Ptr::from_addr(0xc080).as_u16_array()};smoke_stride=2;drive_grip=unsafe{Ptr::from_addr(0xc088).as_u16_array()};}
+ let car=tank_hit::Vehicle{player:r[0u16]!=0,visible:r[1u16]!=0,inventory:at(data,25),timer:at(data,21),velocity:at(data,9),angular:at(data,15),external:at(r,3),has_external:r[2u16]!=0,collision_size:at(data,23),hit_counts:at(data,29),smoke,smoke_stride,parts:parts.as_array(),base_position:at(r,106),grip:prefix,drive_grip,temporary:at(prefix,8)};
  let length=unsafe{Ptr::from_addr(0xfe).read(0)};let count=input[length];let mut frame=0u16;
  while frame<count{
   let c=at(input,length+1+frame*36);let mut hit=projectile_sweep::zero();
@@ -37,16 +42,25 @@ fn main(){
    let shot=tank_hit::Shot{hit:view_of(&mut hit),velocity:at(c,30),kind:g(c,0).lo_bits(),age:g(c,1),time:g(c,1)};
    status=tank_hit::apply(&car,&shot,data,&shared,&ctx);
   }else{status=tank_hit::contact(&car,&hit,at(c,30),g(c,1),data);}
+  if PAGED && (read_dseg_page(2)!=134 || read_dseg_page(3)!=128){halt(0x7e96);}
   pool_rows=pools.as_array();pool=&mut pool_rows[0u16];
   attitude::put(at(temp,276),0,pool.count);copy(at(temp,1878),unsafe{view_of(&mut pool.overflow).as_ptr().as_u16_array()},16);
   attitude::put(out,0,status);copy(at(out,2),data,input[0u16]);
+  if PAGED{
+   let mut i=0u16;while i<4{at(out,43)[i]=smoke[i*2];i+=1;}
+   copy(at(out,2+input[12u16]-16+4),drive_grip,4);
+   copy(at(out,2+input[13u16]-16),temp,input[5u16]-input[13u16]);
+   unsafe{write_dseg_page(3,129);}
+   let geometry=unsafe{Ptr::from_addr(0xc000).as_u16_array()};
+   copy(at(out,2+input[1u16]-16),at(geometry,input[1u16]),input[12u16]-input[1u16]);
+   unsafe{write_dseg_page(3,128);}
+  }
   unsafe{Ptr::from_addr(0xff).write(0,frame+1);}frame+=1;
  }
  halt(0x600d);
 }
-"#,
-        output,
-    )?;
+"#.replace("$PAGED", if paged { "true" } else { "false" });
+    let code = compile(label, &source, output)?;
     let sine = fs::read(fixture.join("sine.i16.bin"))?;
     let cases = data["cases"].as_array().ok_or("tank hit cases")?;
     let mut checked = 0;
@@ -64,6 +78,26 @@ fn main(){
         cpu.physical_memory_mut()[0xfe] = input.len() as u16;
         for (i, v) in input.iter().enumerate() {
             cpu.physical_memory_mut()[0x100 + i] = v.as_u64().unwrap() as u16;
+        }
+        if paged {
+            let values: Vec<u16> = input.iter().map(|v| v.as_u64().unwrap() as u16).collect();
+            let memory = cpu.physical_memory_mut();
+            memory[129 * 16384..129 * 16384 + values.len()].copy_from_slice(&values);
+            let profile = usize::from(values[5]);
+            memory[128 * 16384..128 * 16384 + 112].copy_from_slice(&values[profile..profile + 112]);
+            for field in 0..4 {
+                memory[128 * 16384 + 128 + field * 2] = values[16 + 41 + field];
+                memory[128 * 16384 + 129 + field * 2] = 0;
+            }
+            let prefix = usize::from(values[12]);
+            memory[128 * 16384 + 136..128 * 16384 + 140]
+                .copy_from_slice(&values[prefix + 4..prefix + 8]);
+            let start = usize::from(values[13]);
+            memory[128 * 16384 + 512..128 * 16384 + 512 + profile - start]
+                .copy_from_slice(&values[start..profile]);
+            memory[128 * 16384 + 16383] = 0x7513;
+            memory[129 * 16384 + 16383] = 0x3157;
+            memory[134 * 16384 + 16383] = 0x53a1;
         }
         let controls = case["controls"].as_array().ok_or("tank hit controls")?;
         cpu.physical_memory_mut()[0x100 + input.len()] = controls.len() as u16;
@@ -110,6 +144,20 @@ fn main(){
             if let StepOutcome::Halted { signal } = result {
                 assert_eq!(signal, PASS);
                 assert_eq!(done, expected.len());
+                if paged {
+                    let memory = cpu.physical_memory_slice();
+                    assert_eq!(memory[128 * 16384 + 16383], 0x7513);
+                    assert_eq!(memory[129 * 16384 + 16383], 0x3157);
+                    assert_eq!(memory[134 * 16384 + 16383], 0x53a1);
+                    for field in 0..4 {
+                        assert_eq!(memory[128 * 16384 + 129 + field * 2], 0);
+                    }
+                    for field in
+                        input[1].as_u64().unwrap() as usize..input[12].as_u64().unwrap() as usize
+                    {
+                        assert_eq!(memory[0x100 + field], input[field].as_u64().unwrap() as u16);
+                    }
+                }
                 steps += step;
                 passed = true;
                 break;
@@ -120,10 +168,10 @@ fn main(){
         }
     }
     let report = json!({"cases":cases.len(),"calls":calls,"checked_u16_values":checked,"maximum_integer_error":0,
-        "instruction_steps":steps,"code_bytes":code.total_code_words()*2,"minimum_stack_word":minimum_stack,"scope":data["scope"],
+        "paged_geometry":paged,"instruction_steps":steps,"code_bytes":code.total_code_words()*2,"minimum_stack_word":minimum_stack,"scope":data["scope"],
         "backend":"instruction; direct state and private model geometry, without GPU competition"});
     fs::write(
-        output.join("tank-hit-report.json"),
+        output.join(format!("{label}-report.json")),
         serde_json::to_vec_pretty(&report)?,
     )?;
     Ok(report)

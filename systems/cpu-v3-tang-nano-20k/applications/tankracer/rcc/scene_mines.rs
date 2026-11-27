@@ -51,6 +51,7 @@ pub struct Contact {
     pub vehicle: HitVehicle,
     // Live tails of the existing shield banks, in bank order.
     pub shield_tails: Array<u16>,
+    pub shield_stride: u16,
     pub peers: Array<HitPeer>,
     pub peer_count: u16,
     // Optional camera impulse: presence, unsigned duration, signed magnitude.
@@ -525,7 +526,7 @@ pub fn contact(
             if car.player {
                 bank = 1;
             }
-            let previous = g(frame.shield_tails, bank);
+            let previous = g(frame.shield_tails, bank * frame.shield_stride);
             if bank == 0 && previous != n(0) {
                 if previous == car.entity {
                     p(car.effect, 2, n(0));
@@ -541,7 +542,7 @@ pub fn contact(
                     }
                 }
             }
-            p(frame.shield_tails, bank, car.entity);
+            p(frame.shield_tails, bank * frame.shield_stride, car.entity);
         }
     }
     scene_creation::dispatch(

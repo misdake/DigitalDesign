@@ -21,6 +21,31 @@ impl Prepared {
     pub fn rcc_load_full_race(terrain: Arc<TerrainData>, files: Files<'_>, selection: Selection) -> Result<Self, Box<dyn Error>> {
         Self::load_with(terrain, files, selection, true, scenery::Content::FullRace, None)
     }
+    pub fn rcc_add_peer(&mut self, model: crate::vehicle_model::VehicleModel) -> Result<(), Box<dyn Error>> {
+        let environment = Environment {
+            ambient_wobble: false, session_active: false, ambient_phase: 0, gun_pivot: [0; 3],
+        };
+        // Install real owners before Constructed reserves its empty finish slot.
+        let startup = &mut self.startup;
+        if startup.vehicles.racers[0].is_none() {
+            startup.vehicles.create(&mut startup.identity, &startup.registry, Request {
+                model: self.resources.model.clone(), spawn: self.spawn,
+                environment, static_allocation: true,
+            }, startup.registry.player, 100000).map_err(|e| format!("Player fixture: {e:?}"))?;
+        }
+        let class = if let Some(class) = startup.registry.tank { class } else {
+            let class = crate::dispatch::ClassId(startup.registry.classes.len());
+            startup.registry.classes.push(Arc::new(crate::vehicle_loading::class()));
+            startup.registry.tank = Some(class);
+            startup.objects.world.classes = startup.registry.classes.clone();
+            class
+        };
+        let (_, id) = startup.vehicles.create(&mut startup.identity, &startup.registry, Request {
+            model, spawn: self.spawn, environment, static_allocation: true,
+        }, class, 100000).map_err(|e| format!("Peer fixture: {e:?}"))?;
+        assert_eq!(id, crate::object_query::TankId(1));
+        Ok(())
+    }
 }
 '''
     car_bridge = owner / 'reference_car.rs'

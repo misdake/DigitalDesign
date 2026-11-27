@@ -12,6 +12,7 @@ def main():
     parser.add_argument('checker', type=Path)
     parser.add_argument('fixture', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--packed', action='store_true')
     group=parser.add_mutually_exclusive_group()
     group.add_argument('--creation', action='store_true')
     group.add_argument('--mines',action='store_true')
@@ -654,13 +655,13 @@ def main():
                 shutil.copyfile(fixture / name, folder / name)
         if args.mines or args.mine_tick or args.projectile_flight or args.projectile_area or args.projectile_direct or args.projectile_ufo or args.fire or args.player:shutil.copyfile(fixture/'projectile-cells.bin',folder/'projectile-cells.bin')
         result = subprocess.run([str(args.checker.resolve()), str(folder / 'check'),
-                                 str(folder), '0', mode],
+                                 str(folder), '0', mode + ('-packed' if args.packed else '')],
                                 capture_output=True, text=True, timeout=120)
         message = result.stdout + result.stderr
         if result.returncode == 0 or expected not in message:
             raise RuntimeError(f'{kind} was not rejected at its expected boundary: {message[-2000:]}')
         results.append(dict(kind=kind, tag=tag, frame=frame, rejected=True))
-    (args.output / 'report.json').write_text(json.dumps(dict(passed=True, faults=results), indent=2) + '\n')
+    (args.output / 'report.json').write_text(json.dumps(dict(passed=True, packed=args.packed, faults=results), indent=2) + '\n')
 
 
 if __name__ == '__main__':

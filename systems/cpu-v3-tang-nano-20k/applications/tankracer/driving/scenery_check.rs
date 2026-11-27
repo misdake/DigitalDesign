@@ -397,8 +397,13 @@ pub fn load_life(
         DRIVING_LIFETIME_WORDS - cursor,
     );
     cursor += 1 + signs.count * 2;
+    let saved = spatial::select(&world.grid);
+    let queue = world.properties;
+    let mut guard = queue;
+    guard[DRIVING_LIFE_ENTER_OFFSET - 1] = 0x1d47;
+    guard[DRIVING_LIFE_QUEUE_END] = 0x74d1;
     let enter = loaded_list(
-        lists,
+        queue,
         DRIVING_LIFE_ENTER_OFFSET,
         DRIVING_LIFE_ENTER_CAPACITY,
         at(scratch, cursor as i16),
@@ -406,13 +411,16 @@ pub fn load_life(
     );
     cursor += 1 + enter.count * 2;
     let leave = loaded_list(
-        lists,
+        queue,
         DRIVING_LIFE_LEAVE_OFFSET,
         DRIVING_LIFE_LEAVE_CAPACITY,
         at(scratch, cursor as i16),
         DRIVING_LIFETIME_WORDS - cursor,
     );
     cursor += 1 + leave.count * 2;
+    unsafe {
+        write_dseg_page(3, saved);
+    }
     if cursor != DRIVING_LIFETIME_WORDS {
         halt(0x7f23);
     }
@@ -436,6 +444,7 @@ pub fn load_life(
         free_objects: free,
         lap_objects: lap,
         signs: signs,
+        queue_page: world.grid.page,
         enter: enter,
         leave: leave,
     }
@@ -550,12 +559,22 @@ pub fn apply_world_event(
     scene: &scene_query::Scene,
     state: &mut scene_parent::State,
     world: &mut scene_world::World,
+    player: &mut player_world::Player,
+    data: Array<u16>,
     asset: AssetBytes,
-    frame: u16,
 ) {
     let event: Buf<u16, 4> = Buf::new([0; 4]);
     let e = event.as_array();
-    read(e, asset, fix32::from_words(frame * 4, 0), 4);
+    let number = attitude::get(data, 26);
+    if number.hi_bits() != 0 || number.lo_bits() == 0 {
+        halt(0x7f5f);
+    }
+    read(
+        e,
+        asset,
+        fix32::from_words((number.lo_bits() - 1) * 4, 0),
+        4,
+    );
     let mut i = 0u16;
     while i < e[1u16] {
         if e[0u16] == 1 {
@@ -591,6 +610,29 @@ pub fn apply_world_event(
                 halt(0x7f5e);
             }
             attitude::put(state.runtime.slot, 0, saved);
+        } else if e[0u16] == 3 {
+            if weapon_mines::place(scene, state, world, player, data, e) < fix32::zero() {
+                halt(0x7f6f);
+            }
+        } else if e[0u16] == 4 {
+            if scene_creation::dispatch(
+                scene,
+                &mut state.lifetime,
+                &mut state.runtime,
+                world,
+                &mut player.weapons,
+                &scene_creation::Call {
+                    entity: fix32::from_words(e[2u16] + i, 0),
+                    slot: 8,
+                },
+            ) != fix32::zero()
+            {
+                halt(0x7f70);
+            }
+        } else if e[0u16] == 5 || e[0u16] == 6 {
+            if weapon_ufos::place(scene, state, world, player, e) < fix32::zero() {
+                halt(0x7f75);
+            }
         } else {
             halt(0x7f5f);
         }
@@ -730,6 +772,12 @@ pub fn check_live(
     let mut cursor = h[9u16];
     i = 0;
     while i < 10 {
+        let saved = read_dseg_page(3);
+        if i >= 8 && store.queue_page != 65535 && store.queue_page != saved {
+            unsafe {
+                write_dseg_page(3, store.queue_page);
+            }
+        }
         let list = selected_list(runtime, store, i);
         read(scratch, asset, base + fix32::from_words(cursor, 0), 1);
         if list.count != scratch[0u16] {
@@ -744,6 +792,11 @@ pub fn check_live(
             scratch,
         );
         cursor += list.count * 2;
+        if read_dseg_page(3) != saved {
+            unsafe {
+                write_dseg_page(3, saved);
+            }
+        }
         i += 1;
     }
     if cursor != h[10u16] {
@@ -824,15 +877,15 @@ pub fn check_resource_versions(
     asset: AssetBytes,
     frame: u16,
 ) {
-    let expected: Buf<u16, 28> = Buf::new([0; 28]);
+    let expected: Buf<u16, 40> = Buf::new([0; 40]);
     read(
         expected.as_array(),
         asset,
-        fix32::from_words(frame * 28, 0),
-        28,
+        fix32::from_words(frame * DRIVING_DEFORM_COUNT * 4, 0),
+        DRIVING_DEFORM_COUNT * 4,
     );
     let mut i = 0u16;
-    while i < 7 {
+    while i < DRIVING_DEFORM_COUNT {
         let c = &components[i];
         let view = scene_meshes::view(&c.resources[0u16], c.resource, false);
         if !view.valid

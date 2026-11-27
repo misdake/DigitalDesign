@@ -40,6 +40,18 @@ to the same scene/vehicle owners before parent Tank visibility and preparation.
 `--scope player --steps 2` runs Shell/Homing/Warp input through this complete
 Player stage and the continuous Tank physics owner, comparing route, inventory,
 shared flight, projectile payloads, scenery, vehicle effects and RNG each frame.
+`--scope flight` runs live Shell/Homing/Warp ticks after their Player updates,
+including deferred first flight and queued Warp destruction.
+`--scope impact` adds terrain marks, shared explosions and band/ring updates;
+`--case N` selects one trajectory within the chosen scope.
+`--scope contact` connects live Shell/Homing/Warp vehicle hits, reflection,
+damage smoke, private body/turret dents and temporary effects to the same owners.
+Its focused stationary targets retain checked mutable state across world passes.
+`--scope mines` runs ordinary/electric repeated drops, child ticks, actual driving
+contacts, shared explosions, electric effects and queued retirement on the same
+world and RNG.
+`--scope ufos` adds projectile attachment/carrier following and complete player
+transfer, including temporary removal from the shared Tick list and natural retirement.
 `--scope clock` couples the raw race clock and countdown/release gate to that
 continuous path, with independent physics-dt clamping and per-frame clock checks.
 `track-effects` qualifies track spray, ground-mark FIFO and brake/reverse lights
