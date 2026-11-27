@@ -14,6 +14,7 @@ cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-st
 | `--prepared-selection plans` | Offline bounded plans when range-limit is nonzero; otherwise the original renderer. Default. |
 | `--prepared-selection coarse-sphere` | Runtime coarse PVS and sphere selection, with both opaque and cutout Prepared ranges. Requires Prepared recording and range-limit 0. |
 | `--prepared-selection coarse-sphere-shared` | Same runtime selection, with checked material sharing inside each cutout view group. |
+| `--prepared-selection coarse-sphere-incremental` | Exact coarse-sphere selection with a CPU-side cache for nearby camera poses. |
 | `--range-limit 0` | Default. Original dynamic selection, or the coarse-sphere mode selected above. |
 | `--range-limit 4\|6\|8` | Maximum number of immutable links across opaque and cutout work combined. Requires Prepared recording, culling policy and a route. |
 | `--range-layout route` | Prefer route progress for opaque and cutout grouping, while retaining intersecting surfaces' native relative order. Default. |
@@ -158,3 +159,24 @@ the dynamic command stream and installs its material. The marked remainder
 uses checked material-only links, retaining the World upload and response
 synchronization. No restoration segment is needed. The link budget reserves
 one entry per material group and one final entry in the 32-entry list.
+
+### Incremental sphere selection
+
+The route candidate span, coarse PVS and chunk classification are evaluated
+for the current frame. A fully accepted chunk reuses its Prepared unit IDs.
+For a partially accepted chunk, the CPU reuses group decisions whose distance
+to the visibility boundaries accounts for the maximum change in view-space
+projection since the reference pose. Groups near a boundary repeat the exact
+sphere test for the current pose.
+
+The asset producer supplies an integer bounding box of the packed group
+centers. The CPU bounds each camera row's projection change over that box in
+Q16.16. If any row exceeds 2.25 render units, the current view becomes the
+reference pose and each touched boundary chunk rebuilds its lists as needed.
+A change to a chunk's covered group span also rebuilds its lists. Cameras
+outside the supported route and translation domain use the uncached selector.
+
+The cache uses seven 16-bit words per route ring group, four per chunk and
+48 words for the current and reference projection rows, before allocator
+overhead. The bitmap passed to the range recorder is rebuilt each frame.
+Prepared commands, safe links and draw order are shared with coarse-sphere.

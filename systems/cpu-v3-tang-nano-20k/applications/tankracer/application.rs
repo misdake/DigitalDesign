@@ -87,6 +87,7 @@ const STATIC_APPLICATION: Definition = Definition {
                 "plans",
                 "coarse-sphere",
                 "coarse-sphere-shared",
+                "coarse-sphere-incremental",
             ]),
         ),
         BuildOption::environment(

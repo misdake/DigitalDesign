@@ -419,9 +419,10 @@ def build(output, route_path=None):
     recording = os.getenv('TANKRACER_RECORDING', 'reuse')
     range_limit = int(os.getenv('TANKRACER_RANGE_LIMIT', '0'))
     selection = os.getenv('TANKRACER_PREPARED_SELECTION', 'plans')
-    if selection not in ('plans', 'coarse-sphere', 'coarse-sphere-shared'):
+    if selection not in ('plans', 'coarse-sphere', 'coarse-sphere-shared', 'coarse-sphere-incremental'):
         raise ValueError('unsupported Prepared selection')
     shared_cutouts = selection == 'coarse-sphere-shared'
+    incremental = selection == 'coarse-sphere-incremental'
     hybrid = selection != 'plans'
     if hybrid and range_limit:
         raise ValueError('coarse-sphere modes use a dynamic range budget; omit range-limit')
@@ -560,6 +561,8 @@ def build(output, route_path=None):
             [location_lists[offset] != 0 for offset in location_cells], scale, shift,
             display, range_limit, os.getenv('TANKRACER_RANGE_LAYOUT','route'),
             int(os.getenv('TANKRACER_RANGE_CELL','16')), layout_only=hybrid, shared_cutouts=shared_cutouts)
+        if incremental:
+            range_info['selection'] = selection
         if not hybrid:
             range_info['validated_camera_count'] = range_pvs.validate_cameras(camera_words, range_info, range_data)
     assets.bytes('MAP_RANGE_PLANS', range_data)
@@ -628,7 +631,20 @@ def build(output, route_path=None):
     )
     for name, value in constants.items():
         extra += f"pub const {name}:u16={value};\n"
+    if incremental:
+        # Compact group centers use units of 1/128. Integer bounds on their
+        # world-space coordinates give exact integer products in the motion test.
+        centers = [ring[0][axis::route_ring.RING_WORDS] for axis in range(3)]
+        center_bounds = [(math.floor(min(map(route_ring.signed, axis)) / 128),
+                          math.ceil(max(map(route_ring.signed, axis)) / 128))
+                         for axis in centers]
+    else:
+        center_bounds = [(0, 0)] * 3
+    for name, (low, high) in zip('XYZ', center_bounds):
+        extra += f'pub const RANGE_CENTER_{name}:i16={(low + high) // 2};\n'
+        extra += f'pub const RANGE_EXTENT_{name}:u16={(high - low + 1) // 2};\n'
     range_constants = dict(RANGE_HYBRID=int(hybrid), RANGE_SHARED_CUTOUT=int(shared_cutouts),
+        RANGE_INCREMENTAL=int(incremental), RANGE_CHUNKS=len(chunk_directory) // CLUSTER_WORDS,
         RANGE_LIMIT=range_info['limit'], RANGE_COLUMNS=range_info['columns'],
         RANGE_ROWS=range_info['rows'], RANGE_HEADING_FIRST=range_info['heading_first_sector'],
         RANGE_PLAN_FIRST=range_info['plan_first_sector'], RANGE_PLAN_WORDS=range_info['plan_words'],

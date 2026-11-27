@@ -41,6 +41,8 @@ gap merging, memory ownership and comparison scope.
 Use `--prepared-selection coarse-sphere-shared` to share CP material within
 each cutout view group. Only the first selected draw in a group installs its
 material. The remaining draws use checked Prepared slices.
+Use `--prepared-selection coarse-sphere-incremental` to reuse sphere decisions
+across nearby views while retaining coarse-sphere visibility and draw order.
 
 The ZIP contains `scene.json` and its texture payloads. All texture paths are
 relative ZIP entries. Positions use a shared Y-up source-world basis.

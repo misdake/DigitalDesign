@@ -21,6 +21,29 @@ struct View {
     absolute: Mat3x3,
 }
 
+struct RangeVisibility {
+    anchor: Mat3x4,
+    axes: Ptr,
+    valid: bool,
+    new_anchor: bool,
+    // Per chunk: covered first group/count and the two compact list endpoints.
+    // A visible endpoint of 65535 invalidates only the sphere classification.
+    chunks: Ptr,
+    all: Ptr,
+    visible: Ptr,
+    fringe: Ptr,
+}
+
+struct RingChunk {
+    first: u16,
+    count: u16,
+    classification: u16,
+}
+
+const MOTION: fix32 = fix!(2.25);
+const MOTION_X: fix32 = fix!(4.01953125);
+const MOTION_Y: fix32 = fix!(3.31640625);
+
 pub struct DrawSpan {
     pub first: u16,
     pub count: u16,
@@ -56,6 +79,7 @@ pub struct World {
     alpha_rank_key: u16,
     pvs_mask: Ptr,
     pvs_key: u16,
+    range_visibility: RangeVisibility,
 }
 
 pub struct Selection {
@@ -131,6 +155,7 @@ impl World {
             alpha_rank_key: 65535,
             pvs_mask: pvs::new(),
             pvs_key: 65535,
+            range_visibility: RangeVisibility::new(),
         };
         // The derivative estimator has a conservative half-level footprint.
         // This scene uses the one-pixel footprint while retaining full mips.
@@ -620,6 +645,7 @@ impl World {
         let mut first: u16 = 0;
         let mut remaining: u16 = 0;
         let mut cluster: u16 = 0;
+        let mut incremental = false;
         if route_active {
             let directory = MAP_RING_SEGMENTS.as_array();
             let segment = route_s.to_int() as u16;
@@ -628,6 +654,15 @@ impl World {
             coarse = MAP_RING_CHUNKS.as_array();
             source = MAP_RING_GROUP_DATA.first_sector;
             stride = RING_GROUP_WORDS;
+            if RANGE_INCREMENTAL != 0 {
+                // Bound translation before subtracting Q16.16 rows.
+                incremental = bounded_translation(view.matrix.row0.w)
+                    && bounded_translation(view.matrix.row1.w)
+                    && bounded_translation(view.matrix.row2.w);
+                if incremental {
+                    self.range_visibility.begin(&view.matrix);
+                }
+            }
         }
         while (route_active && remaining != 0) || (!route_active && cluster < CLUSTER_COUNT) {
             let mut header = cluster * CLUSTER_WORDS;
@@ -656,7 +691,14 @@ impl World {
             } else if TANKRACER_POLICY != 0 {
                 classification = classify_cluster(view, coarse, header);
             }
-            if classification != 0 {
+            if incremental && classification != 0 {
+                let chunk = RingChunk {
+                    first,
+                    count,
+                    classification,
+                };
+                self.range_visibility.select(&chunk, words, mask);
+            } else if classification != 0 {
                 if !gpu_window_asset_read(words, source, offset, count * stride) {
                     halt(0x7a12);
                 }
@@ -1151,6 +1193,237 @@ fn project(axis: &Vec4, bound: &Vec4) -> fix32 {
         vec3::new(axis.x, axis.y, axis.z),
         vec3::new(bound.x, bound.y, bound.z),
     ) + axis.w
+}
+
+impl RangeVisibility {
+    fn new() -> Self {
+        let mut cache = Self {
+            anchor: Mat3x4 {
+                row0: Vec4::zero(),
+                row1: Vec4::zero(),
+                row2: Vec4::zero(),
+            },
+            axes: Ptr::from_addr(0),
+            valid: false,
+            new_anchor: false,
+            chunks: Ptr::from_addr(0),
+            all: Ptr::from_addr(0),
+            visible: Ptr::from_addr(0),
+            fringe: Ptr::from_addr(0),
+        };
+        if RANGE_INCREMENTAL != 0 {
+            cache.axes = malloc(48);
+            cache.chunks = malloc(RANGE_CHUNKS * 4);
+            cache.all = malloc(RING_GROUP_COUNT);
+            cache.visible = malloc(RING_GROUP_COUNT);
+            cache.fringe = malloc(RING_GROUP_COUNT * 5);
+            let mut chunks = unsafe { cache.chunks.as_u16_array() };
+            let mut at: u16 = 0;
+            while at < RANGE_CHUNKS * 4 {
+                chunks[at + 1] = 0;
+                at += 4;
+            }
+        }
+        cache
+    }
+
+    fn begin(&mut self, view: &Mat3x4) {
+        store_sphere_axes(view, self.axes);
+        if self.valid
+            && projection_change(&view.row0, &self.anchor.row0) <= MOTION
+            && projection_change(&view.row1, &self.anchor.row1) <= MOTION
+            && projection_change(&view.row2, &self.anchor.row2) <= MOTION
+        {
+            self.new_anchor = false;
+            return;
+        }
+        self.anchor = *view;
+        store_sphere_axes(view, self.axes.add(24));
+        self.valid = true;
+        self.new_anchor = true;
+        let mut chunks = unsafe { self.chunks.as_u16_array() };
+        let mut at: u16 = 0;
+        while at < RANGE_CHUNKS * 4 {
+            chunks[at + 2] = 65535;
+            at += 4;
+        }
+    }
+
+    fn select(&mut self, chunk: &RingChunk, words: Array<u16>, mask: Array<u16>) {
+        let first = chunk.first;
+        let count = chunk.count;
+        let classification = chunk.classification;
+        let base = first & !(RING_CHUNK_GROUPS - 1);
+        let slot = base / RING_CHUNK_GROUPS * 4;
+        let mut chunks = unsafe { self.chunks.as_u16_array() };
+        let mut all = unsafe { self.all.as_u16_array() };
+        let mut visible = unsafe { self.visible.as_u16_array() };
+        let mut fringe = unsafe { self.fringe.as_u16_array() };
+        let shape_changed = chunks[slot + 1] != count || chunks[slot] != first;
+        let rebuild = classification == 1 && (shape_changed || chunks[slot + 2] == 65535);
+        if shape_changed || rebuild {
+            if !gpu_window_asset_read(
+                words,
+                MAP_RING_GROUP_DATA.first_sector,
+                first * RING_GROUP_WORDS,
+                count * RING_GROUP_WORDS,
+            ) {
+                halt(0x7a12);
+            }
+            let mut i: u16 = 0;
+            let mut accepted = base;
+            let mut pending = base * 5;
+            while i < count {
+                let at = i * RING_GROUP_WORDS;
+                let unit = MAP_RANGE_SELECT_INDEX[words[at + 10]];
+                all[base + i] = unit;
+                if classification == 2 {
+                    select_unit(mask, unit);
+                } else {
+                    let bound = group_bound(words, at);
+                    let status = anchor_sphere(self.axes.add(24), &bound);
+                    if status == 3 {
+                        visible[accepted] = unit;
+                        accepted += 1;
+                        select_unit(mask, unit);
+                    } else if status != 0 {
+                        fringe[pending] = words[at];
+                        fringe[pending + 1] = words[at + 1];
+                        fringe[pending + 2] = words[at + 2];
+                        fringe[pending + 3] = words[at + 6];
+                        fringe[pending + 4] = unit;
+                        pending += 5;
+                        if (self.new_anchor && status == 2)
+                            || (!self.new_anchor && visible_sphere(self.axes, &bound))
+                        {
+                            select_unit(mask, unit);
+                        }
+                    }
+                }
+                i += 1;
+            }
+            chunks[slot] = first;
+            chunks[slot + 1] = count;
+            chunks[slot + 2] = 65535;
+            if classification == 1 {
+                chunks[slot + 2] = accepted;
+                chunks[slot + 3] = pending;
+            }
+        } else if classification == 2 {
+            let mut i = base;
+            while i < base + count {
+                select_unit(mask, all[i]);
+                i += 1;
+            }
+        } else {
+            let mut i = base;
+            while i < chunks[slot + 2] {
+                select_unit(mask, visible[i]);
+                i += 1;
+            }
+            i = base * 5;
+            while i < chunks[slot + 3] {
+                let bound = Vec4 {
+                    x: compact_signed(fringe[i]),
+                    y: compact_signed(fringe[i + 1]),
+                    z: compact_signed(fringe[i + 2]),
+                    w: compact_unsigned(fringe[i + 3]),
+                };
+                if visible_sphere(self.axes, &bound) {
+                    select_unit(mask, fringe[i + 4]);
+                }
+                i += 5;
+            }
+        }
+    }
+}
+
+#[inline]
+fn select_unit(mut mask: Array<u16>, unit: u16) {
+    mask[unit >> 4] |= 1u16 << (unit & 15);
+}
+
+fn projection_change(current: &Vec4, anchor: &Vec4) -> fix32 {
+    let x = current.x - anchor.x;
+    let y = current.y - anchor.y;
+    let z = current.z - anchor.z;
+    let midpoint = fdot(
+        vec3::new(x, y, z),
+        vec3::new(
+            fix32::from_int(RANGE_CENTER_X),
+            fix32::from_int(RANGE_CENTER_Y),
+            fix32::from_int(RANGE_CENTER_Z),
+        ),
+    ) + current.w
+        - anchor.w;
+    // Evaluate the linear difference at the bounds' midpoint. The remaining
+    // term bounds any group center about it, with a guard for Q16.16 narrowing.
+    midpoint.abs()
+        + fdot(
+            vec3::new(x.abs(), y.abs(), z.abs()),
+            vec3::new(
+                fix32::from_int(RANGE_EXTENT_X as i16),
+                fix32::from_int(RANGE_EXTENT_Y as i16),
+                fix32::from_int(RANGE_EXTENT_Z as i16),
+            ),
+        )
+        + fix!(0.000030517578125)
+}
+
+fn bounded_translation(translation: fix32) -> bool {
+    let integer = translation.hi_bits() as i16;
+    integer >= -1024 && integer < 1024
+}
+
+fn store_sphere_axes(view: &Mat3x4, target: Ptr) {
+    let x = view.row0;
+    let y = view.row1;
+    let z = view.row2;
+    vec4::export(vec4::new(x.x, x.y, x.z, x.w), target);
+    vec4::export(vec4::new(y.x, y.y, y.z, y.w), target.add(8));
+    vec4::export(vec4::new(z.x, z.y, z.z, z.w), target.add(16));
+}
+
+// 0: stable reject, 1: fringe reject, 2: fringe accept, 3: stable accept.
+// The side guards round up MOTION * (1 + slope), including fixed-point error.
+fn anchor_sphere(axes: Ptr, bound: &Vec4) -> u16 {
+    let center = vec4::new(bound.x, bound.y, bound.z, fix32::one());
+    let depth = -fdot(vec4::import(axes.add(16)), center);
+    let radius = bound.w + fix!(0.0078125);
+    let near = depth + radius;
+    let far = DISPLAY_DISTANCE - (depth - bound.w);
+    if near <= fix32::zero() {
+        return if near <= -MOTION { 0 } else { 1 };
+    }
+    if far < fix32::zero() {
+        return if far < -MOTION { 0 } else { 1 };
+    }
+    let x = depth * X_PER_DEPTH + radius * fix!(1.273) - fdot(vec4::import(axes), center).abs();
+    if x < fix32::zero() {
+        return if x < -MOTION_X { 0 } else { 1 };
+    }
+    let y =
+        depth * Y_PER_DEPTH + radius * fix!(1.107) - fdot(vec4::import(axes.add(8)), center).abs();
+    if y < fix32::zero() {
+        return if y < -MOTION_Y { 0 } else { 1 };
+    }
+    if near > MOTION && far >= MOTION && x >= MOTION_X && y >= MOTION_Y {
+        return 3;
+    }
+    2
+}
+
+fn visible_sphere(axes: Ptr, bound: &Vec4) -> bool {
+    let center = vec4::new(bound.x, bound.y, bound.z, fix32::one());
+    let depth = -fdot(vec4::import(axes.add(16)), center);
+    let radius = bound.w + fix!(0.0078125);
+    if depth + radius <= fix32::zero() || depth - bound.w > DISPLAY_DISTANCE {
+        return false;
+    }
+    if fdot(vec4::import(axes), center).abs() > depth * X_PER_DEPTH + radius * fix!(1.273) {
+        return false;
+    }
+    fdot(vec4::import(axes.add(8)), center).abs() <= depth * Y_PER_DEPTH + radius * fix!(1.107)
 }
 
 fn absolute_basis(axis: Vec4) -> Vec3 {
