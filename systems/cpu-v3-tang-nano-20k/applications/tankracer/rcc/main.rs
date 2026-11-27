@@ -5,6 +5,7 @@ mod gpu_api;
 mod gpu_board;
 mod playback;
 mod prepared_map;
+mod range_map;
 mod world;
 use boot_resources::*;
 use gpu_api::*;
@@ -14,6 +15,10 @@ use world::World;
 
 fn main() {
     if TANKRACER_PREPARED != 0 {
+        if RANGE_LIMIT != 0 {
+            range_map::run();
+            return;
+        }
         prepared_map::run();
         return;
     }

@@ -1,6 +1,6 @@
 //! Reproducible static-map rendering on the production 20K SDK.
 use crate::applications::{
-    Assets, BuildOption, Context, Definition, OptionValues, Prepared, DEFAULT, RENDERER_ASSETS,
+    Assets, BuildOption, Context, DEFAULT, Definition, OptionValues, Prepared, RENDERER_ASSETS,
 };
 use serde_json::Value;
 use std::path::Path;
@@ -79,6 +79,30 @@ const STATIC_APPLICATION: Definition = Definition {
             "recording",
             "TANKRACER_RECORDING",
             OptionValues::Choices(&["always", "reuse", "prepared"]),
+        ),
+        BuildOption::environment(
+            "prepared-selection",
+            "TANKRACER_PREPARED_SELECTION",
+            OptionValues::Choices(&[
+                "plans",
+                "coarse-sphere",
+                "coarse-sphere-shared",
+            ]),
+        ),
+        BuildOption::environment(
+            "range-limit",
+            "TANKRACER_RANGE_LIMIT",
+            OptionValues::Choices(&["0", "4", "6", "8"]),
+        ),
+        BuildOption::environment(
+            "range-layout",
+            "TANKRACER_RANGE_LAYOUT",
+            OptionValues::Choices(&["route", "lanes", "stable"]),
+        ),
+        BuildOption::environment(
+            "range-cell",
+            "TANKRACER_RANGE_CELL",
+            OptionValues::Choices(&["16", "32"]),
         ),
     ],
     assets: Some(Assets {

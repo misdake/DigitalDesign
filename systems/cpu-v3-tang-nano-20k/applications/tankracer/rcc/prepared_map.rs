@@ -18,7 +18,7 @@ use world::{DrawSpan, Selection, World};
 const MAX_RANGES: u16 = 30;
 
 #[static_buffer]
-const OPAQUE_STORAGE: StaticBuffer = StaticBuffer::new(MAP_PREPARED_PAGES * 40960, 128);
+pub const OPAQUE_STORAGE: StaticBuffer = StaticBuffer::new(PREPARED_STORAGE_BYTES, 128);
 
 struct PreparedMap {
     pool: PreparedPool,
@@ -158,7 +158,7 @@ impl PreparedMap {
     }
 }
 
-fn present_frame(display: &mut Display, previous: u16, color: ColorBufferPtr) -> u16 {
+pub fn present_frame(display: &mut Display, previous: u16, color: ColorBufferPtr) -> u16 {
     if display.frame_index() == previous {
         display.wait_vblank();
     }

@@ -14,6 +14,31 @@ source-world units (4×4 render units at scale 0.125). Its 18×27 rectangle has
 the key; a cell or heading-bin transition can update the cached mask. Pitch
 outside the guarded domain uses ordinary dynamic visibility instead.
 
+The opt-in `--prepared-selection coarse-sphere` renderer uses the same grid
+with eight 45-degree headings and one bit per aligned 32-group metadata chunk.
+Its [Prepared range guide](tankracer-range-plans.md#runtime-coarse-pvs-with-prepared-cutouts)
+describes runtime selection and submission. This coarser format admits whole
+chunks for later sphere tests; it does not retain the fine format's group bits.
+
+## Direct chunk format
+
+The coarse producer bakes eight conservative heading cones, ORs fine group
+bits into metadata-chunk bits and restricts them to the cell's possible route
+read domain. That domain includes candidate segments and each successor, with
+whole aligned chunks retained at partial boundaries. The current map uses a
+64-bit mask for its 39 metadata chunks.
+
+Identical heading rows share eight u16 mask IDs. Those IDs address shared
+8-byte masks directly; there is no root/block layer or decompression. Each
+section is 128-byte aligned. ENGLAND occupies 1,024 bytes for cell entries,
+2,944 bytes for heading rows and 2,944 bytes for masks, totaling 6,912 bytes.
+
+The cache uses four mask words, eight heading IDs and cached cell/root IDs:
+28 payload bytes, 32 including allocator tags. An unchanged key reads nothing.
+A cell change needs its entry and heading row; a changed root reads four mask
+words. This format shares `rcc/pvs.rs` and the existing window reader with the
+default format. The format check exercises both RCC cache bodies directly.
+
 ## Shared-block format
 
 `tools/view_pvs.py` produces one sector-aligned `MAP_VIEW_PVS` asset. Integers are

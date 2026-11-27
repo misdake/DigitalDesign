@@ -38,6 +38,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 - [Wall clock](/systems/cpu-v3-tang-nano-20k/docs/wall-clock.md): SystemControl millisecond timestamps, RCC access, wrap limits and functional-model time.
 - [Tank Racer camera playback](/systems/cpu-v3-tang-nano-20k/docs/tankracer-camera-playback.md): interpolated recorded laps and frame-rate-independent timed camera loops.
 - [Tank Racer PVS storage](/systems/cpu-v3-tang-nano-20k/docs/tankracer-pvs-storage.md): shared heading directories, native mask blocks and incremental cache updates with bounded random entry.
+- [Tank Racer bounded visibility plans](tankracer-range-plans.md): offline range budgets, runtime coarse-PVS/sphere selection, shared opaque/cutout Prepared layouts and bounded submission.
 - [DualShock 2](/systems/cpu-v3-tang-nano-20k/docs/dualshock2.md): autonomous Device5 receiver, latest-only CPU snapshot protocol, pin ownership and controller diagnostics.
 - [Calibrated sticks](input-sticks.md): eight-bit calibration, native Q16.16 motion/direction/strength, cached gamepad frames and optional four-way activation hysteresis.
 - [`cpu-v3-optimization.md`](cpu-v3-optimization.md): concise one-sentence optimization index.

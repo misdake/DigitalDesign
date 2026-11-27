@@ -27,6 +27,21 @@ cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview bench-tankracer-
 
 ## Static scene archive
 
+For offline visibility with a fixed submission budget, use `--recording prepared`
+and `--range-limit 4|6|8`. The [bounded visibility plan guide](/systems/cpu-v3-tang-nano-20k/docs/tankracer-range-plans.md)
+describes marked opaque/cutout blocks, route and lane layouts, approximation
+boundaries and validation. The default `--range-limit 0` retains the selection
+pipeline described below.
+
+To retain runtime coarse PVS and sphere culling while preparing both opaque
+and cutout commands, use `--recording prepared --prepared-selection coarse-sphere`.
+This shares the same range recorder and list submission, with a hard maximum
+of 30 immutable links. The guide above explains Prepared unit sizing, overflow
+gap merging, memory ownership and comparison scope.
+Use `--prepared-selection coarse-sphere-shared` to share CP material within
+each cutout view group. Only the first selected draw in a group installs its
+material. The remaining draws use checked Prepared slices.
+
 The ZIP contains `scene.json` and its texture payloads. All texture paths are
 relative ZIP entries. Positions use a shared Y-up source-world basis.
 Coordinates are transformed as `(source - origin) * scale` for both the

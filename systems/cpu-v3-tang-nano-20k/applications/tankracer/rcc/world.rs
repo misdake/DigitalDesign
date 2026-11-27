@@ -73,10 +73,10 @@ impl World {
         let mut alpha_ranks = Ptr::from_addr(0);
         let mut alpha_ordinals = Ptr::from_addr(0);
         let mut alpha_mask = Ptr::from_addr(0);
-        if OPAQUE_COUNT != 0 {
+        if OPAQUE_COUNT != 0 && RANGE_HYBRID == 0 {
             opaque_draws = malloc(OPAQUE_COUNT * OPAQUE_DRAW_WORDS);
         }
-        if GROUP_COUNT != OPAQUE_COUNT {
+        if GROUP_COUNT != OPAQUE_COUNT && RANGE_HYBRID == 0 {
             blended_draws = malloc((GROUP_COUNT - OPAQUE_COUNT) * 6);
             blended_order = malloc(GROUP_COUNT - OPAQUE_COUNT);
             alpha_ranks = malloc(GROUP_COUNT - OPAQUE_COUNT);
@@ -235,7 +235,17 @@ impl World {
         self.record_unlit(commands, bank, color, depth, &selected);
     }
 
+    pub fn select_prepared_frame(&mut self, frame: u16) -> Array<u16> {
+        let selected = self.select_frame(frame);
+        unsafe { self.opaque_mask.as_u16_array() }
+    }
+
     pub fn select_frame(&mut self, frame: u16) -> Selection {
+        let view = self.load_view(frame);
+        self.select(&view)
+    }
+
+    fn load_view(&mut self, frame: u16) -> View {
         let at = frame * 24;
         let data: Buf<u16, 24> = Buf::new([0; 24]);
         let rows = data.as_array();
@@ -258,7 +268,35 @@ impl World {
             },
         };
         self.camera.set_view(matrix);
-        self.select(&view)
+        view
+    }
+
+    pub fn range_key(&mut self, frame: u16) -> u16 {
+        let view = self.load_view(frame);
+        if view.matrix.row2.y.abs() > fix!(0.3255615234375) {
+            return 65535;
+        }
+        let t = vec3::new(view.matrix.row0.w, view.matrix.row1.w, view.matrix.row2.w);
+        let x = -fdot(
+            vec3::new(view.matrix.row0.x, view.matrix.row1.x, view.matrix.row2.x),
+            t,
+        );
+        let z = -fdot(
+            vec3::new(view.matrix.row0.z, view.matrix.row1.z, view.matrix.row2.z),
+            t,
+        );
+        let origin_x = fix32::from_words(RANGE_ORIGIN_X_LOW, RANGE_ORIGIN_X_HIGH);
+        let origin_z = fix32::from_words(RANGE_ORIGIN_Z_LOW, RANGE_ORIGIN_Z_HIGH);
+        let inverse = fix32::from_words(RANGE_INVERSE_LOW, RANGE_INVERSE_HIGH);
+        if x < origin_x || z < origin_z {
+            return 65535;
+        }
+        let column = ((x - origin_x) * inverse).to_int() as u16;
+        let row = ((z - origin_z) * inverse).to_int() as u16;
+        if column >= RANGE_COLUMNS || row >= RANGE_ROWS {
+            return 65535;
+        }
+        (row * RANGE_COLUMNS + column) * 32 + pvs_heading(&view)
     }
 
     fn record_unlit(
@@ -342,8 +380,22 @@ impl World {
     }
 
     pub fn record_static_span(&mut self, part: &mut PreparedPart, mesh: MeshPtr, material: u16) {
+        self.record_range_span(part, mesh, material, false);
+    }
+
+    pub fn record_range_span(
+        &mut self,
+        part: &mut PreparedPart,
+        mesh: MeshPtr,
+        material: u16,
+        cutout: bool,
+    ) {
         self.set_material(material);
-        part.set_state(self.opaque.ptr());
+        let mut state = self.opaque.ptr();
+        if cutout {
+            state = self.cutout.ptr();
+        }
+        part.set_state(state);
         let at = (material & 32767) * 4;
         let texture_id = MAP_MATERIALS[at];
         if texture_id == 0 {
@@ -355,7 +407,17 @@ impl World {
             if MAP_MATERIALS[at + 1] & 1 != 0 {
                 view.set_address_mode(TextureAddressMode::ClampToEdge);
             }
-            part.draw(self.transform.ptr(), mesh, self.material.ptr(), &view);
+            if material & 32768 != 0 {
+                part.draw_billboard(
+                    self.transform.ptr(),
+                    mesh,
+                    self.material.ptr(),
+                    &view,
+                    BillboardFacing::Vertical,
+                );
+            } else {
+                part.draw(self.transform.ptr(), mesh, self.material.ptr(), &view);
+            }
         }
     }
 
@@ -377,7 +439,31 @@ impl World {
             DepthLoad::clear_far(),
         );
         pass.set_camera(self.camera.ptr());
-        pass.set_state(self.opaque.ptr());
+        self.draw_range_seed(&mut pass, mesh, seed);
+        if RANGE_SHARED_CUTOUT != 0 {
+            pass.end_for_list();
+        } else {
+            drop(pass);
+        }
+    }
+
+    pub fn record_group_seed(
+        &mut self,
+        commands: &mut CommandBuffer,
+        mesh: MeshPtr,
+        seed: &DrawSpan,
+    ) {
+        let mut pass = commands.continue_list_pass();
+        self.draw_range_seed(&mut pass, mesh, seed);
+        pass.end_for_list();
+    }
+
+    fn draw_range_seed(&mut self, pass: &mut Pass, mesh: MeshPtr, seed: &DrawSpan) {
+        let mut state = self.opaque.ptr();
+        if seed.item >= OPAQUE_COUNT {
+            state = self.cutout.ptr();
+        }
+        pass.set_state(state);
         if seed.count != 0 {
             self.set_material(seed.material);
             let at = (seed.material & 32767) * 4;
@@ -391,9 +477,28 @@ impl World {
                 if MAP_MATERIALS[at + 1] & 1 != 0 {
                     view.set_address_mode(TextureAddressMode::ClampToEdge);
                 }
-                pass.draw(self.transform.ptr(), mesh, self.material.ptr(), &view);
+                if seed.material & 32768 != 0 {
+                    pass.draw_billboard(
+                        self.transform.ptr(),
+                        mesh,
+                        self.material.ptr(),
+                        &view,
+                        BillboardFacing::Vertical,
+                    );
+                } else {
+                    pass.draw(self.transform.ptr(), mesh, self.material.ptr(), &view);
+                }
             }
         }
+    }
+
+    pub fn record_range_end(
+        &mut self,
+        commands: &mut CommandBuffer,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
+    ) {
+        let pass = commands.pass(color, depth, ColorLoad::load(), DepthLoad::load());
     }
 
     // Keep transparent order and overflow work on the original fast writer.
@@ -540,7 +645,13 @@ impl World {
                 count = coarse[header + 15];
             }
             let mut classification: u16 = 2;
-            if use_pvs && (pvs[(first >> 5) * 2] | pvs[(first >> 5) * 2 + 1]) == 0 {
+            let mut pvs_empty = false;
+            if MAP_PVS_COARSE != 0 {
+                pvs_empty = pvs[first >> 9] & (1u16 << ((first >> 5) & 15)) == 0;
+            } else if use_pvs {
+                pvs_empty = (pvs[(first >> 5) * 2] | pvs[(first >> 5) * 2 + 1]) == 0;
+            }
+            if use_pvs && pvs_empty {
                 classification = 0;
             } else if TANKRACER_POLICY != 0 {
                 classification = classify_cluster(view, coarse, header);
@@ -552,7 +663,9 @@ impl World {
                 let mut index: u16 = 0;
                 while index < count {
                     let record = index * stride;
-                    if !use_pvs || pvs[(first + index) >> 4] & (1u16 << ((first + index) & 15)) != 0
+                    if !use_pvs
+                        || MAP_PVS_COARSE != 0
+                        || pvs[(first + index) >> 4] & (1u16 << ((first + index) & 15)) != 0
                     {
                         let bound = group_bound(words, record);
                         let depth = -project(&view.matrix.row2, &bound);
@@ -561,7 +674,10 @@ impl World {
                             let draw_first = words[record + 7];
                             let draw_count = words[record + 8];
                             let draw_material = words[record + 9];
-                            if words[record + 10] >= OPAQUE_COUNT {
+                            if RANGE_HYBRID != 0 {
+                                let unit = MAP_RANGE_SELECT_INDEX[words[record + 10]];
+                                mask[unit >> 4] |= 1u16 << (unit & 15);
+                            } else if words[record + 10] >= OPAQUE_COUNT {
                                 let mut output = blended;
                                 let cutout =
                                     MAP_MATERIALS[(draw_material & 32767) * 4 + 1] & 8 != 0;
@@ -615,6 +731,9 @@ impl World {
             } else {
                 cluster += 1;
             }
+        }
+        if RANGE_HYBRID != 0 {
+            return result;
         }
         result.opaque = self.ordered_opaque(words);
         let order = unsafe { self.blended_order.as_u16_array() };
@@ -1046,6 +1165,8 @@ fn compact_signed(word: u16) -> fix32 {
     fix32::from_words(word << 9, ((word as i16) >> 7) as u16)
 }
 
+// This two-shift decode is on every per-group visibility test.
+#[inline]
 fn compact_unsigned(word: u16) -> fix32 {
     fix32::from_words(word << 9, word >> 7)
 }
@@ -1085,6 +1206,17 @@ fn intersects(view: &View, bound: &Vec4, extent: vec3, depth: fix32) -> bool {
 }
 
 fn visible_group(view: &View, words: Array<u16>, at: u16, bound: &Vec4, depth: fix32) -> bool {
+    if RANGE_HYBRID != 0 {
+        let radius = bound.w + fix!(0.0078125);
+        if depth + radius <= fix32::zero() || depth - bound.w > DISPLAY_DISTANCE {
+            return false;
+        }
+        if project(&view.matrix.row0, bound).abs() > depth * X_PER_DEPTH + radius * fix!(1.273) {
+            return false;
+        }
+        return project(&view.matrix.row1, bound).abs()
+            <= depth * Y_PER_DEPTH + radius * fix!(1.107);
+    }
     if center_visible(view, bound, depth) {
         return true;
     }

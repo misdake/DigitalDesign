@@ -7,6 +7,7 @@ import io
 import json
 import math
 import os
+import re
 from pathlib import Path, PurePosixPath
 import struct
 import zipfile
@@ -16,6 +17,7 @@ import export_route
 import route_ring
 import alpha_order
 import view_pvs
+import range_pvs
 import camera_path
 
 from gpu_mesh_layout import native_record
@@ -415,6 +417,16 @@ def prepared_ring(rows, opaque_count, ring, position_shift=10, strict=True):
 
 def build(output, route_path=None):
     recording = os.getenv('TANKRACER_RECORDING', 'reuse')
+    range_limit = int(os.getenv('TANKRACER_RANGE_LIMIT', '0'))
+    selection = os.getenv('TANKRACER_PREPARED_SELECTION', 'plans')
+    if selection not in ('plans', 'coarse-sphere', 'coarse-sphere-shared'):
+        raise ValueError('unsupported Prepared selection')
+    shared_cutouts = selection == 'coarse-sphere-shared'
+    hybrid = selection != 'plans'
+    if hybrid and range_limit:
+        raise ValueError('coarse-sphere modes use a dynamic range budget; omit range-limit')
+    if hybrid:
+        range_limit = 30
     if recording not in ('always', 'reuse', 'prepared'):
         raise ValueError('recording must be always, reuse or prepared')
     map_path = os.getenv("TANKRACER_MAP_INPUT")
@@ -495,6 +507,8 @@ def build(output, route_path=None):
     assets.bytes("MAP_OPAQUE_SPANS", struct.pack(f"<{len(spans)}H", *spans))
     packed, clusters, cluster_counts = cluster_groups(rows)
     ranks, rank_sectors, pitch_thresholds = alpha_order.build(packed, opaque_count)
+    if range_limit:
+        ranks, rank_sectors = bytes(128), 1
     assets.bytes('MAP_ALPHA_RANKS', ranks)
     ring = None
     if route_input is not None:
@@ -522,9 +536,43 @@ def build(output, route_path=None):
     cameras, camera_fps, camera_loop_ms = camera_path.expand(json.loads(camera_data))
     camera_words = [w for camera in cameras for w in view_words(camera, origin, scale)]
     assets.bytes("MAP_CAMERA_DATA", struct.pack(f"<{len(camera_words)}H", *camera_words))
-    pvs, pvs_info = view_pvs.build([] if ring is None else ring[0], location, scale,
-                                  [location_lists[offset] != 0 for offset in location_cells])
+    if hybrid:
+        if ring is None or recording != 'prepared' or policy == 0:
+            raise ValueError('coarse-sphere requires Prepared recording, culling and a route')
+        pvs, pvs_info = view_pvs.build_coarse(ring[0], location, scale,
+                                             location_cells, location_lists, ring[1])
+    else:
+        pvs, pvs_info = view_pvs.build([] if ring is None or range_limit else ring[0], location, scale,
+                                      [location_lists[offset] != 0 for offset in location_cells])
     assets.bytes('MAP_VIEW_PVS', pvs)
+    range_info = dict(limit=0, pages=1, units=1, columns=1, rows=1,
+                      origin_q16=[0,0], inverse_q16=65536, heading_first_sector=0,
+                      plan_first_sector=0, plan_words=16, packed_ranges=False, shared_opaque=False)
+    range_units, range_draws = [dict(first=0,count=0,page=0,kind=0)], [0,0,0,0]
+    range_data = bytes(128)
+    if range_limit:
+        if recording != 'prepared' or ring is None or policy == 0:
+            raise ValueError('bounded ranges require Prepared recording and a route')
+        body = material_code.split('Buf::new([',1)[1].split(']);',1)[0]
+        material_words = [int(word) for word in re.findall(r'\d+',body)]
+        range_data, range_info, range_units, range_draws = range_pvs.build(
+            rows, packed, inventory, opaque_count, material_words, ring, location,
+            [location_lists[offset] != 0 for offset in location_cells], scale, shift,
+            display, range_limit, os.getenv('TANKRACER_RANGE_LAYOUT','route'),
+            int(os.getenv('TANKRACER_RANGE_CELL','16')), layout_only=hybrid, shared_cutouts=shared_cutouts)
+        if not hybrid:
+            range_info['validated_camera_count'] = range_pvs.validate_cameras(camera_words, range_info, range_data)
+    assets.bytes('MAP_RANGE_PLANS', range_data)
+    assets.bytes('MAP_RANGE_DRAWS', struct.pack(f'<{len(range_draws)}H',*range_draws))
+    unit_words = [v for u in range_units for v in (u['first'],u['count'],u['page'],u['kind'])]
+    unit_data = unit_words if hybrid else [0]*4
+    assets.bytes('MAP_RANGE_UNIT_DATA', struct.pack(f'<{len(unit_data)}H', *unit_data))
+    select_index = [0]*len(inventory)
+    if hybrid:
+        for unit, value in enumerate(range_units):
+            for identity in value['ids']:
+                select_index[identity] = unit
+    yaw_sectors = pvs_info.get('yaw_sectors', view_pvs.YAW_SECTORS)
     extra = "use crate::dsl_rt::*;\n"
     candidates = os.getenv('TANKRACER_CANDIDATES', 'route')
     if candidates not in ('clusters', 'route'):
@@ -532,14 +580,14 @@ def build(output, route_path=None):
     safe_corridor = 0 if ring is None else max(0, ring[2]['camera_corridor'] - scale)
     constants = dict(
         MAP_PVS_ENABLED=int(pvs_info['enabled']),
-        MAP_PVS_COARSE=0,
+        MAP_PVS_COARSE=int(hybrid),
         MAP_PVS_MASK_WORDS=pvs_info['mask_words'],
         MAP_PVS_ROOT_SHIFT=pvs_info['root_sector_shift'],
         MAP_PVS_MASK_BLOCKS=pvs_info['block_count'],
         MAP_PVS_HEADING_FIRST_SECTOR=pvs_info['heading_first_sector'],
         MAP_PVS_ROOT_FIRST_SECTOR=pvs_info['root_first_sector'],
         MAP_PVS_BLOCK_FIRST_SECTOR=pvs_info['block_first_sector'],
-        MAP_PVS_YAW_SECTORS=view_pvs.YAW_SECTORS,
+        MAP_PVS_YAW_SECTORS=yaw_sectors,
         ALPHA_RANK_SECTORS=rank_sectors,
         ALPHA_PITCH_COUNT=len(alpha_order.PITCH_DEGREES),
         TANKRACER_ROUTE_CANDIDATES=int(candidates == 'route'),
@@ -565,7 +613,7 @@ def build(output, route_path=None):
         MAP_SHARED_OPAQUE_STATE=int(len({(m.get('texture'), m.get('clamp', False),
                                            m.get('rgba', m.get('blend', False)), m.get('mipmaps', False), m.get('atlas_grid_log2', 0))
                                           for m in materials if not m.get('blend', False)}) == 1),
-        OPAQUE_MASK_WORDS=(max(1, (opaque_count + 15) // 16) if recording == 'prepared'
+        OPAQUE_MASK_WORDS=((len(range_units)+15)//16 if hybrid else max(1, (opaque_count + 15) // 16) if recording == 'prepared'
                            else (len(records) + 15) // 16),
         OPAQUE_DRAW_WORDS=4 if recording == 'prepared' else 3,
         TANKRACER_POLICY=policy, GROUP_COUNT=len(inventory), GROUP_WORDS=GROUP_WORDS,
@@ -580,13 +628,46 @@ def build(output, route_path=None):
     )
     for name, value in constants.items():
         extra += f"pub const {name}:u16={value};\n"
+    range_constants = dict(RANGE_HYBRID=int(hybrid), RANGE_SHARED_CUTOUT=int(shared_cutouts),
+        RANGE_LIMIT=range_info['limit'], RANGE_COLUMNS=range_info['columns'],
+        RANGE_ROWS=range_info['rows'], RANGE_HEADING_FIRST=range_info['heading_first_sector'],
+        RANGE_PLAN_FIRST=range_info['plan_first_sector'], RANGE_PLAN_WORDS=range_info['plan_words'],
+        RANGE_PACKED=int(range_info['packed_ranges']),
+        RANGE_SHARED_OPAQUE=int(range_info['shared_opaque']),
+        RANGE_ORIGIN_X_LOW=range_info['origin_q16'][0]&65535,
+        RANGE_ORIGIN_X_HIGH=(range_info['origin_q16'][0]>>16)&65535,
+        RANGE_ORIGIN_Z_LOW=range_info['origin_q16'][1]&65535,
+        RANGE_ORIGIN_Z_HIGH=(range_info['origin_q16'][1]>>16)&65535,
+        RANGE_INVERSE_LOW=range_info['inverse_q16']&65535,
+        RANGE_INVERSE_HIGH=(range_info['inverse_q16']>>16)&65535)
+    for name,value in range_constants.items():
+        extra += f'pub const {name}:u16={value};\n'
+    extra += f'pub const RANGE_PAGES:usize={range_info["pages"]};\n'
+    storage_bytes = range_info['pages']*73728 if range_limit else (len(command_pages)-1)*40960
+    extra += f'pub const PREPARED_STORAGE_BYTES:usize={storage_bytes};\n'
+    extra += f'pub const RANGE_UNITS:u16={len(range_units)};\n'
+    split_blocks = range_info.get('split_blocks', [])
+    extra += f'pub const RANGE_SPLIT_WORDS:u16={sum(2 for _ in split_blocks)};\n'
+    extra += word_table('MAP_RANGE_SPLIT_BLOCKS',
+                        [v for ids in split_blocks for v in (ids[0], ids[-1]+1)] or [0])
+    extra += word_table('MAP_RANGE_UNITS', [0]*4 if hybrid else unit_words)
+    extra += word_table('MAP_RANGE_SELECT_INDEX', select_index if hybrid else [0])
+    extra += word_table('MAP_RANGE_PAGE_FIRST',[
+        next(i for i,u in enumerate(range_units) if u['page']==page)
+        for page in range(range_info['pages'])]+[len(range_units)])
+    extra += word_table('MAP_RANGE_PAGE_GROUP',[
+        next(u.get('group', 0) for u in range_units if u['page']==page)
+        for page in range(range_info['pages'])])
+    extra += word_table('MAP_RANGE_PAGE_KIND',[
+        next(u['kind'] for u in range_units if u['page']==page)
+        for page in range(range_info['pages'])])
     extra += f"pub const MAP_PREPARED_PAGES:usize={len(command_pages) - 1};\n"
-    extra += word_table('MAP_OPAQUE_RING_INDEX', command_index)
-    extra += word_table('MAP_OPAQUE_RING_PAGE', command_ring[4::5] if recording == 'prepared' else [0])
+    extra += word_table('MAP_OPAQUE_RING_INDEX', [0] if hybrid else command_index)
+    extra += word_table('MAP_OPAQUE_RING_PAGE', command_ring[4::5] if recording == 'prepared' and not hybrid else [0])
     extra += word_table('MAP_PREPARED_PAGE_FIRST', command_pages)
     extra += word_table('MAP_ALPHA_PITCH_THRESHOLDS', pitch_thresholds)
-    extra += word_table('MAP_PVS_QUADRANT', [w for i in range(view_pvs.YAW_SECTORS//4+1)
-                         for v in (math.sin(i*2*math.pi/view_pvs.YAW_SECTORS), math.cos(i*2*math.pi/view_pvs.YAW_SECTORS))
+    extra += word_table('MAP_PVS_QUADRANT', [w for i in range(yaw_sectors//4+1)
+                         for v in (math.sin(i*2*math.pi/yaw_sectors), math.cos(i*2*math.pi/yaw_sectors))
                          for w in q16(v)])
     extra += word_table("MAP_CLUSTERS", clusters)
     extra += word_table("MAP_RING_SEGMENTS", [0] if ring is None else ring[1])
@@ -596,9 +677,10 @@ def build(output, route_path=None):
     if ring is None:
         extra += "pub const MAP_RING_GROUP_DATA:AssetBytes=MAP_GROUP_DATA;\n"
     extra += material_code
-    manifest = assets.write_manifest("tankracer_static.rs", sources=[__file__, export_route.__file__, route_ring.__file__, alpha_order.__file__, view_pvs.__file__, camera_path.__file__], extra=extra)
+    manifest = assets.write_manifest("tankracer_static.rs", sources=[__file__, export_route.__file__, route_ring.__file__, alpha_order.__file__, view_pvs.__file__, range_pvs.__file__, camera_path.__file__], extra=extra)
     manifest.update(candidate_source=candidates, map_sha256=hashlib.sha256(map_data).hexdigest(),
                     view_pvs=pvs_info,
+                    range_pvs=range_info,
                     camera_sha256=hashlib.sha256(camera_data).hexdigest(),
                     camera_playback=dict(frames_per_second=camera_fps, loop_ms=camera_loop_ms),
                     origin=origin, render_scale=scale, position_shift=shift, display_distance=display,
