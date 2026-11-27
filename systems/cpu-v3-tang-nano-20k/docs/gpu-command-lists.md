@@ -121,5 +121,18 @@ RGB triangles bypass sampling and may share the installed texture state with
 UV triangles. Keep actual atlas-page or opaque/transparent state transitions in
 the application's normal command stream.
 
+`PreparedPart::share_material()` shares only CP material. It allows ordinary
+World and Billboard draws in the same part. The first draw defines the
+required CP material fields and every later draw must match those fields.
+Each marked entry uploads World and retains any render drain needed for
+geometry responses. Linking checks the current material snapshot and discards
+the response proof after the range.
+
+During list recording, a real draw on entering each material group can
+install that group's state. `Pass::end_for_list()` closes an intermediate
+pass without a terminal flush. `CommandBuffer::continue_list_pass()` resumes
+the same target without another load or clear. The final segment still
+contains WAIT, FLUSH and END.
+
 For raw slices, descriptor limits, and hardware behavior, see the
 [segmented submission ABI](/ip/gpu-v2/docs/commands.md#segmented-submission).

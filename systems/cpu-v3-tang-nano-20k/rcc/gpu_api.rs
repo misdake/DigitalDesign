@@ -600,9 +600,8 @@ impl CommandList {
         } else {
             0
         };
-        meta[GPU_LIST_SHARED_STATE_VALID] = ((record[GPU_RECORD_VALID]
-            & (2 | GPU_BIND_RESPONSE_VALID))
-            == (2 | GPU_BIND_RESPONSE_VALID)) as u16;
+        meta[GPU_LIST_SHARED_STATE_VALID] =
+            record[GPU_RECORD_VALID] & (2 | GPU_BIND_RESPONSE_VALID);
         resource_disarm(buffer);
     }
 
@@ -638,7 +637,10 @@ fn gpu_api_list_prepared_range(allocation: u16, part: PreparedDrawsPtr, first: u
     }
     let part_meta =
         unsafe { Ptr::from_addr(gpu_arena_data(owner)[GPU_PREPARED_META]).as_u16_array() };
-    if part_meta[3u16] != 0 && meta[GPU_LIST_SHARED_STATE_VALID] == 0 {
+    let known = meta[GPU_LIST_SHARED_STATE_VALID];
+    if (part_meta[3u16] != 0 && known & 2 == 0)
+        || (part_meta[3u16] == GPU_GROUP_SHARE_RESPONSE && known & GPU_BIND_RESPONSE_VALID == 0)
+    {
         gpu_api_fail(GpuFault::CommandList, first, end);
     }
     let mut data = gpu_arena_data(owner);
@@ -650,6 +652,8 @@ fn gpu_api_list_prepared_range(allocation: u16, part: PreparedDrawsPtr, first: u
     data[GPU_PREPARED_LIST_REFS] += 1;
     if part_meta[3u16] == 0 {
         meta[GPU_LIST_SHARED_STATE_VALID] = 0;
+    } else if part_meta[3u16] == GPU_GROUP_SHARE_MATERIAL {
+        meta[GPU_LIST_SHARED_STATE_VALID] &= 2;
     }
 }
 fn gpu_api_list_append(allocation: u16, commands: GpuMemory, first: u16, length: u16, owner: u16) {
@@ -895,8 +899,7 @@ impl CommandBuffer {
         }
         let mut meta = gpu_api_list_metadata(allocation);
         meta[GPU_LIST_SCENE_SLOT] = self.slot + 1;
-        meta[GPU_LIST_SHARED_STATE_VALID] = ((c[GPU_RECORD_VALID] & (2 | GPU_BIND_RESPONSE_VALID))
-            == (2 | GPU_BIND_RESPONSE_VALID)) as u16;
+        meta[GPU_LIST_SHARED_STATE_VALID] = c[GPU_RECORD_VALID] & (2 | GPU_BIND_RESPONSE_VALID);
         gpu_api_list_prepared_range(allocation, part, first, end);
         gpu_unlit_end(self.slot);
         let data = gpu_arena_data(part.data());
@@ -904,6 +907,8 @@ impl CommandBuffer {
         c[GPU_RECORD_VALID] &= 65535 ^ 4;
         if part_meta[3u16] == 0 {
             c[GPU_RECORD_VALID] &= 65535 ^ (2 | GPU_BIND_RESPONSE_VALID);
+        } else if part_meta[3u16] == GPU_GROUP_SHARE_MATERIAL {
+            c[GPU_RECORD_VALID] &= 65535 ^ GPU_BIND_RESPONSE_VALID;
         }
         c[GPU_RECORD_INSTANCE_WORD] = 0;
         c[GPU_RECORD_UI_CLEAN] = 0;
@@ -994,6 +999,17 @@ impl CommandBuffer {
             gpu_api_fail(GpuFault::RecorderReset, self.slot, 0);
         }
     }
+    /// Resume draws on the current list target without emitting target loads.
+    pub fn continue_list_pass(&mut self) -> Pass {
+        gpu_api_checked(
+            GPU_CB_LISTS[self.slot * 2] != 0
+                && gpu_record_data(self.slot)[GPU_RECORD_TARGET_WORD] != 0
+                && gpu_record_begin_pass(self.slot),
+            GpuCheck::Prepared,
+        );
+        Pass { slot: self.slot }
+    }
+
     pub fn pass(
         &mut self,
         color: ColorBufferPtr,
@@ -1097,6 +1113,18 @@ impl Drop for CommandBuffer {
     }
 }
 impl Pass {
+    /// Close a pass inside a command list. The final segment still fences and
+    /// flushes at seal time. Intermediate draws keep their normal dependencies.
+    pub fn end_for_list(self) {
+        let mut c = gpu_record_data(self.slot);
+        gpu_api_checked(
+            GPU_CB_LISTS[self.slot * 2] != 0 && c[GPU_RECORD_PHASE] == RecordPhase::PassOpen as u16,
+            GpuCheck::Prepared,
+        );
+        c[GPU_RECORD_PHASE] = RecordPhase::Ready as u16;
+        resource_disarm(self);
+    }
+
     /// Append an immutable part while retaining the next immediate draw's state.
     pub fn draw_prepared(&mut self, part: PreparedDrawsPtr) {
         gpu_unlit_end(self.slot);
@@ -1837,15 +1865,25 @@ impl PreparedPart {
     /// vary transform/tint. Billboards and state changes are rejected. No entry
     /// restoration commands are recorded, and each marked range uploads World.
     pub fn share_state(&mut self) {
+        self.set_shared_state(GPU_GROUP_SHARE_RESPONSE);
+    }
+
+    /// Require matching CP material at replay. World and geometry responses
+    /// remain local to each slice. This also supports Billboard draws.
+    pub fn share_material(&mut self) {
+        self.set_shared_state(GPU_GROUP_SHARE_MATERIAL);
+    }
+
+    fn set_shared_state(&mut self, mode: u16) {
         let mut record = gpu_record_data(self.slot);
         gpu_api_checked(
             record[GPU_RECORD_COMMAND_USED] == 0 && record[GPU_RECORD_PUSH_USED] == 0,
             GpuCheck::Prepared,
         );
-        record[GPU_GROUP_SHARED_STATE] = 1;
+        record[GPU_GROUP_SHARED_STATE] = mode;
     }
     /// Mark a range endpoint and return its unpadded instruction offset.
-    /// A draw that follows the mark establishes its own World and material.
+    /// The next draw uploads World. Non-shared parts also install material.
     pub fn mark_slice(&mut self) -> u16 {
         let mut record = gpu_record_data(self.slot);
         let first = record[GPU_RECORD_COMMAND_USED] >> 1;
@@ -1857,10 +1895,13 @@ impl PreparedPart {
         {
             record[GPU_GROUP_SLICE_START] = first;
         }
-        if record[GPU_GROUP_SHARED_STATE] == 0 {
-            record[GPU_RECORD_VALID] &= 65535 ^ (2 | 4 | GPU_BIND_RESPONSE_VALID);
-        } else {
-            record[GPU_RECORD_VALID] &= 65535 ^ 4;
+        let mode = record[GPU_GROUP_SHARED_STATE] & 3;
+        record[GPU_RECORD_VALID] &= 65535 ^ 4;
+        if mode != GPU_GROUP_SHARE_RESPONSE {
+            record[GPU_RECORD_VALID] &= 65535 ^ GPU_BIND_RESPONSE_VALID;
+        }
+        if mode == 0 {
+            record[GPU_RECORD_VALID] &= 65535 ^ 2;
         }
         first
     }

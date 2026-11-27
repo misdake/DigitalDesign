@@ -193,19 +193,25 @@ fn gpu_bind_plan_fields(
             changes |= 4;
         }
     }
-    if !scene_only && part && c[GPU_GROUP_SHARED_STATE] != 0 {
-        if world != 1 || native[GPU_SCRATCH_BILLBOARD] != 0 {
+    let shared = c[GPU_GROUP_SHARED_STATE] & 3;
+    if !scene_only && part && shared != 0 {
+        if shared == GPU_GROUP_SHARE_RESPONSE && (world != 1 || native[GPU_SCRATCH_BILLBOARD] != 0)
+        {
             return false;
         }
-        if c[GPU_GROUP_SHARED_STATE] == 2
+        if c[GPU_GROUP_SHARED_STATE] & 4 != 0
             && (!gpu_bind_equal(c, GPU_CB_RENDER, native, GPU_SCRATCH_RENDER, 8)
                 || !gpu_bind_equal(c, GPU_CB_RENDER + 10, native, GPU_SCRATCH_RENDER + 10, 2)
-                || !gpu_bind_equal(c, GPU_CB_RESPONSE, native, GPU_SCRATCH_INSTANCE + 26, 4))
+                || (shared == GPU_GROUP_SHARE_RESPONSE
+                    && !gpu_bind_equal(c, GPU_CB_RESPONSE, native, GPU_SCRATCH_INSTANCE + 26, 4)))
         {
             return false;
         }
         // Entry requires this CP state; every marked range still uploads World.
-        changes &= 65535 ^ (2 | 8);
+        changes &= 65535 ^ 2;
+        if shared == GPU_GROUP_SHARE_RESPONSE {
+            changes &= 65535 ^ 8;
+        }
     }
     plan[GPU_BIND_PLAN_MODEL] = 0;
     plan[GPU_BIND_PLAN_VIEW_OFFSET] = 0;
@@ -362,7 +368,7 @@ fn gpu_bind_commit(slot: u16, native: Array<u16>, plan: Array<u16>) {
     let mut c = gpu_record_data(slot);
     let changes = plan[GPU_BIND_PLAN_CHANGES];
     if c[GPU_GROUP_RECORDING] != 0 && c[GPU_GROUP_SHARED_STATE] != 0 {
-        c[GPU_GROUP_SHARED_STATE] = 2;
+        c[GPU_GROUP_SHARED_STATE] |= 4;
         c[GPU_RECORD_VALID] |= 2;
     }
     if changes & 1 != 0 {

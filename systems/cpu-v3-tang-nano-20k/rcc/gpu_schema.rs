@@ -113,6 +113,8 @@ pub const GPU_GROUP_META_FACTS: u16 = GPU_GROUP_META_RESPONSE + 4;
 pub const GPU_GROUP_META_COMMAND_COUNT: u16 = 2;
 // Prepared recording has no terminal command; reuse that context word.
 pub const GPU_GROUP_SHARED_STATE: u16 = 14;
+pub const GPU_GROUP_SHARE_RESPONSE: u16 = 1;
+pub const GPU_GROUP_SHARE_MATERIAL: u16 = 2;
 #[cfg(gpu_debug)]
 pub const GPU_GROUP_RESPONSE_MAX: u16 = GPU_CB_GLOBAL + 16;
 #[repr(u16)]

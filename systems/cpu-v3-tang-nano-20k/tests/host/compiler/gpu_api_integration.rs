@@ -167,7 +167,32 @@ fn main(){
  let list=setup.finish_list();"#,
         );
     assert!(linked.contains("let list=setup.finish_list();"));
+    let material_only = linked.replace("part.share_state();", "part.share_material();");
     let cases = [
+        (
+            "material-valid-linked-debug",
+            material_only.clone(),
+            run.into(),
+            0x600d,
+            1,
+        ),
+        (
+            "material-wrong-entry",
+            material_only.replace("let mut setup=", "material.set_unlit(false);let mut setup="),
+            run.into(),
+            0xe001,
+            0,
+        ),
+        (
+            "material-record-change",
+            material_only.replace(
+                "let first=part.mark_slice();",
+                "let first=part.mark_slice();material.set_unlit(false);",
+            ),
+            run.into(),
+            0xe001,
+            0,
+        ),
         (
             "linked-terminal",
             linked.replace("{let pass=setup.pass(color.ptr(),depth.ptr(),ColorLoad::load(),DepthLoad::load());}", ""),
@@ -393,7 +418,7 @@ fn main(){
             _ => None,
         });
         let [first, end, total] = marks;
-        if name != "shared-record-change" {
+        if name != "shared-record-change" && name != "material-record-change" {
             assert!(first > 0 && first < end && end < total, "{name}");
         }
         let trace = trace.borrow();
@@ -413,7 +438,10 @@ fn main(){
                 &[3, 0x4000, 0, 0x7000, 0, 0xf000]
             );
         }
-        if name != "valid" && !name.starts_with("shared-valid") {
+        if name != "valid"
+            && !name.starts_with("shared-valid")
+            && !name.starts_with("material-valid")
+        {
             continue;
         }
         assert_eq!(trace.count, 0x8003);
@@ -453,6 +481,11 @@ fn main(){
                     .any(|c| { matches!(c[1] >> 12, 5 | 6) || c[1] >> 12 == 4 && c[0] & 2 != 0 }),
                 "shared slice emitted a state change or full-render fence"
             );
+        }
+        if name.starts_with("material-valid") {
+            let commands = commands.as_chunks::<2>().0;
+            assert!(!commands.iter().any(|c| c[1] >> 12 == 6));
+            assert!(commands.iter().any(|c| c[1] >> 12 == 4 && c[0] & 2 != 0));
         }
     }
 }

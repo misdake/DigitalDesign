@@ -239,20 +239,22 @@ reference before mutation. Pool Drop checks all children before releasing
 any. List retirement and unsubmitted list Drop release their references.
 
 Heap metadata stores padded command length in CPU words, fact count, and the
-unpadded 32-bit instruction count in header word 2. Header word 3 identifies a
-shared-state recording. Metadata also holds the 12-word final material snapshot,
+unpadded 32-bit instruction count in header word 2. Header word 3 identifies
+ordinary recording, shared material and response, or shared material alone.
+Metadata also holds the 12-word final material snapshot,
 four-word lighting-response snapshot and four-word resource facts. Debug tracks response maxima
 for the whole part and for each nonempty marked group. A range validates only
 its selected groups against the installed scene light. Nonempty append includes the part's persistent push
 extent in the frame facts, so target-only relocation cannot overlap it. Commands
 contain no END. A failed transport poisons the destination before submission.
 
-`PreparedPart::share_state()` reuses transient terminal word 14 (unused by a
-Prepared recorder): 1 awaits the first draw's state, 2 has captured it. Every
-draw uses the normal encoder, but validates the fixed CP state and omits its
-SET/drain operations. Marked entry still invalidates World residency. Lists
-retain one additional CPU metadata word for the shared-state proof; the
-DMA-visible table and hardware protocol are unchanged.
+`PreparedPart::share_state()` and `share_material()` reuse transient terminal
+word 14 in the Prepared recorder. The low bits select the sharing mode and
+bit 2 records that the first draw established the snapshot. Both modes check
+material and omit its SET. Material-only sharing retains response drains and
+invalidates the response proof at marked entries and after linking. Both modes
+invalidate World residency at a mark. The existing list proof word tracks
+material and response validity separately.
 
 Standalone appends compute one aligned payload offset and preflight their extent.
 Mesh/binding operations preflight their complete layout once. They write one
