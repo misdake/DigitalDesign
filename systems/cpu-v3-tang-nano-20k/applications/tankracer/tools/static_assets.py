@@ -90,7 +90,8 @@ def faces_of(geometry, count):
     return faces
 
 
-def read_geometry(geometry, textured, billboard, origin, scale, shift, exact_anchor=False):
+def read_geometry(geometry, textured, billboard, origin, scale, shift, exact_anchor=False,
+                  atlas_bounds=None):
     points, attributes, offsets = [], [], []
     step = (1 << shift) / 65536
     anchor = None
@@ -113,6 +114,10 @@ def read_geometry(geometry, textured, billboard, origin, scale, shift, exact_anc
         attr = values[4:] if billboard else values[3:]
         if textured and any(not 0 <= v <= 1 for v in attr):
             raise ValueError("UV coordinates must be normalized")
+        if atlas_bounds is not None and any(
+                not low <= round(uv * 65535) < high
+                for uv, (low, high) in zip(attr, atlas_bounds)):
+            raise ValueError("packed UV is outside atlas_region")
         if not textured and any(type(v) is not int or not 0 <= v <= 255 for v in attr):
             raise ValueError("RGB components must be integer bytes")
         if billboard:
@@ -175,6 +180,7 @@ def read_materials(assets, package, materials):
     textures = {}
     texture_indices = {}
     binary_alpha = {}
+    native_storage = {}
     for index, material in enumerate(materials):
         texture = material.get("texture")
         clamp = material.get("clamp", False)
@@ -188,7 +194,10 @@ def read_materials(assets, package, materials):
             raise ValueError("atlas grid requires a two-bit cell exponent, full mips and clamp")
         words.extend((int(texture is not None), int(clamp) | (grid << 1), tint[0] | tint[1] << 8,
                       tint[2] | tint[3] << 8))
+        region = material.get('atlas_region')
         if texture is None:
+            if region is not None:
+                raise ValueError('atlas_region requires a native RGBA pixel rectangle')
             continue
         path = PurePosixPath(texture)
         if path.is_absolute() or ".." in path.parts or ":" in texture or "\\" in texture:
@@ -205,7 +214,12 @@ def read_materials(assets, package, materials):
                 size = material.get("size")
                 if type(size) is not int:
                     raise ValueError("native texture size must be an integer")
-                assets.texture(symbol, payload, size, pixel_format, mipmaps)
+                storage_key = (texture, size, mipmaps)
+                if storage_key in native_storage:
+                    assets.texture_alias(symbol, native_storage[storage_key], pixel_format)
+                else:
+                    assets.texture(symbol, payload, size, pixel_format, mipmaps)
+                    native_storage[storage_key] = symbol
                 base = payload[-max(512, size * size * 2):]
                 binary_alpha[key] = rgba and all((value[0] & 15) in (0, 15)
                                                  for value in struct.iter_unpack('<H', base))
@@ -223,7 +237,25 @@ def read_materials(assets, package, materials):
             textures[key] = symbol
             texture_indices[key] = len(texture_indices)
         words[index * 4] = texture_indices[key] + 1
-        if blend and rgba and tint[3] == 255 and binary_alpha[key]:
+        source_binary = binary_alpha[key]
+        if region is not None:
+            if (encoding != 'gpu-column16' or not rgba or not isinstance(region, list) or len(region) != 4
+                    or any(type(v) is not int for v in region)):
+                raise ValueError('atlas_region requires a native RGBA pixel rectangle')
+            x, y, width, height = region
+            size = material['size']
+            if min(x, y) < 0 or min(width, height) <= 0 or x+width > size or y+height > size:
+                raise ValueError('atlas_region is outside the texture')
+            tile = size >> grid
+            if region != [0, 0, size, size] and (
+                    not clamp or not tile or any(v % tile for v in region)):
+                raise ValueError('atlas_region must align with complete clamp cells')
+            from gpu_texture_layout import level_offset
+            base = package.read(texture)[-max(512, size*size*2):]
+            exponent = size.bit_length()-1
+            source_binary = all((struct.unpack_from('<H', base, level_offset(exponent, i, j))[0] & 15) in (0, 15)
+                                for j in range(y, y+height) for i in range(x, x+width))
+        if blend and rgba and tint[3] == 255 and source_binary:
             words[index * 4 + 1] |= 8
     extra = word_table("MAP_MATERIALS", words)
     extra += f"pub const MAP_TEXTURE_COUNT:u16={len(textures)};\n"
@@ -431,13 +463,22 @@ def build(output, route_path=None):
             opaque_count = len(groups)
         for group in groups:
             mat = group["material"]
-            textured = materials[mat].get("texture") is not None and not materials[mat].get('vertex_color', False)
+            material = materials[mat]
+            textured = material.get("texture") is not None and not material.get('vertex_color', False)
             billboard = bool(group.get("billboard", False))
             if billboard and (not textured or not blended):
                 raise ValueError("vertical billboard needs a textured blended material")
             group_shift = billboard_shift if billboard else shift
+            atlas_bounds = None
+            if textured and material.get('atlas_region') is not None:
+                x, y, width, height = material['atlas_region']
+                size = material['size']
+                # Allow a one-unit interpolation truncation at internal lower edges.
+                atlas_bounds = [((start * 65536) // size + int(start != 0),
+                                 (end * 65536) // size)
+                                for start, end in ((x, x + width), (y, y + height))]
             geometry, points, triangles = read_geometry(
-                group, textured, billboard, origin, scale, group_shift, exact_anchor,
+                group, textured, billboard, origin, scale, group_shift, exact_anchor, atlas_bounds,
             )
             if group.get("bounds_geometry") is not None:
                 _, original_bounds, _ = read_geometry(

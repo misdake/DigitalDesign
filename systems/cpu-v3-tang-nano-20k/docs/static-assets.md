@@ -136,6 +136,13 @@ normal producer source hashes; preparation captures those inputs as before.
 The core demo uses this writer for its actual font. A generated description is
 immutable metadata, not a live GPU resource or a complete mesh-pointer validator.
 
+`assets.texture_alias("OTHER_FORMAT", "TILE", "Rgb565")` emits another
+`TextureDesc` for the same immutable bytes, retaining the source size and mip
+layout. It creates no second payload or loader resource. This supports an atlas
+whose disjoint regions contain RGB565 and RGBA4444 words. Each draw must use
+the matching view, and the producer must build the required mip levels in each
+region's format. Grid clamp/LOD parameters still belong to the recorded view.
+
 Mesh packages may contain physical sector references. Producers leave a zero
 u16 placeholder and emit `sector_relocations` records:
 

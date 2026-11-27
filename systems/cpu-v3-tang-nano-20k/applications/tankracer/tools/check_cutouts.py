@@ -11,7 +11,7 @@ import unittest
 import zipfile
 
 from PIL import Image
-from static_assets import read_materials
+from static_assets import read_geometry, read_materials
 
 
 class Assets:
@@ -23,6 +23,9 @@ class Assets:
 
     def texture_pixels(self, *args, **kwargs):
         self.textures.append(args)
+
+    def texture_alias(self, *args):
+        self.textures.append(('alias', *args))
 
 
 def packed(materials, payloads):
@@ -85,6 +88,56 @@ class Cutouts(unittest.TestCase):
         self.assertEqual([row[1] for row in rows], [15, 7])
         self.assertEqual([(row[1] >> 1) & 3 for row in rows], [3, 3])
 
+    def test_mixed_format_region_checks_its_own_alpha_and_shares_bytes(self):
+        from gpu_texture_layout import pack_levels
+        base = [0x1237]*1024
+        for y in range(16):
+            for x in range(16):
+                base[y*32+x] = 0x1230 if x&1 else 0x456f
+        blob = pack_levels({e: [0]*(1 << (2*e)) for e in range(5)} | {5: base})
+        opaque = dict(texture='mixed', size=32, encoding='gpu-column16', mipmaps=True, clamp=True)
+        rgba = dict(opaque, rgba=True, blend=True, atlas_grid_log2=1, atlas_region=[0,0,16,16])
+        rows, assets = packed([opaque, rgba, dict(rgba, atlas_region=[16,0,16,16])], {'mixed': blob})
+        self.assertEqual([row[1]&8 for row in rows], [0,8,0])
+        self.assertEqual(len(assets.textures), 2)
+        self.assertEqual(assets.textures[1][0], 'alias')
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            packed([dict(rgba, atlas_region=[24,0,16,16])], {'mixed': blob})
+        with self.assertRaisesRegex(ValueError, 'complete clamp cells'):
+            packed([dict(rgba, atlas_region=[1,0,15,16])], {'mixed': blob})
+        from native_asset_source import Sources
+        with tempfile.TemporaryDirectory() as folder:
+            producer = Sources(folder)
+            producer.texture('RGB', blob, 32, 'Rgb565', mipmaps=True)
+            producer.texture_alias('RGBA', 'RGB', 'Rgba4444')
+            manifest = producer.write('assets.rs')
+            self.assertEqual(len(manifest['resources']), 1)
+            declarations = (Path(folder)/'assets.rs').read_text()
+            self.assertIn('RGBA_BYTES:AssetBytes=RGB_BYTES;', declarations)
+            self.assertEqual(declarations.count('#[asset('), 1)
+            with self.assertRaisesRegex(ValueError, 'duplicate'):
+                producer.texture_alias('RGBA', 'RGB', 'Rgba4444')
+            with self.assertRaisesRegex(ValueError, 'existing texture'):
+                producer.texture_alias('MISSING', 'UNKNOWN', 'Rgba4444')
+
+    def test_packed_uv_must_stay_inside_the_declared_region(self):
+        for billboard in (False, True):
+            vertices = [[0, 0, 0], [0, 1, 0], [0, 2, 0]]
+            for i, vertex in enumerate(vertices):
+                if billboard:
+                    vertex.append(i / 8)
+                vertex.extend((0.625, 0.25))
+            geometry = dict(vertices=vertices, triangles=[[0, 1, 2]])
+            bounds = [(32769, 65536), (0, 32768)]
+            _, _, count = read_geometry(geometry, True, billboard, (0, 0, 0), 1, 10,
+                                        atlas_bounds=bounds)
+            self.assertEqual(count, 1)
+            for outside in (0.25, 0.5):
+                vertices[0][-2] = outside
+                with self.assertRaisesRegex(ValueError, 'outside atlas_region'):
+                    read_geometry(geometry, True, billboard, (0, 0, 0), 1, 10,
+                                  atlas_bounds=bounds)
+
     def test_all_default_alpha_textures_are_binary_and_billboards_use_them(self):
         path = Path(__file__).resolve().parents[1]/'assets/england/scene-grid-atlas.zip'
         with zipfile.ZipFile(path) as package:
@@ -99,10 +152,18 @@ class Cutouts(unittest.TestCase):
                 self.assertEqual(words[index * 4 + 1] & 8, 8)
                 size = material['size']
                 base = package.read(material['texture'])[-max(512, size * size * 2):]
-                values = {word & 15 for word, in struct.iter_unpack('<H', base)}
+                region = material.get('atlas_region')
+                if region is None:
+                    values = {word & 15 for word, in struct.iter_unpack('<H', base)}
+                else:
+                    from gpu_texture_layout import level_offset
+                    x, y, width, height = region
+                    values = {struct.unpack_from('<H', base, level_offset(size.bit_length()-1, i, j))[0]&15
+                              for j in range(y,y+height) for i in range(x,x+width)}
                 self.assertEqual(values, {0, 15})
-                alpha.add(material['texture'])
-            self.assertEqual(len(alpha), 3)
+                alpha.add((material['texture'], material.get('atlas_grid_log2', 0)))
+            self.assertEqual(alpha, {('textures/ALPHA_GRID.bin', 2),
+                                     ('textures/OPAQUE_GRID.bin', 3)})
             self.assertTrue(any(group.get('billboard') and
                                 words[group['material'] * 4 + 1] & 8
                                 for group in scene['groups']))

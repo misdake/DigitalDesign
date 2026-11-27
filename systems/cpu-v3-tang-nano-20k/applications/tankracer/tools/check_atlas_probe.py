@@ -40,20 +40,25 @@ def check(snapshot, frames, atlas, source):
             address = struct.unpack_from('<H', mesh, (first+i)*4)[0] * 128
             by_meshlet[address] = (group['name'], material.get('texture'))
         first += group['meshlets']
-    rows, samples = [], 0
+    rows, samples, rgba_samples = [], 0, 0
     paths = sorted(frames.glob('frame-*.uv.json'))
     if len(paths) != run['requested_frames']:
         raise ValueError('Incomplete probe run')
     for path in paths:
         data = json.loads(path.read_text())
         for item in data['textures']:
-            if item['rgba4444']:
-                continue
             group, texture = by_meshlet[item['meshlet']]
+            if item['rgba4444'] and texture not in audit.get('rgba_regions', []):
+                continue
             if texture not in audit['regions']:
                 raise ValueError('Sample has no original opaque source region')
+            if item['rgba4444'] != (texture in audit.get('rgba_regions', [])):
+                raise ValueError('Source region uses the wrong texture interpretation')
             region = audit['regions'][texture]
-            samples += item['samples']
+            if item['rgba4444']:
+                rgba_samples += item['samples']
+            else:
+                samples += item['samples']
             unsafe = []
             for level in item['levels']:
                 scale = audit['side'] // level['side']
@@ -69,7 +74,7 @@ def check(snapshot, frames, atlas, source):
                 rows.append(dict(frame=data['frame'],group=group,texture=texture,
                                  meshlet=item['meshlet'],levels=unsafe))
     return dict(format='tankracer.atlas-footprint-check.v1',artifact_id=build['artifact_id'],
-                frames=len(paths),opaque_samples=samples,source_cell_isolated=not rows,
+                frames=len(paths),opaque_samples=samples,embedded_rgba_samples=rgba_samples,source_cell_isolated=not rows,
                 unsafe_mesh_frame_cases=len(rows),cases=rows,
                 scope='Exact weighted-tap bounds for exercised meshlets. No claim about untested cameras or texel-value equality after UV quantization.')
 

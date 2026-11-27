@@ -23,6 +23,7 @@ class Sources:
         self.resources = []
         self.relocations = []
         self.symbols = set()
+        self.texture_layouts = {}
         self.sources = {Path(__file__), Path(mesh_source.__file__), Path(mesh_inspect.__file__), Path(gpu_mesh_layout.__file__),
                         Path(texture_source.__file__), Path(gpu_texture_layout.__file__), *mesh_partition.SOURCES}
 
@@ -74,6 +75,21 @@ class Sources:
         self._asset(symbol, payload, 'GPU_TEXTURE_ALIGNMENT',
                     f'TextureDesc=unsafe {{ TextureDesc::from_asset({symbol}_BYTES, '
                     f'TextureLayout::square({size},TextureFormat::{pixel_format},Mipmaps::{mip})) }}')
+        self.texture_layouts[symbol] = (size, mipmaps)
+
+    def texture_alias(self, symbol, storage, pixel_format):
+        """Describe the same immutable 16-bit mip storage with another format."""
+        if storage not in self.texture_layouts or pixel_format not in {'Rgb565', 'Rgba4444'}:
+            raise ValueError('texture alias requires an existing texture and native 16-bit format')
+        if not re.fullmatch(r'[A-Z][A-Z0-9_]*', symbol) or symbol in self.symbols:
+            raise ValueError(f'invalid or duplicate native asset symbol: {symbol}')
+        size, mipmaps = self.texture_layouts[storage]
+        self.symbols.add(symbol)
+        self.texture_layouts[symbol] = (size, mipmaps)
+        mip = 'Full' if mipmaps else 'BaseOnly'
+        self.declarations += [f'pub const {symbol}_BYTES:AssetBytes={storage}_BYTES;\n',
+            f'pub const {symbol}:TextureDesc=unsafe {{ TextureDesc::from_asset({symbol}_BYTES, '
+            f'TextureLayout::square({size},TextureFormat::{pixel_format},Mipmaps::{mip})) }};\n']
 
     def mesh(self, symbol, payload, directory_offset, meshlets, sector_pointers):
         if not 0 < meshlets <= 5460 or directory_offset < 0 or directory_offset & 1:

@@ -4,9 +4,16 @@ The default scene is `assets/england/scene-grid-atlas.zip`. Supply a camera
 sequence staged within the repository; `--map` selects an alternative archive.
 The application uses the regular SDK and Display path.
 
-This scene uses the 1024-square, 8×8 fixed grid, trilinear filtering and a
-−0.5-level application LOD bias. The minimum atlas side is eight texels, giving
-one texel per cell at the final permitted mip. The original bordered atlas in
+This scene uses a 512-square atlas with an 8×8 grid of 64-square sampling cells,
+trilinear filtering and a −0.5-level application LOD bias. All 31 64-square
+sources and seven 128-square sources retain their original resolution. A large
+source occupies four cells and stops at its 2×2 mip; smaller sources stop at
+1×1. Every opaque draw shares the same view and command-ring state. IGATE and
+SCARE occupy 128-square and 64-square RGBA4444 regions in the same bytes.
+They share one RGBA4444 view with 64-square clamp cells. IGATE's smallest
+sampled source mip is 2×2. SCARE's is 1×1.
+The remaining 16 cutout images fill one 256-square RGBA4444 atlas.
+The original bordered atlas in
 `scene-opaque-atlas.zip` and its input archive remain available through `--map`.
 
 The same catalog registers `bench-tankracer-physics`, a separate frozen-contact
@@ -41,6 +48,12 @@ Triangles are triples of zero-based vertex indices. Geometry uses the SDK's
 ordinary native culling contract. Supply both windings for a double-sided
 mesh. The packer snaps all groups to the common lattice and rejects a
 meshlet whose local deltas exceed their native width.
+
+An RGBA material can declare `atlas_region: [x, y, width, height]` in base-level
+pixels. The packer validates that rectangle and checks its actual alpha values
+when classifying a mixed-format atlas as a cutout. Subregions align with
+complete clamp cells, and the generator checks that packed mesh UVs stay
+inside the declared region. The region describes the stored layout.
 `bounds_geometry` supplies additional conservative bounds using the same vertex
 format. Its geometry is included in culling and sort bounds but is not submitted.
 It preserves the original sort unit when trimming a transparent card's outline.
@@ -256,18 +269,43 @@ cells per axis. The matching GPU gateware limits texture mip selection and clamp
 planes inside each selected cell; older gateware does not implement this field.
 
 ```powershell
-python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/grid_atlas.py "$assets/scene-compact.zip" --side 1024 --grid-log2 3 --output target/tankracer-grid
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/grid_atlas.py "$assets/scene-compact.zip" --side 512 --grid-log2 3 --native-cells --embed-rgba textures/IGATE_ALPHA.bin --move-alpha-source SCARE --output target/tankracer-grid
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --map target/tankracer-grid/scene.zip --camera systems/cpu-v3-tang-nano-20k/applications/tankracer/assets/england/cameras.json --recording prepared --out target/tankracer-grid-app
 ```
 
-1024/8 gives128-square cells, preserving the128-square sources. The64-square
-sources repeat nearest texels only above their original resolution; their native
-mips are retained below it. A512-square atlas with the same field gives64-square
-cells and uses the128-square sources' existing64-square mip as their base.
-Each primitive must stay inside one cell. The converter moves normalized UV
-endpoints two Q16 units into the cell to cover the interpolator's one-unit
-truncation; no texture gutter is allocated. Complete mip allocations are still
-emitted, even for forbidden coarse levels. Transparent inputs are unchanged.
+`--native-cells` packs larger sources into aligned groups of sampling cells.
+The default 512/8 layout uses all 64 cells. Seven opaque 128-square images
+and IGATE occupy four cells each. The 31 opaque 64-square images and SCARE
+occupy one cell each.
+No source is reduced or enlarged. Every opaque material keeps grid exponent
+three, preserving the single shared-state opaque ring. The shared RGB565/RGBA4444
+mip allocation is 700,928 bytes. Texture descriptions alias the same
+allocation. The separate 256-square RGBA4444 atlas uses 176,640 bytes,
+for a total of 877,568 bytes across the two physical payloads.
+
+Filtering clamps at every 64-square boundary, including the internal boundaries
+of a 128-square source. At the minimum eight-square atlas mip, a large source
+therefore retains 2×2 texels rather than its original 1×1 tail. This deliberately
+trades continuous filtering across those internal boundaries for one view and
+the existing shared-state command path. Source regions remain isolated.
+
+Each primitive must stay inside its source region. The converter moves its
+normalized UV endpoints two Q16 units into that region to cover the
+interpolator's one-unit truncation; no texture gutter is allocated. Complete mip
+allocations are emitted even for forbidden coarse levels. `--embed-rgba` also
+remaps IGATE into the atlas and builds its mip chain using the shared
+premultiplied-alpha source encoder, preserving every original base word.
+`--move-alpha-source SCARE` recovers the 64-square sources from the retained
+two-page inventory and copies SCARE into the last free cell. IGATE and SCARE
+share the RGBA4444 view with exponent three. This gives IGATE a minimum 2×2
+source mip and clamps across its internal 64-square boundaries. The standalone
+IGATE embedding without alpha consolidation retains its 128-square clamp
+and 1×1 mip. The other 16 source images fill the new 4×4 alpha
+grid with independent premultiplied-alpha mips through 1×1. Texture filtering
+is trilinear, including IGATE. Compared with the archived base-only alpha
+pages, the new mips change cutout sampling and depth coverage at distance.
+Without `--native-cells`, the tool retains uniform-cell resampling for
+explicit alternative builds.
 
 Run `tools/check_grid_atlas.py` for native mip choice, guarded endpoints and
 deterministic conversion. Use the sampler probe and `tools/check_atlas_probe.py`
@@ -280,7 +318,7 @@ names. The retained bordered and native archives stay available. Regenerate into
 a fresh destination:
 
 ```powershell
-python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/grid_atlas.py "$assets/scene-compact.zip" --side 1024 --grid-log2 3 --output target/tankracer-grid-source
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/grid_atlas.py "$assets/scene-compact.zip" --side 512 --grid-log2 3 --native-cells --embed-rgba textures/IGATE_ALPHA.bin --move-alpha-source SCARE --output target/tankracer-grid-source
 ```
 
 ## Fixed unlit bindings
