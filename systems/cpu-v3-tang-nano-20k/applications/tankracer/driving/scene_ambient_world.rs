@@ -89,7 +89,7 @@ pub fn tick(
     }
     status
 }
-#[link_cseg = "checks"]
+#[link_cseg = "frame"]
 pub fn check(
     player: &player_world::Player,
     world: &scene_world::World,

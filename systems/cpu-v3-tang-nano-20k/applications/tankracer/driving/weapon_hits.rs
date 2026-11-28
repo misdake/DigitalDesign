@@ -34,7 +34,7 @@ fn part(
     };
     if upper != 0 {
         selected = geometry;
-        pose = ptr(0xc000 + complete_check::CAR_WORD + index * complete_check::CAR_WORDS);
+        pose = ptr(0xc000 + car_runtime::CAR_WORD + index * car_runtime::CAR_WORDS);
         mesh = damage::Mesh {
             present: model[3u16] != 0,
             page: player.weapons.effect_page,
@@ -71,7 +71,7 @@ fn car(
     parts: Array<tank_hit::Part>,
     index: u16,
 ) -> scene_projectile_impact::HitVehicle {
-    let effects = ptr(0xc000 + complete_check::CAR_WORD + index * complete_check::CAR_WORDS);
+    let effects = ptr(0xc000 + car_runtime::CAR_WORD + index * car_runtime::CAR_WORDS);
     let prefix = at(player.prefixes, (index * 50) as i16);
     let fields = at(player.hit_fields.as_array(), (index * 24) as i16);
     let external = attitude::get(effects, 459);

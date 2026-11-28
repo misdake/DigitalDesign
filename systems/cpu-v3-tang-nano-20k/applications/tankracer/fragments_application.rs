@@ -1,5 +1,5 @@
 //! Authored mesh fragments through the normal installer and table windows.
-use crate::applications::{Assets, BuildOption, Definition, OptionValues, ResourceNames, DEFAULT};
+use crate::applications::{Assets, BuildOption, DEFAULT, Definition, OptionValues, ResourceNames};
 pub const APPLICATION: Definition = Definition {
     name: "bench-tankracer-fragments",
     selection: Some("tankracer_fragments"),
@@ -12,7 +12,7 @@ pub const APPLICATION: Definition = Definition {
         BuildOption::environment(
             "scope",
             "TANKRACER_FRAGMENT_SCOPE",
-            OptionValues::Choices(&["full", "parents", "residency"]),
+            OptionValues::Choices(&["full", "parents", "residency", "storage"]),
         ),
     ],
     inputs: |context| {
@@ -90,6 +90,9 @@ pub const APPLICATION: Definition = Definition {
         }
         if std::env::var("TANKRACER_FRAGMENT_SCOPE").as_deref() == Ok("residency") {
             application.source.entry = "residency_main";
+        }
+        if std::env::var("TANKRACER_FRAGMENT_SCOPE").as_deref() == Ok("storage") {
+            application.source.entry = "storage_main";
         }
         // Initial CPU-resident private meshes stay in an 8 KiB heap. Auxiliary
         // geometry shares the level's external bank with its motion rows.

@@ -33,7 +33,7 @@ pub fn load() {
     unsafe {
         write_dseg_page(3, DRIVING_ACTORS.first_sector() >> 8);
     }
-    pickup_check::read_pickup_stage(ptr(0xc000 + WORD), DRIVING_FLOCK, 0, WORDS);
+    read_mapped(ptr(0xc000 + WORD), DRIVING_FLOCK, 0, WORDS);
     let mut i = 0u16;
     while i < 3 {
         let row = ptr(0xc000 + WORD + 16 + i * ROW);
@@ -158,7 +158,7 @@ pub fn tick(
     }
     status
 }
-#[link_cseg = "checks"]
+#[link_cseg = "frame"]
 pub fn check(store: &scene_meshes::Store, expected: &mut Reference, cursor: u16) {
     let saved = read_dseg_page(3);
     unsafe {

@@ -17,6 +17,8 @@ pub struct Surface {
     pub bounds: Array<u16>,
     pub edges: Array<u16>,
     pub cap: fix32,
+    // Other fields retain their existing mappings; 65535 keeps CPU vertices.
+    pub vertex_page: u16,
     pub vertices: Array<i16>,
     pub vertex_count: u16,
     pub records: Array<Record>,
@@ -32,6 +34,7 @@ pub fn disabled(data: Array<u16>, records: Array<Record>) -> Surface {
         bounds: data,
         edges: data,
         cap: n(0),
+        vertex_page: 65535,
         vertices: unsafe { data.as_ptr().as_i16_array() },
         vertex_count: 0,
         records: records,
@@ -61,6 +64,8 @@ pub struct HitConfig {
     pub has_sound: bool,
 }
 pub struct Mesh {
+    // Other fields retain their existing mappings; 65535 keeps CPU vertices.
+    pub vertex_page: u16,
     pub vertices: Array<i16>,
     pub vertex_count: u16,
     pub flags: Array<u16>,
@@ -161,6 +166,12 @@ pub fn sample(surface: &mut Surface, world: Array<u16>) -> Sample {
         p(out.clamped.as_array(), axis, value);
         i += 1;
     }
+    let saved_page = read_dseg_page(3);
+    if surface.vertex_page != 65535 && surface.vertex_page != saved_page {
+        unsafe {
+            write_dseg_page(3, surface.vertex_page);
+        }
+    }
     i = 0;
     while i < surface.vertex_count {
         let x = integer::from_i16(surface.vertices[i * 3]);
@@ -174,6 +185,11 @@ pub fn sample(surface: &mut Surface, world: Array<u16>) -> Sample {
             }
         }
         i += 1;
+    }
+    if surface.vertex_page != 65535 && surface.vertex_page != saved_page {
+        unsafe {
+            write_dseg_page(3, saved_page);
+        }
     }
     i = 0;
     let mut records = surface.records;
@@ -229,6 +245,12 @@ pub fn hit(
         p(point, i, integer::trunc_shift(g(point, i), 3));
         i += 1;
     }
+    let saved_page = read_dseg_page(3);
+    if mesh.vertex_page != 65535 && mesh.vertex_page != saved_page {
+        unsafe {
+            write_dseg_page(3, mesh.vertex_page);
+        }
+    }
     let mut vertices = mesh.vertices;
     let mut changed = false;
     i = 0;
@@ -255,6 +277,11 @@ pub fn hit(
                 vertices[i * 3 + 1] = config.floor.lo_bits() as i16;
             }
             if i >= mesh.flag_count {
+                if mesh.vertex_page != 65535 && mesh.vertex_page != saved_page {
+                    unsafe {
+                        write_dseg_page(3, saved_page);
+                    }
+                }
                 return 2;
             }
             let flag = mesh.flags[i];
@@ -277,6 +304,11 @@ pub fn hit(
             }
         }
         i += 1;
+    }
+    if mesh.vertex_page != 65535 && mesh.vertex_page != saved_page {
+        unsafe {
+            write_dseg_page(3, saved_page);
+        }
     }
     p(vehicle.material, 0, integer::from_i16(config.material));
     if config.has_sound {

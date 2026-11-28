@@ -1,5 +1,5 @@
 //! ENGLAND finish AITank stages around the existing ordered Tank update.
-#![link_cseg = "prefix"]
+#![link_cseg = "vehicle"]
 use super::*;
 fn ptr(word: u16) -> Array<u16> {
     unsafe { Ptr::from_addr(word).as_u16_array() }
@@ -20,10 +20,10 @@ fn abs(value: fix32) -> fix32 {
     value
 }
 fn ai() -> Array<u16> {
-    ptr(0xc000 + complete_check::FINISH_AI_WORD)
+    ptr(0xc000 + car_runtime::FINISH_AI_WORD)
 }
 fn effects() -> Array<u16> {
-    ptr(0xc000 + complete_check::CAR_WORD + 1912)
+    ptr(0xc000 + car_runtime::CAR_WORD + 1912)
 }
 fn flags(mask: u16, set: u16) {
     let value = g(ai(), 2);
@@ -274,7 +274,7 @@ fn visibility(
     state: &mut scene_parent::State,
     world: &mut scene_world::World,
     player: &mut player_world::Player,
-    complete: &complete_check::State,
+    complete: &car_runtime::State,
     frame: Array<u16>,
 ) -> fix32 {
     let collision_page = DRIVING_WORLD.first_sector() >> 8;
@@ -369,7 +369,7 @@ pub fn before(
     state: &mut scene_parent::State,
     world: &mut scene_world::World,
     player: &mut player_world::Player,
-    complete: &complete_check::State,
+    complete: &car_runtime::State,
     frame: Array<u16>,
 ) -> fix32 {
     if state.car_count != 3 || state.slots[0u16] != 2 {
@@ -415,9 +415,7 @@ fn progress(
     world: &scene_world::World,
     player: &player_world::Player,
 ) -> fix32 {
-    let header: Buf<u16, 56> = Buf::new([0; 56]);
-    let h = header.as_array();
-    read(h, player.context, fix32::zero(), 56);
+    let h = player.context_header.as_array();
     let saved = read_dseg_page(3);
     unsafe {
         write_dseg_page(3, world.grid.page);
@@ -477,7 +475,7 @@ pub fn after(
     let view = finish_drive::Car {
         present: true,
         state: ai(),
-        controls: ptr(0xc000 + complete_check::METADATA_WORD + 58),
+        controls: ptr(0xc000 + car_runtime::METADATA_WORD + 58),
         horn: tail,
         position: at(car.motion, 18),
         velocity: car.motion,
@@ -534,7 +532,7 @@ pub fn after(
         status = progress(state, world, player);
     }
     if status == n(0) {
-        let turret = ptr(0xc000 + complete_check::INPUT_WORD + 52);
+        let turret = ptr(0xc000 + car_runtime::INPUT_WORD + 52);
         if g(turret, 9) > n(0) {
             let velocity = g(turret, 5);
             p(

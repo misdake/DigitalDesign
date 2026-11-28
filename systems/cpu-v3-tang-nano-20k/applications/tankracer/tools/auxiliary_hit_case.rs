@@ -104,6 +104,7 @@ pub fn auxiliary_object(
         },
         motion_capacity: input[13u16],
         motion_page: 65535,
+        index_page: view.index_page,
         mesh: view.mesh,
         config: mesh_break::Config {
             gravity: attitude::get(store_at(meta, 10), 0),

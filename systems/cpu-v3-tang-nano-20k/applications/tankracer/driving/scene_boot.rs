@@ -1,6 +1,14 @@
 //! First-map constructors publish directly into the continuous world owners.
 #![link_cseg = "parents"]
 use super::*;
+pub struct Resources {
+    pub scene: AssetBytes,
+    pub tilts: AssetBytes,
+    pub actors_page: u16,
+    pub actors_words: u16,
+    pub surface_count: u16,
+    pub inverse_cosine: Array<i16>,
+}
 const INPUT: u16 = 1088;
 const OUTPUT: u16 = 1280;
 const CAMERA: u16 = 2880;
@@ -101,12 +109,14 @@ pub fn construct(
     state: &mut scene_parent::State,
     world: &mut scene_world::World,
     player: &mut player_world::Player,
-    complete: &complete_check::State,
+    complete: &car_runtime::State,
+    resources: &Resources,
 ) {
-    let asset = driving_scene_boot();
+    require(resources.surface_count <= 10);
+    let asset = resources.scene;
     let saved = read_dseg_page(3);
     let fixed = read_dseg_page(2);
-    let actors_page = DRIVING_ACTORS.first_sector() >> 8;
+    let actors_page = resources.actors_page;
     let header: Buf<u16, 16> = Buf::new([0; 16]);
     let h = header.as_array();
     read(h, asset, fix32::zero(), 16);
@@ -124,7 +134,7 @@ pub fn construct(
             && asset.byte_len_hi == 0
             && asset.byte_len_lo == h[3u16] * 2,
     );
-    require((CAMERA + 57) * 2 <= DRIVING_ACTORS.sector_count() * 128);
+    require((CAMERA + 57) * 2 <= resources.actors_words * 2);
     let setup: Buf<u16, 12> = Buf::new([0; 12]);
     read(setup.as_array(), asset, fix32::from_words(h[7u16], 0), 12);
     let context_header: Buf<u16, 60> = Buf::new([0; 60]);
@@ -142,7 +152,7 @@ pub fn construct(
     let mut a = attachments.as_array();
     let mut surfaces = player.surfaces;
     let mut i = 0u16;
-    while i < DRIVING_DEFORM_COUNT {
+    while i < resources.surface_count {
         let s = &mut surfaces[i];
         a[i] = scene_laps::Attachment {
             object: s.object,
@@ -158,12 +168,12 @@ pub fn construct(
         backups: ptr(0),
         backup_count: 0,
         attachments: a,
-        attachment_count: DRIVING_DEFORM_COUNT,
+        attachment_count: resources.surface_count,
         camera: camera.as_array(),
         lap: 0,
         flush: false,
     };
-    let mut tilts = driving_scene_boot_tilts();
+    let mut tilts = resources.tilts;
     let tilt_view = unsafe { view_of(&mut tilts).as_ptr().as_i16_array() };
     unsafe {
         write_dseg_page(3, complete.page);
@@ -206,7 +216,7 @@ pub fn construct(
         }
         let input = ptr(0xc000 + INPUT);
         let out = ptr(0xc000 + OUTPUT);
-        pickup_check::read_pickup_stage(input, asset, cursor, words + extra);
+        read_mapped(input, asset, cursor, words + extra);
         cursor += words + extra;
         require(input[2u16] == 0 && input[34u16] <= 13 && input[36u16] <= 1);
         let piece_count = input[34u16];
@@ -240,9 +250,9 @@ pub fn construct(
         }
         let mut surface_index = 65535u16;
         if family == 2 {
-            surface_index = deform_contact::find(surfaces, DRIVING_DEFORM_COUNT, object);
+            surface_index = deform_contact::find(surfaces, resources.surface_count, object);
             require(
-                surface_index < DRIVING_DEFORM_COUNT
+                surface_index < resources.surface_count
                     && surfaces[surface_index].mesh.flag_count == input[1u16],
             );
         } else {
@@ -371,7 +381,7 @@ pub fn construct(
             spatial::select(&world.grid);
             let from = ptr(0x8000 + OUTPUT);
             copy(
-                ptr(0xc000 + pickup_check::FLIGHT_WORD + pickup * 54),
+                ptr(0xc000 + pickup_runtime::FLIGHT_WORD + pickup * 54),
                 sub(from, 24),
                 54,
             );
@@ -488,7 +498,7 @@ pub fn construct(
     unsafe {
         write_dseg_page(3, actors_page);
     }
-    pickup_check::read_pickup_stage(ptr(0xc000 + INPUT), asset, h[5u16], 30);
+    read_mapped(ptr(0xc000 + INPUT), asset, h[5u16], 30);
     let input = ptr(0xc000 + INPUT);
     require(scene_initial::camera(
         ptr(0xc000 + CAMERA),
@@ -496,12 +506,10 @@ pub fn construct(
         sub(input, 24),
         state.runtime.seed,
         player.sine,
-        unsafe { addr_of(&DRIVING_INVERSE_COSINE).as_i16_array() },
+        resources.inverse_cosine,
     ));
     let mut camera_words = ptr(0xc000 + CAMERA);
     camera_words[56u16] = 0x2c71;
-    let mut expected_camera = reference(driving_scene_boot_camera(), fix32::zero(), 56);
-    expect_block(ptr(0xc000 + CAMERA), &mut expected_camera, 0, 56);
     // The finish surrogate is declared after the camera and queues its initial
     // Stop for the first world drain, independently of the scene's earlier drain.
     i = 0;

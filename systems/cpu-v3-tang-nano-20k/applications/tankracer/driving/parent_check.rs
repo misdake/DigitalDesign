@@ -1,5 +1,5 @@
 //! Stream original parent/resource answers through the existing bounded cache.
-#![link_cseg = "checks"]
+#![link_cseg = "frame"]
 use super::*;
 pub fn check_parents(
     parents: Array<scene_parent::Actor>,

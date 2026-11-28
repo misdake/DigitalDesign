@@ -1,6 +1,13 @@
 //! Cold publication of a constructed vehicle into the continuous driving owner.
-#![link_cseg = "prefix"]
+#![link_cseg = "vehicle"]
 use super::*;
+pub struct Resources {
+    pub models: AssetBytes,
+    pub actors_page: u16,
+    pub actors_words: u16,
+    pub gun_words: u16,
+    pub count: u16,
+}
 const WORD: u16 = 1088;
 fn at(v: Array<u16>, w: u16) -> Array<u16> {
     unsafe { v.as_ptr().add(w as i16).as_u16_array() }
@@ -15,26 +22,26 @@ pub fn construct(
     actors: Array<driving::Car>,
     prefixes: Array<prefix::State>,
     config: &driving::Config,
-    complete: &complete_check::State,
-    models: AssetBytes,
+    complete: &car_runtime::State,
+    resources: &Resources,
 ) {
     let saved = read_dseg_page(3);
     let fixed = read_dseg_page(2);
-    let page = DRIVING_ACTORS.first_sector() >> 8;
-    if WORD + vehicle_startup::WORDS + 1 > DRIVING_ACTORS.sector_count() * 64 {
+    let page = resources.actors_page;
+    if WORD + vehicle_startup::WORDS + 1 > resources.actors_words {
         halt(0x7f86);
     }
     let metadata: Buf<u16, 200> = Buf::new([0; 200]);
     let m = metadata.as_array();
     let mut actors = actors;
     let mut i = 0u16;
-    while i < 2 {
+    while i < resources.count {
         unsafe {
             write_dseg_page(3, page);
         }
         let mut out = unsafe { Ptr::from_addr(0xc000 + WORD).as_u16_array() };
         out[vehicle_startup::WORDS] = 0x6b17;
-        read(m, models, fix32::from_words(i * 200, 0), 200);
+        read(m, resources.models, fix32::from_words(i * 200, 0), 200);
         let status = vehicle_startup::construct(
             out,
             &vehicle_startup::Model {
@@ -86,12 +93,12 @@ pub fn construct(
         car.ready = g(at(out, 329), 0) != fix32::zero();
         car.turret_z = g(at(out, vehicle_startup::POSE), 11);
         copy(car.blast, at(out, vehicle_startup::FIELDS + 176), 14);
-        if m[146u16] != DRIVING_GUN_WORDS {
+        if m[146u16] != resources.gun_words {
             halt(0x7f54);
         }
         let mut gun = car.gun;
         j = 0;
-        while j < DRIVING_GUN_WORDS {
+        while j < resources.gun_words {
             gun[j] = m[147 + j] as i16;
             j += 1;
         }
@@ -104,7 +111,7 @@ pub fn construct(
         }
         out = unsafe { Ptr::from_addr(0x8000 + WORD).as_u16_array() };
         let live = unsafe {
-            Ptr::from_addr(0xc000 + complete_check::CAR_WORD + i * complete_check::CAR_WORDS)
+            Ptr::from_addr(0xc000 + car_runtime::CAR_WORD + i * car_runtime::CAR_WORDS)
                 .as_u16_array()
         };
         copy(live, at(out, 102), 106);
@@ -119,13 +126,12 @@ pub fn construct(
         p(at(live, 950), 0, fix32::zero());
         p(at(live, 952), 0, fix32::zero());
         p(at(live, 954), 0, integer::from_i16(-1));
-        let inactive = unsafe {
-            Ptr::from_addr(0xc000 + complete_check::METADATA_WORD + i * 28).as_u16_array()
-        };
+        let inactive =
+            unsafe { Ptr::from_addr(0xc000 + car_runtime::METADATA_WORD + i * 28).as_u16_array() };
         copy(inactive, at(out, vehicle_startup::FIELDS + 16), 2);
         copy(at(inactive, 2), at(out, vehicle_startup::FIELDS + 76), 14);
         let player =
-            unsafe { Ptr::from_addr(0xc000 + complete_check::INPUT_WORD + i * 26).as_u16_array() };
+            unsafe { Ptr::from_addr(0xc000 + car_runtime::INPUT_WORD + i * 26).as_u16_array() };
         copy(player, at(out, vehicle_startup::FIELDS + 90), 6);
         copy(at(player, 8), at(out, vehicle_startup::FIELDS + 144), 2);
         copy(at(player, 10), at(out, vehicle_startup::FIELDS + 126), 14);

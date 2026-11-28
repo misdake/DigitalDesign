@@ -27,6 +27,8 @@ pub fn capture_catalog_resource(out: Array<u16>, catalog: &mesh_catalog::Catalog
     let saved = scene_meshes::select(store, id);
     let row = store_at(store.records, id * 13);
     let mut position = store_copy(out, row, 0, 13);
+    let mut output = out;
+    output[0u16] = row[0u16] & 3;
     let data = scene_meshes::payload(store, id);
     let mut mutable_words = 0u16;
     if row[8u16] != 0 {
@@ -46,8 +48,15 @@ pub fn capture_catalog_resource(out: Array<u16>, catalog: &mesh_catalog::Catalog
         } else {
             position = store_copy(out, data, position, vertices);
         }
-        let indices = unsafe { Ptr::from_addr(store.indices[id]).as_u16_array() };
-        position = store_copy(out, indices, position, triangles * 3);
+        // Capture may itself live in DSEG2. The asset reader preserves the
+        // destination window while streaming the immutable index column.
+        mesh_catalog::read(
+            catalog.models.asset,
+            fix32::from_words(catalog.header.as_array()[8u16] + source[4u16], 0),
+            store_at(out, position),
+            triangles * 3,
+        );
+        position += triangles * 3;
         if store.data[id] == 0 {
             mesh_catalog::read(
                 catalog.models.asset,

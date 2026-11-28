@@ -23,6 +23,7 @@ pub fn load_scene_fragment_case(
         private_mesh: attitude::get(extra, 3),
         motion_capacity: fragments.state.count,
         motion_page: 65535,
+        index_page: 65535,
         motion: fragments.state,
         mesh: fragments.mesh,
         config: fragments.config,

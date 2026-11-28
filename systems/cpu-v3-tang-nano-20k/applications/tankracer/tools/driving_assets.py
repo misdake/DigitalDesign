@@ -63,13 +63,13 @@ def main():
                     str(root / 'Cargo.toml'), '--output', str(catalog_reference)], check=True, timeout=400)
     (out / 'mesh-catalog.bin').write_bytes((catalog_reference / 'mesh-catalog.bin').read_bytes())
     catalog = json.loads((catalog_reference / 'mesh-catalog.json').read_text())
-    catalog_words = 2560 + catalog['source_metadata_bytes'] // 2 + catalog['compact_index_bytes'] // 2
+    catalog_words = 2560 + catalog['source_metadata_bytes'] // 2
     player_catalog_reference = out / 'player-catalog-reference'
     subprocess.run([sys.executable, str(owner / 'mesh_store_assets.py'), '--reference',
                     str(root / 'Cargo.toml'), '--output', str(player_catalog_reference), '--player'], check=True, timeout=400)
     (out / 'player-mesh-catalog.bin').write_bytes((player_catalog_reference / 'mesh-catalog.bin').read_bytes())
     player_catalog = json.loads((player_catalog_reference / 'mesh-catalog.json').read_text())
-    catalog_words = max(catalog_words, 2560 + player_catalog['source_metadata_bytes'] // 2 + player_catalog['compact_index_bytes'] // 2)
+    catalog_words = max(catalog_words, 2560 + player_catalog['source_metadata_bytes'] // 2)
     for field in ['motion_layout', 'auxiliary_spans']:
         assert catalog[field] == player_catalog[field], field
     parents = json.loads((out / 'parent-bindings.json').read_text())
@@ -374,16 +374,16 @@ def main():
         source = (owner.parent / 'rcc' / f'{module}.rs').read_text()
         (out / f'{module}.rs').write_text('#![link_cseg = "parents"]\n' + source)
     for module in ['prefix','spin','vehicle_inactive','player_control']:
-        (out / f'{module}.rs').write_text('#![link_cseg = "prefix"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
+        (out / f'{module}.rs').write_text('#![link_cseg = "vehicle"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
     for module in ['scene_world', 'scene_lifecycle', 'entities', 'lifecycle']:
         (out / f'{module}.rs').write_text('#![link_cseg = "world"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
     for module in ['scene_creation','scene_mines','scene_explosions','scene_fire','scene_laps','scene_player','player_route','player_tail','scene_projectiles','scene_projectile_impact','scene_ufos','tank_hit','projectile','projectile_sweep','projectile_flight','projectile_trail','projectile_ricochet','projectile_marks','explosion','explosion_blasts','mine','particle_sprite']:
         (out / f'{module}.rs').write_text('#![link_cseg = "world"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
     for module in ['powerup','inventory','quad_pool','pickup_light','scene_pickups']:
-        (out/f'{module}.rs').write_text('#![link_cseg = "pickups"]\n'+(owner.parent/'rcc'/f'{module}.rs').read_text())
-    (out/'vehicle_startup.rs').write_text('#![link_cseg = "prefix"]\n'+(owner.parent/'rcc/vehicle_startup.rs').read_text())
+        (out/f'{module}.rs').write_text('#![link_cseg = "vehicle"]\n'+(owner.parent/'rcc'/f'{module}.rs').read_text())
+    (out/'vehicle_startup.rs').write_text('#![link_cseg = "vehicle"]\n'+(owner.parent/'rcc/vehicle_startup.rs').read_text())
     for module in ['car_motion','car_effects','vehicle_pose','vehicle_smoke','vehicle_debris','vehicle_shield','track_effects','temporary']:
-        (out/f'{module}.rs').write_text('#![link_cseg = "pickups"]\n'+(owner.parent/'rcc'/f'{module}.rs').read_text())
+        (out/f'{module}.rs').write_text('#![link_cseg = "vehicle"]\n'+(owner.parent/'rcc'/f'{module}.rs').read_text())
     declarations = ['use crate::dsl_rt::*; mod static_assets;use static_assets::AssetBytes;\n']
     declarations.append('pub fn driving_orthogonal(case:u16)->bool {\n')
     for i, case in enumerate(data['cases']):
@@ -397,7 +397,7 @@ def main():
                                 ('SINE', 'sine.i16.bin', 128), ('ANGLE', 'angle.i16.bin', 128),
                                 ('MESH', 'body.bin', 128), ('CASE_META', 'cases.bin', 128),
                                 ('BINDING', 'binding.bin', 128), ('SCENE', 'scene.bin', 128), ('DEFORM', 'deform-bound.bin', 128),
-                                ('MESH_CATALOG', 'mesh-catalog.bin', 128), ('DEFORM_IDS', 'deform-mesh-ids.bin', 128),
+                                ('MESH_CATALOG', 'mesh-catalog.bin', 32768), ('DEFORM_IDS', 'deform-mesh-ids.bin', 128),
                                 ('AUXILIARY_SPANS','auxiliary-spans.bin',128), ('DEBRIS', 'debris.bin', 128), ('SYMBOLS', 'symbols.bin', 128), ('CAR_BINDINGS','car-bindings.bin',128), ('PARENTS', 'parent-bindings.bin', 128), ('MOTION_LAYOUT', 'motion-layout.bin', 128),
                                 ('INVERSE_COSINE', 'cosine-angle.bin', 128),
                                 ('SCENERY', 'scenery.bin', 128), ('IDENTITY', 'identity.bin', 128), ('LIFETIME', 'lifetime.bin', 128)]
@@ -429,7 +429,7 @@ def main():
     resource_specs += [(f'PLAYER_CONTEXT_{i}',data['cases'][i]['player_context'],128) for i in player_cases]
     resource_specs += [('PLAYER_SCENE','player-scene.bin',128)]
     resource_specs += [(f'PLAYER_SCENE_{i}',data['cases'][i]['player_scene'],128) for i in player_cases]
-    resource_specs += [('PLAYER_MESH_CATALOG','player-mesh-catalog.bin',128),
+    resource_specs += [('PLAYER_MESH_CATALOG','player-mesh-catalog.bin',32768),
                        ('PLAYER_PARENTS','player-parent-bindings.bin',128)]
     resource_specs += [(f'PLAYER_{i}',f'player-{i}.bin',128) for i in player_cases]
     prefix_cases=[i for i,c in enumerate(data['cases']) if c.get('prefix_initial')]

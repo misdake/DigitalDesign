@@ -1,5 +1,5 @@
 //! Bounded source-answer reads and short-lived driving verification scratch.
-#![link_cseg = "checks"]
+#![link_cseg = "frame"]
 use super::*;
 pub struct Reference {
     pub asset: AssetBytes,
@@ -164,7 +164,7 @@ fn check_mesh(target: &damage::Target, expected: &mut Reference, flags: u16, ver
         );
         i += 1;
     }
-    if unsafe { Ptr::from_addr(0xc000 + complete_check::BODY_END_WORD - 1).read(0) } != 0x38b1 {
+    if unsafe { Ptr::from_addr(0xc000 + car_runtime::BODY_END_WORD - 1).read(0) } != 0x38b1 {
         halt(0x7f5a);
     }
     if read_dseg_page(3) != saved {
@@ -188,11 +188,20 @@ pub fn check_surfaces(components: Array<deform_contact::Component>, expected: &m
         }
         expect_value(attached, expected, offset + 4);
         offset += 5;
+        let saved_page = read_dseg_page(3);
+        if c.mesh.vertex_page != 65535 {
+            unsafe {
+                write_dseg_page(3, c.mesh.vertex_page);
+            }
+        }
         let mut j = 0u16;
         while j < c.mesh.vertex_count * 3 {
             expect_value(integer::from_i16(c.mesh.vertices[j]), expected, offset);
             offset += 1;
             j += 1;
+        }
+        unsafe {
+            write_dseg_page(3, saved_page);
         }
         i += 1;
     }

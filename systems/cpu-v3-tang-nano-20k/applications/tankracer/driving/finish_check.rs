@@ -1,5 +1,5 @@
 //! Whole-world qualification of finish takeover and continuous driving.
-#![link_cseg = "checks"]
+#![link_cseg = "frame"]
 use super::*;
 fn ptr(word: u16) -> Array<u16> {
     unsafe { Ptr::from_addr(word).as_u16_array() }
@@ -17,7 +17,7 @@ fn n(value: i16) -> fix32 {
 pub fn setup(
     state: &scene_parent::State,
     player: &player_world::Player,
-    complete: &complete_check::State,
+    complete: &car_runtime::State,
     pickups: &Pickups,
     case: u16,
 ) {
@@ -41,12 +41,12 @@ pub fn setup(
     unsafe {
         write_dseg_page(3, complete.page);
     }
-    let metadata = ptr(0xc000 + complete_check::METADATA_WORD);
-    let input = ptr(0xc000 + complete_check::INPUT_WORD);
+    let metadata = ptr(0xc000 + car_runtime::METADATA_WORD);
+    let input = ptr(0xc000 + car_runtime::INPUT_WORD);
     p(metadata, 5, n(1));
     p(input, 2, n(321));
     p(input, 3, n(12345));
-    let lights = ptr(0xc000 + complete_check::CAR_WORD + 830);
+    let lights = ptr(0xc000 + car_runtime::CAR_WORD + 830);
     p(lights, 1, n(1));
     p(lights, 2, n(1));
     p(lights, 3, n(0));
@@ -79,7 +79,7 @@ pub fn qualify(
     state: &mut scene_parent::State,
     world: &scene_world::World,
     player: &mut player_world::Player,
-    complete: &mut complete_check::State,
+    complete: &mut car_runtime::State,
     pickups: &mut Pickups,
     case: u16,
 ) {
@@ -96,7 +96,7 @@ pub fn result(
     state: &mut scene_parent::State,
     world: &scene_world::World,
     player: &mut player_world::Player,
-    complete: &complete_check::State,
+    complete: &car_runtime::State,
     case: u16,
     index: u16,
 ) {
@@ -157,7 +157,7 @@ pub fn result(
         write_dseg_page(3, complete.page);
     }
     expect_block(
-        ptr(0xc000 + complete_check::CAR_WORD + 1912),
+        ptr(0xc000 + car_runtime::CAR_WORD + 1912),
         &mut expected,
         h[17u16],
         952,
@@ -182,13 +182,13 @@ pub fn result(
         h[26u16] - h[25u16],
     );
     expect_block(
-        ptr(0xc000 + complete_check::METADATA_WORD + 56),
+        ptr(0xc000 + car_runtime::METADATA_WORD + 56),
         &mut expected,
         h[26u16],
         28,
     );
     expect_block(
-        ptr(0xc000 + complete_check::INPUT_WORD + 52),
+        ptr(0xc000 + car_runtime::INPUT_WORD + 52),
         &mut expected,
         h[26u16] + 28,
         24,
@@ -199,7 +199,7 @@ pub fn result(
         (h[26u16] + 52) / 2,
     );
     expect_block(
-        ptr(0xc000 + complete_check::FINISH_AI_WORD),
+        ptr(0xc000 + car_runtime::FINISH_AI_WORD),
         &mut expected,
         h[27u16],
         60,

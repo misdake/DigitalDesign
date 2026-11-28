@@ -53,6 +53,7 @@ pub fn load_mesh_model(packet: Array<u16>) -> scene_meshes::Model {
         geometry_words: packet[0u16],
         cold: false,
         page: 65535,
+        index_page: 65535,
         vertices: unsafe { store_at(packet, 10).as_ptr().as_i16_array() },
         indices: store_at(packet, 10 + packet[8u16] * 3),
         flags: store_at(packet, 10 + packet[8u16] * 3 + packet[9u16] * 3),
@@ -100,7 +101,9 @@ pub fn capture_mesh_store(out: Array<u16>, result: fix32, store: &scene_meshes::
         let saved = scene_meshes::select(store, i);
         let row = store_at(store.records, i * 13);
         let data = scene_meshes::payload(store, i);
+        let row_start = position;
         position = store_copy(out, row, position, 13);
+        output[row_start] = row[0u16] & 3;
         let mut mutable_words = 0u16;
         if row[8u16] != 0 {
             let shape = scene_meshes::source(store, i);

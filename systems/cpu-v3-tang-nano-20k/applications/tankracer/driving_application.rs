@@ -59,17 +59,21 @@ pub const APPLICATION: Definition = Definition {
     inputs: |context| {
         context.inputs(&[
             "applications/tankracer/driving/frame_check.rs",
+            "applications/tankracer/driving/game_update.rs",
             "applications/tankracer/driving/parent_check.rs",
             "applications/tankracer/driving/pickup_check.rs",
+            "applications/tankracer/driving/pickup_runtime.rs",
+            "applications/tankracer/driving/level_io.rs",
             "applications/tankracer/driving/complete_check.rs",
-            "applications/tankracer/driving/startup_check.rs",
+            "applications/tankracer/driving/car_runtime.rs",
+            "applications/tankracer/driving/vehicle_boot.rs",
             "applications/tankracer/driving/scene_boot.rs",
             "applications/tankracer/tools/scene_boot_assets.py",
             "applications/tankracer/tools/terrain_map_pack.py",
             "applications/tankracer/tools/scene_initial_assets.py",
             "applications/tankracer/tools/scene_initial_oracle.rs",
             "applications/tankracer/tools/scene_actor_initial_oracle.rs",
-            "applications/tankracer/driving/player_check.rs",
+            "applications/tankracer/driving/player_input.rs",
             "applications/tankracer/driving/player_world.rs",
             "applications/tankracer/driving/weapon_world.rs",
             "applications/tankracer/driving/weapon_hits.rs",
@@ -157,7 +161,7 @@ pub const APPLICATION: Definition = Definition {
         // DSEG2/3 hold the collision stage. Heap, stack and hot car state stay
         // in the lower 64 KiB; the source installs mappings after its prologue.
         application.source.stack_top = Some(0x8000);
-        application.source.heap_words = Some(0x1000);
+        application.source.heap_words = Some(0x400);
         application
             .source
             .ordinary_dirs

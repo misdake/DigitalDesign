@@ -35,7 +35,7 @@ pub fn load(player: &player_world::Player, h: Array<u16>) {
         if !contains(objects[i]) || sounds[i] > 1 || (i > 0 && objects[i] <= objects[i - 1]) {
             halt(0x7f7a);
         }
-        pickup_check::read_pickup_stage(
+        read_mapped(
             ptr(0xc000 + STATE_WORD + i * 60),
             player.context,
             h[38u16] + h[7u16] + i * 62 + 2,

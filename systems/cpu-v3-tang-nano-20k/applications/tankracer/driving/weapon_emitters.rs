@@ -21,7 +21,7 @@ pub fn load(player: &player_world::Player, h: Array<u16>) {
     let mut i = 0u16;
     let mut objects = ptr(0xc000 + OBJECT_WORD);
     while i < 5 {
-        pickup_check::read_pickup_stage(
+        read_mapped(
             at(objects, i as i16),
             player.context,
             h[38u16] + h[54u16] + i * 51,
@@ -30,7 +30,7 @@ pub fn load(player: &player_world::Player, h: Array<u16>) {
         if !contains(objects[i]) || (i > 0 && objects[i] <= objects[i - 1]) {
             halt(0x7f77);
         }
-        pickup_check::read_pickup_stage(
+        read_mapped(
             ptr(0xc000 + STATE_WORD + i * 50),
             player.context,
             h[38u16] + h[54u16] + i * 51 + 1,
@@ -52,16 +52,8 @@ pub fn tick(
     frame: Array<u16>,
     entity: fix32,
 ) -> fix32 {
-    let header: Buf<u16, 56> = Buf::new([0; 56]);
-    let h = header.as_array();
-    read(h, player.context, fix32::zero(), 56);
-    let resources: Buf<u16, 2> = Buf::new([0; 2]);
-    read(
-        resources.as_array(),
-        player.context,
-        fix32::from_words(h[24u16] + 38, 0),
-        2,
-    );
+    let h = player.context_header.as_array();
+    let resources = at(player.projectile_params.as_array(), 38);
     let previous = read_dseg_page(3);
     unsafe {
         write_dseg_page(3, player.weapons.effect_page);
@@ -100,7 +92,7 @@ pub fn tick(
             records: records.as_array(),
             count: 5,
             resources_present: true,
-            material: attitude::get(resources.as_array(), 0),
+            material: attitude::get(resources, 0),
             class: fix32::from_words(h[5u16], 0),
             sine: player.sine,
         },

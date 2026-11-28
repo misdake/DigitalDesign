@@ -7,6 +7,7 @@ autotests = false
 [dependencies]
 cpu-v3-boot-format = { path = "boot-format" }
 serde_json = "1"
+sha2 = "0.10.9"
 syn = { version = "1", features = ["full", "visit"] }
 gpu-v2 = { path = "../../ip/gpu-v2" }
 cpu-v3 = { path = "../../ip/cpu-v3" }
@@ -26,7 +27,6 @@ display-window = ["dep:minifb"]
 windows-sys = { version = "0.48", features = ["Win32_UI_Input_XboxController"] }
 
 [dev-dependencies]
-sha2 = "0.10.9"
 cpu-v3-application = { path = "applications/image" }
 cpu-v3-tools = { path = "tools/boot" }
 serde_json = "1"
@@ -65,6 +65,16 @@ test = false
 [[bin]]
 name = "tankracer-physics-check"
 path = "applications/tankracer/tools/physics_check.rs"
+test = false
+
+[[bin]]
+name = "tankracer-driving-profile"
+path = "applications/tankracer/tools/driving_profile.rs"
+test = false
+
+[[bin]]
+name = "tankracer-driving-loop-profile"
+path = "applications/tankracer/tools/driving_loop_profile.rs"
 test = false
 
 [[bin]]

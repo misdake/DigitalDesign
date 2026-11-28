@@ -133,11 +133,55 @@ pub fn used(page: u16, start: u16, count: u16) -> u16 {
     }
     count - 1 - available
 }
-// A resource owner uses one external arena. CPU endpoints and same-bank
-// payload copies remain direct; mapped data is never bounced per update.
+// CPU and same-page endpoints copy directly. Different mapped pages use one
+// cache-line scratch row, preserving the caller's stack and mapping windows.
 pub fn copy(mut dst: Array<u16>, dst_page: u16, src: Array<u16>, src_page: u16, count: u16) {
+    if count == 0 {
+        return;
+    }
     if dst_page != 65535 && src_page != 65535 && dst_page != src_page {
-        halt(0x7f84);
+        let source = src.as_ptr().addr();
+        let destination = dst.as_ptr().addr();
+        if src_page >= 256
+            || dst_page >= 256
+            || source < 0xc000
+            || destination < 0xc000
+            || count - 1 > 65535 - source
+            || count - 1 > 65535 - destination
+        {
+            halt(0x7f84);
+        }
+        let saved = read_dseg_page(3);
+        let scratch: Buf<u16, 16> = Buf::new([0; 16]);
+        let mut row = scratch.as_array();
+        let mut copied = 0u16;
+        while copied < count {
+            let mut words = count - copied;
+            if words > 16 {
+                words = 16;
+            }
+            unsafe {
+                write_dseg_page(3, src_page);
+            }
+            let mut i = 0u16;
+            while i < words {
+                row[i] = src[copied + i];
+                i += 1;
+            }
+            unsafe {
+                write_dseg_page(3, dst_page);
+            }
+            i = 0;
+            while i < words {
+                dst[copied + i] = row[i];
+                i += 1;
+            }
+            copied += words;
+        }
+        unsafe {
+            write_dseg_page(3, saved);
+        }
+        return;
     }
     let saved = read_dseg_page(3);
     let mut page = src_page;

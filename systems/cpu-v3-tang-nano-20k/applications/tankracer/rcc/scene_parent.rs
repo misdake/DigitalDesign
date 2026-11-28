@@ -439,6 +439,7 @@ pub fn auxiliary_tick(
             halt(0x7f82);
         }
         actor.fragments.mesh = view.mesh;
+        actor.fragments.index_page = view.index_page;
         actor.fragments.version = view.revision;
         actor.fragments.geometry_present = view.valid;
     }

@@ -55,6 +55,7 @@ pub fn component(
             has_sound: row[11u16] != 0,
         },
         mesh: deformation::Mesh {
+            vertex_page: 65535,
             vertices: vertices,
             vertex_count: row[1u16],
             flags: unsafe { data.as_ptr().add(row[4u16] as i16).as_u16_array() },
@@ -67,6 +68,7 @@ pub fn component(
             bounds: unsafe { row.as_ptr().add(12).as_u16_array() },
             edges: unsafe { row.as_ptr().add(22).as_u16_array() },
             cap: field(row, 20),
+            vertex_page: 65535,
             vertices: vertices,
             vertex_count: row[1u16],
             records: records,
@@ -81,9 +83,11 @@ pub fn refresh(component: &mut Component, mutable: bool) -> bool {
         return true;
     }
     let view = scene_meshes::view(&component.resources[0u16], component.resource, mutable);
-    if !view.valid || view.page != 65535 {
+    if !view.valid {
         return false;
     }
+    component.mesh.vertex_page = view.page;
+    component.sampling.vertex_page = view.page;
     component.mesh.vertices = view.mesh.vertices;
     component.mesh.vertex_count = view.mesh.vertex_count;
     component.sampling.vertices = view.mesh.vertices;

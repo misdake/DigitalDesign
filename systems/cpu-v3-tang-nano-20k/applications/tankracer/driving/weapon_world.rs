@@ -64,12 +64,8 @@ pub fn tick(
         }
         return status;
     }
-    let header: Buf<u16, 56> = Buf::new([0; 56]);
-    let h = header.as_array();
-    read(h, player.context, zero, 56);
-    let resources: Buf<u16, 44> = Buf::new([0; 44]);
-    let r = resources.as_array();
-    read(r, player.context, fix32::from_words(h[38u16], 0), 44);
+    let h = player.context_header.as_array();
+    let r = player.explosion_params.as_array();
     if kind == 3 {
         let a = &state.cars[0u16];
         let b = &state.cars[1u16];
@@ -114,20 +110,7 @@ pub fn tick(
         }
         return status;
     }
-    let parameters: Buf<u16, 61> = Buf::new([0; 61]);
-    let bounds: Buf<u16, 28> = Buf::new([0; 28]);
-    read(
-        parameters.as_array(),
-        player.context,
-        fix32::from_words(h[24u16], 0),
-        61,
-    );
-    read(
-        bounds.as_array(),
-        player.context,
-        fix32::from_words(h[32u16], 0),
-        28,
-    );
+    let bounds = player.collision_bounds.as_array();
     let saved = read_dseg_page(3);
     unsafe {
         write_dseg_page(3, player.weapons.effect_page);
@@ -150,7 +133,7 @@ pub fn tick(
     let mut i = 0u16;
     while i < state.car_count {
         let car = &state.cars[i];
-        let effects = ptr(0xc000 + complete_check::CAR_WORD + i * complete_check::CAR_WORDS);
+        let effects = ptr(0xc000 + car_runtime::CAR_WORD + i * car_runtime::CAR_WORDS);
         rows[i] = projectile_sweep::Car {
             entity: car.entity,
             present: true,
@@ -161,12 +144,12 @@ pub fn tick(
             basis: car.attitude,
             turret: effects,
             velocity: car.motion,
-            bounds: at(bounds.as_array(), (car.profile * 14) as i16),
-            radius: attitude::get(at(bounds.as_array(), (car.profile * 14) as i16), 6),
+            bounds: at(bounds, (car.profile * 14) as i16),
+            radius: attitude::get(at(bounds, (car.profile * 14) as i16), 6),
         };
         i += 1;
     }
-    let p = parameters.as_array();
+    let p = player.projectile_params.as_array();
     let mut flight = scene_projectiles::Frame {
         object,
         flight: projectile_flight::Frame {

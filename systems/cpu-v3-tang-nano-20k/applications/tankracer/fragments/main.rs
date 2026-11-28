@@ -13,9 +13,11 @@ use static_buffer::StaticBuffer;
 static FRAGMENTS_MOTION: StaticBuffer = StaticBuffer::new(32768, 32768);
 mod attitude;
 mod blast;
+mod body;
 mod closer;
 mod collision;
 mod deformation;
+mod drive;
 mod driving;
 mod entities;
 mod falling;
@@ -41,9 +43,11 @@ mod scene_query;
 mod scene_world;
 mod shatter;
 mod spatial;
+mod suspension;
 mod symbols;
 mod terrain;
 mod trig_lookup;
+mod vehicle;
 static FRAGMENTS_CASE: u16 = 0;
 static FRAGMENTS_FIELD: u16 = 0;
 static FRAGMENTS_CHECKS: u16 = 0;
@@ -245,6 +249,7 @@ fn run_catalog() {
         storage.memory.as_array(),
         FRAGMENTS_CATALOG_WORDS,
         scratch,
+        fix32::from_words(65535, 0),
     );
     if !scene_meshes::use_arena(
         &mut catalog.store,
@@ -324,6 +329,7 @@ fn run_catalog() {
         storage.memory.as_array(),
         FRAGMENTS_CATALOG_WORDS,
         scratch,
+        fix32::from_words(65535, 0),
     );
     let count = fragment_case::capture_catalog_header(output, &restarted);
     expected = compare(
@@ -491,5 +497,10 @@ fn residency_main() {
     );
     run_catalog();
     run_parents();
+    halt(0x600d);
+}
+
+fn storage_main() {
+    check_storage();
     halt(0x600d);
 }

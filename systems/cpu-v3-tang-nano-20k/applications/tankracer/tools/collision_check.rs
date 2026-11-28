@@ -84,7 +84,7 @@ fn run_deform_hit(input:Array<u16>,out:Array<u16>)->u16{
  let mut vehicle=deformation::Vehicle{entity:attitude::get(input,38),position:unsafe{Ptr::from_addr(0x204e).as_u16_array()},material:unsafe{Ptr::from_addr(0x2054).as_u16_array()},seed:unsafe{Ptr::from_addr(0x2056).as_u16_array()},dt:attitude::get(input,44)};
  let vertices:Buf<i16,9>=Buf::new([0;9]);let mut v=vertices.as_array();i=0;while i<9{v[i]=attitude::get(input,45+i).lo_bits() as i16;i+=1;}
  let flags:Buf<u16,3>=Buf::new([0;3]);let mut f=flags.as_array();i=0;while i<3{f[i]=attitude::get(input,54+i).lo_bits();i+=1;}
- let mesh=deformation::Mesh{vertices:v,vertex_count:3,flags:f,flag_count:attitude::get(input,57).lo_bits()};
+ let mesh=deformation::Mesh{vertex_page:65535,vertices:v,vertex_count:3,flags:f,flag_count:attitude::get(input,57).lo_bits()};
  let status=deformation::hit(&mut state,&cfg,&collider,&mesh,&mut vehicle);
  attitude::put(out,0,state.dirty);attitude::put(out,1,state.last_vehicle);attitude::put(out,2,state.sound_timer);attitude::put(out,3,attitude::get(vehicle.material,0));attitude::put(out,4,attitude::get(vehicle.seed,0));
  i=0;while i<9{attitude::put(out,5+i,integer::from_i16(v[i]));i+=1;}status
@@ -92,7 +92,7 @@ fn run_deform_hit(input:Array<u16>,out:Array<u16>)->u16{
 fn run_surface_sample(input:Array<u16>,mut out:Array<u16>){
  let vertices:Buf<i16,9>=Buf::new([0;9]);let mut v=vertices.as_array();let mut i=0u16;while i<9{v[i]=attitude::get(input,26+i).lo_bits() as i16;i+=1;}
  let records:Buf<deformation::Record,3>=Buf::new([deformation::record_zero(),deformation::record_zero(),deformation::record_zero()]);let mut raw=unsafe{records.as_array().as_ptr().as_u16_array()};i=0;while i<66{raw[i]=input[70+i];i+=1;}
- let mut surface=deformation::Surface{enabled:true,origin:input,basis:unsafe{Ptr::from_addr(0x2006).as_u16_array()},bounds:unsafe{Ptr::from_addr(0x2018).as_u16_array()},edges:unsafe{Ptr::from_addr(0x2020).as_u16_array()},cap:attitude::get(input,20),vertices:v,vertex_count:3,records:records.as_array(),record_count:3,attached:attitude::get(input,21)!=fix32::zero(),dirty:attitude::get(input,22).lo_bits()};
+ let mut surface=deformation::Surface{vertex_page:65535,enabled:true,origin:input,basis:unsafe{Ptr::from_addr(0x2006).as_u16_array()},bounds:unsafe{Ptr::from_addr(0x2018).as_u16_array()},edges:unsafe{Ptr::from_addr(0x2020).as_u16_array()},cap:attitude::get(input,20),vertices:v,vertex_count:3,records:records.as_array(),record_count:3,attached:attitude::get(input,21)!=fix32::zero(),dirty:attitude::get(input,22).lo_bits()};
  let world=unsafe{Ptr::from_addr(0x202e).as_u16_array()};let mut first=deformation::sample(&mut surface,world);let mut second=deformation::sample(&mut surface,world);
  let a=unsafe{view_of(&mut first).as_ptr().as_u16_array()};let b=unsafe{view_of(&mut second).as_ptr().as_u16_array()};i=0;while i<20{out[i]=a[i];out[20+i]=b[i];i+=1;}
  attitude::put(out,20,fix32::from_words(surface.dirty,0));i=0;while i<66{out[42+i]=raw[i];i+=1;}

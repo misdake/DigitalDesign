@@ -84,8 +84,50 @@ pub fn check_mesh_storage(page: u16, start: u16, count: u16) {
     if output[0u16] != input[0u16] || read_dseg_page(3) != saved {
         halt(0x7f8c);
     }
+    check_mesh_pages(page, largest + count - 10);
     mesh_storage::release(page, start, count, largest);
     if mesh_storage::used(page, start, count) != 0 || read_dseg_page(3) != saved {
         halt(0x7f8d);
+    }
+}
+
+// CPU backing is also reachable through a mapped alias. Exercise both transfer
+// directions at the last payload words, including restoration of both windows.
+fn cpu_backing_page(address: u16) -> u16 {
+    if address < 0x4000 {
+        return read_dseg_page(0);
+    }
+    if address < 0x8000 {
+        return read_dseg_page(1);
+    }
+    if address < 0xc000 {
+        return read_dseg_page(2);
+    }
+    halt(0x7f96);
+}
+fn check_mesh_pages(page: u16, address: u16) {
+    let before2 = read_dseg_page(2);
+    let before3 = read_dseg_page(3);
+    let input: Buf<u16, 8> = Buf::new([3, 9, 27, 81, 243, 729, 2187, 6561]);
+    let output: Buf<u16, 8> = Buf::new([0; 8]);
+    let from = input.as_array().as_ptr().addr();
+    let to = output.as_array().as_ptr().addr();
+    if (from & 16383) > 16376 || (to & 16383) > 16376 {
+        halt(0x7f96);
+    }
+    let source = unsafe { Ptr::from_addr(0xc000 + (from & 16383)).as_u16_array() };
+    let destination = unsafe { Ptr::from_addr(0xc000 + (to & 16383)).as_u16_array() };
+    let external = unsafe { Ptr::from_addr(address).as_u16_array() };
+    mesh_storage::copy(external, page, source, cpu_backing_page(from), 8);
+    mesh_storage::copy(destination, cpu_backing_page(to), external, page, 8);
+    let mut i = 0u16;
+    while i < 8 {
+        if input[i] != output[i] {
+            halt(0x7f96);
+        }
+        i += 1;
+    }
+    if read_dseg_page(2) != before2 || read_dseg_page(3) != before3 {
+        halt(0x7f96);
     }
 }

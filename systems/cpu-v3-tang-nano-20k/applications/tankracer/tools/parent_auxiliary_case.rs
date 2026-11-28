@@ -48,6 +48,7 @@ pub fn load_parent_case(
                 maximum_words: 0,
                 records: no_words,
                 indices: no_words,
+                index_page: 65535,
             },
         },
         grid: life.grid,

@@ -22,6 +22,7 @@ fn empty_deform(
             has_sound: false,
         },
         mesh: deformation::Mesh {
+            vertex_page: 65535,
             vertices: unsafe { data.as_ptr().as_i16_array() },
             vertex_count: 0,
             flags: data,
@@ -119,6 +120,7 @@ fn run_car_deform(input: Array<u16>, out: Array<u16>, sine: Array<i16>, angle: A
         has_sound: attitude::get(input, 49) != fix32::zero(),
     };
     parts[0u16].mesh = deformation::Mesh {
+        vertex_page: 65535,
         vertices: v,
         vertex_count: count,
         flags: f,

@@ -111,7 +111,7 @@ pub fn query(world: &World, q: &object_query::Query, out: &mut object_query::Hit
     }
     let length = collision::distance(d);
     let mut collider = object_query::collider_zero();
-    let mut raw = unsafe { view_of(&mut collider).as_ptr().as_u16_array() };
+    let raw = unsafe { view_of(&mut collider).as_ptr().as_u16_array() };
     i = 0;
     while i < row.count {
         let id = attitude::get(row.items, i);
@@ -119,16 +119,25 @@ pub fn query(world: &World, q: &object_query::Query, out: &mut object_query::Hit
             return 4;
         }
         let index = id.lo_bits();
+        let mut status = 0u16;
         if index < world.fixed_count {
-            let mut j = 0u16;
-            while j < 60 {
-                raw[j] = world.colliders[index * 60 + j];
-                j += 1;
+            // The fixed rows use Collider's 60-word layout. Narrow phase only
+            // reads the row and keeps its mapping, so borrow the resident data.
+            let colliders: Array<object_query::Collider> = unsafe {
+                world
+                    .colliders
+                    .as_ptr()
+                    .as_array::<object_query::Collider>()
+            };
+            status = object_query::obstacle_candidate(&colliders[index], index, q, out, d, length);
+        } else {
+            // Dynamic rows borrow DSEG3, where the candidate list also lives.
+            // Keep this snapshot until the narrow phase returns to that list.
+            if !load_collider(world, index, raw) {
+                return 4;
             }
-        } else if !load_collider(world, index, raw) {
-            return 4;
+            status = object_query::obstacle_candidate(&collider, index, q, out, d, length);
         }
-        let status = object_query::obstacle_candidate(&collider, index, q, out, d, length);
         if status != 0 {
             return status;
         }

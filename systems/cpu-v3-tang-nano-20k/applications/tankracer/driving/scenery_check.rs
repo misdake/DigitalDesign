@@ -1,5 +1,5 @@
 //! Live scenery image views and complete-world comparisons for driving frames.
-#![link_cseg = "checks"]
+#![link_cseg = "frame"]
 use super::*;
 #[inline(never)]
 pub fn check_map_residency(map: &mut ground::World) {
@@ -890,7 +890,8 @@ pub fn check_resource_versions(
         let c = &components[i];
         let view = scene_meshes::view(&c.resources[0u16], c.resource, false);
         if !view.valid
-            || view.page != 65535
+            || view.page != c.mesh.vertex_page
+            || view.page != c.sampling.vertex_page
             || c.mesh.vertices.as_ptr().addr() != view.mesh.vertices.as_ptr().addr()
             || c.sampling.vertices.as_ptr().addr() != view.mesh.vertices.as_ptr().addr()
         {

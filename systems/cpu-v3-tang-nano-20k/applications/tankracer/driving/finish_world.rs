@@ -67,7 +67,7 @@ fn clone_car(target: &mut driving::Car, source: &mut driving::Car, entity: fix32
 pub fn transfer(
     state: &mut scene_parent::State,
     player: &mut player_world::Player,
-    complete: &mut complete_check::State,
+    complete: &mut car_runtime::State,
     pickups: &mut Pickups,
     own: u16,
     entity: fix32,
@@ -116,9 +116,9 @@ pub fn transfer(
     unsafe {
         write_dseg_page(3, complete.page);
     }
-    let metadata = ptr(0xc000 + complete_check::METADATA_WORD);
-    let input = ptr(0xc000 + complete_check::INPUT_WORD);
-    let effects = ptr(0xc000 + complete_check::CAR_WORD);
+    let metadata = ptr(0xc000 + car_runtime::METADATA_WORD);
+    let input = ptr(0xc000 + car_runtime::INPUT_WORD);
+    let effects = ptr(0xc000 + car_runtime::CAR_WORD);
     copy(at(metadata, 56), at(metadata, (own * 28) as i16), 28);
     copy(at(input, 52), at(input, (own * 26) as i16), 26);
     copy(at(effects, 1912), at(effects, (own * 956) as i16), 956);
@@ -141,7 +141,7 @@ pub fn transfer(
     p(at(input, 52), 3, g(at(input, (own * 26) as i16), 2));
     p(at(metadata, 56), 5, n(0));
     p(at(effects, 1912), 420, entity);
-    let ai = ptr(0xc000 + complete_check::FINISH_AI_WORD);
+    let ai = ptr(0xc000 + car_runtime::FINISH_AI_WORD);
     let mut i = 0u16;
     let mut words = ai;
     while i < 60 {
@@ -256,7 +256,7 @@ pub fn started(state: &scene_parent::State, player: &mut player_world::Player) {
     unsafe {
         write_dseg_page(3, player.weapons.effect_page);
     }
-    let input = ptr(0xc000 + complete_check::METADATA_WORD + own * 28 + 2);
+    let input = ptr(0xc000 + car_runtime::METADATA_WORD + own * 28 + 2);
     let mut speed = g(state.cars[own].drive, 2);
     if speed < n(0) {
         speed = -speed;

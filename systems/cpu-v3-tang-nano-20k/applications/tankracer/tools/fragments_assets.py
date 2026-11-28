@@ -92,7 +92,7 @@ def main():
     declarations = ['use crate::dsl_rt::*;mod static_assets;use static_assets::AssetBytes;\n']
     for symbol, name in [('INPUTS', 'inputs.bin'), ('EXPECTED', 'expected.bin'), ('DIRECTORY', 'directory.bin'), ('SINE', 'sine.i16.bin'), ('SCENE', 'scene-fragments.bin'), ('CELLS', 'auxiliary-cells.bin'), ('CATALOG', 'mesh-catalog.bin'), ('CATALOG_EXPECTED', 'mesh-catalog-expected.bin'), ('CATALOG_CONTROLS', 'mesh-catalog-controls.bin'), ('PARENT_INPUTS', 'parent-inputs.bin'), ('PARENT_EXPECTED', 'parent-expected.bin'), ('PARENT_DIRECTORY', 'parent-directory.bin'), ('ANGLE', 'angle.i16.bin'), ('INVERSE_COSINE', 'cosine-angle.bin')]:
         path = out / name
-        alignment = 32768 if symbol == 'CELLS' else 128
+        alignment = 32768 if symbol in ('CELLS', 'CATALOG') else 128
         declarations.append(f'#[asset(align={alignment})] pub static FRAGMENTS_{symbol}:AssetBytes=AssetBytes::new(include_bytes!({json.dumps(path.as_posix())}));\n')
         resources.append(dict(file=name, placement='source', symbol='FRAGMENTS_' + symbol,
                               bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
@@ -102,7 +102,7 @@ def main():
     catalog = json.loads((out / 'mesh-catalog.json').read_text())
     restart_ids = ','.join(str(i) for i in catalog['restart_resources'])
     declarations.append(f"pub static FRAGMENTS_CATALOG_RESTART_IDS:Buf<u16,3>=Buf::new([{restart_ids}]);\n")
-    catalog_words = 2560 + catalog['source_metadata_bytes'] // 2 + catalog['compact_index_bytes'] // 2
+    catalog_words = 2560 + catalog['source_metadata_bytes'] // 2
     declarations.append(f"pub const FRAGMENTS_CATALOG_WORDS:u16={catalog_words};\n")
     declarations.append(f"pub const FRAGMENTS_CATALOG_OPERATIONS:u16={catalog['operations']};\n")
     declarations.append(f"pub const FRAGMENTS_CATALOG_INITIAL_PAYLOAD:u16={catalog['initial_payload_bytes'] // 2};\n")
@@ -124,7 +124,7 @@ def main():
     declarations.append(f'pub struct ParentStorage{{pub input:Buf<u16,{parent_input_words}>,pub output:Buf<u16,{parent_output_words}>,pub scratch:Buf<u16,1536>,pub lifetime:Buf<u16,11988>,pub resources:Buf<u16,76>,pub comparison:Buf<u16,256>}}\n')
     declarations.append(f'pub fn parent_storage()->ParentStorage{{ParentStorage{{input:Buf::new([0;{parent_input_words}]),output:Buf::new([0;{parent_output_words}]),scratch:Buf::new([0;1536]),lifetime:Buf::new([0;11988]),resources:Buf::new([0;76]),comparison:Buf::new([0;256])}}}}\n')
     (out / 'fragments_assets.rs').write_text(''.join(declarations))
-    imports = 'use crate::dsl_rt::*;use crate::{attitude,integer,mesh_break,entities,identity_capture,lifecycle,ordered,scene_lifecycle,scene_query,scene_world,spatial,static_assets,scene_fragments,scene_meshes,mesh_catalog,ground,terrain,scene_parent,mesh_storage};\n'
+    imports = 'use crate::dsl_rt::*;use crate::{attitude,integer,mesh_break,entities,identity_capture,lifecycle,ordered,scene_lifecycle,scene_query,scene_world,spatial,static_assets,scene_fragments,scene_meshes,mesh_catalog,ground,terrain,scene_parent,mesh_storage,driving,shatter};\n'
     helpers = ['scene_lifecycle_case.rs', 'mesh_break_case.rs', 'scene_fragment_case.rs', 'mesh_store_case.rs', 'auxiliary_hit_case.rs', 'mesh_catalog_case.rs', 'fragment_motion_case.rs', 'parent_auxiliary_case.rs', 'mesh_storage_case.rs']
     (out / 'fragment_case.rs').write_text(imports + '\n'.join((owner / name).read_text() for name in helpers))
     (out / 'trig_lookup.rs').write_bytes((owner.parent / 'rcc/trig_asset_lookup.rs').read_bytes())

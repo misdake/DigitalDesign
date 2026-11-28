@@ -59,10 +59,9 @@ fn miss_height() -> fix32 {
     fix32::from_words(1, 32768)
 }
 fn edge(x: fix32, z: fix32, data: Array<u16>, a: u16, b: u16) -> bool {
-    fmul_lo32(
-        x - signed(data[a]),
-        signed(data[b + 2]) - signed(data[a + 2]),
-    ) <= fmul_lo32(z - signed(data[a + 2]), signed(data[b]) - signed(data[a]))
+    let ax = signed(data[a]);
+    let az = signed(data[a + 2]);
+    fmul_lo32(x - ax, signed(data[b + 2]) - az) <= fmul_lo32(z - az, signed(data[b]) - ax)
 }
 
 impl Terrain {

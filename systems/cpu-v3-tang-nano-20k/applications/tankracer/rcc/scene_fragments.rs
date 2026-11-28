@@ -16,6 +16,7 @@ pub struct Object {
     pub motion_capacity: u16,
     // 65535 selects caller-owned CPU memory; other values select one DSEG3 bank.
     pub motion_page: u16,
+    pub index_page: u16,
     pub mesh: mesh_break::Mesh,
     pub config: mesh_break::Config,
     // Four little-endian words retain the full wrapping resource revision.
@@ -181,6 +182,7 @@ fn activate_inner(
             halt(0x7f82);
         }
         object.mesh = view.mesh;
+        object.index_page = view.index_page;
         object.version = view.revision;
         object.resource_present = true;
         object.geometry_present = view.valid;
@@ -233,13 +235,14 @@ fn activate_inner(
         halt(0x7f82);
     }
     object.mesh = view.mesh;
+    object.index_page = view.index_page;
     object.version = view.revision;
     object.resource_present = true;
     object.geometry_present = view.valid;
     if !view.valid || row[7u16] & 4 == 0 {
         return n(-1);
     }
-    let hit = mesh_break::Hit {
+    let mut hit = mesh_break::Hit {
         velocity: call.velocity,
         has_velocity: call.vehicle != n(0),
         basis: at(object.collider, 26),
@@ -248,14 +251,59 @@ fn activate_inner(
         paired_tail: call.paired_tail,
         has_paired_tail: call.has_paired_tail,
     };
+    // The collider basis belongs to the world window. Capture it before
+    // borrowing that window for immutable indices; motion stays in DSEG3.
+    let velocity: Buf<u16, 6> = Buf::new([0; 6]);
+    let basis: Buf<u16, 18> = Buf::new([0; 18]);
+    let gains: Buf<u16, 10> = Buf::new([0; 10]);
+    let mut config = mesh_break::Config {
+        gravity: object.config.gravity,
+        gains: object.config.gains,
+    };
+    let saved2 = read_dseg_page(2);
+    if object.index_page != 65535 {
+        let mut i = 0u16;
+        let mut local = velocity.as_array();
+        if hit.has_velocity {
+            while i < 6 {
+                local[i] = hit.velocity[i];
+                i += 1;
+            }
+            hit.velocity = local;
+        }
+        i = 0;
+        local = basis.as_array();
+        if hit.has_basis {
+            while i < 18 {
+                local[i] = hit.basis[i];
+                i += 1;
+            }
+            hit.basis = local;
+        }
+        i = 0;
+        local = gains.as_array();
+        while i < 10 {
+            local[i] = config.gains[i];
+            i += 1;
+        }
+        config.gains = local;
+        unsafe {
+            write_dseg_page(2, object.index_page);
+        }
+    }
     let status = mesh_break::activate(
         &object.motion,
         &object.mesh,
-        &object.config,
+        &config,
         &hit,
         runtime.seed,
         call.limit,
     );
+    if object.index_page != 65535 {
+        unsafe {
+            write_dseg_page(2, saved2);
+        }
+    }
     if status != n(0) {
         return status;
     }
@@ -353,13 +401,44 @@ fn tick_inner(
     if !object.geometry_present || row[7u16] & 4 == 0 {
         return n(-1);
     }
-    let step = mesh_break::Step {
+    let mut step = mesh_break::Step {
         position: at(object.collider, 2),
         dt: frame.dt,
         limit: lifetime.limit,
         sine: frame.sine,
     };
-    let status = mesh_break::tick(&object.motion, &object.mesh, &object.config, &step);
+    let position: Buf<u16, 6> = Buf::new([0; 6]);
+    let gains: Buf<u16, 10> = Buf::new([0; 10]);
+    let mut config = mesh_break::Config {
+        gravity: object.config.gravity,
+        gains: object.config.gains,
+    };
+    let saved2 = read_dseg_page(2);
+    if object.index_page != 65535 {
+        let mut local = position.as_array();
+        let mut i = 0u16;
+        while i < 6 {
+            local[i] = step.position[i];
+            i += 1;
+        }
+        step.position = local;
+        local = gains.as_array();
+        i = 0;
+        while i < 10 {
+            local[i] = config.gains[i];
+            i += 1;
+        }
+        config.gains = local;
+        unsafe {
+            write_dseg_page(2, object.index_page);
+        }
+    }
+    let status = mesh_break::tick(&object.motion, &object.mesh, &config, &step);
+    if object.index_page != 65535 {
+        unsafe {
+            write_dseg_page(2, saved2);
+        }
+    }
     if status < n(0) {
         return status;
     }

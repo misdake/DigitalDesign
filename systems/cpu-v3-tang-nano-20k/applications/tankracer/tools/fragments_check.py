@@ -31,6 +31,11 @@ def main():
         data = dict(data, cases=[], frames=0, checked_i32_values=0,
                     checked_resource_words=0, checked_auxiliary_words=0,
                     scope='Mapped payload allocation/coalescing, complete constructed mesh catalog, and parent chains sharing a motion/geometry bank')
+    if artifact.manifest['application']['entry'] == 'storage_main':
+        data = dict(data, cases=[], frames=0, checked_i32_values=0,
+                    checked_resource_words=0, checked_auxiliary_words=0,
+                    catalog=None, parents=None, residency=None,
+                    scope='Three bounded allocation/coalescing ranges and six mapped-page copy directions, including the final payload word and DSEG restoration')
     args.output.mkdir(parents=True)
     runtime = args.output.resolve() / args.runtime.name
     shutil.copyfile(args.runtime, runtime)

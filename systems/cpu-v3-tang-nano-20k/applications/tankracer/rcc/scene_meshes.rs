@@ -4,6 +4,8 @@ use crate::static_assets::AssetBytes;
 use crate::{attitude, gpu_window, integer, mesh_break, mesh_storage};
 
 pub struct Store {
+    // Slot word 0: present/shared in bits 0..1; (index page + 1) above it.
+    // A zero page tag keeps caller-owned CPU indices.
     // Thirteen words per slot: flags, hint, radius, material key, revision[4],
     // geometry words, center lengths[3], center stride. Flags: present=1, shared=2.
     pub records: Array<u16>,
@@ -40,6 +42,7 @@ pub struct Model {
     // Catalog-backed columns can be read directly into their final allocation.
     pub cold: bool,
     pub page: u16,
+    pub index_page: u16,
     pub vertices: Array<i16>,
     pub indices: Array<u16>,
     pub flags: Array<u16>,
@@ -56,6 +59,7 @@ pub struct View {
     pub revision: Array<u16>,
     pub valid: bool,
     pub page: u16,
+    pub index_page: u16,
 }
 pub fn empty_model() -> Model {
     let words = unsafe { Ptr::from_addr(0).as_u16_array() };
@@ -64,6 +68,7 @@ pub fn empty_model() -> Model {
         geometry_words: 0,
         cold: false,
         page: 65535,
+        index_page: 65535,
         vertices: unsafe { Ptr::from_addr(0).as_i16_array() },
         indices: words,
         flags: words,
@@ -112,6 +117,25 @@ pub fn use_arena(store: &mut Store, page: u16, start: u16, words: u16) -> bool {
     store.arena_page = page;
     store.arena_start = start;
     store.arena_words = words;
+    true
+}
+// Start a fresh payload page with the same region bounds. Existing slots
+// retain their page, so lookup and release keep the original ownership.
+pub fn open_arena_page(store: &mut Store, page: u16) -> bool {
+    if store.arena_page == 65535 || page == store.arena_page {
+        return false;
+    }
+    let mut id = 0u16;
+    while id < store.count {
+        if store.data[id] != 0 && store.pages[id] == page {
+            return false;
+        }
+        id += 1;
+    }
+    if !mesh_storage::begin(page, store.arena_start, store.arena_words) {
+        return false;
+    }
+    store.arena_page = page;
     true
 }
 fn allocate(store: &Store, words: u16) -> Ptr {
@@ -263,6 +287,9 @@ pub fn create(store: &mut Store, model: &Model, shared: bool) -> fix32 {
     if model.cold && store.cold.sector_count == 0 {
         return n(-1);
     }
+    if model.index_page != 65535 && model.index_page > 255 {
+        return n(-1);
+    }
     let mut id = store.count;
     if store.free_count != 0 {
         id = store.free[store.free_count - 1];
@@ -295,6 +322,9 @@ pub fn create(store: &mut Store, model: &Model, shared: bool) -> fix32 {
     row[0u16] = 1;
     if shared {
         row[0u16] |= 2;
+    }
+    if model.index_page != 65535 {
+        row[0u16] |= (model.index_page + 1) << 2;
     }
     row[1u16] = model.hint;
     row[2u16] = model.radius;
@@ -361,6 +391,7 @@ pub fn insert(store: &mut Store, geometry: Array<u16>, words: u16) -> fix32 {
         geometry_words: words,
         cold: false,
         page: 65535,
+        index_page: 65535,
         vertices: unsafe { at(geometry, 2).as_ptr().as_i16_array() },
         indices: at(geometry, 2 + geometry[0u16] * 3),
         flags: at(geometry, 2 + geometry[0u16] * 3 + geometry[1u16] * 3),
@@ -407,6 +438,7 @@ pub fn private_copy(store: &mut Store, id: u16) -> fix32 {
         geometry_words: row[8u16],
         cold: store.data[id] == 0 && store.cold.sector_count != 0,
         page: store.pages[id],
+        index_page: index_page(store, id),
         vertices: unsafe { data.as_ptr().as_i16_array() },
         indices: unsafe { Ptr::from_addr(store.indices[id]).as_u16_array() },
         flags: at(data, vertices),
@@ -479,6 +511,13 @@ pub fn payload(store: &Store, id: u16) -> Array<u16> {
 pub fn source(store: &Store, id: u16) -> Array<u16> {
     unsafe { Ptr::from_addr(store.sources[id]).as_u16_array() }
 }
+pub fn index_page(store: &Store, id: u16) -> u16 {
+    let tag = at(store.records, id * 13)[0u16] >> 2;
+    if tag == 0 {
+        return 65535;
+    }
+    tag - 1
+}
 // Read-only resolution retains the revision. A mutable access increments it
 // before checking the payload, including an access to a released slot.
 pub fn view(store: &Store, id: u16, mutable: bool) -> View {
@@ -520,6 +559,11 @@ pub fn view(store: &Store, id: u16, mutable: bool) -> View {
         valid: present,
         page: if valid && store.data[id] != 0 {
             store.pages[id]
+        } else {
+            65535
+        },
+        index_page: if present {
+            index_page(store, id)
         } else {
             65535
         },

@@ -502,6 +502,7 @@ fn main() {
             models.push((name.to_string(), resources.auxiliary_model(name).unwrap()));
         }
     }
+    let emitters_only = std::env::var("TANKRACER_DRIVING_SCOPE").unwrap_or_default() == "emitters";
     for (name, velocities, separation, object, ordinary, retire, transient) in [
         (
             "complete-player",
@@ -1236,6 +1237,10 @@ fn main() {
             false,
         ),
     ] {
+        // Long emitter sequences are independent of the short slot-scan fixtures.
+        if emitters_only && !name.starts_with("complete-player-emitter") {
+            continue;
+        }
         let constructed_world = reference_world::constructed_pair(root, originals[1].model.clone());
         if name == "complete-player-world-cold" {
             let camera = &constructed_world.camera;

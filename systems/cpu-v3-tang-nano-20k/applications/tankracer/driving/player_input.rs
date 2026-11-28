@@ -1,5 +1,5 @@
-//! Sampled input/control qualification on the continuous vehicle owner.
-#![link_cseg = "prefix"]
+//! Player input sampling over persistent vehicle state.
+#![link_cseg = "vehicle"]
 use super::*;
 fn at(v: Array<u16>, word: u16) -> Array<u16> {
     unsafe { v.as_ptr().add(word as i16).as_u16_array() }
@@ -17,7 +17,7 @@ fn n(v: i16) -> fix32 {
     integer::from_i16(v)
 }
 pub fn sample(
-    state: &complete_check::State,
+    state: &car_runtime::State,
     car: &mut driving::Car,
     config: &driving::Config,
     frame: Array<u16>,
@@ -33,10 +33,10 @@ pub fn sample(
     unsafe {
         write_dseg_page(3, state.page);
     }
-    let fields = ptr(0xc000 + complete_check::INPUT_WORD + car.owner * 26);
-    let stored = ptr(0xc000 + complete_check::METADATA_WORD + 2 + car.owner * 28);
+    let fields = ptr(0xc000 + car_runtime::INPUT_WORD + car.owner * 26);
+    let stored = ptr(0xc000 + car_runtime::METADATA_WORD + 2 + car.owner * 28);
     let core = at(state.prefixes, car.owner * 50);
-    let effects = ptr(0xc000 + complete_check::CAR_WORD + car.owner * complete_check::CAR_WORDS);
+    let effects = ptr(0xc000 + car_runtime::CAR_WORD + car.owner * car_runtime::CAR_WORDS);
     p(fields, 12, g(frame, 3));
     let tuning: Buf<u16, 12> = Buf::new([800, 0, 70, 0, 800, 0, 720, 0, 720, 0, 700, 0]);
     let values: Buf<u16, 20> = Buf::new([0; 20]);

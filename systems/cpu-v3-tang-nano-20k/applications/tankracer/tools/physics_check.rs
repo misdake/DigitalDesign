@@ -203,7 +203,11 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         options.heap_begin = 0x8200;
         options.heap_size = 32;
     }
-    if label == "mesh-store" || label == "mesh-store-oom" || label == "auxiliary-hit" {
+    if label == "mesh-store"
+        || label == "mesh-store-oom"
+        || label == "auxiliary-hit"
+        || label == "auxiliary-hit-paged"
+    {
         // Raw fixture arenas occupy 0x0100..0x873f. Keep their persistent
         // payload heap separate from inputs, snapshots and fragment scratch.
         options.heap_begin = 0x9000;
@@ -223,6 +227,13 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
     {
         options.heap_begin = 0x7000;
         options.heap_size = 0x2000;
+    }
+    if label == "auxiliary-hit-paged" || label == "scene-fragments-paged" {
+        // World records borrow DSEG2; mutable meshes/motion share DSEG3.
+        // Keep the stack and allocator startup in unbanked CPU memory.
+        options.stack_init = 0x8000;
+        options.heap_begin = 0x6000;
+        options.heap_size = 32;
     }
     let ir = compile_program_named_checked(
         label,
@@ -285,6 +296,7 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
             "drive" => Ok(DRIVE.to_owned()),
             "vehicle" => Ok(VEHICLE.to_owned()),
             "trig_lookup" => Ok(if label == "parent-auxiliary"
+                || label == "scene-fragments-paged"
                 || label == "prefix"
                 || label == "powerup"
                 || label == "pickup-light"
@@ -455,10 +467,10 @@ fn primitive_cases(output: &Path) -> Result<Value, Box<dyn Error>> {
         65536,
         i32::MAX,
     ];
-    let shifts = [0, 1, 12, 15, 16, 17, 24, 31, 32, 63, 255];
     let mut cases = Vec::new();
     for (i, &a) in edges.iter().enumerate() {
-        for &shift in &shifts {
+        for count in 0..=64u16 {
+            let shift = if count == 64 { 255 } else { count };
             cases.push((a, edges[(i + usize::from(shift)) % edges.len()], shift));
         }
     }
@@ -535,10 +547,11 @@ fn main() {
     let steps = sim(&code, &input, cases.len() as u16, PASS);
     let zero = compile(
         "division-zero",
-        "fn main(){ integer::div(integer::from_i16(1), fix32::zero()); halt(0x600d); }",
+        "fn main(){ let data=unsafe{Ptr::from_addr(0x2000).as_u16_array()}; integer::div(fix32::load_words(data,0), fix32::zero()); halt(0x600d); }",
         output,
     )?;
-    sim(&zero, &[], 0, 0x7b01);
+    sim(&zero, &[1, 0], 0, 0x7b01);
+    sim(&zero, &[0, 0], 0, 0x7b01);
     Ok(
         json!({"cases":cases.len(), "steps":steps, "code_bytes":code.total_code_words()*2,
               "zero_divisor_signal":"0x7b01"}),

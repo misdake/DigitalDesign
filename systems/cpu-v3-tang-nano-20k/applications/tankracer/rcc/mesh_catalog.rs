@@ -18,6 +18,7 @@ pub struct Sources {
     // Six words per source: counts, cold packet offset, index offset, geometry words.
     pub records: Array<u16>,
     pub indices: Array<u16>,
+    pub index_page: u16,
 }
 fn at(data: Array<u16>, offset: u16) -> Array<u16> {
     unsafe { data.as_ptr().add(offset as i16).as_u16_array() }
@@ -63,6 +64,7 @@ pub fn model(catalog: &Sources, id: u16, scratch: Array<u16>) -> scene_meshes::M
         geometry_words: source[5u16],
         cold: true,
         page: 65535,
+        index_page: catalog.index_page,
         vertices: unsafe { Ptr::from_addr(0).as_i16_array() },
         indices: at(catalog.indices, source[4u16]),
         flags: unsafe { Ptr::from_addr(0).as_u16_array() },
@@ -76,7 +78,13 @@ pub fn model(catalog: &Sources, id: u16, scratch: Array<u16>) -> scene_meshes::M
 }
 // The caller reserves the declared metadata capacity and eight scratch words.
 // Payload allocations stay stable until release; scratch is needed only on load.
-pub fn load(asset: AssetBytes, memory: Array<u16>, capacity: u16, scratch: Array<u16>) -> Catalog {
+pub fn load(
+    asset: AssetBytes,
+    memory: Array<u16>,
+    capacity: u16,
+    scratch: Array<u16>,
+    arena: fix32,
+) -> Catalog {
     if capacity < 2560 {
         halt(0x7f68);
     }
@@ -105,10 +113,21 @@ pub fn load(asset: AssetBytes, memory: Array<u16>, capacity: u16, scratch: Array
             asset: asset,
             count: 0,
             maximum_words: 0,
+            index_page: 65535,
             records: at(memory, 2560),
             indices: memory,
         },
     };
+    // The initial arena packs its page/start in the low/high words.
+    let page = arena.lo_bits();
+    let start = arena.hi_bits();
+    if page != 65535 {
+        if start >= 16384
+            || !scene_meshes::use_arena(&mut catalog.store, page, start, 16384 - start)
+        {
+            halt(0x7f68);
+        }
+    }
     let h = catalog.header.as_array();
     read(asset, word(0), h, 16);
     if h[0u16] != 0x4d52
@@ -123,7 +142,9 @@ pub fn load(asset: AssetBytes, memory: Array<u16>, capacity: u16, scratch: Array
         || h[9u16] != h[8u16] + h[5u16]
         || h[10u16] != h[9u16] + h[2u16] * 14
         || 2560 + h[3u16] * 6 > capacity
-        || h[5u16] > capacity - 2560 - h[3u16] * 6
+        || asset.first_sector & 255 != 0
+        || h[8u16] > 16384
+        || h[5u16] > 16384 - h[8u16]
     {
         halt(0x7f64);
     }
@@ -135,8 +156,8 @@ pub fn load(asset: AssetBytes, memory: Array<u16>, capacity: u16, scratch: Array
     catalog.store.slot_words = h[6u16];
     catalog.models.count = h[3u16];
     catalog.models.maximum_words = h[6u16];
-    catalog.models.indices = at(catalog.models.records, h[3u16] * 6);
-    read(asset, word(h[8u16]), catalog.models.indices, h[5u16]);
+    catalog.models.indices = unsafe { Ptr::from_addr(0x8000 + h[8u16]).as_u16_array() };
+    catalog.models.index_page = asset.first_sector >> 8;
     let row: Buf<u16, 14> = Buf::new([0; 14]);
     let source_row = row.as_array();
     let mut i = 0u16;
@@ -167,11 +188,13 @@ pub fn load(asset: AssetBytes, memory: Array<u16>, capacity: u16, scratch: Array
             halt(0x7f66);
         }
         let mut destination = at(catalog.store.records, i * 13);
+        let index_tag = destination[0u16] & 65532;
         let mut j = 0u16;
         while j < 13 {
             destination[j] = source_row[1 + j];
             j += 1;
         }
+        destination[0u16] = (destination[0u16] & 3) | index_tag;
         i += 1;
     }
     read(asset, word(h[10u16]), catalog.store.names, h[4u16] * 2);

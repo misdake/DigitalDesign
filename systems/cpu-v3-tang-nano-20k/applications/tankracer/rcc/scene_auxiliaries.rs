@@ -145,6 +145,7 @@ pub fn actor(
             motion: scene_fragments::motion(row[5u16], row[11u16]),
             motion_capacity: row[4u16],
             motion_page: page,
+            index_page: 65535,
             mesh: empty.mesh,
             config: mesh_break::Config {
                 gravity: attitude::get(at(row, 12), 0),

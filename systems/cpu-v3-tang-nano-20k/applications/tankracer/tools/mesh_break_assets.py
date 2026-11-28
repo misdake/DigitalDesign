@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from reference_bridge import prepare
 
 
 def main():
@@ -17,13 +18,14 @@ def main():
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     owner = Path(__file__).resolve().parent
+    game = prepare(root, out)
     project = out / 'reference-tool'
     project.mkdir(exist_ok=True)
     manifest = ('[package]\nname="tankracer-mesh-break-assets"\nversion="0.1.0"\nedition="2024"\n'
                 '[workspace]\n[[bin]]\nname="mesh-break-oracle"\npath='
                 + json.dumps((owner / 'mesh_break_oracle.rs').as_posix())
                 + '\n[dependencies]\nserde_json="=1.0.109"\ntankracer-game={path='
-                + json.dumps((root / 'crates/game').as_posix()) + '}\ntankracer-assets={path='
+                + json.dumps(game.as_posix()) + '}\ntankracer-assets={path='
                 + json.dumps((root / 'crates/assets').as_posix()) + '}\n')
     (project / 'Cargo.toml').write_text(manifest)
     with (project / 'build.log').open('w') as log:
@@ -34,7 +36,8 @@ def main():
     subprocess.run([str(exe), str(out), str(root)], check=True, timeout=60)
     subprocess.run([sys.executable, str(owner / 'export_trig_assets.py'), '--reference', str(root),
                     '--output', str(out)], check=True, timeout=60, stdout=subprocess.DEVNULL)
-    sources = [owner / 'mesh_break_oracle.rs', owner / 'fragment_snapshot.rs', owner / 'reference_world.rs', Path(__file__).resolve()]
+    sources = [owner / name for name in ['mesh_break_oracle.rs', 'fragment_snapshot.rs', 'reference_world.rs', 'reference_bridge.py', 'reference_tanks.rs']] + [Path(__file__).resolve()]
+    sources += [Path(row['file']) for row in json.loads((out / 'reference-overlay.json').read_text())['sources']]
     sources += [root / 'crates/game/src' / p for p in ['mesh_break.rs', 'fixed.rs', 'geometry.rs', 'math.rs',
                 'random.rs', 'scene_meshes.rs', 'obstacle_startup.rs', 'scenery.rs', 'world_startup.rs']]
     sources += [root / 'assets/game' / p / 'FASTFILE.DAT' for p in

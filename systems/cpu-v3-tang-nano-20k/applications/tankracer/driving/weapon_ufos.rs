@@ -36,13 +36,13 @@ pub fn load(player: &player_world::Player, h: Array<u16>) {
     unsafe {
         write_dseg_page(3, player.weapons.effect_page);
     }
-    pickup_check::read_pickup_stage(
+    read_mapped(
         ptr(0xc000 + POINT_WORD),
         player.context,
         h[38u16] + h[49u16],
         h[51u16] * 4,
     );
-    pickup_check::read_pickup_stage(
+    read_mapped(
         ptr(0xc000 + ORDER_WORD),
         player.context,
         h[38u16] + h[50u16],
@@ -115,7 +115,7 @@ pub fn place(
             player: car.player,
             slot: car.slot,
             disabled: g(
-                ptr(0xc000 + complete_check::CAR_WORD + i * complete_check::CAR_WORDS + 950),
+                ptr(0xc000 + car_runtime::CAR_WORD + i * car_runtime::CAR_WORDS + 950),
                 0,
             ) != n(0),
             position: at(car.motion, 18),
@@ -383,7 +383,7 @@ fn transfer_car(
     travel: Array<u16>,
     own: u16,
 ) -> scene_vehicle_transfer::Car {
-    let b = ptr(0xc000 + complete_check::CAR_WORD + own * complete_check::CAR_WORDS);
+    let b = ptr(0xc000 + car_runtime::CAR_WORD + own * car_runtime::CAR_WORDS);
     let core = at(player.prefixes, (own * 50) as i16);
     let route = at(player.fields, (own * 30) as i16);
     scene_vehicle_transfer::Car {
@@ -405,7 +405,7 @@ fn transfer_car(
             checkpoint: route,
             passed: at(route, 4),
             laps: at(route, 24),
-            controls: ptr(0xc000 + complete_check::METADATA_WORD + 2 + own * 28),
+            controls: ptr(0xc000 + car_runtime::METADATA_WORD + 2 + own * 28),
             velocity: car.motion,
             acceleration: at(car.drive, 26),
             angular: at(car.attitude, 42),
@@ -486,7 +486,7 @@ pub fn attach(
             player: car.player,
             slot: car.slot,
             disabled: g(
-                ptr(0xc000 + complete_check::CAR_WORD + i * complete_check::CAR_WORDS + 950),
+                ptr(0xc000 + car_runtime::CAR_WORD + i * car_runtime::CAR_WORDS + 950),
                 0,
             ) != n(0),
             position: at(car.motion, 18),

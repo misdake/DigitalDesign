@@ -20,15 +20,8 @@ pub fn place(
     if owner >= state.car_count {
         return integer::from_i16(-4);
     }
-    let header: Buf<u16, 56> = Buf::new([0; 56]);
-    read(header.as_array(), player.context, fix32::zero(), 56);
-    let resources: Buf<u16, 18> = Buf::new([0; 18]);
-    read(
-        resources.as_array(),
-        player.context,
-        fix32::from_words(header[26u16], 0),
-        18,
-    );
+    let header = player.context_header.as_array();
+    let resources = player.mine_params.as_array();
     let car = &state.cars[owner];
     scene_mines::spawn(
         scene,
@@ -45,7 +38,7 @@ pub fn place(
             class: fix32::from_words(header[6u16], 0),
             resources_present: true,
             terrain_present: true,
-            resources: resources.as_array(),
+            resources: resources,
             map: view_of(&mut state.map),
             tables: projectile::Tables {
                 sine: player.sine,
@@ -62,16 +55,8 @@ pub fn tick(
     frame: Array<u16>,
     entity: fix32,
 ) -> fix32 {
-    let header_words: Buf<u16, 56> = Buf::new([0; 56]);
-    let header = header_words.as_array();
-    read(header, player.context, fix32::zero(), 56);
-    let resources: Buf<u16, 18> = Buf::new([0; 18]);
-    read(
-        resources.as_array(),
-        player.context,
-        fix32::from_words(header[26u16], 0),
-        18,
-    );
+    let header = player.context_header.as_array();
+    let resources = player.mine_params.as_array();
     let vehicles: Buf<scene_mines::Vehicle, 3> = Buf::new([
         scene_mines::Vehicle {
             present: true,
@@ -95,7 +80,7 @@ pub fn tick(
         class: fix32::from_words(header[6u16], 0),
         resources_present: true,
         terrain_present: true,
-        resources: resources.as_array(),
+        resources: resources,
         map: view_of(&mut state.map),
         tables: projectile::Tables {
             sine: player.sine,
@@ -152,21 +137,12 @@ pub fn contact(
     }
     let mut status = zero;
     if method.status == 1 {
-        let header: Buf<u16, 56> = Buf::new([0; 56]);
-        read(header.as_array(), player.context, zero, 56);
-        let resources: Buf<u16, 44> = Buf::new([0; 44]);
-        read(
-            resources.as_array(),
-            player.context,
-            fix32::from_words(header[38u16], 0),
-            44,
-        );
-        let r = resources.as_array();
+        let r = player.explosion_params.as_array();
         unsafe {
             write_dseg_page(3, player.weapons.effect_page);
         }
         let car = &state.cars[own];
-        let effects = ptr(0xc000 + complete_check::CAR_WORD + own * complete_check::CAR_WORDS);
+        let effects = ptr(0xc000 + car_runtime::CAR_WORD + own * car_runtime::CAR_WORDS);
         let external = g(effects, 459);
         let mut basis = car.attitude;
         if external == integer::from_i16(2) {
