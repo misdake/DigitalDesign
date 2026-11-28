@@ -91,3 +91,42 @@ analysis publishes a complete sample. A genuinely partial capture is rejected.
 The source run and failed report are preserved. Reports can be large because
 the warmup journal remains available for validation; host processing time is
 excluded from all machine metrics.
+
+## Tank Racer update boundaries
+
+`tankracer-replay` executes recorded input through the shared level entry.
+`bench-tankracer-combined` also records the Prepared static map while the
+preceding GPU submission executes. Its camera collection is independent of
+the recorded vehicle controls; the producer selects one continuous level.
+
+```powershell
+target/release/tankracer-driving-loop-profile.exe target/combined system 60000000 7200 target/loop.json --frames 4
+```
+
+The profiler resolves update boundaries and persistent local owners from the
+frozen source/debug files. `native` measures CPU cycles with functional GPU,
+`instruction` measures interpreter work, and `state` adds frame-end RAM captures.
+`system` uses the complete cycle model, records GPU command lifetimes, and
+hashes completed RGB565/D16 planes. Its RAM captures include CPU pending stores
+and cache data; host inspection leaves model clocks unchanged. CPU intervals
+cover ordered updates and Stop draining. Input/clock/camera preparation,
+comparison, draw recording and presentation remain outside those intervals.
+GPU submission intervals include the intervening application work.
+
+`--frames N` samples a prefix of a recorded-I/O trajectory and reports
+`execution_complete: false`. Complete qualification executes through the target
+halt. The `reference_checks` field distinguishes embedded Rust comparisons from
+recorded-I/O execution. State files are published beside the JSON report in a
+directory with the `.state` suffix.
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_runtime_state.py target/reference target/reference.json target/combined target/loop.json --output target/state-comparison.json
+```
+
+The comparison checks image/capture identities, the independent input words,
+persistent typed game owners and named physical game banks. Debug-derived car
+views are bound independently to the Rust attitude oracle. Physical page fields
+use named owners. Mesh free-list heads, links and allocated bytes are compared;
+free payload bytes have explicit masks. Validation sentinels are checked for
+their mode-specific value before normalization. Reports list
+the compared word observations, unexpanded views and completion boundary.

@@ -64,6 +64,8 @@ pub const APPLICATION: Definition = Definition {
             "applications/tankracer/driving/pickup_check.rs",
             "applications/tankracer/driving/pickup_runtime.rs",
             "applications/tankracer/driving/level_io.rs",
+            "applications/tankracer/driving/level_init.rs",
+            "applications/tankracer/driving/level_run.rs",
             "applications/tankracer/driving/complete_check.rs",
             "applications/tankracer/driving/car_runtime.rs",
             "applications/tankracer/driving/vehicle_boot.rs",
@@ -161,11 +163,96 @@ pub const APPLICATION: Definition = Definition {
         // DSEG2/3 hold the collision stage. Heap, stack and hot car state stay
         // in the lower 64 KiB; the source installs mappings after its prologue.
         application.source.stack_top = Some(0x8000);
+        application.source.heap_begin = Some(0x400);
         application.source.heap_words = Some(0x400);
-        application
-            .source
-            .ordinary_dirs
-            .insert(0, context.output.join("tankracer-driving-assets"));
+        application.source.ordinary_dirs.insert(
+            0,
+            context.output.join("tankracer-driving-assets/rcc-modules"),
+        );
     },
     ..DEFAULT
+};
+
+/// Recorded I/O uses the same instance lifetime and update body as qualification.
+pub const REPLAY_APPLICATION: Definition = Definition {
+    name: "tankracer-replay",
+    selection: Some("tankracer_replay"),
+    assets: Some(Assets {
+        script: "applications/tankracer/tools/runtime_assets.py",
+        ..APPLICATION.assets.unwrap()
+    }),
+    ..APPLICATION
+};
+
+/// Real ordered physics overlaps the previous static view's GPU submission.
+pub const COMBINED_APPLICATION: Definition = Definition {
+    name: "bench-tankracer-combined",
+    selection: Some("tankracer_combined"),
+    options: &[
+        BuildOption::environment("reference", "TANKRACER_REFERENCE", OptionValues::InputFile),
+        BuildOption::integer_constant("steps", "DRIVING_STEPS", 8, 1, 96),
+        BuildOption::environment(
+            "case",
+            "TANKRACER_DRIVING_CASE",
+            OptionValues::Integer {
+                minimum: 0,
+                maximum: 65535,
+            },
+        ),
+        BuildOption::environment(
+            "scope",
+            "TANKRACER_DRIVING_SCOPE",
+            OptionValues::Choices(&[
+                "world",
+                "finish-world",
+                "emitters",
+                "mines",
+                "impact",
+                "contact",
+            ]),
+        ),
+        BuildOption::environment("camera", "TANKRACER_CAMERA_INPUT", OptionValues::InputFile),
+    ],
+    inputs: |context| {
+        (APPLICATION.inputs)(context);
+        for name in [
+            "world",
+            "range_map",
+            "prepared_map",
+            "unlit_world",
+            "pvs",
+            "playback",
+            "impact",
+            "tank_response",
+            "ground",
+        ] {
+            (context.watch)(
+                &context
+                    .root
+                    .join(format!("applications/tankracer/rcc/{name}.rs")),
+            );
+        }
+        if std::env::var_os("TANKRACER_CAMERA_INPUT").is_none() {
+            std::env::set_var(
+                "TANKRACER_CAMERA_INPUT",
+                context
+                    .root
+                    .join("applications/tankracer/assets/england/cameras-quick.json"),
+            );
+        }
+        super::inputs(context);
+    },
+    configure: |context, application, manifest| {
+        (APPLICATION.configure)(context, application, manifest);
+        application.source.heap_begin = Some(0x700);
+        application.source.heap_words = Some(0x1200);
+        application
+            .extra_assets
+            .push("tankracer-driving-assets/render/assets.json".into());
+    },
+    assets: Some(Assets {
+        script: "applications/tankracer/tools/combined_assets.py",
+        ..APPLICATION.assets.unwrap()
+    }),
+    ..APPLICATION
 };

@@ -25,6 +25,8 @@ application_catalog! {
 }
 
 pub struct ApplicationSource {
+    /// Optional first heap word, after application static data.
+    pub heap_begin: Option<u16>,
     /// Optional application-owned heap reservation, in 16-bit words.
     pub heap_words: Option<u16>,
     /// Optional initial stack pointer, in CPU word addresses.
@@ -164,6 +166,7 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
         constants: option_constants,
         extra_assets: vec![],
         source: ApplicationSource {
+            heap_begin: None,
             heap_words: None,
             stack_top: None,
             sector_relocations: vec![],

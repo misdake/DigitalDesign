@@ -4,6 +4,7 @@ mod boot_resources;
 mod gpu_api;
 mod gpu_board;
 mod gpu_window;
+mod map_stage;
 mod playback;
 mod prepared_map;
 mod world;
@@ -28,12 +29,17 @@ struct RangeMap {
 
 impl RangeMap {
     fn new(world: &mut World) -> Self {
+        let saved = map_stage::begin();
+        let mut offsets = map_stage::ranges();
+        if RANGE_HYBRID == 0 {
+            offsets = malloc(RANGE_UNITS * 5);
+        }
         let mut pool = PreparedPool::new(GpuMemory::from_buffer(prepared_map::OPAQUE_STORAGE));
         let first = pool.allocate(8192, 65408);
         let mut result = Self {
             pool,
             parts: Buf::new([first; 8]),
-            offsets: malloc(RANGE_UNITS * 5),
+            offsets,
             scratch: Ptr::from_addr(0),
             headings: Buf::new([0; 32]),
             plan: Buf::new([0; 64]),
@@ -113,6 +119,7 @@ impl RangeMap {
             part.finish();
             page += 1;
         }
+        map_stage::end(saved);
         result
     }
 
@@ -187,6 +194,7 @@ impl RangeMap {
     // Selection rounds up to marked units. Only overflow merges holes; page
     // boundaries are mandatory cuts, and the CPU never records a cutout tail.
     fn select(&mut self, mut mask: Array<u16>) {
+        let saved = map_stage::begin();
         let offsets = unsafe { self.offsets.as_u16_array() };
         let mut raw = unsafe { self.scratch.as_u16_array() };
         let mut seed: u16 = 65535;
@@ -271,6 +279,7 @@ impl RangeMap {
                 i += 1;
             }
             self.plan[0u16] = count;
+            map_stage::end(saved);
             return;
         }
         // Keep the most expensive gaps, treating page crossings as infinite.
@@ -323,6 +332,7 @@ impl RangeMap {
         }
         self.store_range(i, start, raw[count * 2 - 1]);
         self.plan[0u16] = RANGE_LIMIT;
+        map_stage::end(saved);
     }
 
     fn store_range(&mut self, index: u16, first: u16, end: u16) {
@@ -341,6 +351,7 @@ impl RangeMap {
         color: ColorBufferPtr,
         depth: DepthBufferPtr,
     ) {
+        let saved = map_stage::begin();
         let count = self.plan[0u16];
         let mut segments = count + 2;
         if count == 0 {
@@ -383,6 +394,7 @@ impl RangeMap {
             i += 1;
         }
         world.record_range_end(commands, color, depth);
+        map_stage::end(saved);
     }
 
     fn range_first(&self, i: u16) -> u16 {
@@ -454,40 +466,89 @@ impl RangeMap {
     }
 }
 
-pub fn run() {
-    let mut gpu = Gpu::init(board_gpu_config());
-    let color_a = board_color_a();
-    let color_b = board_color_b();
-    let depth = board_depth();
-    let mut display = Display::open();
-    let mut previous = display.frame_index();
-    let mut world = World::new();
-    let mut atlas = RangeMap::new(&mut world);
-    let mut playback = Playback::new();
-    let mut active = false;
-    let mut odd = false;
-    let mut completed = color_b.ptr();
-    loop {
-        let frame = playback.next();
+pub struct Renderer {
+    gpu: Gpu,
+    color_a: ColorBuffer,
+    color_b: ColorBuffer,
+    depth: DepthBuffer,
+    display: Display,
+    previous: u16,
+    world: World,
+    atlas: RangeMap,
+    active: bool,
+    odd: bool,
+    completed: ColorBufferPtr,
+}
+
+impl Renderer {
+    pub fn new(arena_bytes: u16) -> Self {
+        let mut config = board_gpu_config();
+        config.object_arena_bytes = arena_bytes;
+        let gpu = Gpu::init(config);
+        let color_a = board_color_a();
+        let color_b = board_color_b();
+        let depth = board_depth();
+        let display = Display::open();
+        let previous = display.frame_index();
+        let mut world = World::new();
+        let atlas = RangeMap::new(&mut world);
+        let completed = color_b.ptr();
+        Self {
+            gpu,
+            color_a,
+            color_b,
+            depth,
+            display,
+            previous,
+            world,
+            atlas,
+            active: false,
+            odd: false,
+            completed,
+        }
+    }
+
+    pub fn draw(&mut self, frame: u16) {
+        let frame = frame % CAMERA_COUNT;
         if RANGE_HYBRID != 0 {
-            atlas.select(world.select_prepared_frame(frame));
+            self.atlas.select(self.world.select_prepared_frame(frame));
         } else {
-            atlas.load(world.range_key(frame));
+            self.atlas.load(self.world.range_key(frame));
         }
-        let mut back = color_b.ptr();
-        if odd {
-            back = color_a.ptr();
+        let mut back = self.color_b.ptr();
+        if self.odd {
+            back = self.color_a.ptr();
         }
-        let mut commands = gpu.command_buffer();
-        atlas.record(&mut world, &mut commands, back, depth.ptr());
+        let mut commands = self.gpu.command_buffer();
+        self.atlas
+            .record(&mut self.world, &mut commands, back, self.depth.ptr());
         let list = commands.finish_list();
-        if active {
-            gpu.wait_list();
-            previous = prepared_map::present_frame(&mut display, previous, completed);
+        if self.active {
+            self.gpu.wait_list();
+            self.previous =
+                prepared_map::present_frame(&mut self.display, self.previous, self.completed);
         }
-        gpu.submit_list(list);
-        active = true;
-        odd = !odd;
-        completed = back;
+        self.gpu.submit_list(list);
+        self.active = true;
+        self.odd = !self.odd;
+        self.completed = back;
+    }
+
+    pub fn finish(&mut self) {
+        if self.active {
+            self.gpu.wait_list();
+            self.previous =
+                prepared_map::present_frame(&mut self.display, self.previous, self.completed);
+            self.active = false;
+        }
+    }
+}
+
+pub fn run() {
+    let config = board_gpu_config();
+    let mut renderer = Renderer::new(config.object_arena_bytes);
+    let mut playback = Playback::new();
+    loop {
+        renderer.draw(playback.next());
     }
 }

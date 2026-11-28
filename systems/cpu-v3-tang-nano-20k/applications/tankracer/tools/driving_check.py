@@ -23,6 +23,8 @@ def main():
         raise ValueError('fresh output and positive execution limits required')
     artifact = Artifact(args.artifact)
     assets = json.loads((args.artifact / 'tankracer-driving-assets/assets.json').read_text())
+    if assets.get('validation', True) is not True:
+        raise ValueError('runtime replay has no embedded reference comparisons')
     steps = artifact.constants['DRIVING_STEPS']['value']
     if steps != assets['steps']:
         raise ValueError('driving source constant and oracle step count disagree')

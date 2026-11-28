@@ -19,6 +19,7 @@ import alpha_order
 import view_pvs
 import range_pvs
 import camera_path
+import render_stage
 
 from gpu_mesh_layout import native_record
 from mesh_partition import partition
@@ -693,8 +694,10 @@ def build(output, route_path=None):
     if ring is None:
         extra += "pub const MAP_RING_GROUP_DATA:AssetBytes=MAP_GROUP_DATA;\n"
     extra += material_code
-    manifest = assets.write_manifest("tankracer_static.rs", sources=[__file__, export_route.__file__, route_ring.__file__, alpha_order.__file__, view_pvs.__file__, range_pvs.__file__, camera_path.__file__], extra=extra)
+    extra, stage = render_stage.prepare(assets, extra, hybrid, incremental, len(inventory), len(range_units))
+    manifest = assets.write_manifest("tankracer_static.rs", sources=[__file__, export_route.__file__, route_ring.__file__, alpha_order.__file__, view_pvs.__file__, range_pvs.__file__, camera_path.__file__, render_stage.__file__], extra=extra)
     manifest.update(candidate_source=candidates, map_sha256=hashlib.sha256(map_data).hexdigest(),
+                    render_stage=stage,
                     view_pvs=pvs_info,
                     range_pvs=range_info,
                     camera_sha256=hashlib.sha256(camera_data).hexdigest(),

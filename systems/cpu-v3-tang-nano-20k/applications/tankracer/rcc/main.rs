@@ -6,12 +6,13 @@ mod gpu_board;
 mod playback;
 mod prepared_map;
 mod range_map;
+mod unlit_world;
 mod world;
 use boot_resources::*;
 use gpu_api::*;
 use gpu_board::*;
 use playback::Playback;
-use world::World;
+use unlit_world::UnlitWorld;
 
 fn main() {
     if TANKRACER_PREPARED != 0 {
@@ -30,7 +31,7 @@ fn main() {
     let depth = board_depth();
     let mut display = Display::open();
     let mut last_present = display.frame_index();
-    let mut world = World::new();
+    let mut world = UnlitWorld::new();
     let mut playback = Playback::new();
     world.record(
         &mut commands,

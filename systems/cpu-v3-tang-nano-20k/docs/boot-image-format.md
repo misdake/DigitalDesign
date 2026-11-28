@@ -61,10 +61,13 @@ stack stay below 0xc000 and do not depend on that transient page. Moving all
 DSEG pages would also require changing static initialization and physical GPU
 address publication; it would not enlarge either 16-bit address window.
 
-An application recipe may set `ApplicationSource.heap_words` and `stack_top`.
-The former is a word count; the latter is a CPU word address written by the
-compiled entry. Artifact target metadata records these effective values. CB06
-still enters through the fitted cold-boot state above. A recipe using DSEG2/3
+An application recipe may set `ApplicationSource.heap_begin`, `heap_words` and
+`stack_top`. The linker checks static data against the selected heap beginning
+and checks the reserved heap against the initial stack.
+`heap_words` is a word count; the other two fields are CPU word addresses.
+The compiled entry installs the selected stack pointer. Artifact target metadata
+records these effective values. CB06 still enters through the fitted cold-boot
+state above. A recipe using DSEG2/3
 as a 64-KiB working region can put its stack top at 0x8000 and keep statics,
 heap boundary tags and the complete live call stack in DSEG0/1. Its owner installs
 and restores the working mappings explicitly; external asset helpers continue

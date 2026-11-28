@@ -4,9 +4,9 @@ import json
 import math
 from pathlib import Path
 import random
-import re
 import struct
 import view_pvs
+from render_stage import read_table
 
 
 def signed(x):
@@ -73,11 +73,7 @@ def check(snapshot, probes):
     coarse = info.get('encoding') == 'direct-chunk-masks'
     domains = None
     if coarse:
-        source = (folder/'tankracer_static.rs').read_text()
-        def array(name):
-            body = re.search(r'pub static '+name+r':.*?Buf::new\(\[(.*?)\]\);',source,re.S)[1]
-            return [int(value) for value in body.split(',') if value.strip()]
-        cells,lists,directory = [array(name) for name in
+        cells,lists,directory = [read_table(folder, name) for name in
             ('MAP_ROUTE_LOCATION_CELLS','MAP_ROUTE_LOCATION_LISTS','MAP_RING_SEGMENTS')]
         domains = []
         for at in cells:

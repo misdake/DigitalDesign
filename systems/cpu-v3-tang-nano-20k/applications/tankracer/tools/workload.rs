@@ -10,6 +10,7 @@ use gpu_v2::system::{
     command::abi::{Command, DeviceSubmission},
     functional::Executor,
 };
+use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     path::{Path, PathBuf},
@@ -84,6 +85,7 @@ impl Workload {
         stack_high_water: usize,
         probe_uv: bool,
         probe_samples: bool,
+        layout: CpuLayout,
     ) -> Result<(), Box<dyn Error>> {
         let report = replay.execute(&mut self.opaque_only, self.submission)?;
         let [color, depth] = report.effects.target.ok_or("submission has no target")?;
@@ -113,7 +115,7 @@ impl Workload {
                 }
             }
         }
-        let (heap_live, heap_largest_free) = heap_usage(actual)?;
+        let (heap_live, heap_largest_free) = heap_usage(actual, layout)?;
         let mut opaque_pixels = 0;
         let mut billboard_pixels = 0;
         let mut color_fingerprint = 0xcbf29ce484222325_u64;
@@ -171,6 +173,7 @@ impl Workload {
                 "heap_live_bytes": heap_live,
                 "heap_largest_free_bytes": heap_largest_free,
                 "stack_high_water_bytes": stack_high_water,
+                "data_segments": machine.cpu().data_segments(),
             });
             if self.submission.segment_count().is_none() {
                 metadata["words"] = (u32::from(self.submission.count_minus_one) + 1).into();
@@ -198,15 +201,66 @@ fn fingerprint(hash: u64, pixel: u16) -> u64 {
 }
 
 // The board's fixed boundary-tag heap occupies physical words [0x2000,0x9fff).
+#[derive(Clone, Copy)]
+struct CpuLayout {
+    heap_begin: usize,
+    heap_end: usize,
+    stack_top: usize,
+}
+impl CpuLayout {
+    fn load(path: Option<&Path>, package: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let Some(path) = path else {
+            return Ok(Self {
+                heap_begin: 0x2000,
+                heap_end: 0x9fff,
+                stack_top: 0xc000,
+            });
+        };
+        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+        let file = manifest["package"]
+            .as_str()
+            .ok_or("layout package missing")?;
+        let record = &manifest["files"][file];
+        let hash = format!("{:x}", Sha256::digest(package));
+        if record["bytes"].as_u64() != Some(package.len() as u64)
+            || record["sha256"].as_str() != Some(hash.as_str())
+        {
+            return Err("layout does not describe this CB06 package".into());
+        }
+        let target = &manifest["target"];
+        let value = |key: &str| -> Result<usize, Box<dyn Error>> {
+            let n = target[key].as_u64().ok_or("layout field missing")?;
+            if n > 65535 {
+                return Err("layout field exceeds the CPU address space".into());
+            }
+            Ok(n as usize)
+        };
+        let heap_begin = value("heap_begin")?;
+        let heap_end = heap_begin + value("heap_words")?;
+        let stack_top = value("stack_top")?;
+        if heap_end <= heap_begin + 3 || heap_end >= stack_top || stack_top > 65535 {
+            return Err("invalid heap/stack layout".into());
+        }
+        Ok(Self {
+            heap_begin,
+            heap_end,
+            stack_top,
+        })
+    }
+}
+
 // Includes allocation tags; samples are taken at accepted submissions.
-fn heap_usage(words: &[u16]) -> Result<(usize, usize), &'static str> {
-    let mut at = 0x2000;
+fn heap_usage(words: &[u16], layout: CpuLayout) -> Result<(usize, usize), &'static str> {
+    if layout.heap_end > words.len() || layout.heap_begin >= layout.heap_end {
+        return Err("heap extent is outside captured memory");
+    }
+    let mut at = layout.heap_begin;
     let mut live = 0;
     let mut largest_free = 0;
-    while at < 0x9fff {
+    while at < layout.heap_end {
         let flag = words[at];
         let size = usize::from(flag & 32767);
-        if size < 4 || at + size > 0x9fff || words[at + size - 1] != flag {
+        if size < 4 || at + size > layout.heap_end || words[at + size - 1] != flag {
             return Err("invalid board heap boundary tags at submission");
         }
         if flag & 32768 == 0 {
@@ -221,6 +275,14 @@ fn heap_usage(words: &[u16]) -> Result<(usize, usize), &'static str> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut layout_path = None;
+    if let Some(index) = args.iter().position(|arg| arg == "--layout") {
+        let value = args
+            .get(index + 1)
+            .ok_or("--layout needs an application manifest")?;
+        layout_path = Some(PathBuf::from(value));
+        args.drain(index..index + 2);
+    }
     let probe_samples = args.last().is_some_and(|v| v == "--uv-samples");
     if probe_samples {
         args.pop();
@@ -232,7 +294,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let probe_uv = probe_uv || probe_samples;
     if !(3..=5).contains(&args.len()) || (args.len() == 5 && args[4] != "--images-only") {
         return Err(
-            "usage: tankracer-static-workload CB06 FRAMES MAX_CPU_STEPS [CAPTURE_DIRECTORY [--images-only]] [--uv-probe|--uv-samples]".into(),
+            "usage: tankracer-static-workload CB06 FRAMES MAX_CPU_STEPS [CAPTURE_DIRECTORY [--images-only]] [--uv-probe|--uv-samples] [--layout application.build.json]".into(),
         );
     }
     let frame_limit: usize = args[1].parse()?;
@@ -255,6 +317,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::fs::create_dir_all(folder)?;
     }
     let program = std::fs::read(&args[0])?;
+    let layout = CpuLayout::load(layout_path.as_deref(), &program)?;
     if probe_uv {
         if let Some(folder) = &capture {
             let identity = program.iter().fold(0xcbf29ce484222325_u64, |hash, &byte| {
@@ -279,7 +342,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut replay = Executor::new(3_000_000);
     let mut instructions = 0_u64;
     let mut previous_submit = 0_u64;
-    let mut lowest_stack = 0xc000;
+    let mut lowest_stack = layout.stack_top;
     let mut stack_ready = false;
     let mut pc_counts = gpu_capture.then(|| vec![0_u64; 65536]);
     println!(
@@ -321,7 +384,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map_err(|err| format!("{err:?}"))?;
         instructions += u64::from(step.is_some());
         let stack = usize::from(machine.cpu().registers()[13]);
-        if (0x9fff..=0xc000).contains(&stack) {
+        if (layout.heap_end..=layout.stack_top).contains(&stack) {
             stack_ready = true;
             lowest_stack = lowest_stack.min(stack);
         } else if stack_ready {
@@ -366,9 +429,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 capture.as_deref(),
                 instructions - previous_submit,
                 gpu_capture,
-                (0xc000 - lowest_stack) * 2,
+                (layout.stack_top - lowest_stack) * 2,
                 probe_uv,
                 probe_samples,
+                layout,
             )?;
             previous_submit = instructions;
             if seen == frame_limit {
@@ -429,5 +493,44 @@ mod tests {
         assert_eq!(result.opaque_only[259], memory[259]);
         assert_eq!(&result.opaque_only[262..264], &[0, 0]);
         assert_eq!(&result.opaque_only[64..128], &memory[64..128]);
+    }
+}
+
+#[cfg(test)]
+mod heap_tests {
+    use super::*;
+    fn heap() -> (Vec<u16>, CpuLayout) {
+        let mut words = vec![0x7e7e; 32];
+        words[8] = 6;
+        words[13] = 6;
+        words[14] = 0x8006;
+        words[19] = 0x8006;
+        (
+            words,
+            CpuLayout {
+                heap_begin: 8,
+                heap_end: 20,
+                stack_top: 28,
+            },
+        )
+    }
+    #[test]
+    fn measures_only_the_declared_heap() {
+        let (words, layout) = heap();
+        assert_eq!(heap_usage(&words, layout), Ok((12, 12)));
+    }
+    #[test]
+    fn rejects_a_damaged_footer_and_a_block_crossing_the_heap_end() {
+        let (mut words, layout) = heap();
+        words[19] = 0x8005;
+        assert!(heap_usage(&words, layout).is_err());
+        words[14] = 0x8008;
+        assert!(heap_usage(&words, layout).is_err());
+    }
+    #[test]
+    fn rejects_an_extent_outside_the_captured_memory() {
+        let (words, mut layout) = heap();
+        layout.heap_end = 33;
+        assert!(heap_usage(&words, layout).is_err());
     }
 }

@@ -5,13 +5,13 @@ import json
 import math
 from pathlib import Path
 import random
-import re
 import struct
 import unittest
 
 from route_ring import (build_location_grid, fixed_words, native_fixed,
                         native_segment_cell_within, segment_box_distance_squared)
 from export_route import write_json_atomic
+from render_stage import read_table
 
 REAL = None
 Q = 65536
@@ -146,9 +146,7 @@ class LocationGridChecks(unittest.TestCase):
         if REAL is None:
             self.skipTest('Supply --packed for the real native-directory audit')
         folder = REAL.packed
-        source = (folder/'tankracer_static.rs').read_text()
-        match = re.search(r'pub static MAP_RING_SEGMENTS:.*?Buf::new\(\[(.*?)\]\);', source, re.S)
-        directory = [int(v.strip()) for v in match[1].split(',') if v.strip()]
+        directory = read_table(folder, 'MAP_RING_SEGMENTS')
         ring = json.loads((folder/'route-ring.json').read_bytes())
         cells, lists, info = build_location_grid(directory, ring['render_scale'], ring['camera_corridor'])
         points = []

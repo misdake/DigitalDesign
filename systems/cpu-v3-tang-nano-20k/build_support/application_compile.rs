@@ -41,6 +41,9 @@ pub(super) fn compile_program(
         reserved,
     } = request;
     let mut options = options.clone();
+    if let Some(begin) = policy.heap_begin {
+        options.heap_begin = begin;
+    }
     if let Some(words) = policy.heap_words {
         options.heap_size = words;
     }

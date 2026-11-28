@@ -25,14 +25,30 @@ def binary(path, values):
     path.write_bytes(struct.pack('<' + 'H' * len(values), *values))
 
 
+def module_directory(output):
+    """Each producer invocation owns a complete set of generated RCC modules."""
+    output = Path(output).resolve()
+    modules = output / 'rcc-modules'
+    modules.mkdir(exist_ok=True)
+    if modules.resolve() != modules:
+        raise ValueError('generated RCC modules must stay in their output directory')
+    for source in modules.glob('*.rs'):
+        if source.is_symlink() or not source.is_file():
+            raise ValueError('unexpected generated RCC module entry')
+        source.unlink()
+    return modules
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     out = parser.parse_args().output.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    modules = module_directory(out)
     owner = Path(__file__).resolve().parent
     root = Path(os.environ['TANKRACER_REFERENCE']).resolve().parent
     root = Path(root.as_posix().removeprefix('//?/'))
+    verify = os.environ.get('TANKRACER_DRIVING_VERIFY', '1') == '1'
     steps = int(os.environ.get('DRIVING_STEPS', '14'))
     if not 1 <= steps <= 96:
         raise ValueError('driving steps must be in 1..96')
@@ -253,7 +269,7 @@ def main():
     surface_values = sum(5+struct.unpack_from('<H',deform_data,(i*40+1)*2)[0]*3 for i in range(deform_count))
     state_values = len(data['cases'][0]['initial'])
     initial_words = state_values * 2 + 18
-    frame_words = 60 + (state_values + 1) * 2
+    frame_words = 60 + (state_values + 1) * 2 if verify else 60
     camera_cases = [i for i,c in enumerate(data['cases']) if c['name'].startswith(('complete-player-emitter','complete-player-ambient','complete-player-flock','complete-player-lap-crush'))]
     initial, frames, metadata = [], [], []
     for case_index, case in enumerate(data['cases']):
@@ -278,7 +294,8 @@ def main():
             # Only independent input reaches the target. Sampling and boost publish these slots.
             control[5:19] = [0] * 14
             group.extend(words(control))
-            group.extend(words(frame['expected']))
+            if verify:
+                group.extend(words(frame['expected']))
         binary(out / f'frames-{case_index}.bin', group)
         if case['name'] == 'complete-dynamic' or case['name'].startswith(('complete-player-mines','complete-player-ufo')):
             binary(out / f'world-events-{case_index}.bin', [v for frame in case['frames'] for v in frame['world_event']])
@@ -368,23 +385,32 @@ def main():
     binary(out / 'cases.bin', metadata)
     binary(out / 'binding.bin', words(data['collision_binding']))
     subprocess.run([sys.executable, str(owner / 'export_trig_assets.py'), '--reference', str(root), '--output', str(out)], check=True)
-    (out / 'trig_lookup.rs').write_bytes((owner.parent / 'rcc/trig_asset_lookup.rs').read_bytes())
+    (modules / 'trig_lookup.rs').write_bytes((owner.parent / 'rcc/trig_asset_lookup.rs').read_bytes())
     for module in ['scene_parent', 'scene_fragments', 'scene_meshes', 'mesh_storage',
                    'mesh_catalog', 'mesh_break', 'scene_auxiliaries', 'closer', 'inverse_basis', 'shatter', 'debris_catalog', 'scene_debris','scene_ufo_transfer','scene_vehicle_transfer','scene_obstacle_transfer','vehicle_transfer','emitter','scene_emitter','train','scene_train','smoker','scene_ambient','scene_flock','flock','scene_initial','scene_actor_initial']:
         source = (owner.parent / 'rcc' / f'{module}.rs').read_text()
-        (out / f'{module}.rs').write_text('#![link_cseg = "parents"]\n' + source)
+        (modules / f'{module}.rs').write_text('#![link_cseg = "parents"]\n' + source)
     for module in ['prefix','spin','vehicle_inactive','player_control']:
-        (out / f'{module}.rs').write_text('#![link_cseg = "vehicle"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
+        (modules / f'{module}.rs').write_text('#![link_cseg = "vehicle"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
     for module in ['scene_world', 'scene_lifecycle', 'entities', 'lifecycle']:
-        (out / f'{module}.rs').write_text('#![link_cseg = "world"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
+        (modules / f'{module}.rs').write_text('#![link_cseg = "world"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
     for module in ['scene_creation','scene_mines','scene_explosions','scene_fire','scene_laps','scene_player','player_route','player_tail','scene_projectiles','scene_projectile_impact','scene_ufos','tank_hit','projectile','projectile_sweep','projectile_flight','projectile_trail','projectile_ricochet','projectile_marks','explosion','explosion_blasts','mine','particle_sprite']:
-        (out / f'{module}.rs').write_text('#![link_cseg = "world"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
+        (modules / f'{module}.rs').write_text('#![link_cseg = "world"]\n' + (owner.parent / 'rcc' / f'{module}.rs').read_text())
     for module in ['powerup','inventory','quad_pool','pickup_light','scene_pickups']:
-        (out/f'{module}.rs').write_text('#![link_cseg = "vehicle"]\n'+(owner.parent/'rcc'/f'{module}.rs').read_text())
-    (out/'vehicle_startup.rs').write_text('#![link_cseg = "vehicle"]\n'+(owner.parent/'rcc/vehicle_startup.rs').read_text())
+        (modules/f'{module}.rs').write_text('#![link_cseg = "vehicle"]\n'+(owner.parent/'rcc'/f'{module}.rs').read_text())
+    (modules/'vehicle_startup.rs').write_text('#![link_cseg = "vehicle"]\n'+(owner.parent/'rcc/vehicle_startup.rs').read_text())
     for module in ['car_motion','car_effects','vehicle_pose','vehicle_smoke','vehicle_debris','vehicle_shield','track_effects','temporary']:
-        (out/f'{module}.rs').write_text('#![link_cseg = "vehicle"]\n'+(owner.parent/'rcc'/f'{module}.rs').read_text())
+        (modules/f'{module}.rs').write_text('#![link_cseg = "vehicle"]\n'+(owner.parent/'rcc'/f'{module}.rs').read_text())
     declarations = ['use crate::dsl_rt::*; mod static_assets;use static_assets::AssetBytes;\n']
+    declarations.append(f'pub const DRIVING_VERIFY:u16={int(verify)};\n')
+    (modules / 'frame_output.rs').write_text('''//! Qualification keeps graphics output external.
+pub struct Renderer { reserved: u16 }
+impl Renderer {
+    pub fn new(arena_bytes:u16)->Self { Self {reserved:0} }
+    pub fn draw(&mut self,frame:u16) {}
+    pub fn finish(&mut self) {}
+}
+''')
     declarations.append('pub fn driving_orthogonal(case:u16)->bool {\n')
     for i, case in enumerate(data['cases']):
         if case.get('attitude_orthogonal', False):
@@ -653,9 +679,9 @@ def main():
                         ('SCENERY_WORDS', scenery_words), ('LIVE_WORDS', live_words), ('IDENTITY_WORDS', (out / 'identity.bin').stat().st_size // 2),
                         ('SYMBOL_WORDS', (out / 'symbols.bin').stat().st_size // 2), ('LIFETIME_WORDS', (out / 'lifetime.bin').stat().st_size // 2)]:
         declarations.append(f'pub const DRIVING_{name}:u16={value};\n')
-    declarations.append(f'pub static DRIVING_LIVE:Buf<u16,{live_words}>=Buf::new([0;{live_words}]);\n')
-    assert initial_words <= frame_words
-    assert (out / 'lifetime.bin').stat().st_size // 2 <= frame_words
+    assert not verify or initial_words <= frame_words
+    assert not verify or (out / 'lifetime.bin').stat().st_size // 2 <= frame_words
+    declarations.append(f'pub fn driving_live_storage()->Buf<u16,{live_words}> {{ Buf::new([0;{live_words}]) }}\n')
     storage = [('gun', 'i16', data['gun_words'] * 3),
                ('surface_views', 'u16', deform_count*40),
                ('identity', 'u16', 12 + entity_capacity * 4),
@@ -683,7 +709,7 @@ def main():
     sources += [Path(row['file']) for row in json.loads((player_catalog_reference / 'mesh-store-sources.json').read_text())['sources']]
     sources += [root / 'crates/game/src' / n for n in ['vehicle_runtime/car_objects.rs', 'scene_collision.rs', 'deformable_hit.rs', 'deformation.rs', 'obstacle_collision.rs']]
     sources += [root / 'crates/game/src' / n for n in ['contact_pipeline.rs', 'sampling.rs', 'suspension.rs', 'pose.rs', 'body.rs', 'motion.rs', 'vehicle_model.rs', 'random.rs', 'ground_collision.rs', 'impact_particles.rs', 'effect_pool.rs', 'damage.rs']]
-    (out / 'assets.json').write_text(json.dumps(dict(resources=resources, resource_aliases=resource_aliases, sector_relocations=[], steps=steps,
+    manifest = dict(resources=resources, resource_aliases=resource_aliases, sector_relocations=[], steps=steps,
         terrain_map=terrain_map,
         initial_packing=dict(source_words=len(initial), stored_words=len(start_data),
                              row_words=start_words, unique_rows=len(start_images),
@@ -704,7 +730,21 @@ def main():
         catalog_initial_slots=catalog['initial_slots'],catalog_payload_bytes=catalog['initial_payload_bytes'],
         scenery_frames=sum(len(c['frames']) for c in data['cases'] if c.get('scenery')),
         checked_scenery_words=checked_scenery_words,
-        sources=[dict(file=str(p), sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in sources]), indent=2) + '\n')
+        sources=[dict(file=str(p), sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in sources])
+    manifest['validation'] = verify
+    if not verify:
+        manifest['scope'] = ('Recorded independent controls, time, camera and events through the '
+                             'continuous native level runtime. Reference comparisons run separately.')
+        manifest['world_frames'] = sum(len(c['frames']) for c in data['cases'] if c.get('world_pass'))
+        manifest['vehicle_updates'] = sum(len(c['frames']) * (2 if c.get('world_pass') else 1) for c in data['cases'])
+        manifest['finish_transfers'] = 0
+        manifest['finish_check_frames'] = []
+        for key in list(manifest):
+            if key.startswith('checked_') or key == 'resource_version_words':
+                manifest[key] = 0
+        wrapper = owner / 'runtime_assets.py'
+        manifest['sources'].append(dict(file=str(wrapper), sha256=hashlib.sha256(wrapper.read_bytes()).hexdigest()))
+    (out / 'assets.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
 
 if __name__ == '__main__':

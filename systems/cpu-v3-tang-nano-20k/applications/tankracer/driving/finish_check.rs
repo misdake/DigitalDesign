@@ -1,6 +1,11 @@
 //! Whole-world qualification of finish takeover and continuous driving.
 #![link_cseg = "frame"]
 use super::*;
+pub struct Checkpoint {
+    pub case: u16,
+    pub index: u16,
+    pub live: Array<u16>,
+}
 fn ptr(word: u16) -> Array<u16> {
     unsafe { Ptr::from_addr(word).as_u16_array() }
 }
@@ -81,15 +86,16 @@ pub fn qualify(
     player: &mut player_world::Player,
     complete: &mut car_runtime::State,
     pickups: &mut Pickups,
-    case: u16,
+    checkpoint: &Checkpoint,
 ) {
+    let case = checkpoint.case;
     setup(state, player, complete, pickups, case);
     let target = finish_world::entity(state);
     if finish_world::transfer(state, player, complete, pickups, 0, target) != n(0) {
         halt(0x7f97);
     }
     p(state.runtime.slot, 0, n(12));
-    result(state, world, player, complete, case, 0);
+    result(state, world, player, complete, checkpoint);
 }
 
 pub fn result(
@@ -97,9 +103,10 @@ pub fn result(
     world: &scene_world::World,
     player: &mut player_world::Player,
     complete: &car_runtime::State,
-    case: u16,
-    index: u16,
+    checkpoint: &Checkpoint,
 ) {
+    let case = checkpoint.case;
+    let index = checkpoint.index;
     let asset = driving_finish_transfer_data(index);
     let header: Buf<u16, 32> = Buf::new([0; 32]);
     let h = header.as_array();
@@ -222,7 +229,7 @@ pub fn result(
     };
     let scene = scene_query::Scene::begin(driving_scene(case));
     check_live(
-        DRIVING_LIVE.as_array(),
+        checkpoint.live,
         &state.lifetime,
         &state.runtime,
         world,

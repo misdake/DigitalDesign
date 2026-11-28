@@ -180,6 +180,7 @@ impl Index<u16> for Table { type Output=u16;
     fn index(&self,i:u16)->&u16 { &self.0[i as usize] }
 }
 static MAP_MATERIALS:Table=Table([3,0,0,0, 1,0,0,0, 2,0,0,0, 1,0,0,0]);
+fn map_materials()->&'static Table { &MAP_MATERIALS }
 #[derive(Clone,Copy)]
 struct Array { data:*mut u16, initialized:*mut bool, len:usize }
 impl Array {

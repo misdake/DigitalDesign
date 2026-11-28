@@ -6,6 +6,7 @@ mod gpu_board;
 mod gpu_window;
 mod playback;
 mod static_buffer;
+mod unlit_world;
 mod world;
 use boot_resources::*;
 use gpu_api::*;
@@ -13,6 +14,7 @@ use gpu_board::*;
 use gpu_window::gpu_window_asset_read;
 use playback::Playback;
 use static_buffer::StaticBuffer;
+use unlit_world::UnlitWorld;
 use world::{DrawSpan, Selection, World};
 
 const MAX_RANGES: u16 = 30;
@@ -174,16 +176,16 @@ pub fn run() {
     let depth = board_depth();
     let mut display = Display::open();
     let mut last_present = display.frame_index();
-    let mut world = World::new();
-    let atlas = PreparedMap::new(&mut world);
+    let mut world = UnlitWorld::new();
+    let atlas = PreparedMap::new(&mut world.world);
     let ranges: Buf<u16, 90> = Buf::new([0; 90]);
     let mut playback = Playback::new();
     let mut odd = false;
     let mut active = false;
     let mut completed_color = color_b.ptr();
     loop {
-        let selected = world.select_frame(playback.next());
-        let plan = atlas.plan(&world, &selected, ranges.as_array());
+        let selected = world.world.select_frame(playback.next());
+        let plan = atlas.plan(&world.world, &selected, ranges.as_array());
         let mut back = color_b.ptr();
         if odd {
             back = color_a.ptr();
@@ -195,7 +197,9 @@ pub fn run() {
         }
         commands.begin_list(segments);
         let seed = Mesh::from_native(TRACK_MESH.subset(plan.seed.first, plan.seed.count));
-        world.record_prefix(&mut commands, seed.ptr(), &plan.seed, back, depth.ptr());
+        world
+            .world
+            .record_prefix(&mut commands, seed.ptr(), &plan.seed, back, depth.ptr());
         drop(seed);
         atlas.append(&mut commands, ranges.as_array(), plan.ranges);
         let mut tail_first = commands.command_words();
@@ -225,7 +229,7 @@ pub fn run() {
                 if odd {
                     next_back = color_a.ptr();
                 }
-                let next = world.select_frame(playback.next());
+                let next = world.world.select_frame(playback.next());
                 world.record_fallback(&mut recording, &next, next_back, depth.ptr());
                 let completed = gpu.wait();
                 last_present = present_frame(&mut display, last_present, completed_color);

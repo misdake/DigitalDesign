@@ -1,6 +1,7 @@
 //! Source-bound frame-loop timing and architectural data footprints.
 use cpu_v3::{decode, decode_fpu_pair, FpuAuxKind, Instruction, StepOutcome};
 use cpu_v3_tang_nano_20k::{
+    system_cycle_emu::System,
     system_emu::CpuV3SystemEmu,
     system_sim::{CpuV3SystemSim, VBlankMode},
 };
@@ -65,11 +66,20 @@ fn boundaries(app: &Path, manifest: &Value, stages: bool) -> Result<Vec<Boundary
                 .as_str()
                 .is_some_and(|p| p.replace('\\', "/").ends_with("/driving/game_update.rs"))
     });
+    let run_file = if inputs.iter().any(|row| {
+        row["origin"]["path"]
+            .as_str()
+            .is_some_and(|path| path.replace('\\', "/").ends_with("/driving/level_run.rs"))
+    }) {
+        "level_run.rs"
+    } else {
+        "main.rs"
+    };
     let update_file = if split { "game_update.rs" } else { "main.rs" };
     let anchors = [
         (
             "world-control",
-            "main.rs",
+            run_file,
             if split {
                 "let vehicles: Buf<tank_response::Vehicle, 3> = Buf::new(["
             } else {
@@ -122,7 +132,7 @@ fn boundaries(app: &Path, manifest: &Value, stages: bool) -> Result<Vec<Boundary
             "if own == 2 && player.finish_stage != 0 {",
             1,
         ),
-        ("end", "main.rs", "mark(3);", 0),
+        ("end", run_file, "mark(3);", 0),
     ];
     let mut debug = Vec::new();
     for row in segments(manifest)? {
@@ -236,17 +246,30 @@ fn rows_json(
     }
     json!(result)
 }
+fn plane_fingerprint(memory: &[u16], base: usize) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for y in 0..240 {
+        for x in 0..400 {
+            let word = ((x / 16) * 16 + y / 16) * 256 + (y % 16) * 16 + x % 16;
+            hash = (hash ^ u64::from(memory[base + word])).wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 6 {
-        return Err("usage: tankracer-driving-loop-profile ARTIFACT native|instruction|pools MAX_TICKS MAX_HOST_SECONDS OUTPUT".into());
+    if args.len() != 6 && !(args.len() == 8 && args[6] == "--frames") {
+        return Err("usage: tankracer-driving-loop-profile ARTIFACT native|system|instruction|state|pools MAX_TICKS MAX_HOST_SECONDS OUTPUT [--frames N]".into());
     }
     if args[2] == "pools" {
+        if args.len() != 6 {
+            return Err("pool tracing requires the complete trajectory".into());
+        }
         return driving_pool_profile::run(&args);
     }
     let instruction = match args[2].as_str() {
-        "instruction" => true,
-        "native" => false,
+        "instruction" | "state" => true,
+        "native" | "system" => false,
         _ => return Err("unknown backend".into()),
     };
     let budget = args[3].parse::<u64>()?;
@@ -254,6 +277,10 @@ fn run() -> Result<()> {
     let output = Path::new(&args[5]);
     if budget == 0 || limit.is_zero() || output.exists() {
         return Err("positive bounds and a fresh report are required".into());
+    }
+    let captures = output.with_extension("state");
+    if args[2] == "state" || args[2] == "system" {
+        fs::create_dir(&captures)?;
     }
     let app = Path::new(&args[1]);
     let manifest: Value = serde_json::from_slice(&fs::read(app.join("application.build.json"))?)?;
@@ -266,18 +293,52 @@ fn run() -> Result<()> {
     if cases.len() != 1 {
         return Err("select one driving trajectory".into());
     }
-    let expected = if cases[0]["world_pass"] == true {
+    let authored_frames = if cases[0]["world_pass"] == true {
         assets["world_frames"].as_u64()
     } else {
         assets["updates"].as_u64()
     }
     .ok_or("frame count missing")?;
+    let prefix_frames = args.get(7).map(|value| value.parse::<u64>()).transpose()?;
+    if prefix_frames.is_some_and(|count| count == 0 || count > authored_frames) {
+        return Err("frame prefix must stay within the authored trajectory".into());
+    }
+    if prefix_frames.is_some()
+        && assets
+            .get("validation")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    {
+        return Err("frame-prefix sampling requires a recorded-I/O runtime".into());
+    }
+    let expected = prefix_frames.unwrap_or(authored_frames);
     let tags = boundaries(app, &manifest, true)?;
     let package = bound(
         app,
         &manifest,
         manifest["package"].as_str().ok_or("package missing")?,
     )?;
+    let mut planes = Vec::new();
+    if args[2] == "system" && assets["rendering"].is_object() {
+        let debug = String::from_utf8(bound(
+            app,
+            &manifest,
+            manifest["debug"].as_str().ok_or("debug missing")?,
+        )?)?;
+        for name in [
+            "GPU_COLOR_A_SECTOR",
+            "GPU_COLOR_B_SECTOR",
+            "GPU_DEPTH_SECTOR",
+        ] {
+            let prefix = format!("const {name} u16 ");
+            let sector = debug
+                .lines()
+                .find_map(|line| line.strip_prefix(&prefix))
+                .ok_or("GPU plane constant missing")?
+                .parse::<usize>()?;
+            planes.push(sector * 64);
+        }
+    }
     let mut code = vec![Vec::new(); 8];
     if instruction {
         for row in segments(&manifest)? {
@@ -308,12 +369,20 @@ fn run() -> Result<()> {
     let started = Instant::now();
     let mut native = None;
     let mut sim = None;
+    let mut system = None;
+    let mut gpu_starts = Vec::new();
+    let mut gpu_commands = Vec::new();
+    let mut next_progress = 1_000_000;
     if instruction {
-        sim = Some(CpuV3SystemSim::from_single_flash(
-            &package,
-            0xd00d,
-            VBlankMode::Manual,
-        )?);
+        sim = Some(
+            CpuV3SystemSim::from_single_flash(&package, 0xd00d, VBlankMode::Manual)?
+                .with_functional_gpu(),
+        );
+    } else if args[2] == "system" {
+        system = Some(
+            System::from_preloaded_cold(&package, 0xd00d)
+                .map_err(|error| format!("system startup: {error:?}"))?,
+        );
     } else {
         native = Some(
             CpuV3SystemEmu::from_single_flash(&package, 0xd00d, VBlankMode::Manual)?
@@ -321,10 +390,28 @@ fn run() -> Result<()> {
         );
     }
     while ticks < budget && started.elapsed() < limit {
+        if let Some(s) = &system {
+            if ticks >= next_progress {
+                eprintln!(
+                    "system progress: logic={ticks} host={:.1}s frames={} gpu={}/{}",
+                    started.elapsed().as_secs_f64(),
+                    frames.len(),
+                    s.statistics.gpu_completed,
+                    s.statistics.gpu_submits
+                );
+                next_progress += 1_000_000;
+            }
+        }
         let (pc, retired) = if let Some(s) = &sim {
             (
                 Some((s.cpu().code_segment(), s.cpu().pc())),
                 s.cpu().retired_words(),
+            )
+        } else if let Some(s) = &system {
+            let core = s.core();
+            (
+                core.executing_instruction_address(),
+                u64::from(core.retired_words()),
             )
         } else {
             let core = native.as_ref().unwrap().core();
@@ -352,7 +439,41 @@ fn run() -> Result<()> {
                             {
                                 return Err("stage timing coverage differs".into());
                             }
-                            let row = json!({"serial":frames.len(),"ticks":ticks-frame_first.0,"retired_words":retired-frame_first.1,"stages":rows_json(&parts,&reads,&writes,&tags,instruction)});
+                            let mut row = json!({"serial":frames.len(),"ticks":ticks-frame_first.0,"retired_words":retired-frame_first.1,"stages":rows_json(&parts,&reads,&writes,&tags,instruction)});
+                            if let Some(s) = &system {
+                                row["system"] = json!({"gpu_submits":s.statistics.gpu_submits,
+                                    "gpu_completed":s.statistics.gpu_completed,
+                                    "presents":s.statistics.presents_applied,
+                                    "three_way_pending":s.statistics.three_way_pending});
+                            }
+                            if args[2] == "state" || system.is_some() {
+                                let (bytes, registers, pages) = if let Some(s) = &system {
+                                    let registers = s.core().architectural_gprs();
+                                    let pages = s.core().data_segments();
+                                    let mut bytes = Vec::with_capacity(s.backing().len() * 2);
+                                    for address in 0..s.backing().len() {
+                                        let word = s
+                                            .inspect_cpu_word(address as u32)
+                                            .ok_or("coherent CPU snapshot word is unavailable")?;
+                                        bytes.extend(word.to_le_bytes());
+                                    }
+                                    (bytes, registers, pages)
+                                } else {
+                                    let cpu = sim.as_ref().unwrap().cpu();
+                                    let bytes = cpu
+                                        .physical_memory_slice()
+                                        .iter()
+                                        .flat_map(|word| word.to_le_bytes())
+                                        .collect();
+                                    (bytes, *cpu.registers(), cpu.data_segments())
+                                };
+                                let file = format!("frame-{:03}.bin", frames.len());
+                                fs::write(captures.join(&file), &bytes)?;
+                                row["capture"] = json!({"file":file,"bytes":bytes.len(),
+                                    "sha256":format!("{:x}",Sha256::digest(&bytes)),
+                                    "registers":registers,"data_segments":pages,
+                                    "code_segment":segment,"pc":pc});
+                            }
                             println!("{row}");
                             frames.push(row);
                             parts.fill([0; 4]);
@@ -375,7 +496,13 @@ fn run() -> Result<()> {
             }
         }
         previous = pc;
+        if prefix_frames.is_some() && frames.len() as u64 == expected {
+            break;
+        }
         if let Some(s) = &mut sim {
+            if s.blocked_on_vblank() {
+                s.advance_vblank();
+            }
             let mut decoded = None;
             let mut access = None;
             let pages = s.cpu().data_segments();
@@ -449,8 +576,47 @@ fn run() -> Result<()> {
                 halted = true;
                 break;
             }
+        } else if let Some(s) = &mut system {
+            let step = s.step().map_err(|error| format!("system: {error:?}"))?;
+            ticks = s.clock().logic_edges;
+            while gpu_starts.len() < s.statistics.gpu_submits as usize {
+                gpu_starts.push(ticks);
+            }
+            while gpu_commands.len() < s.statistics.gpu_completed as usize {
+                let index = gpu_commands.len();
+                let start = *gpu_starts
+                    .get(index)
+                    .ok_or("GPU completion before submission")?;
+                let mut command =
+                    json!({"submit_cycle":start,"complete_cycle":ticks,"cycles":ticks-start});
+                if planes.len() == 3 {
+                    let color = planes[usize::from(index % 2 == 0)];
+                    command["rgb565_fingerprint"] =
+                        json!(format!("{:016x}", plane_fingerprint(s.backing(), color)));
+                    command["d16_fingerprint"] = json!(format!(
+                        "{:016x}",
+                        plane_fingerprint(s.backing(), planes[2])
+                    ));
+                }
+                gpu_commands.push(command);
+            }
+            if let Some(cpu) = step.cpu {
+                if cpu.fault {
+                    return Err(format!("CPU fault {} at {}", cpu.fault_code, cpu.fault_pc).into());
+                }
+                if cpu.halted {
+                    if cpu.halt_signal != 0x600d {
+                        return Err(format!("halt {:#x}", cpu.halt_signal).into());
+                    }
+                    halted = true;
+                    break;
+                }
+            }
         } else {
             let s = native.as_mut().unwrap();
+            if s.waiting_for_vblank() || s.blocked_on_vblank() {
+                s.advance_vblank();
+            }
             let cpu = s.step().map_err(|e| format!("native: {e:?}"))?;
             ticks = s.cycles();
             if cpu.fault {
@@ -465,9 +631,24 @@ fn run() -> Result<()> {
             }
         }
     }
-    let passed = halted && active.is_none() && frames.len() as u64 == expected;
-    let report = json!({"passed":passed,"artifact_id":manifest["artifact_id"],"profiling_tool_sha256":format!("{:x}",Sha256::digest(include_bytes!("driving_loop_profile.rs"))),"backend":args[2],"clock_hz":54000000,"case":cases[0]["name"],"unit":if cases[0]["world_pass"] == true {"world_frame"} else {"vehicle_update"},"host_seconds":started.elapsed().as_secs_f64(),"ticks_with_loading_and_assertions":ticks,"frames":frames,
-        "scope":"Ordered update loop and Stop drain. Input installation, clock/camera preparation, assertions and loading are outside. Native ticks use first Execute presence, including boundary holds, with functional GPU/Display; GPU work and shared GPU memory competition are outside CPU cycle costs. Instruction ticks are step calls; load/store words and unique physical 32-byte lines exclude instruction fetch, cache refill and SDRAM bus traffic. A skipped branch remains in its enclosing stage.",
+    let passed =
+        (halted || prefix_frames.is_some()) && active.is_none() && frames.len() as u64 == expected;
+    let scope = if system.is_some() {
+        "Ordered update and Stop drain on the whole-system CPU/GPU/Display/native SDRAM cycle model. Recorded input installation, render recording, presentation and loading are outside the measured boundaries. GPU work from the preceding submission may overlap the measured physics. Startup is synthetic cold-preloaded, not a board bootloader checkpoint."
+    } else {
+        "Ordered update loop and Stop drain. Input installation, clock/camera preparation, assertions and loading are outside. Native ticks use first Execute presence, including boundary holds, with functional GPU/Display; GPU work and shared GPU memory competition are outside CPU cycle costs. Instruction ticks are step calls; load/store words and unique physical 32-byte lines exclude instruction fetch, cache refill and SDRAM bus traffic. A skipped branch remains in its enclosing stage."
+    };
+    let final_system = system.as_ref().map(|s| {
+        json!({
+        "gpu_submits":s.statistics.gpu_submits,"gpu_completed":s.statistics.gpu_completed,
+        "presents":s.statistics.presents_applied,"three_way_pending":s.statistics.three_way_pending,
+        "memory_clients":["display","instruction","data","loader","gpu_ro","fb_refill","fb_clean"],
+        "accepts":s.statistics.accepts,"wait_cycles":s.statistics.wait_cycles,
+        "response_beats":s.statistics.response_beats,"write_beats":s.statistics.write_beats,
+        "stop_pc":s.core().executing_instruction_address()})
+    });
+    let report = json!({"passed":passed,"execution_complete":halted,"requested_frame_prefix":prefix_frames,"reference_checks":assets.get("validation").and_then(Value::as_bool).unwrap_or(true),"artifact_id":manifest["artifact_id"],"profiling_tool_sha256":format!("{:x}",Sha256::digest(include_bytes!("driving_loop_profile.rs"))),"backend":args[2],"clock_hz":54000000,"case":cases[0]["name"],"unit":if cases[0]["world_pass"] == true {"world_frame"} else {"vehicle_update"},"host_seconds":started.elapsed().as_secs_f64(),"ticks_with_loading_and_assertions":ticks,"frames":frames,"gpu_commands":gpu_commands,"system":final_system,
+        "scope":scope,
         "boundaries":tags.iter().map(|p| json!({"stage":p.name,"cseg":p.segment,"pc":p.pc,"source_file":p.source,"source_line":p.line})).collect::<Vec<_>>()});
     fs::write(output, serde_json::to_vec_pretty(&report)?)?;
     if !passed {
@@ -476,7 +657,17 @@ fn run() -> Result<()> {
     Ok(())
 }
 fn main() {
-    if let Err(error) = run() {
+    let result = match std::thread::Builder::new()
+        .name("tankracer-profile".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| run().map_err(|error| error.to_string()))
+    {
+        Ok(worker) => worker
+            .join()
+            .unwrap_or_else(|_| Err("profile worker panicked".into())),
+        Err(error) => Err(format!("start profile worker: {error}")),
+    };
+    if let Err(error) = result {
         eprintln!("tankracer-driving-loop-profile: {error}");
         std::process::exit(1);
     }

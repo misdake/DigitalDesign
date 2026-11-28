@@ -42,7 +42,19 @@ fn inputs(context: &mut Context<'_>) {
     }
 }
 
-fn configure(_: &mut Context<'_>, application: &mut Prepared, manifest: &Value) {
+fn configure(context: &mut Context<'_>, application: &mut Prepared, manifest: &Value) {
+    application
+        .source
+        .ordinary_dirs
+        .insert(0, context.output.join("tankracer-static-assets"));
+    application
+        .extra_assets
+        .push("tankracer-static-assets/map_stage.rs".into());
+    if manifest["render_stage"]["bytes"].as_u64().unwrap_or(0) != 0 {
+        // DSEG2 belongs to selection; the stack and ordinary heap stay below it.
+        application.source.stack_top = Some(0x8000);
+        application.source.heap_words = Some(0x2800);
+    }
     for (key, filename) in [("route", "route.json"), ("route_ring", "route-ring.json")] {
         if let Some(file) = manifest[key]["file"].as_str() {
             assert_eq!(file, filename, "unexpected route sidecar name");
@@ -135,6 +147,8 @@ pub const APPLICATIONS: &[Definition] = &[
     physics::APPLICATION,
     terrain::APPLICATION,
     driving::APPLICATION,
+    driving::REPLAY_APPLICATION,
+    driving::COMBINED_APPLICATION,
     scene::APPLICATION,
     retirement::APPLICATION,
     fragments::APPLICATION,
