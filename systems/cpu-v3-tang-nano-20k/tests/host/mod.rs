@@ -43,6 +43,8 @@ mod shared_support_gpu_rcc_d2;
 mod stick;
 #[path = "gpu/system_display_board.rs"]
 mod system_display_board;
+#[path = "apps/tankracer_terrain.rs"]
+mod tankracer_terrain;
 #[path = "gpu/time_device.rs"]
 mod time_device;
 

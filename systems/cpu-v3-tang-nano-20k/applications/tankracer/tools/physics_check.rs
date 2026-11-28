@@ -1,20 +1,90 @@
 //! Reproducible arithmetic qualification through rustc, RCC, sim and core emu.
 use cpu_v3::{
-    rcc_backend::{self, CompilerOptions, CpuV3Program},
     CpuV3Core, CpuV3CoreInput, CpuV3CoreInputValue, CpuV3Sim, StepOutcome,
+    rcc_backend::{self, CompilerOptions, CpuV3Program},
 };
 use digital_design_circuit::build_circuit;
 use digital_design_hardware::{Module, ModuleIo};
 use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{error::Error, fs, path::Path};
 
+#[path = "auxiliary_hit_check.rs"]
+mod auxiliary_hit_check;
+#[path = "car_effects_check.rs"]
+mod car_effects_check;
+#[path = "car_motion_check.rs"]
+mod car_motion_check;
+#[path = "closer_check.rs"]
+mod closer_check;
+#[path = "collision_check.rs"]
+mod collision_check;
+#[path = "contact_effect_check.rs"]
+mod contact_effect_check;
+#[path = "explosion_blasts_check.rs"]
+mod explosion_blasts_check;
+#[path = "explosion_check.rs"]
+mod explosion_check;
+#[path = "finish_drive_check.rs"]
+mod finish_drive_check;
+#[path = "mesh_break_check.rs"]
+mod mesh_break_check;
+#[path = "mesh_store_check.rs"]
+mod mesh_store_check;
+#[path = "mine_check.rs"]
+mod mine_check;
+#[path = "parent_auxiliary_check.rs"]
+mod parent_auxiliary_check;
+#[path = "pickup_light_check.rs"]
+mod pickup_light_check;
+#[path = "player_control_check.rs"]
+mod player_control_check;
+#[path = "player_route_check.rs"]
+mod player_route_check;
+#[path = "player_tail_check.rs"]
+mod player_tail_check;
 #[path = "polar_check.rs"]
 mod polar_check;
+#[path = "powerup_check.rs"]
+mod powerup_check;
+#[path = "prefix_check.rs"]
+mod prefix_check;
+#[path = "projectile_check.rs"]
+mod projectile_check;
+#[path = "projectile_marks_check.rs"]
+mod projectile_marks_check;
+#[path = "scene_actor_initial_check.rs"]
+mod scene_actor_initial_check;
+#[path = "scene_allocation_check.rs"]
+mod scene_allocation_check;
+#[path = "scene_fragment_check.rs"]
+mod scene_fragment_check;
+#[path = "scene_initial_check.rs"]
+mod scene_initial_check;
+#[path = "shatter_check.rs"]
+mod shatter_check;
+#[path = "spin_check.rs"]
+mod spin_check;
+#[path = "tank_hit_check.rs"]
+mod tank_hit_check;
+#[path = "temporary_check.rs"]
+mod temporary_check;
+#[path = "track_effects_check.rs"]
+mod track_effects_check;
 #[path = "trig_check.rs"]
 mod trig_check;
 #[path = "vehicle_core_check.rs"]
 mod vehicle_core_check;
+#[path = "vehicle_effects_check.rs"]
+mod vehicle_effects_check;
+#[path = "vehicle_inactive_check.rs"]
+mod vehicle_inactive_check;
+#[path = "vehicle_pose_check.rs"]
+mod vehicle_pose_check;
+#[path = "vehicle_startup_check.rs"]
+mod vehicle_startup_check;
+#[path = "vehicle_transfer_check.rs"]
+mod vehicle_transfer_check;
 
 const INPUT: usize = 0x2000;
 const COUNT: usize = 0x1ffe;
@@ -26,16 +96,145 @@ const SUSPENSION: &str = include_str!("../rcc/suspension.rs");
 const DRIVE: &str = include_str!("../rcc/drive.rs");
 const VEHICLE: &str = include_str!("../rcc/vehicle.rs");
 const TRIG_LOOKUP: &str = include_str!("../rcc/trig_lookup.rs");
+const COLLISION: &str = include_str!("../rcc/collision.rs");
+const BODY: &str = include_str!("../rcc/body.rs");
+const RANDOM: &str = include_str!("../rcc/random.rs");
+const DEFORMATION: &str = include_str!("../rcc/deformation.rs");
+const DAMAGE: &str = include_str!("../rcc/damage.rs");
+const EFFECT_POOL: &str = include_str!("../rcc/effect_pool.rs");
+const IMPACT: &str = include_str!("../rcc/impact.rs");
+const GROUND_RESPONSE: &str = include_str!("../rcc/ground_response.rs");
+const TANK_RESPONSE: &str = include_str!("../rcc/tank_response.rs");
+const ORDERED: &str = include_str!("../rcc/ordered.rs");
+const LIFECYCLE: &str = include_str!("../rcc/lifecycle.rs");
+const CRUSH: &str = include_str!("../rcc/crush.rs");
+const SPATIAL: &str = include_str!("../rcc/spatial.rs");
+const FALLING: &str = include_str!("../rcc/falling.rs");
+const BLAST: &str = include_str!("../rcc/blast.rs");
+const SCENE_WORLD: &str = include_str!("../rcc/scene_world.rs");
+const SCENE_CONTACT: &str = include_str!("../rcc/scene_contact.rs");
+const BOUNCE: &str = include_str!("../rcc/bounce.rs");
+const GROUND: &str = include_str!("../rcc/ground.rs");
+const SAMPLING: &str = include_str!("../rcc/sampling.rs");
+const TERRAIN: &str = include_str!("../rcc/terrain.rs");
+const STATIC_ASSETS: &str = include_str!("../../../rcc/static_assets.rs");
+const GPU_LAYOUT: &str = include_str!("../../../rcc/gpu_layout.rs");
+const OBJECT_QUERY: &str = include_str!("../rcc/object_query.rs");
 const TRIG_ASSET_LOOKUP: &str = include_str!("../rcc/trig_asset_lookup.rs");
-const PREAMBLE: &str =
-    "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod trig_lookup;\n";
+const PREAMBLE: &str = "use crate::dsl_rt::*; mod integer; mod attitude; mod suspension; mod drive; mod vehicle; mod vehicle_pose; mod vehicle_transfer; mod scene_vehicle_transfer; mod scene_obstacle_transfer; mod scene_ufo_transfer; mod scene_fire; mod scene_laps; mod train; mod scene_train; mod emitter; mod scene_emitter; mod flock; mod scene_flock; mod scene_initial; mod scene_actor_initial; mod smoker; mod scene_ambient; mod player_control; mod player_tail; mod player_route; mod scene_player; mod track_effects; mod vehicle_smoke; mod vehicle_debris; mod vehicle_shield; mod car_effects; mod car_motion; mod vehicle_startup; mod vehicle_inactive; mod trig_lookup; mod collision; mod body; mod object_query; mod random; mod deformation; mod damage; mod effect_pool; mod impact; mod impact_capture; mod ground_response; mod tank_response; mod ordered; mod lifecycle; mod entities; mod scene_lifecycle; mod identity_capture; mod crush; mod spatial; mod falling; mod blast; mod driving; mod scene_world; mod scene_creation; mod scene_ufos; mod scene_mines; mod scene_explosions; mod scene_projectiles; mod scene_projectile_impact; mod scene_contact; mod bounce; mod ground; mod sampling; mod terrain; mod static_assets; mod deform_contact; mod scene_query; mod gpu_window; mod scenery_contact; mod inverse_basis; mod closer; mod mesh_break; mod shatter; mod spin; mod prefix; mod powerup; mod inventory; mod particle_sprite; mod explosion; mod explosion_blasts; mod projectile; mod projectile_marks; mod projectile_flight; mod projectile_sweep; mod projectile_trail; mod projectile_ricochet; mod mine; mod tank_hit; mod temporary; mod quad_pool; mod pickup_light; mod scene_debris; mod scene_fragments; mod scene_meshes; mod mesh_storage; mod scene_parent; mod mesh_catalog; mod symbols;\n";
 
 fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<dyn Error>> {
     let folder = output.join(label);
     fs::create_dir_all(&folder)?;
-    let source = format!("{PREAMBLE}{body}");
+    let placement = if label == "finish-drive" {
+        "#![link_csegs(default=\"parents\",parents=0)]\n"
+    } else if label == "collision" {
+        "#![link_csegs(default=\"app\",app=0,world=1)]\n"
+    } else {
+        ""
+    };
+    let source = format!("{placement}{PREAMBLE}{body}");
     fs::write(folder.join("input.rs"), &source)?;
-    let options = CompilerOptions::for_separate_code_and_data_segments(0);
+    let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
+    if label == "scene-allocation"
+        || label == "scene-allocation-packed"
+        || label == "scene-creation"
+        || label == "scene-mines"
+        || label == "scene-mine-tick"
+        || label == "scene-explosions"
+        || label == "scene-explosion-tick"
+        || label == "scene-weapon-explosion"
+        || label == "scene-mine-explosion"
+        || label == "scene-mine-hit"
+        || label == "scene-projectile-flight"
+        || label == "scene-projectile-area"
+        || label == "scene-projectile-direct"
+        || label == "scene-ufos"
+        || label == "scene-projectile-ufo"
+        || label == "vehicle-pose"
+        || label == "vehicle-transfer"
+        || label == "scene-vehicle-transfer"
+        || label == "scene-obstacle-transfer"
+        || label == "scene-ufo-transfer"
+        || label == "scene-fire"
+        || label == "scene-laps"
+        || label == "scene-train"
+        || label == "scene-emitter"
+        || label == "scene-flock"
+        || label == "scene-ambient"
+        || label == "player-control"
+        || label == "finish-drive"
+        || label == "player-tail"
+        || label == "player-route"
+        || label == "scene-player"
+        || label == "track-effects"
+        || label == "vehicle-effects"
+        || label == "car-effects"
+        || label == "car-motion"
+        || label == "vehicle-startup"
+        || label == "scene-initial"
+        || label == "scene-initial-world"
+        || label == "scene-actor-initial"
+        || label == "vehicle-inactive"
+        || label == "contact-effect"
+        || label == "projectile-marks"
+        || label == "explosion"
+        || label == "explosion-blasts"
+    {
+        options.stack_init = 0x8000;
+        options.heap_begin = 0x6000;
+        options.heap_size = 32;
+    }
+    if label == "finish-drive" {
+        // Compact source IDs and the immutable angle table occupy 0x4100..6500.
+        options.heap_begin = 0x7000;
+    }
+    if label == "collision" {
+        // Resource-aware surface access makes the allocator reachable, even
+        // when RAM-only fixtures never allocate. Keep its startup tags above
+        // the angle table and outside the fixed input/snapshot areas.
+        options.heap_begin = 0x8200;
+        options.heap_size = 32;
+    }
+    if label == "impact" {
+        // DSEG2 is replaced by the line-pool stage. Keep descriptors, capture
+        // and resident comparison rows in DSEG3, above the RAM trig tables.
+        options.stack_init = 0xfff0;
+        options.heap_begin = 0x8200;
+        options.heap_size = 32;
+    }
+    if label == "mesh-store"
+        || label == "mesh-store-oom"
+        || label == "auxiliary-hit"
+        || label == "auxiliary-hit-paged"
+    {
+        // Raw fixture arenas occupy 0x0100..0x873f. Keep their persistent
+        // payload heap separate from inputs, snapshots and fragment scratch.
+        options.heap_begin = 0x9000;
+        options.heap_size = 0x2000;
+        if label == "mesh-store-oom" {
+            options.heap_size = 32;
+        }
+    }
+    if label == "parent-auxiliary"
+        || label == "powerup"
+        || label == "pickup-light"
+        || label == "projectile"
+        || label == "mine"
+        || label == "temporary"
+        || label == "tank-hit"
+        || label == "tank-hit-paged"
+    {
+        options.heap_begin = 0x7000;
+        options.heap_size = 0x2000;
+    }
+    if label == "auxiliary-hit-paged" || label == "scene-fragments-paged" {
+        // World records borrow DSEG2; mutable meshes/motion share DSEG3.
+        // Keep the stack and allocator startup in unbanked CPU memory.
+        options.stack_init = 0x8000;
+        options.heap_begin = 0x6000;
+        options.heap_size = 32;
+    }
     let ir = compile_program_named_checked(
         label,
         &source,
@@ -44,10 +243,181 @@ fn compile(label: &str, body: &str, output: &Path) -> Result<CpuV3Program, Box<d
         &mut |name| match name {
             "integer" => Ok(INTEGER.to_owned()),
             "attitude" => Ok(ATTITUDE.to_owned()),
+            "inverse_basis" => Ok(include_str!("../rcc/inverse_basis.rs").to_owned()),
+            "closer" => Ok(include_str!("../rcc/closer.rs").to_owned()),
+            "mesh_break" => Ok(include_str!("../rcc/mesh_break.rs").to_owned()),
+            "scene_meshes" => Ok(include_str!("../rcc/scene_meshes.rs").to_owned()),
+            "scene_fire" => Ok(include_str!("../rcc/scene_fire.rs").to_owned()),
+            "train" => Ok(include_str!("../rcc/train.rs").to_owned()),
+            "emitter" => Ok(include_str!("../rcc/emitter.rs").to_owned()),
+            "flock" => Ok(include_str!("../rcc/flock.rs").to_owned()),
+            "scene_initial" => Ok(include_str!("../rcc/scene_initial.rs").to_owned()),
+            "scene_actor_initial" => Ok(include_str!("../rcc/scene_actor_initial.rs").to_owned()),
+            "smoker" => Ok(include_str!("../rcc/smoker.rs").to_owned()),
+            "player_tail" => Ok(include_str!("../rcc/player_tail.rs").to_owned()),
+            "player_control" => Ok(include_str!("../rcc/player_control.rs").to_owned()),
+            "player_route" => Ok(include_str!("../rcc/player_route.rs").to_owned()),
+            "finish_drive" => Ok(include_str!("../rcc/finish_drive.rs").to_owned()),
+            "finish_routes" => Ok(include_str!("../rcc/finish_routes.rs").to_owned()),
+            "scene_player" => Ok(include_str!("../rcc/scene_player.rs").to_owned()),
+            "track_effects" => Ok(include_str!("../rcc/track_effects.rs").to_owned()),
+            "car_motion" => Ok(include_str!("../rcc/car_motion.rs").to_owned()),
+            "vehicle_inactive" => Ok(include_str!("../rcc/vehicle_inactive.rs").to_owned()),
+            "vehicle_startup" => Ok(include_str!("../rcc/vehicle_startup.rs").to_owned()),
+            "car_effects" => Ok(include_str!("../rcc/car_effects.rs").to_owned()),
+            "vehicle_smoke" => Ok(include_str!("../rcc/vehicle_smoke.rs").to_owned()),
+            "vehicle_debris" => Ok(include_str!("../rcc/vehicle_debris.rs").to_owned()),
+            "vehicle_shield" => Ok(include_str!("../rcc/vehicle_shield.rs").to_owned()),
+            "scene_ambient" => Ok(include_str!("../rcc/scene_ambient.rs").to_owned()),
+            "scene_flock" => Ok(include_str!("../rcc/scene_flock.rs").to_owned()),
+            "scene_emitter" => Ok(include_str!("../rcc/scene_emitter.rs").to_owned()),
+            "scene_train" => Ok(include_str!("../rcc/scene_train.rs").to_owned()),
+            "scene_laps" => Ok(include_str!("../rcc/scene_laps.rs").to_owned()),
+            "scene_ufo_transfer" => Ok(include_str!("../rcc/scene_ufo_transfer.rs").to_owned()),
+            "scene_obstacle_transfer" => {
+                Ok(include_str!("../rcc/scene_obstacle_transfer.rs").to_owned())
+            }
+            "scene_vehicle_transfer" => {
+                Ok(include_str!("../rcc/scene_vehicle_transfer.rs").to_owned())
+            }
+            "vehicle_transfer" => Ok(include_str!("../rcc/vehicle_transfer.rs").to_owned()),
+            "vehicle_pose" => Ok(include_str!("../rcc/vehicle_pose.rs").to_owned()),
+            "scene_ufos" => Ok(include_str!("../rcc/scene_ufos.rs").to_owned()),
+            "scene_creation" => Ok(include_str!("../rcc/scene_creation.rs").to_owned()),
+            "scene_mines" => Ok(include_str!("../rcc/scene_mines.rs").to_owned()),
+            "scene_projectiles" => Ok(include_str!("../rcc/scene_projectiles.rs").to_owned()),
+            "scene_projectile_impact" => {
+                Ok(include_str!("../rcc/scene_projectile_impact.rs").to_owned())
+            }
+            "scene_explosions" => Ok(include_str!("../rcc/scene_explosions.rs").to_owned()),
+            "mesh_storage" => Ok(include_str!("../rcc/mesh_storage.rs").to_owned()),
+            "scene_fragments" => Ok(include_str!("../rcc/scene_fragments.rs").to_owned()),
             "suspension" => Ok(SUSPENSION.to_owned()),
             "drive" => Ok(DRIVE.to_owned()),
             "vehicle" => Ok(VEHICLE.to_owned()),
-            "trig_lookup" => Ok(TRIG_LOOKUP.to_owned()),
+            "trig_lookup" => Ok(if label == "parent-auxiliary"
+                || label == "scene-fragments-paged"
+                || label == "prefix"
+                || label == "powerup"
+                || label == "pickup-light"
+                || label == "projectile"
+                || label == "mine"
+                || label == "temporary"
+                || label == "vehicle-pose"
+                || label == "vehicle-effects"
+                || label == "car-effects"
+                || label == "car-motion"
+                || label == "vehicle-startup"
+                || label == "scene-initial"
+                || label == "scene-initial-world"
+                || label == "scene-actor-initial"
+                || label == "vehicle-inactive"
+                || label == "contact-effect"
+                || label == "vehicle-transfer"
+                || label == "scene-vehicle-transfer"
+                || label == "scene-obstacle-transfer"
+                || label == "scene-ufo-transfer"
+                || label == "scene-fire"
+                || label == "scene-player"
+                || label == "scene-laps"
+                || label == "scene-train"
+                || label == "scene-emitter"
+                || label == "scene-flock"
+                || label == "scene-ambient"
+                || label == "tank-hit"
+                || label == "tank-hit-paged"
+                || label == "explosion"
+                || label == "explosion-blasts"
+                || label == "scene-creation"
+                || label == "scene-mines"
+                || label == "scene-mine-tick"
+                || label == "scene-explosions"
+                || label == "scene-explosion-tick"
+                || label == "scene-weapon-explosion"
+                || label == "scene-mine-explosion"
+                || label == "scene-mine-hit"
+                || label == "scene-projectile-flight"
+                || label == "scene-projectile-area"
+                || label == "scene-projectile-direct"
+                || label == "scene-ufos"
+                || label == "scene-projectile-ufo"
+            {
+                TRIG_ASSET_LOOKUP
+            } else {
+                TRIG_LOOKUP
+            }
+            .to_owned()),
+            "mesh_catalog" => Ok(include_str!("../rcc/mesh_catalog.rs").to_owned()),
+            "symbols" => Ok(include_str!("../rcc/symbols.rs").to_owned()),
+            "scene_debris" => Ok(include_str!("../rcc/scene_debris.rs").to_owned()),
+            "particle_sprite" => Ok(include_str!("../rcc/particle_sprite.rs").to_owned()),
+            "projectile" => Ok(include_str!("../rcc/projectile.rs").to_owned()),
+            "projectile_marks" => Ok(include_str!("../rcc/projectile_marks.rs").to_owned()),
+            "projectile_sweep" => Ok(include_str!("../rcc/projectile_sweep.rs").to_owned()),
+            "projectile_trail" => Ok(include_str!("../rcc/projectile_trail.rs").to_owned()),
+            "temporary" => Ok(include_str!("../rcc/temporary.rs").to_owned()),
+            "explosion" => Ok(include_str!("../rcc/explosion.rs").to_owned()),
+            "explosion_blasts" => Ok(include_str!("../rcc/explosion_blasts.rs").to_owned()),
+            "tank_hit" => Ok(include_str!("../rcc/tank_hit.rs").to_owned()),
+            "mine" => Ok(include_str!("../rcc/mine.rs").to_owned()),
+            "projectile_ricochet" => Ok(include_str!("../rcc/projectile_ricochet.rs").to_owned()),
+            "projectile_flight" => Ok(include_str!("../rcc/projectile_flight.rs").to_owned()),
+            "powerup" => Ok(include_str!("../rcc/powerup.rs").to_owned()),
+            "quad_pool" => Ok(include_str!("../rcc/quad_pool.rs").to_owned()),
+            "pickup_light" => Ok(include_str!("../rcc/pickup_light.rs").to_owned()),
+            "inventory" => Ok(include_str!("../rcc/inventory.rs").to_owned()),
+            "prefix" => Ok(include_str!("../rcc/prefix.rs").to_owned()),
+            "spin" => Ok(include_str!("../rcc/spin.rs").to_owned()),
+            "shatter" => Ok(include_str!("../rcc/shatter.rs").to_owned()),
+            "scene_parent" => Ok(include_str!("../rcc/scene_parent.rs").to_owned()),
+            "collision" => Ok(COLLISION.to_owned()),
+            "body" => Ok(BODY.to_owned()),
+            "object_query" => Ok(OBJECT_QUERY.to_owned()),
+            "random" => Ok(RANDOM.to_owned()),
+            "deformation" => Ok(DEFORMATION.to_owned()),
+            "deform_contact" => Ok(include_str!("../rcc/deform_contact.rs").to_owned()),
+            "scenery_contact" => Ok(include_str!("../rcc/scenery_contact.rs").to_owned()),
+            "scene_query" => Ok(include_str!("../rcc/scene_query.rs").to_owned()),
+            "gpu_window" | "trig_lookup/gpu_window" | "mesh_catalog/gpu_window" => {
+                Ok(include_str!("../../../rcc/gpu_window.rs").to_owned())
+            }
+            "damage" => Ok(DAMAGE.to_owned()),
+            "effect_pool" => Ok(EFFECT_POOL.to_owned()),
+            "impact" => Ok(IMPACT.to_owned()),
+            "impact_capture" => Ok(include_str!("impact_capture.rs").to_owned()),
+            "ground_response" => Ok(GROUND_RESPONSE.to_owned()),
+            "tank_response" => Ok(TANK_RESPONSE.to_owned()),
+            "ordered" => Ok(ORDERED.to_owned()),
+            "lifecycle" | "entities" | "scene_lifecycle" | "scene_world" => {
+                let content = match name {
+                    "lifecycle" => LIFECYCLE,
+                    "entities" => include_str!("../rcc/entities.rs"),
+                    "scene_lifecycle" => include_str!("../rcc/scene_lifecycle.rs"),
+                    _ => SCENE_WORLD,
+                };
+                if label == "collision" {
+                    Ok(format!("#![link_cseg = \"world\"]\n{content}"))
+                } else {
+                    Ok(content.to_owned())
+                }
+            }
+            "identity_capture" => Ok(include_str!("identity_capture.rs").to_owned()),
+            "crush" => Ok(CRUSH.to_owned()),
+            "spatial" => Ok(SPATIAL.to_owned()),
+            "falling" => Ok(FALLING.to_owned()),
+            "blast" => Ok(BLAST.to_owned()),
+            "driving" => Ok(include_str!("../rcc/driving.rs").to_owned()),
+            "scene_contact" => Ok(SCENE_CONTACT.to_owned()),
+            "bounce" => Ok(BOUNCE.to_owned()),
+            "ground" => Ok(GROUND.to_owned()),
+            "sampling" => Ok(SAMPLING.to_owned()),
+            "terrain" => Ok(TERRAIN.to_owned()),
+            "static_assets" => Ok(STATIC_ASSETS.to_owned()),
+            "gpu_layout"
+            | "static_assets/gpu_layout"
+            | "gpu_window/gpu_layout"
+            | "trig_lookup/gpu_window/gpu_layout"
+            | "mesh_catalog/gpu_window/gpu_layout" => Ok(GPU_LAYOUT.to_owned()),
             _ => Err(format!("unexpected module {name}")),
         },
     )?;
@@ -97,10 +467,10 @@ fn primitive_cases(output: &Path) -> Result<Value, Box<dyn Error>> {
         65536,
         i32::MAX,
     ];
-    let shifts = [0, 1, 12, 15, 16, 17, 24, 31, 32, 63, 255];
     let mut cases = Vec::new();
     for (i, &a) in edges.iter().enumerate() {
-        for &shift in &shifts {
+        for count in 0..=64u16 {
+            let shift = if count == 64 { 255 } else { count };
             cases.push((a, edges[(i + usize::from(shift)) % edges.len()], shift));
         }
     }
@@ -177,10 +547,11 @@ fn main() {
     let steps = sim(&code, &input, cases.len() as u16, PASS);
     let zero = compile(
         "division-zero",
-        "fn main(){ integer::div(integer::from_i16(1), fix32::zero()); halt(0x600d); }",
+        "fn main(){ let data=unsafe{Ptr::from_addr(0x2000).as_u16_array()}; integer::div(fix32::load_words(data,0), fix32::zero()); halt(0x600d); }",
         output,
     )?;
-    sim(&zero, &[], 0, 0x7b01);
+    sim(&zero, &[1, 0], 0, 0x7b01);
+    sim(&zero, &[0, 0], 0, 0x7b01);
     Ok(
         json!({"cases":cases.len(), "steps":steps, "code_bytes":code.total_code_words()*2,
               "zero_divisor_signal":"0x7b01"}),
@@ -474,6 +845,132 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or(600);
         let mode = std::env::args().nth(4);
         let report = match mode.as_deref() {
+            Some(mode)
+                if mode.starts_with("scene-")
+                    && (mode.ends_with("-packed") || mode.ends_with("-paged")) =>
+            {
+                scene_allocation_check::run(&output, Path::new(&fixture), mode)?
+            }
+            Some("scene-allocation") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-allocation")?
+            }
+            Some("scene-creation") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-creation")?
+            }
+            Some("scene-mines") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-mines")?
+            }
+            Some("scene-mine-tick") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-mine-tick")?
+            }
+            Some("scene-explosions") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-explosions")?
+            }
+            Some("scene-explosion-tick") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-explosion-tick")?
+            }
+            Some("scene-projectile-ufo") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-projectile-ufo")?
+            }
+            Some("scene-ufos") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-ufos")?
+            }
+            Some("scene-projectile-direct") => scene_allocation_check::run(
+                &output,
+                Path::new(&fixture),
+                "scene-projectile-direct",
+            )?,
+            Some("scene-projectile-area") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-projectile-area")?
+            }
+            Some("scene-projectile-flight") => scene_allocation_check::run(
+                &output,
+                Path::new(&fixture),
+                "scene-projectile-flight",
+            )?,
+            Some("scene-mine-hit") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-mine-hit")?
+            }
+            Some("scene-mine-explosion") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-mine-explosion")?
+            }
+            Some("scene-weapon-explosion") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-weapon-explosion")?
+            }
+            Some("collision") => collision_check::run(&output, Path::new(&fixture))?,
+            Some("player-tail") => player_tail_check::run(&output, Path::new(&fixture))?,
+            Some("player-control") => player_control_check::run(&output, Path::new(&fixture))?,
+            Some("finish-drive") => finish_drive_check::run(&output, Path::new(&fixture))?,
+            Some("track-effects") => track_effects_check::run(&output, Path::new(&fixture))?,
+            Some("vehicle-effects") => vehicle_effects_check::run(&output, Path::new(&fixture))?,
+            Some("car-effects") => car_effects_check::run(&output, Path::new(&fixture))?,
+            Some("car-motion") => car_motion_check::run(&output, Path::new(&fixture))?,
+            Some("contact-effect") => contact_effect_check::run(&output, Path::new(&fixture))?,
+            Some("vehicle-inactive") => vehicle_inactive_check::run(&output, Path::new(&fixture))?,
+            Some("vehicle-startup") => vehicle_startup_check::run(&output, Path::new(&fixture))?,
+            Some("scene-initial") => scene_initial_check::run(&output, Path::new(&fixture))?,
+            Some("scene-actor-initial") => {
+                scene_actor_initial_check::run(&output, Path::new(&fixture))?
+            }
+            Some("player-route") => player_route_check::run(&output, Path::new(&fixture))?,
+            Some("scene-player") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-player")?
+            }
+            Some("closer") => closer_check::run(&output, Path::new(&fixture))?,
+            Some("scene-ambient") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-ambient")?
+            }
+            Some("scene-flock") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-flock")?
+            }
+            Some("scene-emitter") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-emitter")?
+            }
+            Some("scene-train") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-train")?
+            }
+            Some("scene-laps") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-laps")?
+            }
+            Some("scene-fire") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-fire")?
+            }
+            Some("scene-ufo-transfer") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-ufo-transfer")?
+            }
+            Some("scene-obstacle-transfer") => scene_allocation_check::run(
+                &output,
+                Path::new(&fixture),
+                "scene-obstacle-transfer",
+            )?,
+            Some("scene-vehicle-transfer") => {
+                scene_allocation_check::run(&output, Path::new(&fixture), "scene-vehicle-transfer")?
+            }
+            Some("vehicle-transfer") => vehicle_transfer_check::run(&output, Path::new(&fixture))?,
+            Some("vehicle-pose") => vehicle_pose_check::run(&output, Path::new(&fixture))?,
+            Some("temporary") => temporary_check::run(&output, Path::new(&fixture))?,
+            Some("explosion") => explosion_check::run(&output, Path::new(&fixture))?,
+            Some("explosion-blasts") => explosion_blasts_check::run(&output, Path::new(&fixture))?,
+            Some("tank-hit") => tank_hit_check::run(&output, Path::new(&fixture), false, false)?,
+            Some("tank-hit-paged") => {
+                tank_hit_check::run(&output, Path::new(&fixture), true, false)?
+            }
+            Some("tank-hit-cached-header") => {
+                tank_hit_check::run(&output, Path::new(&fixture), true, true)?
+            }
+            Some("mine") => mine_check::run(&output, Path::new(&fixture))?,
+            Some("projectile-marks") => projectile_marks_check::run(&output, Path::new(&fixture))?,
+            Some("projectile") => projectile_check::run(&output, Path::new(&fixture))?,
+            Some("powerup") => powerup_check::run(&output, Path::new(&fixture))?,
+            Some("pickup-light") => pickup_light_check::run(&output, Path::new(&fixture))?,
+            Some("prefix") => prefix_check::run(&output, Path::new(&fixture))?,
+            Some("spin") => spin_check::run(&output, Path::new(&fixture))?,
+            Some("shatter") => shatter_check::run(&output, Path::new(&fixture))?,
+            Some("mesh-break") => mesh_break_check::run(&output, Path::new(&fixture))?,
+            Some("mesh-store") => mesh_store_check::run(&output, Path::new(&fixture))?,
+            Some("auxiliary-hit") => auxiliary_hit_check::run(&output, Path::new(&fixture))?,
+            Some("parent-auxiliary") => parent_auxiliary_check::run(&output, Path::new(&fixture))?,
+            Some("scene-fragments") => scene_fragment_check::run(&output, Path::new(&fixture))?,
             Some("suspension") => suspension_cases(&output, Path::new(&fixture), limit)?,
             Some("drive") => drive_cases(&output, Path::new(&fixture), limit)?,
             Some("vehicle") => vehicle_cases(&output, Path::new(&fixture), limit)?,
@@ -903,10 +1400,12 @@ fn feed_drive(m: &mut [u16], input: &Value) {
 }
 
 fn read_i32(memory: &[u16], address: usize, count: usize) -> Value {
-    json!(memory[address..address + count * 2]
-        .chunks_exact(2)
-        .map(|p| (u32::from(p[0]) | (u32::from(p[1]) << 16)) as i32)
-        .collect::<Vec<_>>())
+    json!(
+        memory[address..address + count * 2]
+            .chunks_exact(2)
+            .map(|p| (u32::from(p[0]) | (u32::from(p[1]) << 16)) as i32)
+            .collect::<Vec<_>>()
+    )
 }
 fn write_i32(memory: &mut [u16], address: usize, values: &Value) {
     for (i, v) in values.as_array().unwrap().iter().enumerate() {

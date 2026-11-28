@@ -40,13 +40,13 @@ fn maximum(a: fix32, b: fix32) -> fix32 {
     }
     b
 }
-fn gain(v: fix32, c: Array<u16>, i: u16) -> fix32 {
+pub fn gain(v: fix32, c: Array<u16>, i: u16) -> fix32 {
     integer::trunc_shift(integer::mul(v, g(c, i)), g(c, i + 1).lo_bits() & 255)
 }
 fn average(v: fix32, c: Array<u16>, a: u16, b: u16, channel: u16) -> fix32 {
     integer::sar(gain(v, c, a + channel) + gain(v, c, b + channel), 1)
 }
-fn rate(v: fix32, force: fix32, dt: fix32) -> fix32 {
+pub fn rate(v: fix32, force: fix32, dt: fix32) -> fix32 {
     let amount = integer::mul(force, dt);
     if v > amount {
         return v - amount;
@@ -63,10 +63,10 @@ fn decay(v: fix32, shift: u16, dt: fix32) -> fix32 {
     }
     result
 }
-fn damp(v: fix32, c: Array<u16>, i: u16, dt: fix32) -> fix32 {
+pub fn damp(v: fix32, c: Array<u16>, i: u16, dt: fix32) -> fix32 {
     decay(rate(v, g(c, i), dt), g(c, i + 2).lo_bits(), dt)
 }
-fn damp_force(v: fix32, force: fix32, c: Array<u16>, i: u16, dt: fix32) -> fix32 {
+pub fn damp_force(v: fix32, force: fix32, c: Array<u16>, i: u16, dt: fix32) -> fix32 {
     decay(
         rate(v, n(force.lo_bits() as i16), dt),
         g(c, i + 2).lo_bits(),

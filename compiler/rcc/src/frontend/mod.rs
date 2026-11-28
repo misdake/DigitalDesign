@@ -6697,7 +6697,7 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
     }
     if matches!(
         method.as_str(),
-        "read" | "write" | "as_u16_array" | "as_i16_array"
+        "read" | "write" | "as_u16_array" | "as_i16_array" | "as_array"
     ) {
         if l.unsafe_depth == 0 {
             return Err(err(
@@ -6741,6 +6741,22 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
             let (v, _) = coerce(l, v, &Ty::U16, &Ty::U16, &m.args[1])?;
             l.b.store_mem(base2, off, v);
             Ok(Val::V(v, Ty::Unit))
+        }
+        "as_array" => {
+            if !m.args.is_empty() {
+                return Err(err(&m.method, "as_array::<T>() takes no arguments"));
+            }
+            let Some(args) = &m.turbofish else {
+                return Err(err(&m.method, "as_array::<T>() needs one element type"));
+            };
+            if args.args.len() != 1 {
+                return Err(err(args, "as_array::<T>() needs one element type"));
+            }
+            let Some(syn::GenericMethodArgument::Type(elem)) = args.args.first() else {
+                return Err(err(args, "as_array::<T>() needs one element type"));
+            };
+            let array: Type = syn::parse_quote!(Array<#elem>);
+            Ok(Val::V(base, ty_of(&array, &l.globals.type_names)?))
         }
         "as_u16_array" | "as_i16_array" => {
             if !m.args.is_empty() {
@@ -7631,6 +7647,34 @@ mod tests {
             0,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn typed_pointer_views_require_an_explicit_array_element_and_unsafe() {
+        for (method, message) in [
+            ("as_array()", "needs one element type"),
+            ("as_array::<u16, i16>()", "needs one element type"),
+            ("as_array::<3>()", "needs one element type"),
+            ("as_array::<fix32>()", "Array element type"),
+            ("as_array::<u16>(1)", "takes no arguments"),
+        ] {
+            let source = format!(
+                "fn main() {{ let a = unsafe {{ Ptr::from_addr(256).{method} }}; halt(0); }}"
+            );
+            let error = parse_source_with(&source, 0).err().unwrap().to_string();
+            assert!(error.contains(message), "{method}: {error}");
+        }
+        let error = parse_source_with(
+            "fn main() { let a = Ptr::from_addr(256).as_array::<u16>(); halt(0); }",
+            0,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            error.contains("Ptr::as_array requires an unsafe block"),
+            "{error}"
+        );
     }
 }
 

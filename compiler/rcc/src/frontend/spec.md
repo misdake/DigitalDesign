@@ -126,13 +126,18 @@ impl Ptr {
     unsafe fn write(self, off: i16, v: u16); // mem[self + off] = v
     unsafe fn as_u16_array(self) -> Array<u16>;
     unsafe fn as_i16_array(self) -> Array<i16>;
+    unsafe fn as_array<T>(self) -> Array<T>;
 }
 ```
 
 `Ptr` remains the untyped interface at heap/MMIO/device boundaries. A dereference or raw-address
 cache-line command must appear in an `unsafe { ... }` block; empty/nested unsafe blocks and unsafe
 blocks without a raw operation, cache command or direct unsafe-function call are errors. Ordinary buffers and local values use
-`Buf`/`Array`/`view_of` without unsafe. Struct memory layouts remain out of scope.
+`Buf`/`Array`/`view_of` without unsafe. `as_array::<T>()` accepts the same element
+types as `Array<T>` and preserves the word address without allocating or copying.
+The type argument is explicit; the caller supplies initialized storage with the
+target layout and keeps its mapping resident. Struct layouts remain private to
+the compiled program rather than defining a host or file ABI.
 
 Checked compilation also accepts nongeneric `unsafe fn` declarations, including
 ordinary value constructors. The original unsafe signature reaches rustc before

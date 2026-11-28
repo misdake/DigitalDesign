@@ -47,7 +47,7 @@ are `(DSEG[address >> 14] << 14) | (address & 0x3fff)`.
 
 All 65536 code words are available regardless of the ordinary data offsets.
 The four data pages likewise cover 128 KiB independently of code, but the
-application ABI divides that address space: statics occupy at most words
+default application ABI divides that address space: statics occupy at most words
 [0,0x2000), the boundary-tag heap is [0x2000,0x9fff), and the stack grows down
 from word 0xc000 toward the heap. The heap length is 0x7fff words; the remaining
 0x2001 words below SP form the initial stack budget. These are data-allocation
@@ -60,6 +60,15 @@ mapping restoration owned by the access helper. Ordinary statics, heap and
 stack stay below 0xc000 and do not depend on that transient page. Moving all
 DSEG pages would also require changing static initialization and physical GPU
 address publication; it would not enlarge either 16-bit address window.
+
+An application recipe may set `ApplicationSource.heap_words` and `stack_top`.
+The former is a word count; the latter is a CPU word address written by the
+compiled entry. Artifact target metadata records these effective values. CB06
+still enters through the fitted cold-boot state above. A recipe using DSEG2/3
+as a 64-KiB working region can put its stack top at 0x8000 and keep statics,
+heap boundary tags and the complete live call stack in DSEG0/1. Its owner installs
+and restores the working mappings explicitly; external asset helpers continue
+to borrow only DSEG3.
 
 `boot_address_spaces` exercises a maximum-size code COPY together with the
 maximum static ZERO prefix in both instruction simulation and native CPU

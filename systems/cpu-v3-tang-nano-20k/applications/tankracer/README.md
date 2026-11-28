@@ -20,6 +20,88 @@ The same catalog registers `bench-tankracer-physics`, a separate frozen-contact
 single-vehicle benchmark. Its kernels, resource inputs and execution boundary
 are described in [physical update](/systems/cpu-v3-tang-nano-20k/applications/tankracer/physics.md).
 
+`bench-tankracer-terrain` loads two adjacent collision pages and checks the
+production terrain kernels against reference queries; see
+[cell-local terrain queries](/systems/cpu-v3-tang-nano-20k/applications/tankracer/terrain.md).
+
+`bench-tankracer-driving` connects real primary contacts, surface noise/effects,
+lazy auxiliary queries, track poses and immediate car/ground collisions to
+ordered persistent vehicle updates sharing one RNG and effect pool;
+see [real-map driving](/systems/cpu-v3-tang-nano-20k/applications/tankracer/driving.md).
+Its `--scope complete --steps 3` cases compare the complete original prepare and physics
+method for continuous two-car driving, car collisions and an authored object hit,
+including all part poses, the complete immediate effects sequence, boost,
+temporary-effect expiration and smoke's synchronous impact generation.
+`--scope startup` constructs the cars from model/spawn metadata before driving;
+the reusable `vehicle-startup` qualifier checks the full fresh Player state.
+`vehicle-inactive` qualifies the complete non-AI middle-distance Tank branch
+over the constructor row, real terrain and shared effects/RNG. The kernel also
+binds the full driving owner's fields directly; `--scope visibility --steps 4`
+checks both branch transitions in continuous two-car updates.
+`--scope effect` exercises both game-owned surface-effect slots through complete
+vehicle updates; `contact-effect` checks synchronous publication across query errors.
+Its reusable complete part-pose and route-restoration kernels also have independent
+`vehicle-pose` and `vehicle-transfer` qualification entries.
+`player-control` qualifies sampled input/countdown, turret, auxiliary brake
+restoration and collision indication on shared live fields before Tank dispatch.
+`--scope controls --steps 6` connects those sampled fields to continuous Tank
+updates; `--scope fast-controls --steps 2` covers fast braking and restoration.
+`player-route` covers actual ENGLAND checkpoint/progress queries, lap records,
+wrong-way state and the raw-time race clock.
+`scene-player` connects input, lap events, turret/fire, brake and route progress
+to the same scene/vehicle owners before parent Tank visibility and preparation.
+`--scope player --steps 2` runs Shell/Homing/Warp input through this complete
+Player stage and the continuous Tank physics owner, comparing route, inventory,
+shared flight, projectile payloads, scenery, vehicle effects and RNG each frame.
+`--scope flight` runs live Shell/Homing/Warp ticks after their Player updates,
+including deferred first flight and queued Warp destruction.
+`--scope impact` adds terrain marks, shared explosions and band/ring updates;
+`--case N` selects one trajectory within the chosen scope.
+`--scope contact` connects live Shell/Homing/Warp vehicle hits, reflection,
+damage smoke, private body/turret dents and temporary effects to the same owners.
+Its focused stationary targets retain checked mutable state across world passes.
+`--scope mines` runs ordinary/electric repeated drops, child ticks, actual driving
+contacts, shared explosions, electric effects and queued retirement on the same
+world and RNG.
+`--scope ufos` adds projectile attachment/carrier following and complete player
+transfer, including temporary removal from the shared Tick list and natural retirement.
+`--scope clock` couples the raw race clock and countdown/release gate to that
+continuous path, with independent physics-dt clamping and per-frame clock checks.
+`track-effects` qualifies track spray, ground-mark FIFO and brake/reverse lights
+on one shared quad/line phase bank.
+`vehicle-effects` qualifies damage/traction smoke with synchronous impact emission,
+shared debris ownership and shield initialization/update using the same game RNG.
+`car-effects` executes the complete ordered vehicle-effects stage on those owners,
+including pickup fade, impact animation, track effects and temporary electric lines.
+`car-motion` qualifies complete post-collision movement and all part poses, with
+explicit successful-tick hull/rate publication after the intervening effects stage.
+
+`bench-tankracer-scene` loads the complete initial ENGLAND collision metadata,
+checks candidates/class slots and runs connected Fall/Bounce contacts and motion; see
+[scene collision assets](/systems/cpu-v3-tang-nano-20k/applications/tankracer/scene.md).
+The reusable `scene-laps` qualifier covers real lap memberships, camera-delayed
+queues and off-camera Fall restoration. `scene-train` qualifies both authored
+ENGLAND paths against live class calls and shared RNG. `scene-emitter` covers
+the five authored emitters and their real ownerless projectile factories.
+`scene-flock` connects all three bird groups, live wing models and render mesh revisions.
+`scene-ambient` qualifies chimney particles and ambient sound-region selection.
+
+[Collision and body arithmetic](/systems/cpu-v3-tang-nano-20k/applications/tankracer/collision.md)
+describes reflection, pair impulses, body springs, contact hulls and their module checks.
+
+[Weapon and explosion state](weapons.md) describes player fire, weapon construction, projectile launch,
+banked flight, targeting, reflection, trails, terrain marks, complete Concussion/Debris
+impact updates, complete Shell/Homing/Warp hits with live mesh damage and temporary
+effects, UFO projectile attachment/follow, UFO construction, complete transfer updates
+and shared retirement, mine placement/arming/lifetime and complete
+mine contacts with vehicle impulses and electric effects,
+explosion animation, smoke, contact fragments and shared blast slots, with their reference snapshot checks
+and scene integration boundary.
+
+`bench-tankracer-fragments` qualifies authored auxiliary mesh activation,
+real-terrain contact, vertex/center updates and live class completion through normal asset loading; see
+[mutable mesh fragments](collision.md#mutable-mesh-fragments).
+
 ```powershell
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bench-tankracer-static --camera systems/cpu-v3-tang-nano-20k/applications/tankracer/assets/england/cameras.json --recording prepared --out target/tankracer-map
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview bench-tankracer-static --snapshot target/tankracer-map --presents 2
@@ -752,8 +834,8 @@ The application-owned [integer module](/systems/cpu-v3-tang-nano-20k/application
 uses `fix32` as a raw signed 32-bit carrier. Addition, subtraction, negation
 and comparisons operate on those bits directly. Call `integer::mul` for a
 wrapping integer product. Ordinary `fix32` multiplication has Q16.16 semantics.
-The current checkout forms the integer product from unsigned 16-bit product
-windows, including the high cross terms.
+The helper uses the CPU's `MUL.LO32` instruction through `fmul_lo32`, keeping
+operands and the wrapped result in the scalar register domain.
 
 | Entry | Contract |
 | --- | --- |

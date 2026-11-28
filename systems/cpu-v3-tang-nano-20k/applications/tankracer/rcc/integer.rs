@@ -7,11 +7,28 @@ pub fn from_i16(value: i16) -> fix32 {
 }
 
 pub fn mul(a: fix32, b: fix32) -> fix32 {
-    let alo = a.lo_bits();
-    let ahi = a.hi_bits();
-    let blo = b.lo_bits();
-    let bhi = b.hi_bits();
-    fix32::from_words(alo * blo, mul16(alo, blo) + ahi * blo + alo * bhi)
+    fmul_lo32(a, b)
+}
+
+pub fn rate_step(value: fix32, force: fix32, dt: fix32) -> fix32 {
+    let amount = fmul_lo32(force, dt);
+    if value > amount {
+        return value - amount;
+    }
+    if value < -amount {
+        return value + amount;
+    }
+    fix32::zero()
+}
+
+pub fn decay(value: fix32, shift: u16, dt: fix32) -> fix32 {
+    let result = value - sar(fmul_lo32(value, dt), shift);
+    if (value < fix32::zero() && result > fix32::zero())
+        || (value > fix32::zero() && result < fix32::zero())
+    {
+        return fix32::zero();
+    }
+    result
 }
 
 pub fn shl(value: fix32, count: u16) -> fix32 {
@@ -34,14 +51,14 @@ pub fn sar(value: fix32, count: u16) -> fix32 {
     if shift == 0 {
         return value;
     }
-    let hi = value.hi_bits() as i16;
     if shift >= 16 {
+        let hi = value.hi_bits() as i16;
         return fix32::from_words((hi >> (shift - 16)) as u16, (hi >> 15) as u16);
     }
-    fix32::from_words(
-        (value.lo_bits() >> shift) | ((hi as u16) << (16 - shift)),
-        (hi >> shift) as u16,
-    )
+    // MUL keeps bits 47:16 of the signed product. For 1..15 the positive
+    // coefficient is 2^(16-shift), so this is exactly floor(value/2^shift).
+    // The product magnitude is at most 2^46, within the signed 64-bit path.
+    value * fix32::from_words(1u16 << (16 - shift), 0)
 }
 
 /// Legacy sign/magnitude shift, including the wrapping INT_MIN behavior.
@@ -56,6 +73,9 @@ pub fn trunc_shift(value: fix32, count: u16) -> fix32 {
 pub fn div(numerator: fix32, denominator: fix32) -> fix32 {
     if denominator == fix32::zero() {
         halt(0x7b01);
+    }
+    if numerator == fix32::zero() {
+        return fix32::zero();
     }
     let negative = (numerator.hi_bits() ^ denominator.hi_bits()) & 0x8000 != 0;
     let mut n = numerator;

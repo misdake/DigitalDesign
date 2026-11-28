@@ -2,6 +2,22 @@
 use super::{execute, parse};
 
 #[test]
+fn rustc_typed_pointer_views_keep_nested_storage_resident() {
+    execute(
+        "typed-pointer-view",
+        r#"struct Row{values:Buf<u16,3>,tail:i16}
+fn main(){
+ let raw:Buf<u16,8>=Buf::new([0;8]);
+ let mut rows=unsafe{raw.as_ptr().as_array::<Row>()};
+ rows[1u16].values[2u16]=73;rows[1u16].tail=-9;
+ if raw[6u16]!=73 || raw[7u16]!=65527{halt(1);}
+ let words=unsafe{rows.as_ptr().as_array::<u16>()};
+ if words[6u16]!=73{halt(2);}halt(0x600d);
+}"#,
+    );
+}
+
+#[test]
 fn rustc_resource_references_can_be_reselected_without_moving_owners() {
     execute(
         "resource-reference-selection",
