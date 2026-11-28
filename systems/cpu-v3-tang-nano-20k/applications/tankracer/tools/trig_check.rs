@@ -1,4 +1,4 @@
-//! Producer -> standard AssetBytes placement/boot packing -> existing scoped SDK read.
+//! Complete immutable tables through standard placement, boot packing and scoped word reads.
 use super::*;
 use cpu_v3_tang_nano_20k::boot;
 use rcc::frontend::static_assets::AssetBank;
@@ -11,6 +11,7 @@ fn compile_asset(
 ) -> Result<(CpuV3Program, Vec<u16>, Value), Box<dyn Error>> {
     let folder = out.join(label);
     fs::create_dir_all(&folder)?;
+    let producer = producer.canonicalize()?;
     let sine = producer
         .join("sine.i16.bin")
         .to_string_lossy()
@@ -19,8 +20,15 @@ fn compile_asset(
         .join("angle.i16.bin")
         .to_string_lossy()
         .replace('\\', "/");
-    let roots=format!("mod static_assets;use static_assets::*;\n#[asset] static SINE_BYTES:AssetBytes=AssetBytes::new(include_bytes!(\"{sine}\"));\n#[asset] static ANGLE_BYTES:AssetBytes=AssetBytes::new(include_bytes!(\"{angle}\"));\n");
-    let source = format!("{PREAMBLE}{roots}{body}");
+    let roots = format!(
+        "mod static_assets;use static_assets::*;\n#[asset] static SINE_BYTES:AssetBytes=AssetBytes::new(include_bytes!(\"{sine}\"));\n#[asset] static ANGLE_BYTES:AssetBytes=AssetBytes::new(include_bytes!(\"{angle}\"));\n"
+    );
+    let preamble = if label == "vehicle" {
+        PREAMBLE
+    } else {
+        "use crate::dsl_rt::*; mod integer; mod trig_lookup;\n"
+    };
+    let source = format!("{preamble}{roots}{body}");
     fs::write(folder.join("input.rs"), &source)?;
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
     options.asset_banks = vec![AssetBank {
@@ -124,10 +132,7 @@ fn prepare(memory: &mut [u16], case: &Value, previous: &Value, frame: &Value) {
     }
     feed_vehicle(memory, &frame["input"]);
 }
-pub(super) fn run(output: &Path, producer: &Path) -> Result<Value, Box<dyn Error>> {
-    let base = producer.parent().ok_or("producer parent missing")?;
-    let vehicle_fixture = base.parent().unwrap().join("vehicle-node/fixtures-final");
-    let fixture: Value = serde_json::from_slice(&fs::read(vehicle_fixture.join("vehicle.json"))?)?;
+pub(super) fn tables(output: &Path, producer: &Path) -> Result<Value, Box<dyn Error>> {
     let sine = fs::read(producer.join("sine.i16.bin"))?;
     let angle = fs::read(producer.join("angle.i16.bin"))?;
     let mut all_reports = Vec::new();
@@ -135,8 +140,8 @@ pub(super) fn run(output: &Path, producer: &Path) -> Result<Value, Box<dyn Error
         let (code, mut memory, placement) = compile_asset(
             label,
             r#"
-fn check(actual:Array<i16>,expected:Array<i16>,count:u16){let mut i=0u16;while i<count{if trig_lookup::index(actual,i)!=integer::from_i16(expected[i]){halt(1);}if read_dseg_page(3)!=3{halt(2);}i+=1;}}
-fn main(){let sine=unsafe{addr_of(&SINE_BYTES).as_i16_array()};let angle=unsafe{addr_of(&ANGLE_BYTES).as_i16_array()};check(sine,unsafe{Ptr::from_addr(0x3000).as_i16_array()},20480);check(angle,unsafe{Ptr::from_addr(0x8000).as_i16_array()},257);halt(0x600d);}
+fn check(actual:Array<i16>,expected:Array<i16>,count:u16){let saved=read_dseg_page(3);let mut i=0u16;while i<count{if trig_lookup::index(actual,i)!=integer::from_i16(expected[i]){halt(1);}if read_dseg_page(3)!=saved{halt(2);}i+=1;}}
+fn main(){unsafe{write_dseg_page(3,Ptr::from_addr(0x1fff).read(0));}let sine=unsafe{addr_of(&SINE_BYTES).as_i16_array()};let angle=unsafe{addr_of(&ANGLE_BYTES).as_i16_array()};check(sine,unsafe{Ptr::from_addr(0x3000).as_i16_array()},20480);check(angle,unsafe{Ptr::from_addr(0x8000).as_i16_array()},257);halt(0x600d);}
 "#,
             output,
             producer,
@@ -147,41 +152,44 @@ fn main(){let sine=unsafe{addr_of(&SINE_BYTES).as_i16_array()};let angle=unsafe{
                 memory[address + i] = u16::from_le_bytes([pair[0], pair[1]]);
             }
         }
-        let mut cpu = CpuV3Sim::with_physical_memory_words(memory.len());
-        cpu.physical_memory_mut().copy_from_slice(&memory);
-        cpu.set_boot_window(&code.words);
-        let mut transitions = 0u64;
-        let mut last_page = 3;
-        let mut halted = false;
-        let mut used = 0;
-        for steps in 1..=50_000_000u64 {
-            let outcome = cpu.step().expect("trig asset instruction");
-            let page = cpu.data_segments()[3];
-            if page != last_page {
-                transitions += 1;
-                last_page = page;
+        for initial_page in [3, 32] {
+            let mut cpu = CpuV3Sim::with_physical_memory_words(memory.len());
+            cpu.physical_memory_mut().copy_from_slice(&memory);
+            cpu.physical_memory_mut()[0x1fff] = initial_page;
+            cpu.set_boot_window(&code.words);
+            let mut transitions = 0u64;
+            let mut last_page = 3;
+            let mut halted = false;
+            let mut used = 0;
+            for steps in 1..=50_000_000u64 {
+                let outcome = cpu.step().expect("trig asset instruction");
+                let page = cpu.data_segments()[3];
+                if page != last_page {
+                    transitions += 1;
+                    last_page = page;
+                }
+                if let StepOutcome::Halted { signal } = outcome {
+                    assert_eq!(signal, PASS);
+                    assert_eq!(cpu.data_segments(), [0, 1, 2, initial_page]);
+                    halted = true;
+                    used = steps;
+                    break;
+                }
             }
-            if let StepOutcome::Halted { signal } = outcome {
-                assert_eq!(signal, PASS);
-                assert_eq!(cpu.data_segments(), [0, 1, 2, 3]);
-                halted = true;
-                used = steps;
-                break;
-            }
+            assert!(halted);
+            all_reports.push(json!({"placement":label,"initial_dseg3":initial_page,"sine_entries_checked":20480,"angle_entries_checked":257,"sim_instructions":used,"dseg3_transitions":transitions,"placement_metadata":placement,"maximum_integer_error":0,"mapping_restored_after_every_read":true}));
         }
-        assert!(halted);
-        all_reports.push(json!({"placement":label,"sine_entries_checked":20480,"angle_entries_checked":257,"sim_instructions":used,"dseg3_transitions":transitions,"placement_metadata":placement,"maximum_integer_error":0,"mapping_restored_after_every_read":true}));
     }
     let (bounds_code, bounds_memory, _) = compile_asset(
         "bounds",
         r#"
-fn main(){let which=unsafe{Ptr::from_addr(0x1ffe).read(0)};if which==0{trig_lookup::index(unsafe{addr_of(&SINE_BYTES).as_i16_array()},20480);}else{trig_lookup::index(unsafe{addr_of(&ANGLE_BYTES).as_i16_array()},257);}halt(0x600d);}
+fn main(){let which=unsafe{Ptr::from_addr(0x1ffe).read(0)};let mut root=unsafe{addr_of(&SINE_BYTES).as_u16_array()};if which==0{trig_lookup::index(unsafe{addr_of(&SINE_BYTES).as_i16_array()},20480);}else if which==1{trig_lookup::index(unsafe{addr_of(&ANGLE_BYTES).as_i16_array()},257);}else if which==2{root[0u16]=65535;trig_lookup::index(unsafe{addr_of(&SINE_BYTES).as_i16_array()},64);}else{root[3u16]=1;trig_lookup::index(unsafe{addr_of(&SINE_BYTES).as_i16_array()},0);}halt(0x600d);}
 "#,
         output,
         producer,
         0x107f80,
     )?;
-    for which in 0..2u16 {
+    for which in 0..4u16 {
         let mut cpu = CpuV3Sim::with_physical_memory_words(bounds_memory.len());
         cpu.physical_memory_mut().copy_from_slice(&bounds_memory);
         cpu.physical_memory_mut()[COUNT] = which;
@@ -189,7 +197,7 @@ fn main(){let which=unsafe{Ptr::from_addr(0x1ffe).read(0)};if which==0{trig_look
         let mut halted = false;
         for _ in 0..10000 {
             if let StepOutcome::Halted { signal } = cpu.step().expect("bounds instruction") {
-                assert_eq!(signal, 0x7d01);
+                assert_eq!(signal, if which == 2 { 0x7d02 } else { 0x7d01 });
                 assert_eq!(cpu.data_segments(), [0, 1, 2, 3]);
                 halted = true;
                 break;
@@ -197,6 +205,18 @@ fn main(){let which=unsafe{Ptr::from_addr(0x1ffe).read(0)};if which==0{trig_look
         }
         assert!(halted);
     }
+    Ok(
+        json!({"all_entries":all_reports,"range_rejections":2,"sector_overflow_rejections":1,
+        "oversized_root_rejections":1,"maximum_integer_error":0,
+        "scope":"Complete raw i16 tables at aligned/page-tail placements and two incoming mappings; instruction simulation, bounded loops."}),
+    )
+}
+pub(super) fn run(output: &Path, producer: &Path) -> Result<Value, Box<dyn Error>> {
+    let report = tables(output, producer)?;
+    let all_reports = &report["all_entries"];
+    let base = producer.parent().ok_or("producer parent missing")?;
+    let vehicle_fixture = base.parent().unwrap().join("vehicle-node/fixtures-final");
+    let fixture: Value = serde_json::from_slice(&fs::read(vehicle_fixture.join("vehicle.json"))?)?;
     let qualified = base
         .parent()
         .unwrap()
@@ -265,6 +285,6 @@ fn main(){let which=unsafe{Ptr::from_addr(0x1ffe).read(0)};if which==0{trig_look
         core_reports.push(result);
     }
     Ok(
-        json!({"producer_manifest":producer.join("trig-assets.json").to_string_lossy(),"all_entries":all_reports,"out_of_range_rejections":2,"vehicle_short":short,"vehicle_placement":placement,"vehicle_core":core_reports,"interface":"same trig_lookup::index(table,index)->raw fix32; backend selected at compile-time, no runtime callback; local backend views i16 values, asset backend views a low-memory AssetBytes root and calls unchanged SDK gpu_window_asset_read","scope":"complete physical short replay; existing immutable SDK DSEG3 read/save/restore and 54MHz direct-core one-cycle peer; excludes native cache/SDRAM/render timing"}),
+        json!({"producer_manifest":producer.join("trig-assets.json").to_string_lossy(),"all_entries":all_reports,"out_of_range_rejections":2,"vehicle_short":short,"vehicle_placement":placement,"vehicle_core":core_reports,"interface":"trig_lookup::index(table,index)->raw fix32; backend selected at compile-time; local backend views i16 values, asset backend resolves a low-memory AssetBytes root to one exact DSEG3 word","scope":"complete physical short replay; immutable DSEG3 read/save/restore and 54MHz direct-core one-cycle peer; excludes native cache/SDRAM/render timing"}),
     )
 }

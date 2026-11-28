@@ -15,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod driving_detail;
 mod driving_pool_profile;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -258,8 +259,8 @@ fn plane_fingerprint(memory: &[u16], base: usize) -> u64 {
 }
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 6 && !(args.len() == 8 && args[6] == "--frames") {
-        return Err("usage: tankracer-driving-loop-profile ARTIFACT native|system|instruction|state|pools MAX_TICKS MAX_HOST_SECONDS OUTPUT [--frames N]".into());
+    if args.len() < 6 {
+        return Err("usage: tankracer-driving-loop-profile ARTIFACT native|native-state|system|instruction|state|pools MAX_TICKS MAX_HOST_SECONDS OUTPUT [--frames N] [--detail] [--vblank-period TICKS]".into());
     }
     if args[2] == "pools" {
         if args.len() != 6 {
@@ -267,9 +268,35 @@ fn run() -> Result<()> {
         }
         return driving_pool_profile::run(&args);
     }
+    let mut prefix_frames = None;
+    let mut detailed = false;
+    let mut vblank_period = None;
+    let mut option = 6;
+    while option < args.len() {
+        match args[option].as_str() {
+            "--frames" if prefix_frames.is_none() && option + 1 < args.len() => {
+                option += 1;
+                prefix_frames = Some(args[option].parse::<u64>()?);
+            }
+            "--detail" if !detailed => detailed = true,
+            "--vblank-period" if vblank_period.is_none() && option + 1 < args.len() => {
+                option += 1;
+                let period = args[option].parse::<u64>()?;
+                if period == 0 || args[2] == "system" {
+                    return Err(
+                        "synthetic vblank requires a positive period and a functional-GPU backend"
+                            .into(),
+                    );
+                }
+                vblank_period = Some(period);
+            }
+            _ => return Err("unknown or repeated profiling option".into()),
+        }
+        option += 1;
+    }
     let instruction = match args[2].as_str() {
         "instruction" | "state" => true,
-        "native" | "system" => false,
+        "native" | "native-state" | "system" => false,
         _ => return Err("unknown backend".into()),
     };
     let budget = args[3].parse::<u64>()?;
@@ -279,7 +306,7 @@ fn run() -> Result<()> {
         return Err("positive bounds and a fresh report are required".into());
     }
     let captures = output.with_extension("state");
-    if args[2] == "state" || args[2] == "system" {
+    if matches!(args[2].as_str(), "state" | "native-state" | "system") {
         fs::create_dir(&captures)?;
     }
     let app = Path::new(&args[1]);
@@ -299,7 +326,6 @@ fn run() -> Result<()> {
         assets["updates"].as_u64()
     }
     .ok_or("frame count missing")?;
-    let prefix_frames = args.get(7).map(|value| value.parse::<u64>()).transpose()?;
     if prefix_frames.is_some_and(|count| count == 0 || count > authored_frames) {
         return Err("frame prefix must stay within the authored trajectory".into());
     }
@@ -313,6 +339,11 @@ fn run() -> Result<()> {
     }
     let expected = prefix_frames.unwrap_or(authored_frames);
     let tags = boundaries(app, &manifest, true)?;
+    let mut detail = if detailed {
+        Some(driving_detail::Detail::new(app, &manifest)?)
+    } else {
+        None
+    };
     let package = bound(
         app,
         &manifest,
@@ -373,6 +404,7 @@ fn run() -> Result<()> {
     let mut gpu_starts = Vec::new();
     let mut gpu_commands = Vec::new();
     let mut next_progress = 1_000_000;
+    let mut next_vblank = vblank_period.unwrap_or(u64::MAX);
     if instruction {
         sim = Some(
             CpuV3SystemSim::from_single_flash(&package, 0xd00d, VBlankMode::Manual)?
@@ -390,6 +422,15 @@ fn run() -> Result<()> {
         );
     }
     while ticks < budget && started.elapsed() < limit {
+        if ticks >= next_vblank {
+            if let Some(s) = &mut sim {
+                s.advance_vblank();
+            }
+            if let Some(s) = &mut native {
+                s.advance_vblank();
+            }
+            next_vblank = next_vblank.saturating_add(vblank_period.unwrap());
+        }
         if let Some(s) = &system {
             if ticks >= next_progress {
                 eprintln!(
@@ -440,13 +481,26 @@ fn run() -> Result<()> {
                                 return Err("stage timing coverage differs".into());
                             }
                             let mut row = json!({"serial":frames.len(),"ticks":ticks-frame_first.0,"retired_words":retired-frame_first.1,"stages":rows_json(&parts,&reads,&writes,&tags,instruction)});
+                            row["begin_cycle"] = json!(frame_first.0);
+                            row["end_cycle"] = json!(ticks);
+                            if let Some(detail) = &mut detail {
+                                let registers = if let Some(s) = &sim {
+                                    *s.cpu().registers()
+                                } else if let Some(s) = &system {
+                                    s.core().architectural_gprs()
+                                } else {
+                                    native.as_ref().unwrap().core().architectural_gprs()
+                                };
+                                detail.return_at((segment, pc), &registers, ticks);
+                                row["detail"] = detail.finish_frame(ticks - frame_first.0)?;
+                            }
                             if let Some(s) = &system {
                                 row["system"] = json!({"gpu_submits":s.statistics.gpu_submits,
                                     "gpu_completed":s.statistics.gpu_completed,
                                     "presents":s.statistics.presents_applied,
                                     "three_way_pending":s.statistics.three_way_pending});
                             }
-                            if args[2] == "state" || system.is_some() {
+                            if matches!(args[2].as_str(), "state" | "native-state" | "system") {
                                 let (bytes, registers, pages) = if let Some(s) = &system {
                                     let registers = s.core().architectural_gprs();
                                     let pages = s.core().data_segments();
@@ -458,6 +512,16 @@ fn run() -> Result<()> {
                                         bytes.extend(word.to_le_bytes());
                                     }
                                     (bytes, registers, pages)
+                                } else if let Some(s) = &native {
+                                    let words =
+                                        s.inspect_cpu_words(0, s.physical_memory().len())?;
+                                    let bytes =
+                                        words.iter().flat_map(|word| word.to_le_bytes()).collect();
+                                    (
+                                        bytes,
+                                        s.core().architectural_gprs(),
+                                        s.core().data_segments(),
+                                    )
                                 } else {
                                     let cpu = sim.as_ref().unwrap().cpu();
                                     let bytes = cpu
@@ -495,12 +559,35 @@ fn run() -> Result<()> {
                 }
             }
         }
+        if let Some(detail) = &mut detail {
+            let logic_edge = system.as_ref().is_none_or(|s| s.clock().peek().logic_rise);
+            let registers = if pc != previous {
+                if let Some(s) = &sim {
+                    *s.cpu().registers()
+                } else if let Some(s) = &system {
+                    s.core().architectural_gprs()
+                } else {
+                    native.as_ref().unwrap().core().architectural_gprs()
+                }
+            } else {
+                [0; 16]
+            };
+            detail.observe(
+                pc,
+                active.is_some(),
+                pc != previous,
+                ticks,
+                frames.len(),
+                &registers,
+                logic_edge,
+            );
+        }
         previous = pc;
         if prefix_frames.is_some() && frames.len() as u64 == expected {
             break;
         }
         if let Some(s) = &mut sim {
-            if s.blocked_on_vblank() {
+            if vblank_period.is_none() && s.blocked_on_vblank() {
                 s.advance_vblank();
             }
             let mut decoded = None;
@@ -614,7 +701,7 @@ fn run() -> Result<()> {
             }
         } else {
             let s = native.as_mut().unwrap();
-            if s.waiting_for_vblank() || s.blocked_on_vblank() {
+            if vblank_period.is_none() && (s.waiting_for_vblank() || s.blocked_on_vblank()) {
                 s.advance_vblank();
             }
             let cpu = s.step().map_err(|e| format!("native: {e:?}"))?;
@@ -648,6 +735,11 @@ fn run() -> Result<()> {
         "stop_pc":s.core().executing_instruction_address()})
     });
     let report = json!({"passed":passed,"execution_complete":halted,"requested_frame_prefix":prefix_frames,"reference_checks":assets.get("validation").and_then(Value::as_bool).unwrap_or(true),"artifact_id":manifest["artifact_id"],"profiling_tool_sha256":format!("{:x}",Sha256::digest(include_bytes!("driving_loop_profile.rs"))),"backend":args[2],"clock_hz":54000000,"case":cases[0]["name"],"unit":if cases[0]["world_pass"] == true {"world_frame"} else {"vehicle_update"},"host_seconds":started.elapsed().as_secs_f64(),"ticks_with_loading_and_assertions":ticks,"frames":frames,"gpu_commands":gpu_commands,"system":final_system,
+        "output_timeline":detail.as_ref().map(|d| &d.events),
+        "selection_profile":detail.as_ref().map(|d| &d.selections),
+        "synthetic_vblank_period_ticks":vblank_period,
+        "detail_tool_sha256":detailed.then(||format!("{:x}",Sha256::digest(include_bytes!("driving_detail.rs")))),
+        "detail_scope":"Exclusive instruction step counts or native/system cycle occupancy at Execute PC; missing Execute addresses are reported separately. Frame-output milestones are passive frozen-source addresses.",
         "scope":scope,
         "boundaries":tags.iter().map(|p| json!({"stage":p.name,"cseg":p.segment,"pc":p.pc,"source_file":p.source,"source_line":p.line})).collect::<Vec<_>>()});
     fs::write(output, serde_json::to_vec_pretty(&report)?)?;

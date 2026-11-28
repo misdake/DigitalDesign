@@ -106,6 +106,8 @@ target/release/tankracer-driving-loop-profile.exe target/combined system 6000000
 The profiler resolves update boundaries and persistent local owners from the
 frozen source/debug files. `native` measures CPU cycles with functional GPU,
 `instruction` measures interpreter work, and `state` adds frame-end RAM captures.
+`native-state` adds coherent frame-end captures to native CPU timing, including
+dirty cache lines and pending scalar stores without advancing model clocks.
 `system` uses the complete cycle model, records GPU command lifetimes, and
 hashes completed RGB565/D16 planes. Its RAM captures include CPU pending stores
 and cache data; host inspection leaves model clocks unchanged. CPU intervals
@@ -123,6 +125,11 @@ directory with the `.state` suffix.
 python -B systems/cpu-v3-tang-nano-20k/applications/tankracer/tools/check_runtime_state.py target/reference target/reference.json target/combined target/loop.json --output target/state-comparison.json
 ```
 
+A passed, explicitly requested frame prefix is a valid comparison boundary for
+`state`, `native-state` and `system`. It must contain exactly the requested
+positive number of coherent captures; program completion and GPU completion
+remain separate report fields.
+
 The comparison checks image/capture identities, the independent input words,
 persistent typed game owners and named physical game banks. Debug-derived car
 views are bound independently to the Rust attitude oracle. Physical page fields
@@ -130,3 +137,29 @@ use named owners. Mesh free-list heads, links and allocated bytes are compared;
 free payload bytes have explicit masks. Validation sentinels are checked for
 their mode-specific value before normalization. Reports list
 the compared word observations, unexpanded views and completion boundary.
+
+`--detail` adds per-update scalar Execute-PC occupancy, selected inclusive
+function intervals, and source-bound selection, recording, swap and submission
+milestones. Inclusive intervals use function entry and the caller continuation
+at the original stack depth; nested rows overlap. Scalar occupancy reports
+cycles without an Execute address separately, including FPU and frontend work.
+For the whole-system calendar, occupancy samples only logic edges. The frame
+rows include absolute begin/end cycles for comparing work with GPU lifetimes.
+`selection_profile` records selected inclusive calls between draw entry and the
+end of visibility/range selection, separately from ordered-update counters.
+It includes early presentation queuing and excludes CB recording. The update
+endpoint closes a returning outer call before its counters are published.
+
+`--vblank-period N` drives functional Display events every N interpreter steps
+or native cycles. It exercises queued swaps during CPU preparation; its period
+is synthetic and is reported explicitly. The whole-system backend uses its own
+Display clock. Use manual and periodic functional runs for output correctness,
+and the whole-system backend for actual presentation timing and contention.
+
+The `tankracer-physics-check` mode `trig-tables` validates complete authored i16
+tables at aligned and page-tail placements with two incoming DSEG3 mappings,
+including logical index, physical-sector overflow and oversized-root errors:
+
+```powershell
+target/release/tankracer-physics-check.exe target/trig-check target/combined/tankracer-driving-assets 1 trig-tables
+```

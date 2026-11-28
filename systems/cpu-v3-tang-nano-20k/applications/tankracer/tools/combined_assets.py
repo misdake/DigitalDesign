@@ -45,11 +45,14 @@ def main():
         source = original.read_text()
         source = source.replace('boot_resources', 'static_resources')
         (modules / (name + '.rs')).write_text('#![link_cseg = "frame"]\n' + source)
-    for name in ['impact', 'tank_response', 'ground']:
+    for name, segment in [('impact', 'frame'), ('tank_response', 'frame'), ('ground', 'app'),
+                          ('scene_query', 'world'), ('ground_response', 'frame'),
+                          ('deform_contact', 'frame'),
+                          ('projectile_trail', 'app'), ('particle_sprite', 'app'), ('quad_pool', 'app')]:
         original = owner.parent / 'rcc' / (name + '.rs')
         manifest['sources'].append(dict(file=str(original), sha256=hashlib.sha256(original.read_bytes()).hexdigest()))
         source = original.read_text()
-        (modules / (name + '.rs')).write_text('#![link_cseg = "frame"]\n' + source)
+        (modules / (name + '.rs')).write_text(f'#![link_cseg = "{segment}"]\n' + source)
     source = (render / 'map_stage.rs').read_text().replace('boot_resources', 'static_resources')
     (modules / 'map_stage.rs').write_text('#![link_cseg = "frame"]\n' + source)
     (modules / 'static_resources.rs').write_bytes((render / 'tankracer_static.rs').read_bytes())

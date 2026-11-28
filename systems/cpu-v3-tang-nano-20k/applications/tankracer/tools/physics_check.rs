@@ -975,6 +975,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Some("drive") => drive_cases(&output, Path::new(&fixture), limit)?,
             Some("vehicle") => vehicle_cases(&output, Path::new(&fixture), limit)?,
             Some("trig-assets") => trig_check::run(&output, Path::new(&fixture))?,
+            Some("trig-tables") => trig_check::tables(&output, Path::new(&fixture))?,
             Some("polar-kernel") => polar_check::run(&output)?,
             Some("vehicle-core-candidate") => {
                 let qualified = std::env::args_os()

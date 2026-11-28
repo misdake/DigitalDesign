@@ -509,6 +509,15 @@ impl Renderer {
     }
 
     pub fn draw(&mut self, frame: u16) {
+        let mut queued = false;
+        if self.active && self.display.frame_index() != self.previous {
+            if self.gpu.try_wait_list() {
+                // The completed image can wait for scanout while the CPU records.
+                // Its successor is submitted only after the old reads retire.
+                self.display.set_next_swap(self.completed);
+                queued = true;
+            }
+        }
         let frame = frame % CAMERA_COUNT;
         if RANGE_HYBRID != 0 {
             self.atlas.select(self.world.select_prepared_frame(frame));
@@ -524,9 +533,14 @@ impl Renderer {
             .record(&mut self.world, &mut commands, back, self.depth.ptr());
         let list = commands.finish_list();
         if self.active {
-            self.gpu.wait_list();
-            self.previous =
-                prepared_map::present_frame(&mut self.display, self.previous, self.completed);
+            if queued {
+                self.display.wait_vblank();
+                self.previous = self.display.frame_index();
+            } else {
+                self.gpu.wait_list();
+                self.previous =
+                    prepared_map::present_frame(&mut self.display, self.previous, self.completed);
+            }
         }
         self.gpu.submit_list(list);
         self.active = true;

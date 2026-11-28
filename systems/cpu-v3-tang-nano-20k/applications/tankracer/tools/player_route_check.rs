@@ -21,7 +21,7 @@ fn main(){
  let mut base=ptr(0x2000);if meta[3u16]!=0{base=ptr(0xc000);}
  let routes=player_route::Routes{header:base,points:at(base,0x100),count:meta[2u16],ranges:at(base,0x1000),items:at(base,0x1100)};
  let ids=entities::State{row_words:6,header:ptr(0x1000),rows:ptr(0x100c),storage_capacity:512};
- let world=scene_world::World{colliders:ptr(0x8000),properties:ptr(0),count:meta[1u16],fixed_count:meta[1u16],dynamic_page:121,dynamic_capacity:0,grid:spatial::Grid{page:65535,origin:ptr(0),shift_x:0,shift_z:0,items:ptr(0),ranges:ptr(0)},deformables:ordered::List{items:ptr(0),count:0,capacity:0}};
+ let world=scene_world::World{colliders:ptr(0x8000),properties:ptr(0),count:meta[1u16],fixed_count:meta[4u16],dynamic_page:121,dynamic_capacity:meta[5u16],grid:spatial::Grid{page:65535,origin:ptr(0),shift_x:0,shift_z:0,items:ptr(0),ranges:ptr(0)},deformables:ordered::List{items:ptr(0),count:0,capacity:0}};
  let car=player_route::Car{route:s,race:at(s,22)};let result=at(s,46);let mut frame=0u16;
  unsafe{write_dseg_page(2,120);write_dseg_page(3,119);}
  while frame<meta[0u16]{
@@ -48,7 +48,8 @@ fn main(){
     let mut instructions = 0u64;
     let mut minimum_stack = u16::MAX;
     let mut route_bytes = 0;
-    for (index, case) in cases.iter().enumerate() {
+    for index in 0..cases.len() * 3 {
+        let case = &cases[index / 3];
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&code.words);
         let memory = cpu.physical_memory_mut();
@@ -86,12 +87,29 @@ fn main(){
         }
         route_bytes = route_bytes.max(bytes);
         let colliders = values(&case["colliders"]);
+        let count = colliders.len() / 60;
+        let mut fixed = count;
+        if index % 3 == 1 {
+            fixed = count / 2;
+        } else if index % 3 == 2 {
+            fixed = 0;
+        }
+        fixed = fixed.max(count.saturating_sub(215));
+        let mut dynamic = Vec::new();
+        for row in fixed..count {
+            dynamic.extend_from_slice(&colliders[row * 60..(row + 1) * 60]);
+            dynamic.extend_from_slice(&[0x79ab; 16]);
+        }
+        let dynamic_first = 121 * 16384;
+        memory[dynamic_first..dynamic_first + dynamic.len()].copy_from_slice(&dynamic);
         memory[120 * 16384 + colliders.len()..121 * 16384].fill(0x79ab);
         let controls = case["controls"].as_array().unwrap();
         memory[0x180] = controls.len() as u16;
         memory[0x181] = (colliders.len() / 60) as u16;
         memory[0x182] = (values(&case["points"]).len() / 14) as u16;
         memory[0x183] = u16::from(banked);
+        memory[0x184] = fixed as u16;
+        memory[0x185] = (count - fixed) as u16;
         let route_image = memory[base..base + 0x1800].to_vec();
         for (frame, c) in controls.iter().enumerate() {
             assert_eq!(c.as_array().unwrap().len(), 10);
@@ -144,6 +162,10 @@ fn main(){
                     assert!(memory[address..address + 64].iter().all(|v| *v == 0x79ab));
                 }
                 assert_eq!(&memory[base..base + 0x1800], route_image.as_slice());
+                assert_eq!(
+                    &memory[dynamic_first..dynamic_first + dynamic.len()],
+                    dynamic.as_slice()
+                );
                 for (frame, c) in controls.iter().enumerate() {
                     for (i, v) in c.as_array().unwrap().iter().enumerate() {
                         let address = 0x4000 + frame * 20 + i * 2;
@@ -153,11 +175,9 @@ fn main(){
                         );
                     }
                 }
-                assert!(
-                    memory[120 * 16384 + colliders.len()..121 * 16384]
-                        .iter()
-                        .all(|v| *v == 0x79ab)
-                );
+                assert!(memory[120 * 16384 + colliders.len()..121 * 16384]
+                    .iter()
+                    .all(|v| *v == 0x79ab));
                 done += 1;
                 calls += 1;
             }
@@ -173,7 +193,7 @@ fn main(){
             return Err(format!("player-route case {index}: instruction bound").into());
         }
     }
-    let report = json!({"cases":cases.len(),"calls":calls,"checked_u16_values":checked,"maximum_integer_error":0,"instruction_steps":instructions,"code_bytes":code.total_code_words()*2,"maximum_stack_bytes":(0x8000-usize::from(minimum_stack))*2,"minimum_stack_word":minimum_stack,"route_metadata_bytes":route_bytes,"player_route_bytes":44,"racer_bytes":12,"clock_bytes":12,"scope":data["scope"],"backend":"instruction, live ENGLAND collider/identity/route views without GPU competition"});
+    let report = json!({"cases":cases.len()*3,"source_cases":cases.len(),"collider_storage_variants":3,"calls":calls,"checked_u16_values":checked,"maximum_integer_error":0,"instruction_steps":instructions,"code_bytes":code.total_code_words()*2,"maximum_stack_bytes":(0x8000-usize::from(minimum_stack))*2,"minimum_stack_word":minimum_stack,"route_metadata_bytes":route_bytes,"player_route_bytes":44,"racer_bytes":12,"clock_bytes":12,"scope":data["scope"],"backend":"instruction, live ENGLAND collider/identity/route views without GPU competition"});
     fs::write(
         output.join("player-route-report.json"),
         serde_json::to_vec_pretty(&report)?,

@@ -98,6 +98,13 @@ mine contacts with vehicle impulses and electric effects,
 explosion animation, smoke, contact fragments and shared blast slots, with their reference snapshot checks
 and scene integration boundary.
 
+Shared blast bands prepare thirteen inner/outer edge pairs in a 156-word
+local buffer. Adjacent quads copy the same transformed edge, while the first
+and thirteenth angles retain their distinct quantized values. Rotation and
+camera transforms keep their original integer rounding; allocation, release,
+colors and RNG follow the same ordered calls. The buffer lives only during
+band creation or read-only projection.
+
 `bench-tankracer-fragments` qualifies authored auxiliary mesh activation,
 real-terrain contact, vertex/center updates and live class completion through normal asset loading; see
 [mutable mesh fragments](collision.md#mutable-mesh-fragments).
@@ -125,6 +132,13 @@ each cutout view group. Only the first selected draw in a group installs its
 material. The remaining draws use checked Prepared slices.
 Use `--prepared-selection coarse-sphere-incremental` to reuse sphere decisions
 across nearby views while retaining coarse-sphere visibility and draw order.
+Selection combines child groups with an OR per Prepared unit. Once a unit is
+selected, later children defer their sphere tests and retain their packed bounds
+in the fringe cache. A later view can test those children when the unit is still
+unselected. This uses the existing fixed-capacity cache and preserves the final
+unit mask. Immutable group records are read directly through DSEG3 when the whole
+chunk fits one window; crossing chunks use the bounded staging copy. Each chunk
+restores the incoming mapping before returning.
 
 The ZIP contains `scene.json` and its texture payloads. All texture paths are
 relative ZIP entries. Positions use a shared Y-up source-world basis.
@@ -512,8 +526,13 @@ reference, duplicate edges, and the exact branch-0 circuit. `route.json` wraps
 the authored graph with positions transformed using the scene origin and scale.
 `route-ring.json` records the static-group ordering and conservative segment ranges.
 For the current compact ENGLAND scene, all 1,235 static groups share one ring,
-including 697 opaque and 538 blended sort units. Each record has 16 u16 words:
-39,520 bytes of metadata. The 33-entry segment directory uses 12 u16 words per
+including 697 opaque and 538 blended sort units. Hybrid Prepared selection
+publishes five u16 words per group: signed Q9.7 center XYZ, unsigned Q9.7
+radius, and the final Prepared unit ID. Both the ring and spatial fallback
+use this consumer format; each table occupies 12,350 bytes. The draw spans,
+material bindings and full bounds remain in the offline layout pass. Other
+recording modes retain their 16-word ring records (39,520 bytes).
+The 33-entry segment directory uses 12 u16 words per
 entry (792 bytes); 39 fixed chunks of at most 32 records use a 1,248-byte bound
 directory. The renderer keeps a 4-byte render-only position key and a 2-byte
 location-grid cell index.
@@ -521,13 +540,17 @@ The ring tables are loaded, including in the explicit clusters comparison build;
 the current compiler retains their resource references. JSON sidecars are
 inspection data and do not add another runtime copy.
 
-Each record preserves the compact center/extents, radius, meshlet
+The full offline record preserves compact center/extents, radius, meshlet
 index/count pairs, material/billboard key and stable group ID. Its last five
 words are reserved. Intervals use X/Z AABBs rather than the radius field.
+Hybrid publication retains the same sphere bits and inlines the unit lookup;
+the spatial directory offsets use its five-word stride. Runtime range selection
+uses immutable draw-unit data independently of the visibility records.
 The segment directory stores cyclic start/count, X/Z origin and delta, and a
 reciprocal-length hint. Meshlet indices remain logical geometry spans. Each
 chunk encloses both group boxes and visibility spheres; it uses the existing
-coarse classifier before reading metadata into a shared 512-word scratch.
+coarse classifier before reading metadata into a shared scratch: 160 words
+for hybrid spheres, or 512 words for full records.
 Opaque and blended groups then follow their existing visibility tests,
 opaque coalescing and depth/stable-ID transparent sort.
 

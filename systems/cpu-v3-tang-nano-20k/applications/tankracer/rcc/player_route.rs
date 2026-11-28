@@ -94,7 +94,7 @@ pub fn search(r: &Routes, world: &scene_world::World, ids: &entities::State, q: 
     let mut best = 65535u16;
     let mut distance = fix32::from_words(40960, 15);
     let collider: Buf<u16, 60> = Buf::new([0; 60]);
-    let raw = collider.as_array();
+    let mut raw = collider.as_array();
     let delta: Buf<u16, 6> = Buf::new([0; 6]);
     let d = delta.as_array();
     while z <= end_z {
@@ -131,8 +131,17 @@ pub fn search(r: &Routes, world: &scene_world::World, ids: &entities::State, q: 
                         if g(row, 1) == n(-1) {
                             continue;
                         }
-                        if !scene_world::load_collider(world, id.lo_bits(), raw) {
-                            return n(-4);
+                        let object = id.lo_bits();
+                        if object < world.fixed_count {
+                            if object >= world.count {
+                                return n(-4);
+                            }
+                            raw = at(world.colliders, object * 60);
+                        } else {
+                            raw = collider.as_array();
+                            if !scene_world::load_collider(world, object, raw) {
+                                return n(-4);
+                            }
                         }
                         let mut axis = 0u16;
                         let mut far = false;
@@ -200,8 +209,16 @@ pub fn search(r: &Routes, world: &scene_world::World, ids: &entities::State, q: 
         return n(0);
     }
     let row = at(r.points, best * 14);
-    if !scene_world::load_collider(world, best, raw) {
-        return n(-4);
+    if best < world.fixed_count {
+        if best >= world.count {
+            return n(-4);
+        }
+        raw = at(world.colliders, best * 60);
+    } else {
+        raw = collider.as_array();
+        if !scene_world::load_collider(world, best, raw) {
+            return n(-4);
+        }
     }
     let mut value = g(raw, 0);
     if !q.nearest {
@@ -277,8 +294,14 @@ pub fn cross(
     }
     let row = at(r.points, next_id.lo_bits() * 14);
     let collider: Buf<u16, 60> = Buf::new([0; 60]);
-    let raw = collider.as_array();
-    if !scene_world::load_collider(world, next_id.lo_bits(), raw) {
+    let mut raw = collider.as_array();
+    let object = next_id.lo_bits();
+    if object < world.fixed_count {
+        if object >= world.count {
+            return n(-4);
+        }
+        raw = at(world.colliders, object * 60);
+    } else if !scene_world::load_collider(world, object, raw) {
         return n(-4);
     }
     if !inside_gate(raw, position, g(row, 6)) {

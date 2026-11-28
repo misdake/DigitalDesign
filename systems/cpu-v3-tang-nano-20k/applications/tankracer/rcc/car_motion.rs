@@ -36,13 +36,13 @@ pub struct Frame {
     pub pose: vehicle_pose::Environment,
 }
 fn n(v: i16) -> fix32 {
-    integer::from_i16(v)
+    fix32::from_words(v as u16, (v >> 15) as u16)
 }
 fn g(v: Array<u16>, i: u16) -> fix32 {
-    attitude::get(v, i)
+    fix32::load_words(v, i * 2)
 }
 fn p(v: Array<u16>, i: u16, x: fix32) {
-    attitude::put(v, i, x);
+    fix32::store_words(v, i * 2, x);
 }
 fn copy(mut to: Array<u16>, from: Array<u16>, words: u16) {
     let mut i = 0u16;

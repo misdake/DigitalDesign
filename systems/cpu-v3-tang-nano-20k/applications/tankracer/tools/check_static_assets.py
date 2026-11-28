@@ -9,7 +9,10 @@ from pathlib import Path
 from PIL import Image
 from compare_frames import compare
 
-from static_assets import CLUSTER_GROUPS, CLUSTER_WORDS, GROUP_WORDS, cluster_groups, opaque_spans, prepared_ring, q16
+from static_assets import (
+    CLUSTER_GROUPS, CLUSTER_WORDS, GROUP_WORDS, cluster_groups, opaque_spans,
+    prepared_ring, q16, sphere_groups,
+)
 
 
 def signed(word):
@@ -146,6 +149,34 @@ class SelectionRecords(unittest.TestCase):
         self.assertEqual([clusters[i + 14] for i in range(0, len(clusters), CLUSTER_WORDS)],
                          [0, 32 * GROUP_WORDS, 64 * GROUP_WORDS])
         self.assertEqual([packed[i + 10] for i in range(0, len(packed), GROUP_WORDS)], list(range(65)))
+
+    def test_hybrid_spheres_preserve_bounds_and_unit_identity(self):
+        # Spatial order differs from stable identity. Include signed centers,
+        # an unsigned large radius, and route records with unrelated padding.
+        source = sum((row([i - 17, -i / 2, i % 7 - 3], [1, 2, 3], i)
+                      for i in range(33)), [])
+        packed, _, _ = cluster_groups(source)
+        units = [65535 - i * 3 for i in range(33)]
+        spheres = sphere_groups(packed, GROUP_WORDS, units)
+        ring = []
+        for at in range(0, len(packed), GROUP_WORDS):
+            ring.extend(packed[at:at + GROUP_WORDS] + [49999] * 5)
+        self.assertEqual(spheres, sphere_groups(ring, 16, units))
+        self.assertEqual(len(spheres), 33 * 5)
+        for at in range(0, len(spheres), 5):
+            identity = (65535 - spheres[at + 4]) // 3
+            old = struct.unpack('<7i', struct.pack('<14H', *source[identity * 18:identity * 18 + 14]))
+            center = [signed(v) * 512 for v in spheres[at:at + 3]]
+            self.assertGreaterEqual(spheres[at + 3] * 512,
+                                    old[3] + math.dist(center, old[:3]))
+        packed[6] = 65535
+        self.assertEqual(sphere_groups(packed, GROUP_WORDS, units)[3], 65535)
+        with self.assertRaisesRegex(ValueError, 'layout'):
+            sphere_groups(packed[:-1], GROUP_WORDS, units)
+        with self.assertRaisesRegex(ValueError, 'group ID'):
+            sphere_groups(packed, GROUP_WORDS, [0])
+        with self.assertRaisesRegex(ValueError, 'unit ID'):
+            sphere_groups(packed, GROUP_WORDS, [65536] * 33)
 
     def test_invalid_coordinate_and_material(self):
         with self.assertRaisesRegex(ValueError, 'center'):

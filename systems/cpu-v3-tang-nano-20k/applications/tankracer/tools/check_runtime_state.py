@@ -30,16 +30,22 @@ def free_payload_ranges(words, start, count):
     return result
 
 
+
+def capture_ready(report):
+    """Accept a completed run or an explicitly requested coherent frame prefix."""
+    count = len(report['frames'])
+    prefix = count > 0 and report.get('requested_frame_prefix') == count
+    return (report['passed'] and report['backend'] in ('state', 'native-state', 'system')
+            and (report.get('execution_complete', True) or prefix))
+
+
 class Recording:
     def __init__(self, directory, report):
         self.artifact = Artifact(directory)
         self.report_path = Path(report).resolve()
         self.report = json.loads(self.report_path.read_text())
-        system_prefix = (self.report['backend'] == 'system'
-                         and self.report.get('requested_frame_prefix') == len(self.report['frames']))
-        if (not self.report['passed'] or self.report['backend'] not in ('state', 'system')
-                or not (self.report.get('execution_complete', True) or system_prefix)):
-            raise ValueError('a completed state-capture report is required')
+        if not capture_ready(self.report):
+            raise ValueError('a completed run or requested frame-prefix capture is required')
         if self.report['artifact_id'] != self.artifact.manifest['artifact_id']:
             raise ValueError('capture report belongs to another image')
         self.assets = json.loads(self.artifact.files['tankracer-driving-assets/assets.json'])

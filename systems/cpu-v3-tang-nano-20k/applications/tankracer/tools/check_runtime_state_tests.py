@@ -1,7 +1,7 @@
 """Check the allocator boundary used by frame-state comparisons."""
 import unittest
 
-from check_runtime_state import free_payload_ranges
+from check_runtime_state import capture_ready, free_payload_ranges
 
 
 class MeshArenaMask(unittest.TestCase):
@@ -28,6 +28,27 @@ class MeshArenaMask(unittest.TestCase):
         words[11] = 6
         with self.assertRaisesRegex(ValueError, 'exceeds'):
             free_payload_ranges(words, 2, 14)
+
+
+class CaptureBoundary(unittest.TestCase):
+    def test_requested_prefix_is_an_explicit_boundary_on_each_capture_backend(self):
+        for backend in ('state', 'native-state', 'system'):
+            report = dict(passed=True, backend=backend, execution_complete=False,
+                          requested_frame_prefix=2, frames=[{}, {}])
+            self.assertTrue(capture_ready(report))
+            report['requested_frame_prefix'] = 3
+            self.assertFalse(capture_ready(report))
+            del report['requested_frame_prefix']
+            self.assertFalse(capture_ready(report))
+
+    def test_empty_failed_and_non_capture_runs_are_rejected(self):
+        report = dict(passed=True, backend='native-state', execution_complete=False,
+                      requested_frame_prefix=0, frames=[])
+        self.assertFalse(capture_ready(report))
+        report.update(requested_frame_prefix=1, frames=[{}], passed=False)
+        self.assertFalse(capture_ready(report))
+        report.update(passed=True, backend='native', execution_complete=True)
+        self.assertFalse(capture_ready(report))
 
 
 if __name__ == '__main__':

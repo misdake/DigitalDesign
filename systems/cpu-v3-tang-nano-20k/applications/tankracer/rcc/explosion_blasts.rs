@@ -1,6 +1,6 @@
 //! Two shared blast slots and derived additive geometry on live effect pools.
 use crate::dsl_rt::*;
-use crate::{attitude, collision, effect_pool, integer, projectile, quad_pool, trig_lookup};
+use crate::{attitude, effect_pool, integer, projectile, quad_pool, trig_lookup};
 
 pub struct State {
     // i32: four signed times, two next slots, two unsigned counts, total.
@@ -194,41 +194,89 @@ fn allocate(
     out.slot = slot;
     out
 }
-fn point(out: Array<u16>, origin: Array<u16>, x: fix32, y: fix32, angle: u16, ctx: &Context) {
+fn rotation(out: Array<u16>, angle: u16, ctx: &Context) {
     let index = (angle & 65532) >> 2;
-    let sine = trig_lookup::index(ctx.sine, index);
-    let cosine = trig_lookup::index(ctx.sine, 4096 + index);
-    let local: Buf<u16, 6> = Buf::new([0; 6]);
+    p(out, 0, trig_lookup::index(ctx.sine, index));
+    p(out, 1, trig_lookup::index(ctx.sine, 4096 + index));
+}
+fn point(
+    out: Array<u16>,
+    origin: Array<u16>,
+    x: fix32,
+    y: fix32,
+    rotation: Array<u16>,
+    ctx: &Context,
+) {
+    let sine = fix32::load_words(rotation, 0);
+    let cosine = fix32::load_words(rotation, 2);
     let delta: Buf<u16, 6> = Buf::new([0; 6]);
-    p(
-        local.as_array(),
-        0,
-        integer::trunc_shift(fmul_lo32(x, cosine) - fmul_lo32(y, sine), 12),
-    );
-    p(
-        local.as_array(),
-        1,
-        integer::trunc_shift(fmul_lo32(x, sine) + fmul_lo32(y, cosine), 12),
-    );
-    collision::transform(delta.as_array(), ctx.camera, local.as_array(), false);
+    let u = integer::trunc_shift(fmul_lo32(x, cosine) - fmul_lo32(y, sine), 12);
+    let v = integer::trunc_shift(fmul_lo32(x, sine) + fmul_lo32(y, cosine), 12);
+    // The local Z component is zero. Keep both original rounding stages and
+    // complete the transform before publishing any output coordinates.
     let mut i = 0u16;
+    while i < 3 {
+        let a = fix32::load_words(ctx.camera, i * 2);
+        let b = fix32::load_words(ctx.camera, (i + 3) * 2);
+        fix32::store_words(
+            delta.as_array(),
+            i * 2,
+            integer::sar(fmul_lo32(a, u) + fmul_lo32(b, v), 12),
+        );
+        i += 1;
+    }
+    i = 0;
     while i < 3 {
         p(out, i, g(origin, i) + g(delta.as_array(), i));
         i += 1;
     }
 }
-fn band_quad(mut out: Array<u16>, row: Array<u16>, index: u16, initial: bool, ctx: &Context) {
+fn band_points(out: Array<u16>, row: Array<u16>, initial: bool, ctx: &Context) {
     let inner = g(row, 0);
     let mut outer = inner - integer::sar(inner, 2);
     if initial {
         outer = n(8);
     }
-    let first = index * 5461;
-    let second = (index + 1) * 5461;
-    point(out, at(row, 4), inner, n(0), first, ctx);
-    point(at(out, 6), at(row, 4), outer, n(0), first, ctx);
-    point(at(out, 12), at(row, 4), outer, n(0), second, ctx);
-    point(at(out, 18), at(row, 4), inner, n(0), second, ctx);
+    let angle: Buf<u16, 4> = Buf::new([0; 4]);
+    let mut i = 0u16;
+    while i < 13 {
+        rotation(angle.as_array(), i * 5461, ctx);
+        point(
+            at(out, i * 12),
+            at(row, 4),
+            inner,
+            n(0),
+            angle.as_array(),
+            ctx,
+        );
+        point(
+            at(out, i * 12 + 6),
+            at(row, 4),
+            outer,
+            n(0),
+            angle.as_array(),
+            ctx,
+        );
+        i += 1;
+    }
+}
+fn band_quad(
+    mut out: Array<u16>,
+    row: Array<u16>,
+    index: u16,
+    initial: bool,
+    ctx: &Context,
+    points: Array<u16>,
+) {
+    let inner = g(row, 0);
+    let mut i = 0u16;
+    while i < 6 {
+        out[i] = points[index * 12 + i];
+        out[6 + i] = points[index * 12 + 6 + i];
+        out[12 + i] = points[index * 12 + 18 + i];
+        out[18 + i] = points[index * 12 + 12 + i];
+        i += 1;
+    }
     let flipped = g(row, 7) != n(0);
     let mut extra = 15u16;
     if initial || flipped {
@@ -272,6 +320,8 @@ fn ring_quad(mut out: Array<u16>, row: Array<u16>, ray: Array<u16>, project: boo
         }
         blue = red;
     }
+    let angle: Buf<u16, 4> = Buf::new([0; 4]);
+    rotation(angle.as_array(), g(ray, 4).lo_bits(), ctx);
     let mut i = 0u16;
     while i < 4 {
         let mut x = n(0);
@@ -282,7 +332,7 @@ fn ring_quad(mut out: Array<u16>, row: Array<u16>, ray: Array<u16>, project: boo
         if i == 1 || i == 2 {
             y = -y;
         }
-        point(at(out, i * 6), at(row, 2), x, y, g(ray, 4).lo_bits(), ctx);
+        point(at(out, i * 6), at(row, 2), x, y, angle.as_array(), ctx);
         i += 1;
     }
     p(out, 12, g(ctx.resources, 1 + kind));
@@ -327,9 +377,11 @@ pub fn band(
         p(row, 7, n(1));
     }
     let quad: Buf<u16, 32> = Buf::new([0; 32]);
+    let points: Buf<u16, 156> = Buf::new([0; 156]);
+    band_points(points.as_array(), row, true, ctx);
     i = 0;
     while i < 12 {
-        band_quad(quad.as_array(), row, i, true, ctx);
+        band_quad(quad.as_array(), row, i, true, ctx, points.as_array());
         let handle = quad_pool::allocate(quads, lines, quad.as_array());
         p(row, 8 + i, handle);
         if handle == n(-1) {
@@ -482,6 +534,8 @@ pub fn project(state: &State, ctx: &Context, out: Array<u16>) -> fix32 {
     let mut slot = 0u16;
     while slot < 2 {
         if g(state.core, slot) != n(0) {
+            let points: Buf<u16, 156> = Buf::new([0; 156]);
+            band_points(points.as_array(), at(state.bands, slot * 40), false, ctx);
             let mut i = 0u16;
             while i < 12 {
                 band_quad(
@@ -490,6 +544,7 @@ pub fn project(state: &State, ctx: &Context, out: Array<u16>) -> fix32 {
                     i,
                     false,
                     ctx,
+                    points.as_array(),
                 );
                 count += 1;
                 i += 1;

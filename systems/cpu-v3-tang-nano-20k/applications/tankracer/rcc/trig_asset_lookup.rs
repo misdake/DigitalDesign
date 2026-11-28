@@ -10,11 +10,27 @@ pub fn index(table: Array<i16>, index: u16) -> fix32 {
     if root[3u16] != 0 || index >= root[2u16] >> 1 {
         halt(0x7d01);
     }
-    let sample: Buf<u16, 1> = Buf::new([0; 1]);
-    let values = sample.as_array();
-    if !gpu_window_asset_read(values, root[0u16], index, 1) {
+    let first = root[0u16];
+    if gpu_memory_faulted() || (index >> 6) > 65535 - first {
         halt(0x7d02);
     }
+    // One immutable word: physical_word = first_sector * 64 + index.
+    // The page/offset split is exact and leaves the incoming window intact.
+    let sector = first + (index >> 6);
+    let page = sector >> 8;
+    let offset = ((sector & 255) << 6) + (index & 63);
+    let saved = read_dseg_page(3);
+    if saved != page {
+        unsafe {
+            write_dseg_page(3, page);
+        }
+    }
+    let value = unsafe { Ptr::from_addr(0xc000 + offset).read(0) };
+    if saved != page {
+        unsafe {
+            write_dseg_page(3, saved);
+        }
+    }
     // Raw i32 carrier: explicit i16 sign extension, never ordinary I16TOF scaling.
-    integer::from_i16(values[0u16] as i16)
+    integer::from_i16(value as i16)
 }

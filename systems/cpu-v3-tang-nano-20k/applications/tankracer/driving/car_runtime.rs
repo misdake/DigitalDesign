@@ -27,13 +27,13 @@ pub(super) fn sub(a: Array<u16>, w: u16) -> Array<u16> {
     unsafe { a.as_ptr().add(w as i16).as_u16_array() }
 }
 pub(super) fn g(a: Array<u16>, i: u16) -> fix32 {
-    attitude::get(a, i)
+    fix32::load_words(a, i * 2)
 }
 fn p(a: Array<u16>, i: u16, v: fix32) {
-    attitude::put(a, i, v);
+    fix32::store_words(a, i * 2, v);
 }
 fn n(v: i16) -> fix32 {
-    integer::from_i16(v)
+    fix32::from_words(v as u16, (v >> 15) as u16)
 }
 pub(super) fn row(slot: u16) -> Array<u16> {
     ptr(0xc000 + CAR_WORD + slot * CAR_WORDS)

@@ -50,7 +50,7 @@ fn i32_at(data: Array<u16>, at: u16) -> fix32 {
     fix32::from_words(data[at], data[at + 1])
 }
 fn signed(value: u16) -> fix32 {
-    integer::from_i16(value as i16)
+    fix32::from_words(value, ((value as i16) >> 15) as u16)
 }
 fn byte(data: Array<u16>, at: u16, index: u16) -> u16 {
     (data[at + (index >> 1)] >> ((index & 1) << 3)) & 255
@@ -58,10 +58,20 @@ fn byte(data: Array<u16>, at: u16, index: u16) -> u16 {
 fn miss_height() -> fix32 {
     fix32::from_words(1, 32768)
 }
-fn edge(x: fix32, z: fix32, data: Array<u16>, a: u16, b: u16) -> bool {
+fn inside(x: fix32, z: fix32, data: Array<u16>, a: u16, b: u16, c: u16) -> bool {
     let ax = signed(data[a]);
     let az = signed(data[a + 2]);
-    fmul_lo32(x - ax, signed(data[b + 2]) - az) <= fmul_lo32(z - az, signed(data[b]) - ax)
+    let bx = signed(data[b]);
+    let bz = signed(data[b + 2]);
+    if fmul_lo32(x - ax, bz - az) > fmul_lo32(z - az, bx - ax) {
+        return false;
+    }
+    // Only decode C after AB accepts. Reuse the same signed coordinates on
+    // BC and CA, keeping the original wrapped products and short-circuit order.
+    let cx = signed(data[c]);
+    let cz = signed(data[c + 2]);
+    fmul_lo32(x - bx, cz - bz) <= fmul_lo32(z - bz, cx - bx)
+        && fmul_lo32(x - cx, az - cz) <= fmul_lo32(z - cz, ax - cx)
 }
 
 impl Terrain {
@@ -203,10 +213,7 @@ impl Terrain {
                         let a = vertices + (data[face + 3] & 255) * 3;
                         let b = vertices + (data[face + 3] >> 8) * 3;
                         let c = vertices + data[face + 4] * 3;
-                        if edge(dx, dz, data, a, b)
-                            && edge(dx, dz, data, b, c)
-                            && edge(dx, dz, data, c, a)
-                        {
+                        if inside(dx, dz, data, a, b, c) {
                             selected.status = 1;
                             selected.node = node;
                             selected.mesh = mesh;

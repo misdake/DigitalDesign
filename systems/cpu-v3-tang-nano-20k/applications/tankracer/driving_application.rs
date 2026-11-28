@@ -225,6 +225,12 @@ pub const COMBINED_APPLICATION: Definition = Definition {
             "impact",
             "tank_response",
             "ground",
+            "scene_query",
+            "ground_response",
+            "deform_contact",
+            "projectile_trail",
+            "particle_sprite",
+            "quad_pool",
         ] {
             (context.watch)(
                 &context

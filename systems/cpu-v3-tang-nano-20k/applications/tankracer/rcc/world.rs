@@ -7,7 +7,7 @@ mod map_stage;
 mod pvs;
 use boot_resources::*;
 use gpu_api::*;
-use gpu_window::gpu_window_asset_read;
+use gpu_window::{gpu_memory_faulted, gpu_window_asset_read};
 
 const FAR: fix32 = fix32::from_words(MAP_FAR_LOW, MAP_FAR_HIGH);
 const DISPLAY_DISTANCE: fix32 = fix32::from_words(MAP_DISPLAY_LOW, MAP_DISPLAY_HIGH);
@@ -481,50 +481,53 @@ impl World {
                         let depth = -project(&view.matrix.row2, &bound);
                         if classification == 2 || visible_group(view, words, record, &bound, depth)
                         {
-                            let draw_first = words[record + 7];
-                            let draw_count = words[record + 8];
-                            let draw_material = words[record + 9];
                             if RANGE_HYBRID != 0 {
-                                let unit = map_range_select_index()[words[record + 10]];
+                                let unit = words[record + 4];
                                 mask[unit >> 4] |= 1u16 << (unit & 15);
-                            } else if words[record + 10] >= OPAQUE_COUNT {
-                                let mut output = blended;
-                                let cutout =
-                                    map_materials()[(draw_material & 32767) * 4 + 1] & 8 != 0;
-                                let mut target = result.blended * 6;
-                                if cutout {
-                                    target = (GROUP_COUNT - OPAQUE_COUNT - 1 - result.cutout) * 6;
-                                }
-                                if !cutout && same_blended {
-                                    if result.blended >= self.previous_blended {
-                                        same_blended = false;
-                                    } else if output[target + 3] != words[record + 10] {
-                                        same_blended = false;
-                                    }
-                                }
-                                output[target + 3] = words[record + 10];
-                                output[target + 4] = depth.lo_bits();
-                                output[target + 5] = depth.hi_bits();
-                                output[target] = draw_first;
-                                output[target + 1] = draw_count;
-                                output[target + 2] = draw_material;
-                                if cutout {
-                                    result.cutout += 1;
-                                } else {
-                                    result.blended += 1;
-                                }
                             } else {
-                                if TANKRACER_PREPARED != 0 {
-                                    let item = MAP_OPAQUE_RING_INDEX[words[record + 10]];
-                                    mask[item >> 4] |= 1u16 << (item & 15);
-                                    // Retain the exact selected range already loaded by culling.
-                                    // The remaining word per group holds its ordered index.
-                                    let mut spans = unsafe { self.opaque_draws.as_u16_array() };
-                                    spans[item * 3] = draw_first;
-                                    spans[item * 3 + 1] = draw_count;
-                                    spans[item * 3 + 2] = draw_material;
+                                let draw_first = words[record + 7];
+                                let draw_count = words[record + 8];
+                                let draw_material = words[record + 9];
+                                if words[record + 10] >= OPAQUE_COUNT {
+                                    let mut output = blended;
+                                    let cutout =
+                                        map_materials()[(draw_material & 32767) * 4 + 1] & 8 != 0;
+                                    let mut target = result.blended * 6;
+                                    if cutout {
+                                        target =
+                                            (GROUP_COUNT - OPAQUE_COUNT - 1 - result.cutout) * 6;
+                                    }
+                                    if !cutout && same_blended {
+                                        if result.blended >= self.previous_blended {
+                                            same_blended = false;
+                                        } else if output[target + 3] != words[record + 10] {
+                                            same_blended = false;
+                                        }
+                                    }
+                                    output[target + 3] = words[record + 10];
+                                    output[target + 4] = depth.lo_bits();
+                                    output[target + 5] = depth.hi_bits();
+                                    output[target] = draw_first;
+                                    output[target + 1] = draw_count;
+                                    output[target + 2] = draw_material;
+                                    if cutout {
+                                        result.cutout += 1;
+                                    } else {
+                                        result.blended += 1;
+                                    }
                                 } else {
-                                    mask[draw_first >> 4] |= 1u16 << (draw_first & 15);
+                                    if TANKRACER_PREPARED != 0 {
+                                        let item = MAP_OPAQUE_RING_INDEX[words[record + 10]];
+                                        mask[item >> 4] |= 1u16 << (item & 15);
+                                        // Retain the exact selected range already loaded by culling.
+                                        // The remaining word per group holds its ordered index.
+                                        let mut spans = unsafe { self.opaque_draws.as_u16_array() };
+                                        spans[item * 3] = draw_first;
+                                        spans[item * 3 + 1] = draw_count;
+                                        spans[item * 3 + 2] = draw_material;
+                                    } else {
+                                        mask[draw_first >> 4] |= 1u16 << (draw_first & 15);
+                                    }
                                 }
                             }
                         }
@@ -969,7 +972,7 @@ impl RangeVisibility {
         }
     }
 
-    fn select(&mut self, chunk: &RingChunk, words: Array<u16>, mask: Array<u16>) {
+    fn select(&mut self, chunk: &RingChunk, mut words: Array<u16>, mask: Array<u16>) {
         let first = chunk.first;
         let count = chunk.count;
         let classification = chunk.classification;
@@ -981,13 +984,30 @@ impl RangeVisibility {
         let mut fringe = unsafe { self.fringe.as_u16_array() };
         let shape_changed = chunks[slot + 1] != count || chunks[slot] != first;
         let rebuild = classification == 1 && (shape_changed || chunks[slot + 2] == 65535);
+        let mut saved = 0u16;
+        let mut mapped = false;
         if shape_changed || rebuild {
-            if !gpu_window_asset_read(
-                words,
-                MAP_RING_GROUP_DATA.first_sector,
-                first * RING_GROUP_WORDS,
-                count * RING_GROUP_WORDS,
-            ) {
+            let offset = first * RING_GROUP_WORDS;
+            let size = count * RING_GROUP_WORDS;
+            if gpu_memory_faulted() || (offset >> 6) > 65535 - MAP_RING_GROUP_DATA.first_sector {
+                halt(0x7a12);
+            }
+            let sector = MAP_RING_GROUP_DATA.first_sector + (offset >> 6);
+            let at = ((sector & 255) << 6) + (offset & 63);
+            // Immutable group records can be read in place. Keep the existing
+            // bounded copy for the occasional chunk spanning two windows.
+            if size <= 16384 - at {
+                saved = read_dseg_page(3);
+                let page = sector >> 8;
+                if saved != page {
+                    unsafe {
+                        write_dseg_page(3, page);
+                    }
+                    mapped = true;
+                }
+                words = unsafe { Ptr::from_addr(0xc000 + at).as_u16_array() };
+            } else if !gpu_window_asset_read(words, MAP_RING_GROUP_DATA.first_sector, offset, size)
+            {
                 halt(0x7a12);
             }
             let mut i: u16 = 0;
@@ -995,13 +1015,18 @@ impl RangeVisibility {
             let mut pending = base * 5;
             while i < count {
                 let at = i * RING_GROUP_WORDS;
-                let unit = map_range_select_index()[words[at + 10]];
+                let unit = words[at + 4];
                 all[base + i] = unit;
                 if classification == 2 {
                     select_unit(mask, unit);
                 } else {
-                    let bound = group_bound(words, at);
-                    let status = anchor_sphere(self.axes.add(24), &bound);
+                    let marked = mask[unit >> 4] & (1u16 << (unit & 15)) != 0;
+                    // The frame output is an OR per unit. Deferred groups stay
+                    // in fringe so another view can still select them later.
+                    let mut status = 1u16;
+                    if !marked {
+                        status = anchor_sphere(self.axes.add(24), words, at);
+                    }
                     if status == 3 {
                         visible[accepted] = unit;
                         accepted += 1;
@@ -1010,12 +1035,15 @@ impl RangeVisibility {
                         fringe[pending] = words[at];
                         fringe[pending + 1] = words[at + 1];
                         fringe[pending + 2] = words[at + 2];
-                        fringe[pending + 3] = words[at + 6];
+                        fringe[pending + 3] = words[at + GROUP_RADIUS_WORD];
                         fringe[pending + 4] = unit;
                         pending += 5;
-                        if (self.new_anchor && status == 2)
-                            || (!self.new_anchor && visible_sphere(self.axes, &bound))
-                        {
+                        let mut visible_now = marked || (self.new_anchor && status == 2);
+                        if !self.new_anchor && !marked {
+                            let bound = group_bound(words, at);
+                            visible_now = visible_sphere(self.axes, &bound);
+                        }
+                        if !marked && visible_now {
                             select_unit(mask, unit);
                         }
                     }
@@ -1043,16 +1071,24 @@ impl RangeVisibility {
             }
             i = base * 5;
             while i < chunks[slot + 3] {
-                let bound = Vec4 {
-                    x: compact_signed(fringe[i]),
-                    y: compact_signed(fringe[i + 1]),
-                    z: compact_signed(fringe[i + 2]),
-                    w: compact_unsigned(fringe[i + 3]),
-                };
-                if visible_sphere(self.axes, &bound) {
-                    select_unit(mask, fringe[i + 4]);
+                let unit = fringe[i + 4];
+                if mask[unit >> 4] & (1u16 << (unit & 15)) == 0 {
+                    let bound = Vec4 {
+                        x: compact_signed(fringe[i]),
+                        y: compact_signed(fringe[i + 1]),
+                        z: compact_signed(fringe[i + 2]),
+                        w: compact_unsigned(fringe[i + 3]),
+                    };
+                    if visible_sphere(self.axes, &bound) {
+                        select_unit(mask, unit);
+                    }
                 }
                 i += 5;
+            }
+        }
+        if mapped {
+            unsafe {
+                write_dseg_page(3, saved);
             }
         }
     }
@@ -1106,12 +1142,20 @@ fn store_sphere_axes(view: &Mat3x4, target: Ptr) {
 
 // 0: stable reject, 1: fringe reject, 2: fringe accept, 3: stable accept.
 // The side guards round up MOTION * (1 + slope), including fixed-point error.
-fn anchor_sphere(axes: Ptr, bound: &Vec4) -> u16 {
-    let center = vec4::new(bound.x, bound.y, bound.z, fix32::one());
+fn anchor_sphere(axes: Ptr, words: Array<u16>, at: u16) -> u16 {
+    // Consume the packed bound directly; the caller only expands a Vec4 when
+    // an older anchor also requires a test against the current view.
+    let center = vec4::new(
+        compact_signed(words[at]),
+        compact_signed(words[at + 1]),
+        compact_signed(words[at + 2]),
+        fix32::one(),
+    );
+    let bound_radius = compact_unsigned(words[at + GROUP_RADIUS_WORD]);
     let depth = -fdot(vec4::import(axes.add(16)), center);
-    let radius = bound.w + fix!(0.0078125);
+    let radius = bound_radius + fix!(0.0078125);
     let near = depth + radius;
-    let far = DISPLAY_DISTANCE - (depth - bound.w);
+    let far = DISPLAY_DISTANCE - (depth - bound_radius);
     if near <= fix32::zero() {
         return if near <= -MOTION { 0 } else { 1 };
     }
@@ -1169,7 +1213,7 @@ fn group_bound(words: Array<u16>, at: u16) -> Vec4 {
         x: compact_signed(words[at]),
         y: compact_signed(words[at + 1]),
         z: compact_signed(words[at + 2]),
-        w: compact_unsigned(words[at + 6]),
+        w: compact_unsigned(words[at + GROUP_RADIUS_WORD]),
     }
 }
 

@@ -64,6 +64,25 @@ pub fn replace(pool: &Pool, lines: &effect_pool::Pool, handle: fix32, quad: Arra
     if !valid(handle) {
         return 1;
     }
+    if handle.hi_bits() == 0 && handle.lo_bits() < 159 {
+        let row = unsafe {
+            pool.records
+                .as_ptr()
+                .add((handle.lo_bits() * 32) as i16)
+                .as_u16_array()
+        };
+        let mut i = 0u16;
+        while i < 16 {
+            let mut value = fix32::load_words(quad, i * 2);
+            if i < 12 {
+                value = integer::sar(value, 3);
+            }
+            fix32::store_words(row, i * 2, value);
+            i += 1;
+        }
+        return 0;
+    }
+    // Quad 159's tail and the -1/160 exhaustion aliases retain their split views.
     let mut i = 0u16;
     while i < 16 {
         let mut value = attitude::get(quad, i);
@@ -82,7 +101,8 @@ pub fn allocate(pool: &mut Pool, lines: &effect_pool::Pool, quad: Array<u16>) ->
     let mut i = 0u16;
     while i < 160 {
         let handle = fix32::from_words(i, 0);
-        if get(pool, lines, handle, 1) == effect_pool::free() {
+        // The free marker of every ordinary slot, including 159, is resident.
+        if fix32::load_words(pool.records, i * 32 + 2) == effect_pool::free() {
             pool.count = pool.count + n(1);
             replace(pool, lines, handle, quad);
             return handle;

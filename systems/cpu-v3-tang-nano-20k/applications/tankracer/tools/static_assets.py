@@ -320,6 +320,23 @@ def cluster_groups(rows):
 
 
 
+
+def sphere_groups(records, stride, unit_index):
+    """Publish just the sphere and final unit used by hybrid visibility."""
+    if stride not in (GROUP_WORDS, route_ring.RING_WORDS) or len(records) % stride:
+        raise ValueError('invalid hybrid group record layout')
+    packed = []
+    for at in range(0, len(records), stride):
+        identity = records[at + 10]
+        if not 0 <= identity < len(unit_index):
+            raise ValueError('hybrid group ID exceeds the unit index')
+        unit = unit_index[identity]
+        if not 0 <= unit <= 65535:
+            raise ValueError('hybrid unit ID exceeds u16')
+        packed.extend((*records[at:at + 3], records[at + 6], unit))
+    return packed
+
+
 def ring_chunks(metadata, maximum):
     """Fixed-size ring chunks enclose both compact boxes and group spheres."""
     if maximum <= 0 or len(metadata) % route_ring.RING_WORDS:
@@ -516,10 +533,9 @@ def build(output, route_path=None):
     if route_input is not None:
         ring = route_ring.build_ring(route_input[0], packed, opaque_count, origin, scale, display,
                                      include_blended=True)
-        assets.bytes("MAP_RING_GROUP_DATA", struct.pack(f"<{len(ring[0])}H", *ring[0]))
     # Match the spatial cluster count and keep the runtime chunk division a shift.
     chunk_groups = CLUSTER_GROUPS
-    scratch_words = max(CLUSTER_GROUPS * GROUP_WORDS, chunk_groups * route_ring.RING_WORDS)
+    scratch_words = CLUSTER_GROUPS * 5 if hybrid else max(CLUSTER_GROUPS * GROUP_WORDS, chunk_groups * route_ring.RING_WORDS)
     chunk_directory = [0] if ring is None else ring_chunks(ring[0], chunk_groups)
     if ring is not None:
         ring[2].update(coarse_chunk_groups=chunk_groups,
@@ -534,7 +550,6 @@ def build(output, route_path=None):
         rows, opaque_count, ring, shift, strict=recording == 'prepared')
     assets.bytes('MAP_OPAQUE_RING', struct.pack(f'<{len(command_ring)}H', *command_ring))
     mesh_asset(assets, records)
-    assets.bytes("MAP_GROUP_DATA", struct.pack(f"<{len(packed)}H", *packed))
     cameras, camera_fps, camera_loop_ms = camera_path.expand(json.loads(camera_data))
     camera_words = [w for camera in cameras for w in view_words(camera, origin, scale)]
     assets.bytes("MAP_CAMERA_DATA", struct.pack(f"<{len(camera_words)}H", *camera_words))
@@ -576,6 +591,24 @@ def build(output, route_path=None):
         for unit, value in enumerate(range_units):
             for identity in value['ids']:
                 select_index[identity] = unit
+    # Hybrid visibility consumes spheres and final unit IDs, not draw spans.
+    # Keep the full records only in the offline producer until range layout ends.
+    group_stride = 5 if hybrid else GROUP_WORDS
+    ring_words = 5 if hybrid else route_ring.RING_WORDS
+    group_data = packed
+    ring_data = None if ring is None else ring[0]
+    if hybrid:
+        group_data = sphere_groups(packed, GROUP_WORDS, select_index)
+        ring_data = sphere_groups(ring[0], route_ring.RING_WORDS, select_index)
+        ring[2]['metadata_bytes'] = len(ring_data) * 2
+        clusters = list(clusters)
+        for at in range(14, len(clusters), CLUSTER_WORDS):
+            if clusters[at] % GROUP_WORDS:
+                raise ValueError('cluster offset is not a complete group record')
+            clusters[at] = clusters[at] // GROUP_WORDS * group_stride
+    assets.bytes('MAP_GROUP_DATA', struct.pack(f'<{len(group_data)}H', *group_data))
+    if ring_data is not None:
+        assets.bytes('MAP_RING_GROUP_DATA', struct.pack(f'<{len(ring_data)}H', *ring_data))
     yaw_sectors = pvs_info.get('yaw_sectors', view_pvs.YAW_SECTORS)
     extra = "use crate::dsl_rt::*;\n"
     candidates = os.getenv('TANKRACER_CANDIDATES', 'route')
@@ -595,7 +628,7 @@ def build(output, route_path=None):
         ALPHA_RANK_SECTORS=rank_sectors,
         ALPHA_PITCH_COUNT=len(alpha_order.PITCH_DEGREES),
         TANKRACER_ROUTE_CANDIDATES=int(candidates == 'route'),
-        RING_GROUP_WORDS=route_ring.RING_WORDS, RING_SEGMENT_WORDS=route_ring.SEGMENT_WORDS,
+        RING_GROUP_WORDS=ring_words, RING_SEGMENT_WORDS=route_ring.SEGMENT_WORDS,
         RING_CHUNK_GROUPS=chunk_groups,
         ROUTE_LOCATION_GRID=int(location['enabled']),
         ROUTE_LOCATION_COLUMNS=location['columns'], ROUTE_LOCATION_ROWS=location['rows'],
@@ -620,7 +653,8 @@ def build(output, route_path=None):
         OPAQUE_MASK_WORDS=((len(range_units)+15)//16 if hybrid else max(1, (opaque_count + 15) // 16) if recording == 'prepared'
                            else (len(records) + 15) // 16),
         OPAQUE_DRAW_WORDS=4 if recording == 'prepared' else 3,
-        TANKRACER_POLICY=policy, GROUP_COUNT=len(inventory), GROUP_WORDS=GROUP_WORDS,
+        TANKRACER_POLICY=policy, GROUP_COUNT=len(inventory), GROUP_WORDS=group_stride,
+        GROUP_RADIUS_WORD=3 if hybrid else 6,
         GROUP_SCRATCH_WORDS=scratch_words, OPAQUE_COUNT=opaque_count,
         CLUSTER_COUNT=len(cluster_counts), CLUSTER_WORDS=CLUSTER_WORDS,
         CAMERA_COUNT=len(cameras),
@@ -668,7 +702,7 @@ def build(output, route_path=None):
     extra += word_table('MAP_RANGE_SPLIT_BLOCKS',
                         [v for ids in split_blocks for v in (ids[0], ids[-1]+1)] or [0])
     extra += word_table('MAP_RANGE_UNITS', [0]*4 if hybrid else unit_words)
-    extra += word_table('MAP_RANGE_SELECT_INDEX', select_index if hybrid else [0])
+    extra += word_table('MAP_RANGE_SELECT_INDEX', [0])
     extra += word_table('MAP_RANGE_PAGE_FIRST',[
         next(i for i,u in enumerate(range_units) if u['page']==page)
         for page in range(range_info['pages'])]+[len(range_units)])
@@ -703,8 +737,10 @@ def build(output, route_path=None):
                     camera_sha256=hashlib.sha256(camera_data).hexdigest(),
                     camera_playback=dict(frames_per_second=camera_fps, loop_ms=camera_loop_ms),
                     origin=origin, render_scale=scale, position_shift=shift, display_distance=display,
-                    selection=dict(group_record_bytes=GROUP_WORDS * 2,
-                                   group_asset_bytes=len(packed) * 2,
+                    selection=dict(group_record_bytes=group_stride * 2,
+                                   group_asset_bytes=len(group_data) * 2,
+                                   ring_record_bytes=ring_words * 2,
+                                   ring_asset_bytes=0 if ring_data is None else len(ring_data) * 2,
                                    cluster_count=len(cluster_counts),
                                    cluster_directory_bytes=len(clusters) * 2,
                                    group_scratch_bytes=scratch_words * 2,
